@@ -916,89 +916,89 @@ export default function App() {
           </div>
           {dash ? <BranchMarketTickers dash={dash} cfg={cfg} /> : null}
         </div>
-        <div className="toolbar actions">
-          <div title="Refresh dashboard data and open full settings.">
-            <div className="toolbar-label">Controls</div>
-            <div className="toolbar-group">
-              <button
-                className="primary"
-                disabled={busy}
-                title="Fetch /api/dashboard now (this page also auto-refreshes every ~2.5s)."
-                onClick={() => refresh()}
-              >
-                Refresh data
-              </button>
+        <div className="toolbar-panel">
+          <div className="toolbar toolbar--dock">
+            <div className="toolbar-block" title="Refresh dashboard data and open full settings.">
+              <div className="toolbar-label">Controls</div>
+              <div className="toolbar-group">
+                <button
+                  className="primary"
+                  disabled={busy}
+                  title="Fetch /api/dashboard now (this page also auto-refreshes every ~2.5s)."
+                  onClick={() => refresh()}
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Filters, subtitle rules, sizing, poll/window, rule bands, JSON rules, sim lab parameters."
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  Settings
+                </button>
+                <button type="button" disabled={busy} title="Explore saved historical rows and export CSV." onClick={() => setHistoryOpen(true)}>
+                  History
+                </button>
+              </div>
+            </div>
+            <div className="toolbar-block" title="Paper vs real fills on the Live branch, and whether the Live engine loop runs.">
+              <div className="toolbar-label">Live</div>
+              <div className="toolbar-group">
+                <button
+                  className={cfg.simulate ? "primary" : "danger"}
+                  disabled={busy}
+                  title={
+                    cfg.simulate
+                      ? "Live branch uses simulated fills only — no orders sent to Kalshi. Click to switch to Real $ (you will be asked to confirm)."
+                      : "Live branch can place real limit orders on Kalshi when the engine is on and a rule matches. Click to switch to Simulate (paper)."
+                  }
+                  onClick={() => setSimulate(!Boolean(cfg.simulate))}
+                >
+                  {cfg.simulate ? "Paper" : "Real $"}
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy}
+                  title="Starts/stops the Live engine loop (market scan, rules, trades on the Live branch)."
+                  onClick={() => setRunning(!Boolean(cfg.engine_running))}
+                >
+                  Engine {cfg.engine_running ? "on" : "off"}
+                </button>
+              </div>
+            </div>
+            <div className="toolbar-block" title="Always-paper engines with their own parameters.">
+              <div className="toolbar-label">Labs</div>
+              <div className="toolbar-group">
+                <button
+                  className="primary"
+                  disabled={busy}
+                  title="Parallel paper engine with its own sizing/window; uses the same market data as Live. Always simulated."
+                  onClick={() => setSimLabRunning(!Boolean(engineLabA?.engine_running ?? simLab.engine_running))}
+                >
+                  A {engineLabA?.engine_running ? "on" : "off"}
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy}
+                  title="Second parallel paper engine for A/B testing."
+                  onClick={() => setLabRunning("b", !Boolean(labB.engine_running))}
+                >
+                  B {engineLabB?.engine_running ? "on" : "off"}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="toolbar-optimizer-foot" title="Anthropic-backed recommendations from Lab A/B data only.">
+            <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
               <button
                 type="button"
-                disabled={busy}
-                title="Filters, subtitle rules, sizing, poll/window, rule bands, JSON rules, sim lab parameters."
-                onClick={() => setSettingsOpen(true)}
+                className={optimizerOpen ? "primary" : ""}
+                title="Open or close the Claude optimizer panel (labs-only data; stays clickable while other saves run)."
+                onClick={() => setOptimizerOpen((o) => !o)}
               >
-                Settings…
+                Optimizer{optimizerOpen ? " ▾" : ""}
               </button>
-              <button type="button" disabled={busy} title="Explore saved historical rows and export CSV." onClick={() => setHistoryOpen(true)}>
-                History…
-              </button>
-            </div>
-          </div>
-          <div title="Paper vs real fills on the Live branch, and whether the Live engine loop runs.">
-            <div className="toolbar-label">Live branch</div>
-            <div className="toolbar-group">
-              <button
-                className={cfg.simulate ? "primary" : "danger"}
-                disabled={busy}
-                title={
-                  cfg.simulate
-                    ? "Live branch uses simulated fills only — no orders sent to Kalshi. Click to switch to Real $ (you will be asked to confirm)."
-                    : "Live branch can place real limit orders on Kalshi when the engine is on and a rule matches. Click to switch to Simulate (paper)."
-                }
-                onClick={() => setSimulate(!Boolean(cfg.simulate))}
-              >
-                {cfg.simulate ? "Live mode: Simulate (safe)" : "Live mode: Real $"}
-              </button>
-              <button
-                className="primary"
-                disabled={busy}
-                title="Starts/stops the Live engine loop (market scan, rules, trades on the Live branch)."
-                onClick={() => setRunning(!Boolean(cfg.engine_running))}
-              >
-                Live engine: {cfg.engine_running ? "On" : "Off"}
-              </button>
-            </div>
-          </div>
-          <div title="Always-paper second engine with its own parameters.">
-            <div className="toolbar-label">Simulation labs</div>
-            <div className="toolbar-group">
-              <button
-                className="primary"
-                disabled={busy}
-                title="Parallel paper engine with its own sizing/window; uses the same market data as Live. Always simulated."
-                onClick={() => setSimLabRunning(!Boolean(engineLabA?.engine_running ?? simLab.engine_running))}
-              >
-                Lab A: {engineLabA?.engine_running ? "On" : "Off"}
-              </button>
-              <button
-                className="primary"
-                disabled={busy}
-                title="Second parallel paper engine for A/B testing."
-                onClick={() => setLabRunning("b", !Boolean(labB.engine_running))}
-              >
-                Lab B: {engineLabB?.engine_running ? "On" : "Off"}
-              </button>
-            </div>
-          </div>
-          <div
-            style={{ position: "relative", marginLeft: "auto", display: "flex", flexDirection: "column", alignItems: "flex-end" }}
-            title="Anthropic-backed recommendations from Lab A/B data only."
-          >
-            <button
-              type="button"
-              className={optimizerOpen ? "primary" : ""}
-              title="Open or close the optimizer panel (stays clickable while other saves run)."
-              onClick={() => setOptimizerOpen((o) => !o)}
-            >
-              Claude optimizer{optimizerOpen ? " ▾" : "…"}
-            </button>
             {optimizerOpen ? (
               <div
                 className="panel"
@@ -1075,6 +1075,7 @@ export default function App() {
                 </div>
               </div>
             ) : null}
+            </div>
           </div>
         </div>
       </div>

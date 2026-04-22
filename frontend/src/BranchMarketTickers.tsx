@@ -13,7 +13,7 @@ function seg(text: string, tone?: Tone): TickerSeg {
 }
 
 function dot(): TickerSeg {
-  return { text: "   ·   ", tone: "muted" };
+  return { text: " · ", tone: "muted" };
 }
 
 function fmt$(n: number) {
@@ -36,8 +36,13 @@ function ReturnBadge({ metrics }: { metrics: AnyObj }): ReactNode {
   const tone: Tone = x > 0 ? "pos" : x < 0 ? "neg" : "muted";
   return (
     <span className={`branch-ticker-portfolio-ret ticker-seg--${tone}`}>
-      {arrow} {sign}
-      {x.toFixed(1)}%
+      <span className="branch-ticker-portfolio-ret-arrow" aria-hidden>
+        {arrow}
+      </span>
+      <span>
+        {sign}
+        {x.toFixed(1)}%
+      </span>
     </span>
   );
 }
@@ -51,6 +56,17 @@ function isNoiseBlob(raw: string): boolean {
     s.includes("after filters") ||
     s.includes("returned no markets")
   );
+}
+
+/** Config/credential messages — headline already shows “keys off”; do not scroll in marquee. */
+function isCredentialOrEnvMarqueeNoise(raw: string): boolean {
+  const s = String(raw).toLowerCase();
+  if (isNoiseBlob(raw)) return true;
+  if (s.includes("kalshi_api") || s.includes("api_key") || s.includes("api key")) return true;
+  if (s.includes("is not set") || s.includes("not set") || s.includes("missing key")) return true;
+  if (s.includes("private key") || s.includes("pem") || s.includes("rsa private")) return true;
+  if (s.includes(".env") && (s.includes("missing") || s.includes("not set") || s.includes("read"))) return true;
+  return false;
 }
 
 function snapIsUseful(snap: AnyObj): boolean {
@@ -111,7 +127,7 @@ function monitoringSegments(assets: [string, AnyObj][], snaps: Record<string, An
       out.push(seg(" rules ", "muted"), seg(rules.join(", "), "muted"));
     }
   }
-  if (!any) return [seg("Markets: scanning…", "muted")];
+  if (!any) return [seg("Scanning…", "muted")];
   return out;
 }
 
@@ -138,7 +154,13 @@ function kalshiOpenSegments(rows: unknown, assetLabel: string): TickerSeg[] {
 function simOpenSegments(rows: unknown, assetLabel: string, tag: string): TickerSeg[] {
   const arr = Array.isArray(rows) ? (rows as AnyObj[]) : [];
   if (!arr.length) return [];
-  const out: TickerSeg[] = [seg(`${assetLabel} `, "muted"), seg(`${tag} open `, "muted")];
+  const prefix: TickerSeg[] =
+    tag === "Lab A" || tag === "Lab B"
+      ? [seg(`${assetLabel} `, "muted")]
+      : tag === "Live"
+        ? [seg(`${assetLabel} `, "muted"), seg("paper ", "muted")]
+        : [seg(`${assetLabel} `, "muted"), seg(`${tag} `, "muted")];
+  const out: TickerSeg[] = [...prefix];
   for (let i = 0; i < arr.length; i++) {
     const r = arr[i];
     if (i) out.push(seg(" · ", "muted"));
@@ -204,13 +226,9 @@ function tradeSegments(t: AnyObj): TickerSeg[] {
       ? `@${Number(t.limit_yes_dollars).toFixed(2)}`
       : "";
   const pnlC = t.pnl_cents != null && Number.isFinite(Number(t.pnl_cents)) ? Number(t.pnl_cents) / 100 : null;
-  const out: TickerSeg[] = [
-    seg(st, "muted"),
-    seg(" ", "muted"),
-    seg(side.toUpperCase() || "—", sideTone),
-    seg(" ", "muted"),
-    seg(tick, "muted"),
-  ];
+  const out: TickerSeg[] = [];
+  if (st && st !== "settled") out.push(seg(st, "muted"), seg(" ", "muted"));
+  out.push(seg(side.toUpperCase() || "—", sideTone), seg(" ", "muted"), seg(tick, "muted"));
   if (amt) {
     out.push(seg(" ", "muted"), seg(amt, "muted"));
   }
@@ -228,7 +246,7 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
     const pv = metrics.exchange_portfolio_value_dollars;
     const balS = bal != null && Number.isFinite(Number(bal)) ? fmt$(Number(bal)) : "—";
     const pvS = pv != null && Number.isFinite(Number(pv)) ? fmt$(Number(pv)) : "—";
-    const out: TickerSeg[] = [seg("Live ", "muted"), seg("real · ", "muted")];
+    const out: TickerSeg[] = [seg("Live · ", "muted")];
     if (kalshiPrivateOk) {
       out.push(seg("pv ", "muted"), seg(pvS, "pos"), seg(" cash ", "muted"), seg(balS, "pos"));
     } else out.push(seg("keys off", "warn"));
@@ -248,7 +266,7 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
   const lab = branch === "lab_a" ? "Lab A" : branch === "lab_b" ? "Lab B" : "Live";
   const rt: Tone = !Number.isFinite(retN) ? "muted" : retN > 0 ? "pos" : retN < 0 ? "neg" : "muted";
   return [
-    seg(`${lab} paper `, "muted"),
+    seg(`${lab} · `, "muted"),
     seg(eqS, "pos"),
     seg(" · PnL ", "muted"),
     seg(fmt$(pnl), pnl > 0 ? "pos" : pnl < 0 ? "neg" : "muted"),
@@ -276,11 +294,11 @@ function buildBranchSegments(args: {
 
   const tickAt = engineBlock?.last_tick_at ? String(engineBlock.last_tick_at) : "";
   if (tickAt) {
-    parts.push([dot(), seg(`tick ${tickAt.replace("T", " ").slice(5, 19)}`, "muted")]);
+    parts.push([dot(), seg(`${tickAt.replace("T", " ").slice(5, 19)}`, "muted")]);
   }
 
   const err = engineBlock?.last_error ? String(engineBlock.last_error) : "";
-  if (err && !isNoiseBlob(err)) {
+  if (err && !isCredentialOrEnvMarqueeNoise(err)) {
     parts.push([dot(), seg(err.slice(0, 100), "warn")]);
   }
 
@@ -292,7 +310,7 @@ function buildBranchSegments(args: {
 
   const trades = recentTrades.filter((t) => normBranch(t.branch) === branch).slice(0, 5);
   for (const t of trades) {
-    parts.push([dot(), seg("Trade ", "muted"), ...tradeSegments(t)]);
+    parts.push([dot(), ...tradeSegments(t)]);
   }
 
   const flat: TickerSeg[] = [];
@@ -348,64 +366,30 @@ function TickerRow({
   );
 }
 
-function PortfolioSnapshotPanel({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }) {
-  const mLive = (dash?.metrics || {}) as AnyObj;
-  const mA = ((dash?.metrics_lab_a || dash?.metrics_sim_lab) || {}) as AnyObj;
-  const mB = (dash?.metrics_lab_b || {}) as AnyObj;
-  const rb = dash?.remote_balance as AnyObj | undefined;
-  const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
-  const livePaper = Boolean(cfg.simulate);
-
-  const portfolioLive = livePaper
-    ? fmtNum$(mLive.current_equity_dollars)
-    : fmtNum$(mLive.exchange_portfolio_value_dollars ?? (rb?.portfolio_value != null ? Number(rb.portfolio_value) / 100 : null));
-  const cashLive =
-    livePaper || !keys
-      ? null
-      : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
-
-  const labAeq = fmtNum$(mA.current_equity_dollars);
-  const labBeq = fmtNum$(mB.current_equity_dollars);
-
-  const tipLive = livePaper
-    ? "Live paper equity (est.) from dashboard metrics."
-    : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
-
+function TickerSnapAside({
+  title,
+  ariaLabel,
+  value,
+  valueColor,
+  metrics,
+  children,
+}: {
+  title: string;
+  ariaLabel: string;
+  value: string;
+  valueColor: string;
+  metrics: AnyObj;
+  children?: ReactNode;
+}) {
   return (
-    <aside
-      className="branch-ticker-portfolio section-tip"
-      title={`Snapshot: ${tipLive} Lab A/B paper equity.`}
-      aria-label="Portfolio snapshot"
-    >
-      <div className="branch-ticker-portfolio-title">Snapshot</div>
-      <div className="branch-ticker-portfolio-row" title={tipLive}>
-        <span className="branch-ticker-portfolio-k">{livePaper ? "Live" : "Portfolio"}</span>
-        <span className="branch-ticker-portfolio-v" style={{ color: "#6ee7ff" }}>
-          {portfolioLive}
+    <aside className="branch-ticker-snap-cell section-tip" title={title} aria-label={ariaLabel}>
+      <div className="branch-ticker-portfolio-row">
+        <span className="branch-ticker-portfolio-v" style={{ color: valueColor }}>
+          {value}
         </span>
-        <ReturnBadge metrics={mLive} />
+        <ReturnBadge metrics={metrics} />
       </div>
-      {!livePaper && cashLive ? (
-        <div className="branch-ticker-portfolio-row" title="Cash balance from Kalshi.">
-          <span className="branch-ticker-portfolio-k">Cash</span>
-          <span className="branch-ticker-portfolio-v">{cashLive}</span>
-        </div>
-      ) : null}
-      <div className="branch-ticker-portfolio-divider" />
-      <div className="branch-ticker-portfolio-row" title="Lab A paper equity (est.).">
-        <span className="branch-ticker-portfolio-k">Lab A</span>
-        <span className="branch-ticker-portfolio-v" style={{ color: "#c4b5fd" }}>
-          {labAeq}
-        </span>
-        <ReturnBadge metrics={mA} />
-      </div>
-      <div className="branch-ticker-portfolio-row" title="Lab B paper equity (est.).">
-        <span className="branch-ticker-portfolio-k">Lab B</span>
-        <span className="branch-ticker-portfolio-v" style={{ color: "#fdba74" }}>
-          {labBeq}
-        </span>
-        <ReturnBadge metrics={mB} />
-      </div>
+      {children}
     </aside>
   );
 }
@@ -463,18 +447,65 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
     return Math.min(120, Math.max(28, Math.round(len / 3.5)));
   };
 
+  const rb = dash?.remote_balance as AnyObj | undefined;
+  const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
+  const livePaper = Boolean(cfg.simulate);
+  const portfolioLive = livePaper
+    ? fmtNum$(mLive.current_equity_dollars)
+    : fmtNum$(mLive.exchange_portfolio_value_dollars ?? (rb?.portfolio_value != null ? Number(rb.portfolio_value) / 100 : null));
+  const cashLive =
+    livePaper || !keys
+      ? null
+      : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
+  const labAeq = fmtNum$(mA.current_equity_dollars);
+  const labBeq = fmtNum$(mB.current_equity_dollars);
+  const tipLive = livePaper
+    ? "Live paper equity (est.) from dashboard metrics."
+    : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
+
   return (
-    <div className="branch-ticker-outer">
-      <div
-        className="branch-ticker-stack section-tip"
-        title="Scrolling readouts: markets with real quotes, open positions, recent trades. Green/red = direction or PnL."
-        aria-label="Live, Lab A, and Lab B tickers"
-      >
+    <div
+      className="branch-ticker-outer section-tip"
+      title="Scrolling readouts plus per-row snapshot (value + return vs start). Green/red = direction or PnL."
+      aria-label="Live, Lab A, and Lab B tickers with aligned snapshots"
+    >
+      <div className="branch-ticker-band">
         <TickerRow label="LIVE" accent="#6ee7ff" segments={segBundles.live} durationSec={dur(segBundles.live)} />
-        <TickerRow label="LAB A" accent="#c4b5fd" segments={segBundles.lab_a} durationSec={dur(segBundles.lab_a)} />
-        <TickerRow label="LAB B" accent="#fdba74" segments={segBundles.lab_b} durationSec={dur(segBundles.lab_b)} />
+        <TickerSnapAside
+          title={tipLive}
+          aria-label="Live portfolio or paper equity and return vs start"
+          value={portfolioLive}
+          valueColor="#6ee7ff"
+          metrics={mLive}
+        >
+          {!livePaper && cashLive ? (
+            <div className="branch-ticker-portfolio-row branch-ticker-portfolio-row--sub" title="Cash balance from Kalshi.">
+              <span className="branch-ticker-portfolio-k">Cash</span>
+              <span className="branch-ticker-portfolio-v">{cashLive}</span>
+            </div>
+          ) : null}
+        </TickerSnapAside>
       </div>
-      <PortfolioSnapshotPanel dash={dash} cfg={cfg} />
+      <div className="branch-ticker-band">
+        <TickerRow label="LAB A" accent="#c4b5fd" segments={segBundles.lab_a} durationSec={dur(segBundles.lab_a)} />
+        <TickerSnapAside
+          title="Lab A paper equity (est.)."
+          aria-label="Lab A paper equity and return vs start"
+          value={labAeq}
+          valueColor="#c4b5fd"
+          metrics={mA}
+        />
+      </div>
+      <div className="branch-ticker-band">
+        <TickerRow label="LAB B" accent="#fdba74" segments={segBundles.lab_b} durationSec={dur(segBundles.lab_b)} />
+        <TickerSnapAside
+          title="Lab B paper equity (est.)."
+          aria-label="Lab B paper equity and return vs start"
+          value={labBeq}
+          valueColor="#fdba74"
+          metrics={mB}
+        />
+      </div>
     </div>
   );
 }
