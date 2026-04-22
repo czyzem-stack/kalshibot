@@ -9,6 +9,21 @@ BRANCH_LAB_B = "lab_b"
 BRANCH_SIM_LAB = BRANCH_LAB_A
 BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B)
 
+# Same bounds as ``BotConfigPayload.balance_fraction_per_window`` (API / dashboard).
+MIN_BALANCE_FRACTION_PER_WINDOW = 0.0001
+MAX_BALANCE_FRACTION_PER_WINDOW = 1.0
+
+
+def clamp_balance_fraction_per_window(raw: Any) -> float:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = 0.03
+    if v != v:  # NaN
+        v = 0.03
+    return max(MIN_BALANCE_FRACTION_PER_WINDOW, min(MAX_BALANCE_FRACTION_PER_WINDOW, v))
+
+
 SIM_LAB_OVERLAY_KEYS = (
     "balance_fraction_per_window",
     "window_minutes",

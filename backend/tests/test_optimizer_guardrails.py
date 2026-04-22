@@ -13,7 +13,7 @@ class OptimizerGuardrailsTest(unittest.TestCase):
             trades=[],
             signals=[],
             metrics={"lab_a": {}, "lab_b": {}},
-            oc={"max_bet_fraction": 0.12},
+            oc={},
         )
         self.assertEqual(payload.get("branches"), [BRANCH_LAB_A, BRANCH_LAB_B])
         self.assertTrue(payload.get("live_branch_forbidden"))

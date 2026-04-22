@@ -37,6 +37,8 @@ export type SettingsOverlayProps = {
   onSaveOptimizerConfig: (patch: AnyObj) => void | Promise<void>;
   optimizerSaving?: boolean;
   onResetTradingData: (branch: "all" | "live" | "lab_a" | "lab_b", backup: boolean) => void | Promise<void>;
+  /** Direct ``PUT /api/config/lab-branches`` (merge + optional branch data reset); independent of optimizer. */
+  onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
 };
 
 export default function SettingsOverlay({
@@ -63,6 +65,7 @@ export default function SettingsOverlay({
   onSaveOptimizerConfig,
   optimizerSaving = false,
   onResetTradingData,
+  onApplyLabBranches,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<"live" | "lab_a" | "lab_b" | "lab_ab_optimizer" | "all">("all");
   useEffect(() => {
@@ -305,7 +308,11 @@ export default function SettingsOverlay({
           </p>
         ) : null}
         {showLabA ? (
-        <div className="panel settings-nested-panel" style={{ marginTop: 8, padding: "12px 14px" }}>
+        <div
+          key={`lab-a-fields-${String(labA.paper_balance_cents ?? "")}-${String(labA.window_minutes ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${labA.auto_optimize ? 1 : 0}-${labA.auto_reset_paper_on_tick_failure ? 1 : 0}`}
+          className="panel settings-nested-panel"
+          style={{ marginTop: 8, padding: "12px 14px" }}
+        >
           <h3 style={{ margin: 0 }} title="Branch lab_a configuration.">
             Lab A
           </h3>
@@ -390,7 +397,11 @@ export default function SettingsOverlay({
         ) : null}
 
         {showLabB ? (
-        <div className="panel settings-nested-panel" style={{ marginTop: 12, padding: "12px 14px" }}>
+        <div
+          key={`lab-b-fields-${String(labB.paper_balance_cents ?? "")}-${String(labB.window_minutes ?? "")}-${String(labB.balance_fraction_per_window ?? "")}-${labB.auto_optimize ? 1 : 0}-${labB.auto_reset_paper_on_tick_failure ? 1 : 0}`}
+          className="panel settings-nested-panel"
+          style={{ marginTop: 12, padding: "12px 14px" }}
+        >
           <h3 style={{ margin: 0 }} title="Branch lab_b configuration.">
             Lab B
           </h3>
@@ -483,6 +494,144 @@ export default function SettingsOverlay({
               In <strong>duel</strong> mode, Lab A stays conservative and Lab B explores more aggressively. In{" "}
               <strong>independent</strong> mode, each lab uses its own style/toggles.
             </p>
+            <div
+              key={`bulk-labs-${String(labA.paper_balance_cents ?? "")}-${String(labB.paper_balance_cents ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${String(labB.balance_fraction_per_window ?? "")}`}
+              style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}
+            >
+              <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="Uses PUT /api/config/lab-branches — does not depend on optimizer enable/disable.">
+                {"Lab A & B — bankroll / sizing (direct save)"}
+              </h3>
+              <p className="sub" style={{ marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
+                Merge-only save for both labs in one request. Optionally wipe <strong>signals / trades / equity</strong> for
+                one or both lab branches first (same scope as per-lab reset buttons), then apply the numbers below.
+              </p>
+              <div className="field">
+                <label htmlFor="bulk_lab_reset" className="section-tip" title="Runs before applying the lab_* patches below.">
+                  Reset lab trading data first
+                </label>
+                <select id="bulk_lab_reset" defaultValue="none" disabled={busy}>
+                  <option value="none">No reset (config only)</option>
+                  <option value="lab_a">Lab A only</option>
+                  <option value="lab_b">Lab B only</option>
+                  <option value="both">Lab A + Lab B</option>
+                </select>
+              </div>
+              <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
+                <input id="bulk_lab_backup" type="checkbox" defaultChecked disabled={busy} />
+                <span>SQLite + JSONL backup when reset runs (first branch only if both)</span>
+              </label>
+              <div className="row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <strong style={{ fontSize: 12 }}>Lab A</strong>
+                  <div className="field" style={{ marginTop: 6 }}>
+                    <label htmlFor="bulk_la_paper" className="section-tip">
+                      Paper (cents)
+                    </label>
+                    <input id="bulk_la_paper" type="number" defaultValue={String(labA.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)} disabled={busy} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="bulk_la_frac" className="section-tip">
+                      Balance fraction
+                    </label>
+                    <input id="bulk_la_frac" type="text" defaultValue={String(labA.balance_fraction_per_window ?? 0.055)} disabled={busy} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="bulk_la_win" className="section-tip">
+                      Window (min)
+                    </label>
+                    <input id="bulk_la_win" type="number" defaultValue={String(labA.window_minutes ?? 15)} disabled={busy} />
+                  </div>
+                </div>
+                <div>
+                  <strong style={{ fontSize: 12 }}>Lab B</strong>
+                  <div className="field" style={{ marginTop: 6 }}>
+                    <label htmlFor="bulk_lb_paper" className="section-tip">
+                      Paper (cents)
+                    </label>
+                    <input id="bulk_lb_paper" type="number" defaultValue={String(labB.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)} disabled={busy} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="bulk_lb_frac" className="section-tip">
+                      Balance fraction
+                    </label>
+                    <input id="bulk_lb_frac" type="text" defaultValue={String(labB.balance_fraction_per_window ?? 0.09)} disabled={busy} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="bulk_lb_win" className="section-tip">
+                      Window (min)
+                    </label>
+                    <input id="bulk_lb_win" type="number" defaultValue={String(labB.window_minutes ?? 12)} disabled={busy} />
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="primary"
+                style={{ marginTop: 12 }}
+                disabled={busy || optimizerSaving}
+                title="PUT /api/config/lab-branches — merge lab_a & lab_b; optional SQLite wipe for selected branches."
+                onClick={() => {
+                  const parseC = (id: string) =>
+                    Math.round(Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim()));
+                  const parseF = (id: string) => Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim());
+                  const resetVal = String((document.getElementById("bulk_lab_reset") as HTMLSelectElement | null)?.value || "none");
+                  const backupEl = document.getElementById("bulk_lab_backup") as HTMLInputElement | null;
+                  const backup = backupEl ? backupEl.checked : true;
+                  const laPaper = parseC("bulk_la_paper");
+                  const laFrac = parseF("bulk_la_frac");
+                  const laWin = parseC("bulk_la_win");
+                  const lbPaper = parseC("bulk_lb_paper");
+                  const lbFrac = parseF("bulk_lb_frac");
+                  const lbWin = parseC("bulk_lb_win");
+                  if (!Number.isFinite(laFrac) || laFrac < 0.0001 || laFrac > 1) {
+                    window.alert("Lab A balance fraction must be between 0.0001 and 1.");
+                    return;
+                  }
+                  if (!Number.isFinite(lbFrac) || lbFrac < 0.0001 || lbFrac > 1) {
+                    window.alert("Lab B balance fraction must be between 0.0001 and 1.");
+                    return;
+                  }
+                  if (!Number.isFinite(laWin) || laWin < 1 || laWin > 1440 || !Number.isInteger(laWin)) {
+                    window.alert("Lab A window must be an integer 1–1440 minutes.");
+                    return;
+                  }
+                  if (!Number.isFinite(lbWin) || lbWin < 1 || lbWin > 1440 || !Number.isInteger(lbWin)) {
+                    window.alert("Lab B window must be an integer 1–1440 minutes.");
+                    return;
+                  }
+                  if (!Number.isFinite(laPaper) || laPaper < 0 || !Number.isInteger(laPaper)) {
+                    window.alert("Lab A paper balance must be a non-negative integer (cents).");
+                    return;
+                  }
+                  if (!Number.isFinite(lbPaper) || lbPaper < 0 || !Number.isInteger(lbPaper)) {
+                    window.alert("Lab B paper balance must be a non-negative integer (cents).");
+                    return;
+                  }
+                  if (resetVal !== "none") {
+                    const ok = window.confirm(
+                      `Reset SQLite trading data for ${resetVal === "both" ? "Lab A and Lab B" : resetVal} before saving new bankroll/sizing? This cannot be undone (backups may run).`,
+                    );
+                    if (!ok) return;
+                  }
+                  void onApplyLabBranches({
+                    reset_data: resetVal,
+                    backup,
+                    lab_a: {
+                      paper_balance_cents: laPaper,
+                      balance_fraction_per_window: laFrac,
+                      window_minutes: laWin,
+                    },
+                    lab_b: {
+                      paper_balance_cents: lbPaper,
+                      balance_fraction_per_window: lbFrac,
+                      window_minutes: lbWin,
+                    },
+                  });
+                }}
+              >
+                {"Apply lab bankroll & sizing (both branches)"}
+              </button>
+            </div>
             <div className="field">
               <label>Mode</label>
               <select id="opt_mode" defaultValue={String(optimizerCfg?.mode || "duel")}>
@@ -557,10 +706,6 @@ export default function SettingsOverlay({
               <input id="opt_min_profitable_trades" type="number" min={0} max={200} defaultValue={String(optimizerCfg?.min_profitable_trades ?? 8)} />
             </div>
             <div className="field">
-              <label>Max bet fraction (cap)</label>
-              <input id="opt_max_bet_fraction" type="number" min={0.02} max={0.5} step={0.01} defaultValue={String(optimizerCfg?.max_bet_fraction ?? 0.12)} />
-            </div>
-            <div className="field">
               <label>Regime lookback (hours)</label>
               <input id="opt_regime_lookback_hours" type="number" min={1} max={168} defaultValue={String(optimizerCfg?.regime_lookback_hours ?? 6)} />
             </div>
@@ -598,7 +743,6 @@ export default function SettingsOverlay({
                   lab_b_min_minutes_left: Number((document.getElementById("opt_lab_b_min_minutes_left") as HTMLInputElement | null)?.value || 3),
                   min_trades_for_optimize: Number((document.getElementById("opt_min_trades_for_optimize") as HTMLInputElement | null)?.value || 25),
                   min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 8),
-                  max_bet_fraction: Number((document.getElementById("opt_max_bet_fraction") as HTMLInputElement | null)?.value || 0.12),
                   regime_lookback_hours: Number((document.getElementById("opt_regime_lookback_hours") as HTMLInputElement | null)?.value || 6),
                   optimize_bet_size: Boolean((document.getElementById("opt_optimize_bet_size") as HTMLInputElement | null)?.checked),
                   include_fees_in_score: Boolean((document.getElementById("opt_include_fees_in_score") as HTMLInputElement | null)?.checked),

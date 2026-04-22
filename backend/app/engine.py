@@ -371,16 +371,16 @@ async def tick_once(engine: TradingEngine) -> None:
         lab_key = "lab_a" if branch in (BRANCH_SIM_LAB, BRANCH_LAB_A) else "lab_b"
         lab = full_cfg.get(lab_key) or {}
         balance_cents = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
+    elif trade_mode == "simulate" or bool(cfg.get("_simulate_orders")):
+        # Live branch paper sim: stake against configured bankroll only (not exchange balance).
+        balance_cents = int(cfg.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
     else:
         try:
             bal = await engine.client.get_private("/portfolio/balance")
             balance_cents = int(bal.get("balance") or 0)
         except Exception as e:
             engine.state.last_error = f"balance: {e}"
-            if trade_mode == "simulate":
-                balance_cents = int(full_cfg.get("paper_balance_cents") or 500_000)
-            else:
-                balance_cents = 0
+            balance_cents = 0
 
     assets = cfg.get("assets") or {}
     rules = build_effective_rules(cfg)
@@ -511,6 +511,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
     if should_wipe:
         rb = BRANCH_LAB_A if br_engine in (BRANCH_SIM_LAB, BRANCH_LAB_A) else BRANCH_LAB_B
         await engine.store.reset_trading_data(backup=False, branch=rb)
+        await engine.store.bump_lab_paper_lifetime_basis(rb)
         engine._paper_auto_reset_streak_handled = True
         payload: dict[str, Any] = {
             "event": "auto_reset_lab_paper",
@@ -1469,7 +1470,9 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             for br in (BRANCH_LAB_A, BRANCH_LAB_B):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
-                    if tick % 25 == 0 and bool(lc.get("auto_optimize")):
+                    # Legacy Lab A fraction nudger — do not run while main optimizer is enabled (avoids fighting Claude/adaptive).
+                    oc0 = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+                    if tick % 25 == 0 and bool(lc.get("auto_optimize")) and not bool(oc0.get("enabled")):
                         await maybe_auto_optimize(eng_live.store)
                     if cfg.get("engine_running"):
                         await asyncio.sleep(0.4)

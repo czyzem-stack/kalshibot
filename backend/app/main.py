@@ -13,14 +13,14 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from .api_models import BotConfigPayload
+from .api_models import BotConfigPayload, merge_lab_branch_patch
 from .branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LIVE, BRANCH_SIM_LAB, merge_branch_config
 from .engine import TradingEngine, dual_engine_loop, exclude_subtitle_parts_from_cfg
 from .kalshi_client import KalshiClient
 from .kalshi_portfolio import fetch_portfolio_snapshot
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
-from .persistence import Store
+from .persistence import Store, expand_partial_lab_branch
 from .optimizer_claude import run_optimizer_once
 from .settings_env import env, kalshi_credentials_report
 
@@ -345,6 +345,44 @@ async def put_config(body: BotConfigPayload) -> dict[str, Any]:
     return merged
 
 
+@app.put("/api/config/lab-branches")
+async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Merge ``lab_a`` / ``lab_b`` settings without the general ``BotConfigPayload`` shape (reliable for nested lab saves).
+
+    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``both`` — wipes signals/trades/equity for those
+    branches before applying config patches. ``backup`` (default true) is passed to ``reset_trading_data``.
+    """
+    reset = str(body.get("reset_data") or "none").strip().lower()
+    backup = bool(body.get("backup", True))
+    if reset == "both":
+        await store.reset_trading_data(backup=backup, branch="lab_a")
+        await store.reset_trading_data(backup=False, branch="lab_b")
+        _clear_engine_mem_after_reset("lab_a")
+        _clear_engine_mem_after_reset("lab_b")
+    elif reset == "lab_a":
+        await store.reset_trading_data(backup=backup, branch="lab_a")
+        _clear_engine_mem_after_reset("lab_a")
+    elif reset == "lab_b":
+        await store.reset_trading_data(backup=backup, branch="lab_b")
+        _clear_engine_mem_after_reset("lab_b")
+    elif reset not in ("none", ""):
+        raise HTTPException(status_code=400, detail="reset_data must be none, lab_a, lab_b, or both")
+
+    cfg = await store.load_config()
+    la = body.get("lab_a")
+    if isinstance(la, dict) and la:
+        merged_a = merge_lab_branch_patch(dict(cfg.get("lab_a") or {}), la)
+        cfg["lab_a"] = expand_partial_lab_branch("lab_a", merged_a)
+        cfg["sim_lab"] = dict(cfg["lab_a"])
+    lb = body.get("lab_b")
+    if isinstance(lb, dict) and lb:
+        merged_b = merge_lab_branch_patch(dict(cfg.get("lab_b") or {}), lb)
+        cfg["lab_b"] = expand_partial_lab_branch("lab_b", merged_b)
+    await store.save_config(cfg)
+    return {"ok": True, "config": await store.load_config()}
+
+
 @app.get("/api/engine/status")
 async def engine_status() -> dict[str, Any]:
     cfg = await store.load_config()
@@ -546,19 +584,25 @@ async def dashboard() -> dict[str, Any]:
         bal_json=bal_json if isinstance(bal_json, dict) else None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_live),
     )
-    lab_paper_cents = int(lab_a.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
+    def _lab_paper_basis_cents(lab: dict[str, Any]) -> int:
+        lt = lab.get("paper_lifetime_basis_cents")
+        if lt is not None:
+            return int(lt)
+        return int(lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
+
+    lab_paper_basis_a = _lab_paper_basis_cents(lab_a if isinstance(lab_a, dict) else {})
     _enrich_strategy_metrics(
         metrics_lab_a,
         paper_mode=True,
-        paper_start_cents=lab_paper_cents,
+        paper_start_cents=lab_paper_basis_a,
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_a),
     )
-    lab_b_paper_cents = int(lab_b.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
+    lab_paper_basis_b = _lab_paper_basis_cents(lab_b if isinstance(lab_b, dict) else {})
     _enrich_strategy_metrics(
         metrics_lab_b,
         paper_mode=True,
-        paper_start_cents=lab_b_paper_cents,
+        paper_start_cents=lab_paper_basis_b,
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_b),
     )
@@ -836,12 +880,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                 nxt[k] = bool(v)
             else:
                 nxt[k] = v
-    if "max_bet_fraction" in body and body["max_bet_fraction"] is not None:
-        try:
-            mf = float(body["max_bet_fraction"])
-            nxt["max_bet_fraction"] = max(0.01, min(0.5, mf))
-        except (TypeError, ValueError):
-            nxt["max_bet_fraction"] = body["max_bet_fraction"]
+    nxt.pop("max_bet_fraction", None)
     cfg["optimizer"] = nxt
     await store.save_config(cfg)
     return {"ok": True, "optimizer": nxt}

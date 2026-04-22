@@ -215,7 +215,6 @@ def default_bot_config() -> dict[str, Any]:
             "lab_b_min_minutes_left": 3,
             "min_trades_for_optimize": 25,
             "min_profitable_trades": 8,
-            "max_bet_fraction": 0.12,
             "optimize_bet_size": True,
             "include_fees_in_score": True,
             "regime_lookback_hours": 6,
@@ -226,6 +225,18 @@ def default_bot_config() -> dict[str, Any]:
             "last_error": "",
         },
     }
+
+
+def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any]:
+    """
+    Shallow-merge ``lab`` over ``default_bot_config()[branch]`` so thin saves (e.g. only paper / fraction / window)
+    cannot strip ``engine_running``, fee keys, or other lab defaults.
+    """
+    if branch not in ("lab_a", "lab_b"):
+        raise ValueError(f"branch must be lab_a or lab_b, got {branch!r}")
+    base = dict(default_bot_config().get(branch) or {})
+    base.update(lab)
+    return base
 
 
 async def _migrate_columns(db: aiosqlite.Connection) -> None:
@@ -289,11 +300,11 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": 15,
             "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
         }
-    # Keep legacy key synced for older frontend reads.
-    cfg["sim_lab"] = dict(cfg.get("lab_a") or {})
     dopt = dict(default_bot_config().get("optimizer") or {})
     cur_o = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
-    cfg["optimizer"] = {**dopt, **cur_o}
+    merged_o = {**dopt, **cur_o}
+    merged_o.pop("max_bet_fraction", None)
+    cfg["optimizer"] = merged_o
     assets = cfg.get("assets")
     default_assets = default_bot_config().get("assets") or {}
     if isinstance(default_assets, dict) and default_assets:
@@ -317,6 +328,11 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Dev sim high-YES bypass: migrate legacy boolean to percent field
     if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(cfg.get("dev_sim_yes_implied_ge_70")):
         cfg["dev_sim_yes_implied_ge_pct"] = 70.0
+    if isinstance(cfg.get("lab_a"), dict):
+        cfg["lab_a"] = expand_partial_lab_branch("lab_a", dict(cfg["lab_a"]))
+    if isinstance(cfg.get("lab_b"), dict):
+        cfg["lab_b"] = expand_partial_lab_branch("lab_b", dict(cfg["lab_b"]))
+    cfg["sim_lab"] = dict(cfg.get("lab_a") or {})
     return cfg
 
 
@@ -354,6 +370,27 @@ class Store:
         async with self._open_db() as db:
             await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(cfg),))
             await db.commit()
+
+    async def bump_lab_paper_lifetime_basis(self, branch: str) -> None:
+        """
+        After an auto lab wipe, add one more paper seed tranche to cumulative basis.
+
+        Dashboard return % vs ``paper_lifetime_basis_cents`` (falling back to per-lab
+        ``paper_balance_cents``) then reflects all capital ever re-seeded into that lab.
+        """
+        br = str(branch or "").strip().lower()
+        if br not in ("lab_a", "lab_b"):
+            return
+        cfg = await self.load_config()
+        lab_key = "lab_a" if br == "lab_a" else "lab_b"
+        lab = dict(cfg.get(lab_key) or {})
+        seed = int(lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
+        prev = int(lab.get("paper_lifetime_basis_cents") or 0)
+        if prev <= 0:
+            prev = seed
+        lab["paper_lifetime_basis_cents"] = prev + seed
+        cfg[lab_key] = lab
+        await self.save_config(cfg)
 
     async def insert_signal(self, row: dict[str, Any]) -> int:
         async with self._open_db() as db:

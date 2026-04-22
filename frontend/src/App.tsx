@@ -14,6 +14,9 @@ import { BranchMarketTickers } from "./BranchMarketTickers";
 
 type AnyObj = Record<string, any>;
 
+/** Stable empty lab when config has no lab object yet — avoids `new {}` every render breaking PUT payloads. */
+const EMPTY_LAB: AnyObj = Object.freeze({});
+
 async function apiGet<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) throw new Error(`${path} ${r.status}`);
@@ -26,8 +29,37 @@ async function apiPut(path: string, body: AnyObj) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`${path} ${r.status}`);
+  if (!r.ok) {
+    let detail = "";
+    try {
+      const j = (await r.json()) as AnyObj;
+      detail = typeof j?.detail === "string" ? j.detail : JSON.stringify(j?.detail ?? j);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail ? `${path} ${r.status}: ${detail}` : `${path} ${r.status}`);
+  }
   return await r.json();
+}
+
+async function apiPutLabBranches(body: AnyObj): Promise<AnyObj> {
+  const path = "/api/config/lab-branches";
+  const r = await fetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = "";
+    try {
+      const j = (await r.json()) as AnyObj;
+      detail = typeof j?.detail === "string" ? j.detail : JSON.stringify(j?.detail ?? j);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail ? `${path} ${r.status}: ${detail}` : `${path} ${r.status}`);
+  }
+  return (await r.json()) as AnyObj;
 }
 
 async function apiPost(path: string) {
@@ -50,27 +82,74 @@ function fmtPct(n: unknown, digits = 2): string {
   return `${sign}${x.toFixed(digits)}%`;
 }
 
+type MetricValueTone = "pos" | "neg" | "neu";
+
+function metricSignedTone(n: unknown): MetricValueTone {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "neu";
+  if (x > 0.0005) return "pos";
+  if (x < -0.0005) return "neg";
+  return "neu";
+}
+
+function metricEquityVsBankroll(eq: unknown, bank: unknown): MetricValueTone {
+  const e = Number(eq);
+  const b = Number(bank);
+  if (!Number.isFinite(e) || !Number.isFinite(b) || b <= 0) return "neu";
+  return metricSignedTone(e - b);
+}
+
+function metricWinRateTone(pct: unknown): MetricValueTone {
+  const x = Number(pct);
+  if (!Number.isFinite(x)) return "neu";
+  return metricSignedTone(x - 50);
+}
+
+function decisiveWinRatePct(m: AnyObj): unknown {
+  const decisive = Number(m.wins ?? 0) + Number(m.losses ?? 0) > 0;
+  return decisive ? m.win_rate_decisive_pct : m.win_rate_pct;
+}
+
+function decisiveLossRatePct(m: AnyObj): unknown {
+  const decisive = Number(m.wins ?? 0) + Number(m.losses ?? 0) > 0;
+  return decisive ? m.loss_rate_decisive_pct : m.loss_rate_pct;
+}
+
+function metricValClass(t: MetricValueTone | undefined): string {
+  if (!t || t === "neu") return "v";
+  return `v metric-val--${t}`;
+}
+
+function metricSubClass(t: MetricValueTone | undefined): string {
+  if (!t || t === "neu") return "metric-sub";
+  return `metric-sub metric-sub--${t}`;
+}
+
 function MetricTile({
   label,
   value,
   title,
   sub,
+  valueTone,
+  subTone,
 }: {
   label: string;
   value: ReactNode;
   title: string;
   sub?: ReactNode;
+  valueTone?: MetricValueTone;
+  subTone?: MetricValueTone;
 }) {
   return (
     <div className="metric" title={title}>
       <div className="k" title={title}>
         {label}
       </div>
-      <div className="v" title={title}>
+      <div className={metricValClass(valueTone)} title={title}>
         {value}
       </div>
       {sub != null && sub !== "" ? (
-        <div className="metric-sub" title={title}>
+        <div className={metricSubClass(subTone)} title={title}>
           {sub}
         </div>
       ) : null}
@@ -337,10 +416,13 @@ function EngineAssetSnapBlock({
     );
   }
   const hasBook = Boolean(snap.has_orderbook);
-  const pYes =
-    hasBook && snap.implied_prob != null && Number.isFinite(Number(snap.implied_prob))
+  const implied01 =
+    snap.implied_prob != null && Number.isFinite(Number(snap.implied_prob))
       ? Math.min(1, Math.max(0, Number(snap.implied_prob)))
       : null;
+  // Sentiment bar + YES/NO lean: use implied mid whenever present (do not require has_orderbook; avoids empty bar
+  // when backend relaxes book flags or after feed quirks).
+  const pYes = implied01;
   const lean: "yes" | "no" | "neutral" =
     pYes == null ? "neutral" : pYes >= 0.5 ? "yes" : "no";
   const fmtPx = (v: unknown) => {
@@ -564,8 +646,18 @@ export default function App() {
   const snaps = (dash?.equity_snapshots || []) as AnyObj[];
   const equitySnapsLabA = (dash?.equity_snapshots_lab_a || dash?.equity_snapshots_sim_lab || []) as AnyObj[];
   const equitySnapsLabB = (dash?.equity_snapshots_lab_b || []) as AnyObj[];
-  const labA = ((cfg.lab_a || cfg.sim_lab) || {}) as AnyObj;
-  const labB = (cfg.lab_b || {}) as AnyObj;
+  const labA = useMemo((): AnyObj => {
+    const a = cfg.lab_a;
+    if (a && typeof a === "object") return a as AnyObj;
+    const s = cfg.sim_lab;
+    if (s && typeof s === "object") return s as AnyObj;
+    return EMPTY_LAB;
+  }, [cfg.lab_a, cfg.sim_lab]);
+  const labB = useMemo((): AnyObj => {
+    const b = cfg.lab_b;
+    if (b && typeof b === "object") return b as AnyObj;
+    return EMPTY_LAB;
+  }, [cfg.lab_b]);
   // Backward-compatible aliases while we expand UI sections incrementally.
   const simLab = labA;
 
@@ -676,22 +768,38 @@ export default function App() {
 
   const saveLabFromSliders = async (lab: "a" | "b") => {
     const p = `lab_${lab}`;
-    const frac = Number((document.getElementById(`${p}_frac`) as HTMLInputElement)?.value);
-    const win = Number((document.getElementById(`${p}_win`) as HTMLInputElement)?.value);
-    const paper = Number((document.getElementById(`${p}_paper`) as HTMLInputElement)?.value);
-    const opt = Boolean((document.getElementById(`${p}_opt`) as HTMLInputElement)?.checked);
-    const autoReset = Boolean((document.getElementById(`${p}_auto_reset_failure`) as HTMLInputElement)?.checked);
+    const fracRaw = (document.getElementById(`${p}_frac`) as HTMLInputElement | null)?.value;
+    const winRaw = (document.getElementById(`${p}_win`) as HTMLInputElement | null)?.value;
+    const paperRaw = (document.getElementById(`${p}_paper`) as HTMLInputElement | null)?.value;
+    const frac = Number(String(fracRaw ?? "").replace(/,/g, "").trim());
+    const win = Math.round(Number(String(winRaw ?? "").replace(/,/g, "").trim()));
+    const paper = Math.round(Number(String(paperRaw ?? "").replace(/,/g, "").trim()));
+    const opt = Boolean((document.getElementById(`${p}_opt`) as HTMLInputElement | null)?.checked);
+    const autoReset = Boolean((document.getElementById(`${p}_auto_reset_failure`) as HTMLInputElement | null)?.checked);
+    if (!Number.isFinite(frac) || frac < 0.0001 || frac > 1) {
+      setErr("Lab balance fraction must be between 0.0001 and 1 (e.g. 0.055).");
+      return;
+    }
+    if (!Number.isFinite(win) || win < 1 || win > 1440 || !Number.isInteger(win)) {
+      setErr("Lab window length must be a whole number of minutes from 1 to 1440.");
+      return;
+    }
+    if (!Number.isFinite(paper) || paper < 0 || !Number.isInteger(paper)) {
+      setErr("Lab paper balance must be a non-negative whole number of cents (digits only, or use commas as thousands separators).");
+      return;
+    }
     setBusy(true);
     try {
-      await apiPut("/api/config", {
-        [lab === "a" ? "lab_a" : "lab_b"]: {
-          ...(lab === "a" ? labA : labB),
-          balance_fraction_per_window: frac,
-          window_minutes: win,
-          paper_balance_cents: paper,
-          auto_optimize: opt,
-          auto_reset_paper_on_tick_failure: autoReset,
-        },
+      const patch = {
+        balance_fraction_per_window: frac,
+        window_minutes: win,
+        paper_balance_cents: paper,
+        auto_optimize: opt,
+        auto_reset_paper_on_tick_failure: autoReset,
+      };
+      await apiPutLabBranches({
+        reset_data: "none",
+        ...(lab === "a" ? { lab_a: patch } : { lab_b: patch }),
       });
       await refresh();
     } catch (e: any) {
@@ -707,11 +815,9 @@ export default function App() {
   const saveLabRules = async (lab: "a" | "b", rules: AnyObj[]) => {
     setBusy(true);
     try {
-      await apiPut("/api/config", {
-        [lab === "a" ? "lab_a" : "lab_b"]: {
-          ...(lab === "a" ? labA : labB),
-          rules,
-        },
+      await apiPutLabBranches({
+        reset_data: "none",
+        ...(lab === "a" ? { lab_a: { rules } } : { lab_b: { rules } }),
       });
       await refresh();
     } catch (e: any) {
@@ -836,6 +942,18 @@ export default function App() {
     }
   };
 
+  const applyLabBranchesBulk = async (body: AnyObj) => {
+    setBusy(true);
+    try {
+      await apiPutLabBranches(body);
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const resetTradingData = async (branch: "all" | "live" | "lab_a" | "lab_b", backup: boolean) => {
     setBusy(true);
     try {
@@ -915,6 +1033,7 @@ export default function App() {
             </a>
           </div>
           {dash ? <BranchMarketTickers dash={dash} cfg={cfg} /> : null}
+          {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
         </div>
         <div className="toolbar-panel">
           <div className="toolbar toolbar--dock">
@@ -1090,8 +1209,6 @@ export default function App() {
 
       {dash ? (
         <>
-      <ConnectionStrip kalshi={kalshi} />
-      <SetupChecklist dash={dash} cfg={cfg} />
       <KalshiStatusBanner dash={dash} cfg={cfg} />
 
       <div className="metrics" style={{ marginBottom: 8 }}>
@@ -1155,22 +1272,28 @@ export default function App() {
               value={fmtMoney(Number(metrics.current_equity_dollars ?? 0))}
               title="paper_start + total settled PnL − open sim committed premium. Same formula the engine uses for paper equity snapshots."
               sub={`Return vs start ${fmtPct(metrics.return_vs_start_pct)} · chart last ${metrics.latest_equity_snapshot_dollars != null ? fmtMoney(Number(metrics.latest_equity_snapshot_dollars)) : "—"}`}
+              valueTone={metricEquityVsBankroll(metrics.current_equity_dollars, metrics.paper_start_dollars)}
+              subTone={metricSignedTone(metrics.return_vs_start_pct)}
             />
             <MetricTile
               label="Total PnL (realized)"
               value={fmtMoney(Number(metrics.total_pnl_dollars || 0))}
               title="Sum of pnl_cents / 100 for Live-branch trades with status settled and mode matching Live (simulate)."
               sub={`${fmtPct(metrics.realized_pnl_pct_of_start)} of starting bankroll`}
+              valueTone={metricSignedTone(metrics.total_pnl_dollars)}
+              subTone={metricSignedTone(metrics.realized_pnl_pct_of_start)}
             />
             <MetricTile
               label="Total Kalshi fees"
               value={fmtMoney(Number(metrics.total_kalshi_fees_dollars || 0))}
               title="Modeled entry + exit fees accumulated from trade extra_json for this branch/mode."
+              valueTone="neg"
             />
             <MetricTile
               label="Avg hourly (realized)"
               value={fmtMoney(Number(metrics.avg_hourly_pnl_dollars || 0))}
               title="total realized PnL divided by hours between first and last settled trade timestamps on this branch (min ~1h denominator)."
+              valueTone={metricSignedTone(metrics.avg_hourly_pnl_dollars)}
             />
             <MetricTile
               label="Settled trades"
@@ -1186,12 +1309,9 @@ export default function App() {
             />
             <MetricTile
               label="Win rate"
-              value={fmtPct(
-                Number(metrics.wins ?? 0) + Number(metrics.losses ?? 0) > 0
-                  ? metrics.win_rate_decisive_pct
-                  : metrics.win_rate_pct,
-              )}
+              value={fmtPct(decisiveWinRatePct(metrics))}
               title="wins ÷ (wins + losses) when there is at least one decisive outcome; otherwise wins ÷ settled. Full-table SQL, same scope as Total PnL."
+              valueTone={metricWinRateTone(decisiveWinRatePct(metrics))}
             />
             <MetricTile
               label="Avg PnL / settled"
@@ -1201,15 +1321,13 @@ export default function App() {
                   : "—"
               }
               title="total_pnl_dollars ÷ settled_trades — mean realized dollars per closed trade."
+              valueTone={metricSignedTone(metrics.avg_realized_per_settled_dollars)}
             />
             <MetricTile
               label="Loss rate"
-              value={fmtPct(
-                Number(metrics.wins ?? 0) + Number(metrics.losses ?? 0) > 0
-                  ? metrics.loss_rate_decisive_pct
-                  : metrics.loss_rate_pct,
-              )}
+              value={fmtPct(decisiveLossRatePct(metrics))}
               title="losses ÷ (wins + losses) when decisive outcomes exist; else losses ÷ settled."
+              valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metrics)))}
             />
             <MetricTile
               label="Open (paper)"
@@ -1221,6 +1339,7 @@ export default function App() {
               value={fmtMoney(Number(metrics.open_sim_committed_dollars || 0))}
               title="Sum of amount_cents for those open sim trades ÷ 100 — premium tied up until settlement."
               sub={fmtPct(metrics.committed_pct_of_start) + " of bankroll"}
+              subTone={metricSignedTone(-Number(metrics.committed_pct_of_start))}
             />
           </>
         ) : (
@@ -1247,16 +1366,19 @@ export default function App() {
               label="Bot settled PnL"
               value={fmtMoney(Number(metrics.total_pnl_dollars || 0))}
               title="Sum of realized pnl from this bot’s logged Live-branch live-mode fills (SQLite), not the entire exchange account."
+              valueTone={metricSignedTone(metrics.total_pnl_dollars)}
             />
             <MetricTile
               label="Total Kalshi fees"
               value={fmtMoney(Number(metrics.total_kalshi_fees_dollars || 0))}
               title="Modeled entry + exit fees accumulated from trade extra_json for this branch/mode."
+              valueTone="neg"
             />
             <MetricTile
               label="Avg hourly (bot)"
               value={fmtMoney(Number(metrics.avg_hourly_pnl_dollars || 0))}
               title="Bot realized PnL per wall-clock hour between first and last settled trade on Live live mode."
+              valueTone={metricSignedTone(metrics.avg_hourly_pnl_dollars)}
             />
             <MetricTile
               label="Settled (bot)"
@@ -1272,12 +1394,9 @@ export default function App() {
             />
             <MetricTile
               label="Win rate"
-              value={fmtPct(
-                Number(metrics.wins ?? 0) + Number(metrics.losses ?? 0) > 0
-                  ? metrics.win_rate_decisive_pct
-                  : metrics.win_rate_pct,
-              )}
+              value={fmtPct(decisiveWinRatePct(metrics))}
               title="wins ÷ (wins + losses) when decisive; else wins ÷ settled (full-table SQL)."
+              valueTone={metricWinRateTone(decisiveWinRatePct(metrics))}
             />
             <MetricTile
               label="Avg PnL / settled"
@@ -1287,6 +1406,13 @@ export default function App() {
                   : "—"
               }
               title="Mean realized dollars per closed bot trade."
+              valueTone={metricSignedTone(metrics.avg_realized_per_settled_dollars)}
+            />
+            <MetricTile
+              label="Loss rate"
+              value={fmtPct(decisiveLossRatePct(metrics))}
+              title="losses ÷ (wins + losses) when decisive; else losses ÷ settled."
+              valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metrics)))}
             />
             <MetricTile
               label="Open (paper)"
@@ -1315,7 +1441,7 @@ export default function App() {
         title="Each block below is scoped to one branch only, same layout idea as Live strategy metrics."
       >
         Metrics below are <strong>not mixed</strong>: Lab A uses only <code>branch=lab_a</code> (legacy <code>sim_lab</code> counts as Lab A); Lab B uses only{" "}
-        <code>branch=lab_b</code>. Unset per-lab paper balance falls back to global paper balance.
+        <code>branch=lab_b</code>. Lab <strong>bankroll (start)</strong> is cumulative capital injected (including each auto-reseed); return % is vs that basis.
       </p>
 
       <div className="metrics" style={{ marginBottom: 14 }}>
@@ -1338,29 +1464,35 @@ export default function App() {
         <MetricTile
           label="Lab A bankroll (start)"
           value={fmtMoney(Number(metricsLabA.paper_start_dollars ?? 0))}
-          title="lab_a.paper_balance_cents if set, else cfg.paper_balance_cents."
+          title="Cumulative paper basis: lab_a.paper_lifetime_basis_cents after each auto wipe, else lab_a.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
         />
         <MetricTile
           label="Lab A equity (est.)"
           value={fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))}
           title="Lab A bankroll + settled PnL − open committed."
           sub={`Return vs start ${fmtPct(metricsLabA.return_vs_start_pct)} · chart last ${metricsLabA.latest_equity_snapshot_dollars != null ? fmtMoney(Number(metricsLabA.latest_equity_snapshot_dollars)) : "—"}`}
+          valueTone={metricEquityVsBankroll(metricsLabA.current_equity_dollars, metricsLabA.paper_start_dollars)}
+          subTone={metricSignedTone(metricsLabA.return_vs_start_pct)}
         />
         <MetricTile
           label="Lab A total PnL"
           value={fmtMoney(Number(metricsLabA.total_pnl_dollars || 0))}
           title="Realized PnL for branch lab_a, mode simulate, status settled."
           sub={`${fmtPct(metricsLabA.realized_pnl_pct_of_start)} of lab bankroll`}
+          valueTone={metricSignedTone(metricsLabA.total_pnl_dollars)}
+          subTone={metricSignedTone(metricsLabA.realized_pnl_pct_of_start)}
         />
         <MetricTile
           label="Lab A fees"
           value={fmtMoney(Number(metricsLabA.total_kalshi_fees_dollars || 0))}
           title="Modeled entry + exit fees accumulated for Lab A."
+          valueTone="neg"
         />
         <MetricTile
           label="Lab A avg hourly"
           value={fmtMoney(Number(metricsLabA.avg_hourly_pnl_dollars || 0))}
           title="Lab A realized PnL divided by hours spanned by settled lab_a trades (min ~1h denominator)."
+          valueTone={metricSignedTone(metricsLabA.avg_hourly_pnl_dollars)}
         />
         <MetricTile
           label="Lab A settled"
@@ -1376,12 +1508,9 @@ export default function App() {
         />
         <MetricTile
           label="Lab A win rate"
-          value={fmtPct(
-            Number(metricsLabA.wins ?? 0) + Number(metricsLabA.losses ?? 0) > 0
-              ? metricsLabA.win_rate_decisive_pct
-              : metricsLabA.win_rate_pct,
-          )}
+          value={fmtPct(decisiveWinRatePct(metricsLabA))}
           title="Lab A wins ÷ (wins + losses) when decisive outcomes exist."
+          valueTone={metricWinRateTone(decisiveWinRatePct(metricsLabA))}
         />
         <MetricTile
           label="Lab A avg / settled"
@@ -1391,15 +1520,13 @@ export default function App() {
               : "—"
           }
           title="Lab A total realized PnL ÷ Lab A settled count."
+          valueTone={metricSignedTone(metricsLabA.avg_realized_per_settled_dollars)}
         />
         <MetricTile
           label="Lab A loss rate"
-          value={fmtPct(
-            Number(metricsLabA.wins ?? 0) + Number(metricsLabA.losses ?? 0) > 0
-              ? metricsLabA.loss_rate_decisive_pct
-              : metricsLabA.loss_rate_pct,
-          )}
+          value={fmtPct(decisiveLossRatePct(metricsLabA))}
           title="Lab A losses ÷ (wins + losses) when decisive outcomes exist."
+          valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metricsLabA)))}
         />
         <MetricTile
           label="Lab A open"
@@ -1411,6 +1538,7 @@ export default function App() {
           value={fmtMoney(Number(metricsLabA.open_sim_committed_dollars || 0))}
           title="Premium tied up in open lab_a positions."
           sub={fmtPct(metricsLabA.committed_pct_of_start) + " of lab bankroll"}
+          subTone={metricSignedTone(-Number(metricsLabA.committed_pct_of_start))}
         />
       </div>
 
@@ -1434,29 +1562,35 @@ export default function App() {
         <MetricTile
           label="Lab B bankroll (start)"
           value={fmtMoney(Number(metricsLabB.paper_start_dollars ?? 0))}
-          title="lab_b.paper_balance_cents if set, else cfg.paper_balance_cents."
+          title="Cumulative paper basis: lab_b.paper_lifetime_basis_cents after each auto wipe, else lab_b.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
         />
         <MetricTile
           label="Lab B equity (est.)"
           value={fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))}
           title="Lab B bankroll + settled PnL − open committed."
           sub={`Return vs start ${fmtPct(metricsLabB.return_vs_start_pct)} · chart last ${metricsLabB.latest_equity_snapshot_dollars != null ? fmtMoney(Number(metricsLabB.latest_equity_snapshot_dollars)) : "—"}`}
+          valueTone={metricEquityVsBankroll(metricsLabB.current_equity_dollars, metricsLabB.paper_start_dollars)}
+          subTone={metricSignedTone(metricsLabB.return_vs_start_pct)}
         />
         <MetricTile
           label="Lab B total PnL"
           value={fmtMoney(Number(metricsLabB.total_pnl_dollars || 0))}
           title="Realized PnL for branch lab_b, mode simulate, status settled."
           sub={`${fmtPct(metricsLabB.realized_pnl_pct_of_start)} of lab bankroll`}
+          valueTone={metricSignedTone(metricsLabB.total_pnl_dollars)}
+          subTone={metricSignedTone(metricsLabB.realized_pnl_pct_of_start)}
         />
         <MetricTile
           label="Lab B fees"
           value={fmtMoney(Number(metricsLabB.total_kalshi_fees_dollars || 0))}
           title="Modeled entry + exit fees accumulated for Lab B."
+          valueTone="neg"
         />
         <MetricTile
           label="Lab B avg hourly"
           value={fmtMoney(Number(metricsLabB.avg_hourly_pnl_dollars || 0))}
           title="Lab B realized PnL divided by hours spanned by settled lab_b trades (min ~1h denominator)."
+          valueTone={metricSignedTone(metricsLabB.avg_hourly_pnl_dollars)}
         />
         <MetricTile
           label="Lab B settled"
@@ -1472,12 +1606,9 @@ export default function App() {
         />
         <MetricTile
           label="Lab B win rate"
-          value={fmtPct(
-            Number(metricsLabB.wins ?? 0) + Number(metricsLabB.losses ?? 0) > 0
-              ? metricsLabB.win_rate_decisive_pct
-              : metricsLabB.win_rate_pct,
-          )}
+          value={fmtPct(decisiveWinRatePct(metricsLabB))}
           title="Lab B wins ÷ (wins + losses) when decisive outcomes exist."
+          valueTone={metricWinRateTone(decisiveWinRatePct(metricsLabB))}
         />
         <MetricTile
           label="Lab B avg / settled"
@@ -1487,15 +1618,13 @@ export default function App() {
               : "—"
           }
           title="Lab B total realized PnL ÷ Lab B settled count."
+          valueTone={metricSignedTone(metricsLabB.avg_realized_per_settled_dollars)}
         />
         <MetricTile
           label="Lab B loss rate"
-          value={fmtPct(
-            Number(metricsLabB.wins ?? 0) + Number(metricsLabB.losses ?? 0) > 0
-              ? metricsLabB.loss_rate_decisive_pct
-              : metricsLabB.loss_rate_pct,
-          )}
+          value={fmtPct(decisiveLossRatePct(metricsLabB))}
           title="Lab B losses ÷ (wins + losses) when decisive outcomes exist."
+          valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metricsLabB)))}
         />
         <MetricTile
           label="Lab B open"
@@ -1507,19 +1636,9 @@ export default function App() {
           value={fmtMoney(Number(metricsLabB.open_sim_committed_dollars || 0))}
           title="Premium tied up in open lab_b positions."
           sub={fmtPct(metricsLabB.committed_pct_of_start) + " of lab bankroll"}
+          subTone={metricSignedTone(-Number(metricsLabB.committed_pct_of_start))}
         />
       </div>
-
-      {cfg.simulate ? (
-        <div
-          className="panel section-tip"
-          style={{ marginBottom: 12, padding: "12px 14px" }}
-          title="Live branch is in paper mode. Use Assets to watch (sentiment bar + implied YES) for how markets look; turn the Live engine on to log simulated trades and grow PnL over time."
-        >
-          <strong title="Configured paper bankroll for Live branch when in simulate mode.">Paper bankroll (Live simulate)</strong>:{" "}
-          <span title="cfg.paper_balance_cents / 100.">{fmtMoney(Number(cfg.paper_balance_cents || 0) / 100)}</span>
-        </div>
-      ) : null}
 
       <div className="grid">
         <div className="panel">
@@ -2117,6 +2236,7 @@ export default function App() {
         onSaveOptimizerConfig={saveOptimizerConfig}
         optimizerSaving={optimizerSaving}
         onResetTradingData={resetTradingData}
+        onApplyLabBranches={applyLabBranchesBulk}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
         </>
@@ -2272,141 +2392,131 @@ function ApiLoadingCallout() {
   );
 }
 
-function ConnectionStrip({ kalshi }: { kalshi: AnyObj | undefined }) {
-  if (!kalshi) return null;
-  const pub = Boolean(kalshi.public_ok);
-  const priv = Boolean(kalshi.private_ok);
-  const sim = Boolean(kalshi.simulate_live);
-  const writes = Boolean(kalshi.order_writes_live);
-  const pos = Number(kalshi.position_count ?? 0);
-  const ord = Number(kalshi.resting_order_count ?? 0);
+/** One-row Kalshi API + getting-started status; hover each orb for the old card/checklist copy. */
+function KalshiSetupOrbRow({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj }) {
+  const k = dash?.kalshi as AnyObj | undefined;
+  if (!dash || !k) return null;
+  const cred = (k.credentials || {}) as AnyObj;
+  const credOk = Boolean(cred.api_key_id_configured) && Boolean(cred.private_key_configured);
+  const pub = Boolean(k.public_ok);
+  const priv = Boolean(k.private_ok);
+  const simLive = Boolean(k.simulate_live);
+  const writes = Boolean(k.order_writes_live);
+  const poll = Boolean(k.polling_enabled);
+  const pos = Number(k.position_count ?? 0);
+  const ord = Number(k.resting_order_count ?? 0);
+  const notes = k.portfolio_notes ? String(k.portfolio_notes) : "";
 
-  const writeHint = sim
+  const writeDetail = simLive
     ? "Live branch uses paper fills; Kalshi does not receive orders from Live."
     : writes
       ? "Live branch can POST limit orders when the Live engine is on and a rule matches."
-      : "Fix authentication before enabling real orders.";
+      : priv
+        ? "Authenticated but order posting is not enabled for this configuration."
+        : "Fix authentication before enabling real orders.";
 
-  return (
-    <div className="panel" style={{ marginBottom: 14 }}>
-      <h2 className="section-tip" title="Health of public market reads, signed portfolio reads, and whether the Live branch may POST orders. Hover each card for detail.">
-        Kalshi API (read / write)
-      </h2>
-      <div className="chip-row" style={{ marginTop: 10 }}>
-        <div
-          className={`chip chip--${pub ? "ok" : "bad"} section-tip`}
-          title="No API key required. Used for quotes, series, and sim settlement checks."
-        >
-          <div className="chip-title" title="Public REST health.">
-            Markets (public read)
-          </div>
-          <div className="chip-value" title={pub ? "Kalshi public API responded OK." : "Cannot reach public Kalshi API."}>
-            {pub ? "Reachable" : "Unreachable"}
-          </div>
-        </div>
-        <div
-          className={`chip chip--${priv ? "ok" : pub ? "warn" : "bad"} section-tip`}
-          title={
-            priv
-              ? `Signed portfolio API. Loaded ${pos} position(s), ${ord} resting order(s).`
-              : "Needs KALSHI_API_KEY_ID + RSA private key in .env (restart backend)."
-          }
-        >
-          <div className="chip-title" title="Signed portfolio endpoints.">
-            Portfolio (private read)
-          </div>
-          <div className="chip-value" title={priv ? "Private RSA auth succeeded." : "Private auth failed or not configured."}>
-            {priv ? "Signed in" : pub ? "Public only" : "Not signed in"}
-          </div>
-        </div>
-        <div className={`chip chip--${sim ? "neutral" : writes ? "ok" : priv ? "warn" : "bad"} section-tip`} title={writeHint}>
-          <div className="chip-title" title="Whether Live branch may POST orders to Kalshi.">
-            Live orders (write)
-          </div>
-          <div className="chip-value" title={writeHint}>
-            {sim ? "Simulated" : writes ? "Real posts on" : "Blocked"}
-          </div>
-        </div>
-      </div>
-      {kalshi.portfolio_notes ? (
-        <div className="sub" style={{ marginTop: 10, color: "#ffc878" }}>
-          Note: {String(kalshi.portfolio_notes)}
-        </div>
-      ) : null}
-    </div>
-  );
-}
+  let writeState: "ok" | "warn" | "bad";
+  if (simLive) writeState = "ok";
+  else if (writes) writeState = "warn";
+  else if (priv) writeState = "warn";
+  else writeState = "bad";
 
-function SetupChecklist({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj }) {
-  const k = dash?.kalshi as AnyObj | undefined;
-  if (!k) return null;
-  const cred = (k.credentials || {}) as AnyObj;
-  const credOk = Boolean(cred.api_key_id_configured) && Boolean(cred.private_key_configured);
-  const steps: { ok: boolean; mid: "ok" | "warn" | "bad"; title: string; hint: string }[] = [
+  const orbs: {
+    step: number;
+    title: string;
+    subtitle: string;
+    hint: string;
+    state: "ok" | "warn" | "bad";
+  }[] = [
     {
-      ok: Boolean(dash),
-      mid: dash ? "ok" : "bad",
+      step: 1,
       title: "Backend and this page are running",
+      subtitle: "Dashboard",
       hint: "You already loaded the dashboard from npm run dev with the API proxy.",
+      state: dash ? "ok" : "bad",
     },
     {
-      ok: credOk,
-      mid: credOk ? "ok" : "warn",
+      step: 2,
       title: "Configure .env for Kalshi",
+      subtitle: "Keys in .env",
       hint:
         cred.private_key_source === "file_missing"
           ? "KALSHI_PRIVATE_KEY_PATH points to a file that was not found."
           : "Copy .env.example to .env in the repo root; set KALSHI_API_KEY_ID and PEM path or KALSHI_PRIVATE_KEY_PEM.",
+      state: credOk ? "ok" : "warn",
     },
     {
-      ok: Boolean(k.public_ok),
-      mid: k.public_ok ? "ok" : "bad",
-      title: "Reach Kalshi REST (correct KALSHI_ENV)",
-      hint: "Demo uses demo-api.kalshi.co; prod uses api.elections.kalshi.com. Keys must match the environment.",
+      step: 3,
+      title: "Markets (public read)",
+      subtitle: pub ? "Reachable" : "Unreachable",
+      hint: pub
+        ? "Kalshi public API responded OK. Used for quotes, series, and sim settlement checks."
+        : "Cannot reach public Kalshi API. Check KALSHI_ENV and network.",
+      state: pub ? "ok" : "bad",
     },
     {
-      ok: Boolean(k.private_ok),
-      mid: k.private_ok ? "ok" : k.public_ok ? "warn" : "bad",
-      title: "Authenticate (read portfolio)",
-      hint: k.private_ok
-        ? "Portfolio reads succeeded."
-        : k.public_ok
-          ? "Optional for public-only use — add keys if you want balance, Kalshi positions, or real order posting."
-          : "If this fails, check key id, PEM format, and that the key belongs to this environment.",
+      step: 4,
+      title: "Portfolio (private read)",
+      subtitle: priv ? `Signed in · ${pos} pos, ${ord} orders` : pub ? "Public only" : "Not signed in",
+      hint: priv
+        ? `Signed portfolio API. Loaded ${pos} position(s), ${ord} resting order(s).`
+        : "Needs KALSHI_API_KEY_ID + RSA private key in .env (restart backend). Optional for public-only paper.",
+      state: priv ? "ok" : pub ? "warn" : "bad",
     },
     {
-      ok: Boolean(k.polling_enabled),
-      mid: k.polling_enabled ? "ok" : "warn",
+      step: 5,
       title: "Turn on an engine to stream markets into the bot",
-      hint: "Enable Live engine and/or Sim lab so ticks run and markets_scanned updates.",
+      subtitle: poll ? "Polling on" : "Engines idle",
+      hint: "Enable Live engine and/or labs so ticks run and markets_scanned updates.",
+      state: poll ? "ok" : "warn",
     },
     {
-      ok: Boolean(cfg.simulate),
-      mid: cfg.simulate ? "ok" : "warn",
+      step: 6,
       title: "Live mode (simulate vs real)",
+      subtitle: cfg.simulate ? "Paper (simulate)" : "Real $",
       hint: cfg.simulate
         ? "Simulate is on — Live branch will not POST orders to Kalshi."
         : "Real $ is on — Live branch can POST limit orders when the Live engine runs and a rule matches.",
+      state: cfg.simulate ? "ok" : "warn",
+    },
+    {
+      step: 7,
+      title: "Live orders (write)",
+      subtitle: simLive ? "Simulated" : writes ? "Real posts on" : "Blocked",
+      hint: writeDetail,
+      state: writeState,
+    },
+    {
+      step: 8,
+      title: "Portfolio notes",
+      subtitle: notes ? "See tooltip" : "No warnings",
+      hint: notes || "No extra portfolio notes from the last signed read.",
+      state: notes ? "warn" : "ok",
     },
   ];
 
   return (
-    <div className="setup-card">
-      <h2 className="section-tip" title="Quick readiness checklist. Hover each step for more detail.">
-        Getting started
-      </h2>
-      <ul className="checklist">
-        {steps.map((s, i) => (
-          <li key={i} className="section-tip" title={s.hint} aria-label={`${s.title}. ${s.hint}`}>
-            <span className={`step-mark ${s.ok ? "ok" : s.mid}`} title={s.hint}>
-              {s.ok ? "✓" : i + 1}
-            </span>
-            <div className="step-body">
-              <strong>{s.title}</strong>
-            </div>
-          </li>
-        ))}
-      </ul>
+    <div
+      className="kalshi-setup-orbs section-tip"
+      role="list"
+      title="Kalshi API (read / write) and getting started — hover each dot for status."
+      aria-label="Kalshi connection and setup checklist as compact status dots"
+    >
+      {orbs.map((o) => {
+        const fullTitle = `${o.step}. ${o.title} · ${o.subtitle} — ${o.hint}`;
+        const tone = o.state;
+        return (
+          <span
+            key={o.step}
+            className={`kalshi-setup-orb kalshi-setup-orb--${tone} section-tip`}
+            role="listitem"
+            title={fullTitle}
+            aria-label={`${o.title}. ${o.subtitle}. ${o.hint}`}
+          >
+            {o.state === "ok" ? "✓" : o.step}
+          </span>
+        );
+      })}
     </div>
   );
 }

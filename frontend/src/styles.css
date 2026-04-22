@@ -236,6 +236,26 @@ input[type="number"] {
   font-size: 18px;
 }
 
+.metric .v.metric-val--pos {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.metric .v.metric-val--neg {
+  color: #ff9aa8;
+  font-weight: 700;
+}
+
+.metric .metric-sub.metric-sub--pos {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.metric .metric-sub.metric-sub--neg {
+  color: #ff9aa8;
+  font-weight: 600;
+}
+
 .error {
   color: #ffb4bc;
   font-size: 12px;
@@ -459,6 +479,50 @@ input[type="number"] {
 .step-body strong {
   display: block;
   margin-bottom: 2px;
+}
+
+/* Hero: compact Kalshi API + setup status (replaces large ConnectionStrip + checklist) */
+.kalshi-setup-orbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 2px 0 0;
+}
+
+.kalshi-setup-orb {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.kalshi-setup-orb--ok {
+  background: rgba(94, 243, 169, 0.22);
+  color: var(--ok);
+  border-color: rgba(94, 243, 169, 0.35);
+}
+
+.kalshi-setup-orb--warn {
+  background: rgba(255, 200, 120, 0.2);
+  color: #ffc878;
+  border-color: rgba(255, 200, 120, 0.4);
+}
+
+.kalshi-setup-orb--bad {
+  background: rgba(255, 107, 122, 0.18);
+  color: #ff9aa8;
+  border-color: rgba(255, 107, 122, 0.35);
 }
 
 .muted-link {

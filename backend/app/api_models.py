@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .branch_config import normalize_paper_fee_model
+from .persistence import expand_partial_lab_branch
 
 
 class AssetCfg(BaseModel):
@@ -21,6 +22,23 @@ class RuleCfg(BaseModel):
     max_minutes_left: float = 1e9
     # "yes" (default): band is implied YES probability. "no": band is implied NO (= 1 − YES mid); buys NO at no ask.
     side: str | None = Field(default=None, description='yes or no')
+
+
+def merge_lab_branch_patch(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Merge lab_a / lab_b patch; always coerce ``paper_balance_cents`` to int when provided (non-null)."""
+    out = dict(cur)
+    for k, v in patch.items():
+        if k == "paper_balance_cents":
+            if v is None:
+                continue
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                pass
+            continue
+        if v is not None:
+            out[k] = v
+    return out
 
 
 class BotConfigPayload(BaseModel):
@@ -115,25 +133,16 @@ class BotConfigPayload(BaseModel):
         if self.rules is not None:
             out["rules"] = [r.model_dump(exclude_none=True) for r in self.rules]
         if self.sim_lab is not None:
-            cur = dict(out.get("lab_a") or out.get("sim_lab") or {})
-            for k, v in self.sim_lab.items():
-                if v is not None:
-                    cur[k] = v
-            out["lab_a"] = cur
-            out["sim_lab"] = dict(cur)
+            cur = merge_lab_branch_patch(dict(out.get("lab_a") or out.get("sim_lab") or {}), self.sim_lab)
+            out["lab_a"] = expand_partial_lab_branch("lab_a", cur)
+            out["sim_lab"] = dict(out["lab_a"])
         if self.lab_a is not None:
-            cur = dict(out.get("lab_a") or {})
-            for k, v in self.lab_a.items():
-                if v is not None:
-                    cur[k] = v
-            out["lab_a"] = cur
-            out["sim_lab"] = dict(cur)
+            cur = merge_lab_branch_patch(dict(out.get("lab_a") or {}), self.lab_a)
+            out["lab_a"] = expand_partial_lab_branch("lab_a", cur)
+            out["sim_lab"] = dict(out["lab_a"])
         if self.lab_b is not None:
-            cur = dict(out.get("lab_b") or {})
-            for k, v in self.lab_b.items():
-                if v is not None:
-                    cur[k] = v
-            out["lab_b"] = cur
+            cur = merge_lab_branch_patch(dict(out.get("lab_b") or {}), self.lab_b)
+            out["lab_b"] = expand_partial_lab_branch("lab_b", cur)
         if self.optimizer is not None:
             cur = dict(out.get("optimizer") or {})
             for k, v in self.optimizer.items():

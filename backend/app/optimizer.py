@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import random
 
-from .branch_config import BRANCH_LAB_A
+from .branch_config import (
+    BRANCH_LAB_A,
+    MAX_BALANCE_FRACTION_PER_WINDOW,
+    MIN_BALANCE_FRACTION_PER_WINDOW,
+)
 from .persistence import Store
 
 
@@ -18,11 +22,6 @@ async def maybe_auto_optimize(store: Store) -> None:
         min_settled = max(6, int(oc.get("min_trades_for_optimize") or 25))
     except (TypeError, ValueError):
         min_settled = 25
-    try:
-        max_frac = float(oc.get("max_bet_fraction") or 0.12)
-    except (TypeError, ValueError):
-        max_frac = 0.12
-    max_frac = max(0.02, min(0.5, max_frac))
 
     trades = await store.recent_trades(limit=400)
     settled = [
@@ -41,12 +40,15 @@ async def maybe_auto_optimize(store: Store) -> None:
 
     step = 0.003
     if pnl > 0:
-        frac = min(max_frac, frac + step)
+        frac = min(MAX_BALANCE_FRACTION_PER_WINDOW, frac + step)
     elif pnl < 0:
-        frac = max(0.01, frac - step)
+        frac = max(MIN_BALANCE_FRACTION_PER_WINDOW, frac - step)
     else:
         if random.random() < 0.2:
-            frac = min(max_frac, max(0.01, frac + random.uniform(-step, step)))
+            frac = min(
+                MAX_BALANCE_FRACTION_PER_WINDOW,
+                max(MIN_BALANCE_FRACTION_PER_WINDOW, frac + random.uniform(-step, step)),
+            )
 
     lab = dict(lab)
     lab["balance_fraction_per_window"] = round(frac, 4)

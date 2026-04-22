@@ -5,7 +5,11 @@ import json
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from .branch_config import BRANCH_LAB_A, BRANCH_LAB_B
+from .branch_config import (
+    BRANCH_LAB_A,
+    BRANCH_LAB_B,
+    clamp_balance_fraction_per_window,
+)
 from .engine import rule_matches
 from .settings_env import env
 
@@ -28,6 +32,7 @@ def _opt_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out = dict(oc or {})
+    out.pop("max_bet_fraction", None)
     out.setdefault("enabled", False)
     out.setdefault("interval_minutes", 120)
     out.setdefault("lookback_hours", 72)
@@ -49,7 +54,6 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("lab_b_min_minutes_left", 3)
     out.setdefault("min_trades_for_optimize", 25)
     out.setdefault("min_profitable_trades", 8)
-    out.setdefault("max_bet_fraction", 0.12)
     out.setdefault("optimize_bet_size", True)
     out.setdefault("include_fees_in_score", True)
     out.setdefault("regime_lookback_hours", 6)
@@ -328,7 +332,6 @@ def _build_metrics_context(
         "optimizer_guards": {
             "min_trades_for_optimize": oc.get("min_trades_for_optimize"),
             "min_profitable_trades": oc.get("min_profitable_trades"),
-            "max_bet_fraction": oc.get("max_bet_fraction"),
             "optimize_bet_size": oc.get("optimize_bet_size"),
             "backtest_proposals": oc.get("backtest_proposals"),
         },
@@ -539,7 +542,6 @@ def _apply_claude_bet_recommendations(
     )
     if prof < min_prof:
         return []
-    max_bf = max(0.02, min(0.5, _safe_float(oc.get("max_bet_fraction"), 0.12)))
     out_hist: list[dict[str, Any]] = []
     recs = rec.get("recommendations")
     if not isinstance(recs, list):
@@ -555,7 +557,7 @@ def _apply_claude_bet_recommendations(
         new_f = _safe_float(sug, -1.0)
         if new_f < 0:
             continue
-        new_f = max(0.01, min(max_bf, new_f))
+        new_f = clamp_balance_fraction_per_window(new_f)
         lab_raw = cfg.get(tgt)
         lab = dict(lab_raw) if isinstance(lab_raw, dict) else {}
         old_f = _safe_float(lab.get("balance_fraction_per_window"), 0.05)
@@ -604,11 +606,11 @@ def _build_payload(
         },
         "performance_metrics": metrics,
         "optimizer_controls": {
-            "max_bet_fraction": oc.get("max_bet_fraction"),
             "optimize_bet_size": oc.get("optimize_bet_size"),
             "include_fees_in_score": oc.get("include_fees_in_score"),
             "min_trades_for_optimize": oc.get("min_trades_for_optimize"),
             "min_profitable_trades": oc.get("min_profitable_trades"),
+            "balance_fraction_bounds": {"min": 0.0001, "max": 1.0},
         },
         "recent_trades": trades,
         "recent_signals": signals,
@@ -710,7 +712,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             "Use performance_metrics: per-rule win rates, replay PnL under current rules, equity slopes, and regime buckets. "
             "When optimize_bet_size is true, you may emit recommendations with "
             "field=balance_fraction_per_window and target lab_a or lab_b; keep suggested values within "
-            "0.01 and the given max_bet_fraction. "
+            "0.0001 and 1.0 (same bounds as dashboard balance fraction per window). "
             "Return concise JSON only, following the provided output_schema."
         ),
         "messages": [{"role": "user", "content": json.dumps(payload)}],

@@ -95,6 +95,18 @@ class BranchResetTest(unittest.IsolatedAsyncioTestCase):
         tickers = {str(r.get("ticker")) for r in rows}
         self.assertIn("KX-OLD", tickers)
 
+    async def test_bump_lab_paper_lifetime_basis_accumulates(self) -> None:
+        cfg = await self.store.load_config()
+        cfg["paper_balance_cents"] = 100_000
+        cfg["lab_a"] = {**(cfg.get("lab_a") or {}), "paper_balance_cents": 100_000}
+        await self.store.save_config(cfg)
+        await self.store.bump_lab_paper_lifetime_basis("lab_a")
+        cfg1 = await self.store.load_config()
+        self.assertEqual(int(cfg1["lab_a"]["paper_lifetime_basis_cents"]), 200_000)
+        await self.store.bump_lab_paper_lifetime_basis("lab_a")
+        cfg2 = await self.store.load_config()
+        self.assertEqual(int(cfg2["lab_a"]["paper_lifetime_basis_cents"]), 300_000)
+
 
 if __name__ == "__main__":
     unittest.main()
