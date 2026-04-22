@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   DevSimHighYesControl,
   EMPTY_RULES_LIST,
@@ -12,6 +13,153 @@ import {
 } from "./settingsRules";
 
 type AnyObj = Record<string, any>;
+type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_ab_optimizer" | "all";
+type LabBranchKey = "a" | "b";
+
+function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: AnyObj; cfg: AnyObj; busy: boolean }) {
+  const p = `lab_${which}`;
+  const defFrac = which === "a" ? 0.055 : 0.09;
+  const defWin = which === "a" ? 15 : 12;
+  return (
+    <div>
+      <strong style={{ fontSize: 12 }} title={which === "a" ? "Branch lab_a" : "Branch lab_b"}>
+        Lab {which === "a" ? "A" : "B"}
+      </strong>
+      <div className="field" style={{ marginTop: 6 }}>
+        <label htmlFor={`${p}_paper`} className="section-tip">
+          Paper balance (cents)
+        </label>
+        <input
+          id={`${p}_paper`}
+          type="number"
+          defaultValue={String(lab.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)}
+          disabled={busy}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor={`${p}_frac`} className="section-tip">
+          Balance fraction per window
+        </label>
+        <input id={`${p}_frac`} type="text" defaultValue={String(lab.balance_fraction_per_window ?? defFrac)} disabled={busy} />
+      </div>
+      <div className="field">
+        <label htmlFor={`${p}_win`} className="section-tip">
+          Window (minutes)
+        </label>
+        <input id={`${p}_win`} type="number" defaultValue={String(lab.window_minutes ?? defWin)} disabled={busy} />
+      </div>
+    </div>
+  );
+}
+
+function LabBranchPanel({
+  branch,
+  lab,
+  cfg,
+  busy,
+  onResetTradingData,
+  onSaveLabRules,
+  onSaveLabFromSliders,
+  style,
+}: {
+  branch: LabBranchKey;
+  lab: AnyObj;
+  cfg: AnyObj;
+  busy: boolean;
+  onResetTradingData: (branch: "lab_a" | "lab_b", backup: boolean) => void;
+  onSaveLabRules: (rules: AnyObj[]) => void;
+  onSaveLabFromSliders: () => void;
+  style?: CSSProperties;
+}) {
+  const p = `lab_${branch}`;
+  const resetKey = branch === "a" ? "lab_a" : "lab_b";
+  const title = branch === "a" ? "Lab A" : "Lab B";
+  const autoResetTitle =
+    branch === "a"
+      ? "When enabled, wipe Lab A SQLite trades/signals/equity once per bad streak if a tick ends with an error OR derived paper equity (seed + settled PnL − open commit) is ≤ 0—then the next tick starts from Paper balance (cents) in the sizing row above."
+      : "Same as Lab A: one automatic wipe per bad streak on tick error or paper equity ≤ 0, so the loop can continue from the saved bankroll seed.";
+  const note: ReactNode =
+    branch === "a" ? (
+      <>
+        Clears <code>lab_a</code> / legacy <code>sim_lab</code> rows only, once per bad streak, so the next tick starts from
+        your configured bankroll seed.
+      </>
+    ) : (
+      <>Clears <code>lab_b</code> rows only, once per bad streak (tick error or equity ≤ 0).</>
+    );
+  const resetConfirm =
+    branch === "a"
+      ? "Reset Lab A data only? Removes SQLite signals, trades, and equity snapshots for Lab A (including legacy sim_lab). Live and Lab B are kept."
+      : "Reset Lab B data only? Removes SQLite signals, trades, and equity snapshots for Lab B. Live and Lab A are kept.";
+  const resetBtnTitle = branch === "a" ? "Deletes Lab A branch rows only (lab_a and legacy sim_lab)." : "Deletes Lab B branch rows only.";
+
+  return (
+    <div
+      key={`lab-${branch}-fields-${String(lab.paper_balance_cents ?? "")}-${String(lab.window_minutes ?? "")}-${String(lab.balance_fraction_per_window ?? "")}-${lab.auto_optimize ? 1 : 0}-${lab.auto_reset_paper_on_tick_failure ? 1 : 0}`}
+      className="panel settings-nested-panel"
+      style={{ padding: "12px 14px", ...style }}
+    >
+      <h3 style={{ margin: 0 }} title={branch === "a" ? "Branch lab_a configuration." : "Branch lab_b configuration."}>
+        {title}
+      </h3>
+      <p className="sub" style={{ marginTop: 8, marginBottom: 0, fontSize: 12, lineHeight: 1.45 }}>
+        Bankroll, fraction, and window are in the <strong>Simulation labs</strong> row above. Here: optimizer toggles, auto-reset,
+        rule bands, and save.
+      </p>
+      <label className="checkbox section-tip" style={{ border: "none", marginTop: 12 }} title={`Allow optimizer to auto-apply suggestions to ${title}.`}>
+        <input id={`${p}_opt`} type="checkbox" defaultChecked={Boolean(lab.auto_optimize)} disabled={busy} />
+        <span>Auto-optimize</span>
+      </label>
+      <label className="checkbox section-tip" style={{ border: "none", marginTop: 6 }} title={autoResetTitle}>
+        <input id={`${p}_auto_reset_failure`} type="checkbox" defaultChecked={Boolean(lab.auto_reset_paper_on_tick_failure)} disabled={busy} />
+        <span>Auto-reset paper data on tick failure (loop testing)</span>
+      </label>
+      <p className="sub" style={{ marginTop: 6, fontSize: 11, lineHeight: 1.45 }}>
+        {note}
+      </p>
+      <label className="checkbox section-tip" style={{ border: "none", marginTop: 10 }}>
+        <input id={`reset_backup_${p}`} type="checkbox" defaultChecked disabled={busy} />
+        <span>Before {title} reset: copy SQLite + JSONL exports</span>
+      </label>
+      <button
+        type="button"
+        className="primary"
+        style={{ marginTop: 8, borderColor: "#6b2a2a", background: "linear-gradient(180deg,#2a1520,#1a0f18)" }}
+        disabled={busy}
+        title={resetBtnTitle}
+        onClick={() => {
+          const el = document.getElementById(`reset_backup_${p}`) as HTMLInputElement | null;
+          const backup = el ? el.checked : true;
+          if (!window.confirm(resetConfirm)) return;
+          void onResetTradingData(resetKey, backup);
+        }}
+      >
+        Reset {title} trading data
+      </button>
+      <RulesBandsSliders
+        key={`lab-${branch}-yes-${Array.isArray(lab.rules) ? lab.rules.length : 0}-${(cfg.rules || []).length}`}
+        rules={Array.isArray(lab.rules) && lab.rules.length ? lab.rules : (cfg.rules ?? EMPTY_RULES_LIST)}
+        disabled={busy}
+        onSave={(r) => void onSaveLabRules(r)}
+      />
+      <NoBandsSliders
+        key={`lab-${branch}-no-${Array.isArray(lab.rules) ? lab.rules.length : 0}-${(cfg.rules || []).length}`}
+        rules={Array.isArray(lab.rules) && lab.rules.length ? lab.rules : (cfg.rules ?? EMPTY_RULES_LIST)}
+        disabled={busy}
+        onSave={(r) => void onSaveLabRules(r)}
+      />
+      <button
+        className="primary"
+        style={{ marginTop: 10 }}
+        disabled={busy}
+        title={`Save ${title} optimizer toggles and auto-reset (sizing uses values in the row above).`}
+        onClick={() => void onSaveLabFromSliders()}
+      >
+        Save {title} options
+      </button>
+    </div>
+  );
+}
 
 export type SettingsOverlayProps = {
   open: boolean;
@@ -67,7 +215,7 @@ export default function SettingsOverlay({
   onResetTradingData,
   onApplyLabBranches,
 }: SettingsOverlayProps) {
-  const [settingsTab, setSettingsTab] = useState<"live" | "lab_a" | "lab_b" | "lab_ab_optimizer" | "all">("all");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -83,6 +231,11 @@ export default function SettingsOverlay({
   const showLive = settingsTab === "live" || settingsTab === "all";
   const showLabA = settingsTab === "lab_a" || settingsTab === "all";
   const showLabB = settingsTab === "lab_b" || settingsTab === "all";
+  /** Shared bankroll row: any tab except Live-only (includes Lab A/B optimizer tab). */
+  const showLabSizingGrid = settingsTab !== "live";
+  const showLabAColumn = settingsTab === "all" || settingsTab === "lab_a" || settingsTab === "lab_ab_optimizer";
+  const showLabBColumn = settingsTab === "all" || settingsTab === "lab_b" || settingsTab === "lab_ab_optimizer";
+  const showCombinedLabReset = settingsTab === "all" || settingsTab === "lab_ab_optimizer";
   // Optimizer controls + save button: dedicated tab, All, or either lab tab (so Lab A/B-only views can persist).
   const showOpt =
     settingsTab === "lab_ab_optimizer" ||
@@ -297,192 +450,152 @@ export default function SettingsOverlay({
           </>
         ) : null}
 
-        {showLabA || showLabB ? (
-          <h2 className="section-tip" style={{ marginTop: 20 }} title="Parallel paper labs with separate sizing/window/bankroll.">
-          Simulation labs
-          </h2>
+        {showLabSizingGrid ? (
+          <div
+            key={`lab-sizing-${String(labA.paper_balance_cents ?? "")}-${String(labB.paper_balance_cents ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${String(labB.balance_fraction_per_window ?? "")}`}
+            className="panel settings-nested-panel"
+            style={{ marginTop: showLive ? 20 : 12, padding: "12px 14px" }}
+          >
+            <h2 className="section-tip" style={{ marginTop: 0 }} title="Parallel paper labs with separate sizing, rules, and bankroll.">
+              Simulation labs
+            </h2>
+            <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
+              Paper bankroll, fraction, and window for each branch (same values used by per-lab <strong>Save … options</strong> and
+              by <code>PUT /api/config/lab-branches</code>). Per-lab YES/NO bands override Live until you clear them in JSON;
+              sliders fall back to the Live rule list when a lab has no saved <code>rules</code>.
+            </p>
+            <div
+              className="row"
+              style={{
+                display: "grid",
+                gridTemplateColumns: showLabAColumn && showLabBColumn ? "1fr 1fr" : "1fr",
+                gap: 12,
+                marginTop: 12,
+              }}
+            >
+              {showLabAColumn ? <LabSizingInputs which="a" lab={labA} cfg={cfg} busy={busy} /> : null}
+              {showLabBColumn ? <LabSizingInputs which="b" lab={labB} cfg={cfg} busy={busy} /> : null}
+            </div>
+            {showCombinedLabReset ? (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+                <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="Optional SQLite wipe for one or both labs, then merge the bankroll/sizing numbers above in one request.">
+                  Reset lab data + apply sizing (both branches)
+                </h3>
+                <p className="sub" style={{ marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
+                  Same scope as the per-lab reset buttons below, but you can wipe one or both branches and push the sizing row
+                  above in a single step.
+                </p>
+                <div className="field">
+                  <label htmlFor="bulk_lab_reset" className="section-tip" title="Runs before applying lab_* patches from the sizing row.">
+                    Reset lab trading data first
+                  </label>
+                  <select id="bulk_lab_reset" defaultValue="none" disabled={busy}>
+                    <option value="none">No reset (config only)</option>
+                    <option value="lab_a">Lab A only</option>
+                    <option value="lab_b">Lab B only</option>
+                    <option value="both">Lab A + Lab B</option>
+                  </select>
+                </div>
+                <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
+                  <input id="bulk_lab_backup" type="checkbox" defaultChecked disabled={busy} />
+                  <span>SQLite + JSONL backup when reset runs (first branch only if both)</span>
+                </label>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || optimizerSaving}
+                  title="PUT /api/config/lab-branches — reads lab_a_* / lab_b_* from the sizing row."
+                  onClick={() => {
+                    const parseC = (id: string) =>
+                      Math.round(Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim()));
+                    const parseF = (id: string) =>
+                      Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim());
+                    const resetVal = String((document.getElementById("bulk_lab_reset") as HTMLSelectElement | null)?.value || "none");
+                    const backupEl = document.getElementById("bulk_lab_backup") as HTMLInputElement | null;
+                    const backup = backupEl ? backupEl.checked : true;
+                    const laPaper = parseC("lab_a_paper");
+                    const laFrac = parseF("lab_a_frac");
+                    const laWin = parseC("lab_a_win");
+                    const lbPaper = parseC("lab_b_paper");
+                    const lbFrac = parseF("lab_b_frac");
+                    const lbWin = parseC("lab_b_win");
+                    if (!Number.isFinite(laFrac) || laFrac < 0.0001 || laFrac > 1) {
+                      window.alert("Lab A balance fraction must be between 0.0001 and 1.");
+                      return;
+                    }
+                    if (!Number.isFinite(lbFrac) || lbFrac < 0.0001 || lbFrac > 1) {
+                      window.alert("Lab B balance fraction must be between 0.0001 and 1.");
+                      return;
+                    }
+                    if (!Number.isFinite(laWin) || laWin < 1 || laWin > 1440 || !Number.isInteger(laWin)) {
+                      window.alert("Lab A window must be an integer 1–1440 minutes.");
+                      return;
+                    }
+                    if (!Number.isFinite(lbWin) || lbWin < 1 || lbWin > 1440 || !Number.isInteger(lbWin)) {
+                      window.alert("Lab B window must be an integer 1–1440 minutes.");
+                      return;
+                    }
+                    if (!Number.isFinite(laPaper) || laPaper < 0 || !Number.isInteger(laPaper)) {
+                      window.alert("Lab A paper balance must be a non-negative integer (cents).");
+                      return;
+                    }
+                    if (!Number.isFinite(lbPaper) || lbPaper < 0 || !Number.isInteger(lbPaper)) {
+                      window.alert("Lab B paper balance must be a non-negative integer (cents).");
+                      return;
+                    }
+                    if (resetVal !== "none") {
+                      const ok = window.confirm(
+                        `Reset SQLite trading data for ${resetVal === "both" ? "Lab A and Lab B" : resetVal} before saving new bankroll/sizing? This cannot be undone (backups may run).`,
+                      );
+                      if (!ok) return;
+                    }
+                    void onApplyLabBranches({
+                      reset_data: resetVal,
+                      backup,
+                      lab_a: {
+                        paper_balance_cents: laPaper,
+                        balance_fraction_per_window: laFrac,
+                        window_minutes: laWin,
+                      },
+                      lab_b: {
+                        paper_balance_cents: lbPaper,
+                        balance_fraction_per_window: lbFrac,
+                        window_minutes: lbWin,
+                      },
+                    });
+                  }}
+                >
+                  Apply reset (if any) + bankroll / sizing
+                </button>
+              </div>
+            ) : null}
+          </div>
         ) : null}
-        {showLabA || showLabB ? (
-          <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }} title="Per-lab rules override Live rules for that branch only until cleared in config JSON.">
-          Each lab can use its own YES/NO bands below. If a lab has no saved <code>rules</code> yet, sliders start from the Live rule list; saving writes <code>lab_a.rules</code> or <code>lab_b.rules</code>.
-          </p>
-        ) : null}
+
         {showLabA ? (
-        <div
-          key={`lab-a-fields-${String(labA.paper_balance_cents ?? "")}-${String(labA.window_minutes ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${labA.auto_optimize ? 1 : 0}-${labA.auto_reset_paper_on_tick_failure ? 1 : 0}`}
-          className="panel settings-nested-panel"
-          style={{ marginTop: 8, padding: "12px 14px" }}
-        >
-          <h3 style={{ margin: 0 }} title="Branch lab_a configuration.">
-            Lab A
-          </h3>
-          <div className="field">
-            <label htmlFor="lab_a_frac" className="section-tip" title="Per-trade sizing fraction for Lab A only.">
-              Balance fraction per window
-            </label>
-            <input id="lab_a_frac" type="text" defaultValue={String(labA.balance_fraction_per_window ?? 0.05)} />
-          </div>
-          <div className="field">
-            <label htmlFor="lab_a_win" className="section-tip" title="Spend/dedupe window minutes for Lab A.">
-              Window (minutes)
-            </label>
-            <input id="lab_a_win" type="number" defaultValue={String(labA.window_minutes ?? 15)} />
-          </div>
-          <div className="field">
-            <label htmlFor="lab_a_paper" className="section-tip" title="Starting paper bankroll for branch lab_a.">
-              Paper balance (cents)
-            </label>
-            <input id="lab_a_paper" type="number" defaultValue={String(labA.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)} />
-          </div>
-          <label className="checkbox section-tip" style={{ border: "none" }} title="Allow optimizer to auto-apply suggestions to Lab A.">
-            <input id="lab_a_opt" type="checkbox" defaultChecked={Boolean(labA.auto_optimize)} disabled={busy} />
-            <span>Auto-optimize</span>
-          </label>
-          <label
-            className="checkbox section-tip"
-            style={{ border: "none", marginTop: 6 }}
-            title="When enabled, wipe Lab A SQLite trades/signals/equity once per bad streak if a tick ends with an error OR derived paper equity (seed + settled PnL − open commit) is ≤ 0—then the next tick starts from Paper balance (cents) above. Check system JSONL for tick_error vs non_positive_equity."
-          >
-            <input id="lab_a_auto_reset_failure" type="checkbox" defaultChecked={Boolean(labA.auto_reset_paper_on_tick_failure)} disabled={busy} />
-            <span>Auto-reset paper data on tick failure (loop testing)</span>
-          </label>
-          <p className="sub" style={{ marginTop: 6, fontSize: 11, lineHeight: 1.45 }}>
-            Note: clears <code>lab_a</code> / legacy <code>sim_lab</code> rows only, once per bad streak, so the next tick starts from your configured bankroll seed—covers API tick failures and a blown paper bankroll (equity ≤ 0) from bad rule runs.
-          </p>
-          <label className="checkbox section-tip" style={{ border: "none", marginTop: 10 }}>
-            <input id="reset_backup_lab_a" type="checkbox" defaultChecked disabled={busy} />
-            <span>Before Lab A reset: copy SQLite + JSONL exports</span>
-          </label>
-          <button
-            type="button"
-            className="primary"
-            style={{ marginTop: 8, borderColor: "#6b2a2a", background: "linear-gradient(180deg,#2a1520,#1a0f18)" }}
-            disabled={busy}
-            title="Deletes Lab A branch rows only (lab_a and legacy sim_lab)."
-            onClick={() => {
-              const el = document.getElementById("reset_backup_lab_a") as HTMLInputElement | null;
-              const backup = el ? el.checked : true;
-              if (
-                !window.confirm(
-                  "Reset Lab A data only? Removes SQLite signals, trades, and equity snapshots for Lab A (including legacy sim_lab). Live and Lab B are kept.",
-                )
-              ) {
-                return;
-              }
-              void onResetTradingData("lab_a", backup);
-            }}
-          >
-            Reset Lab A trading data
-          </button>
-          <RulesBandsSliders
-            key={`lab-a-yes-${Array.isArray(labA.rules) ? labA.rules.length : 0}-${(cfg.rules || []).length}`}
-            rules={
-              Array.isArray(labA.rules) && labA.rules.length ? labA.rules : (cfg.rules ?? EMPTY_RULES_LIST)
-            }
-            disabled={busy}
-            onSave={(r) => void onSaveLabARules(r)}
+          <LabBranchPanel
+            branch="a"
+            lab={labA}
+            cfg={cfg}
+            busy={busy}
+            onResetTradingData={onResetTradingData}
+            onSaveLabRules={onSaveLabARules}
+            onSaveLabFromSliders={onSaveLabAFromSliders}
+            style={{ marginTop: showLabSizingGrid ? 12 : 20 }}
           />
-          <NoBandsSliders
-            key={`lab-a-no-${Array.isArray(labA.rules) ? labA.rules.length : 0}-${(cfg.rules || []).length}`}
-            rules={
-              Array.isArray(labA.rules) && labA.rules.length ? labA.rules : (cfg.rules ?? EMPTY_RULES_LIST)
-            }
-            disabled={busy}
-            onSave={(r) => void onSaveLabARules(r)}
-          />
-          <button className="primary" style={{ marginTop: 10 }} disabled={busy} title="Save Lab A sizing/window/bankroll/optimizer fields." onClick={() => void onSaveLabAFromSliders()}>
-            Save Lab A params
-          </button>
-        </div>
         ) : null}
 
         {showLabB ? (
-        <div
-          key={`lab-b-fields-${String(labB.paper_balance_cents ?? "")}-${String(labB.window_minutes ?? "")}-${String(labB.balance_fraction_per_window ?? "")}-${labB.auto_optimize ? 1 : 0}-${labB.auto_reset_paper_on_tick_failure ? 1 : 0}`}
-          className="panel settings-nested-panel"
-          style={{ marginTop: 12, padding: "12px 14px" }}
-        >
-          <h3 style={{ margin: 0 }} title="Branch lab_b configuration.">
-            Lab B
-          </h3>
-          <div className="field">
-            <label htmlFor="lab_b_frac" className="section-tip" title="Per-trade sizing fraction for Lab B only.">
-              Balance fraction per window
-            </label>
-            <input id="lab_b_frac" type="text" defaultValue={String(labB.balance_fraction_per_window ?? 0.05)} />
-          </div>
-          <div className="field">
-            <label htmlFor="lab_b_win" className="section-tip" title="Spend/dedupe window minutes for Lab B.">
-              Window (minutes)
-            </label>
-            <input id="lab_b_win" type="number" defaultValue={String(labB.window_minutes ?? 15)} />
-          </div>
-          <div className="field">
-            <label htmlFor="lab_b_paper" className="section-tip" title="Starting paper bankroll for branch lab_b.">
-              Paper balance (cents)
-            </label>
-            <input id="lab_b_paper" type="number" defaultValue={String(labB.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)} />
-          </div>
-          <label className="checkbox section-tip" style={{ border: "none" }} title="Allow optimizer to auto-apply suggestions to Lab B.">
-            <input id="lab_b_opt" type="checkbox" defaultChecked={Boolean(labB.auto_optimize)} disabled={busy} />
-            <span>Auto-optimize</span>
-          </label>
-          <label
-            className="checkbox section-tip"
-            style={{ border: "none", marginTop: 6 }}
-            title="Same as Lab A: one automatic wipe per bad streak on tick error or paper equity ≤ 0, so the loop can continue from the saved bankroll seed."
-          >
-            <input id="lab_b_auto_reset_failure" type="checkbox" defaultChecked={Boolean(labB.auto_reset_paper_on_tick_failure)} disabled={busy} />
-            <span>Auto-reset paper data on tick failure (loop testing)</span>
-          </label>
-          <p className="sub" style={{ marginTop: 6, fontSize: 11, lineHeight: 1.45 }}>
-            Note: clears <code>lab_b</code> rows only, once per bad streak (tick error or equity ≤ 0).
-          </p>
-          <label className="checkbox section-tip" style={{ border: "none", marginTop: 10 }}>
-            <input id="reset_backup_lab_b" type="checkbox" defaultChecked disabled={busy} />
-            <span>Before Lab B reset: copy SQLite + JSONL exports</span>
-          </label>
-          <button
-            type="button"
-            className="primary"
-            style={{ marginTop: 8, borderColor: "#6b2a2a", background: "linear-gradient(180deg,#2a1520,#1a0f18)" }}
-            disabled={busy}
-            title="Deletes Lab B branch rows only."
-            onClick={() => {
-              const el = document.getElementById("reset_backup_lab_b") as HTMLInputElement | null;
-              const backup = el ? el.checked : true;
-              if (
-                !window.confirm(
-                  "Reset Lab B data only? Removes SQLite signals, trades, and equity snapshots for Lab B. Live and Lab A are kept.",
-                )
-              ) {
-                return;
-              }
-              void onResetTradingData("lab_b", backup);
-            }}
-          >
-            Reset Lab B trading data
-          </button>
-          <RulesBandsSliders
-            key={`lab-b-yes-${Array.isArray(labB.rules) ? labB.rules.length : 0}-${(cfg.rules || []).length}`}
-            rules={
-              Array.isArray(labB.rules) && labB.rules.length ? labB.rules : (cfg.rules ?? EMPTY_RULES_LIST)
-            }
-            disabled={busy}
-            onSave={(r) => void onSaveLabBRules(r)}
+          <LabBranchPanel
+            branch="b"
+            lab={labB}
+            cfg={cfg}
+            busy={busy}
+            onResetTradingData={onResetTradingData}
+            onSaveLabRules={onSaveLabBRules}
+            onSaveLabFromSliders={onSaveLabBFromSliders}
+            style={{ marginTop: showLabA ? 12 : showLabSizingGrid ? 12 : 20 }}
           />
-          <NoBandsSliders
-            key={`lab-b-no-${Array.isArray(labB.rules) ? labB.rules.length : 0}-${(cfg.rules || []).length}`}
-            rules={
-              Array.isArray(labB.rules) && labB.rules.length ? labB.rules : (cfg.rules ?? EMPTY_RULES_LIST)
-            }
-            disabled={busy}
-            onSave={(r) => void onSaveLabBRules(r)}
-          />
-          <button className="primary" style={{ marginTop: 10 }} disabled={busy} title="Save Lab B sizing/window/bankroll/optimizer fields." onClick={() => void onSaveLabBFromSliders()}>
-            Save Lab B params
-          </button>
-        </div>
         ) : null}
 
         {showOpt ? (
@@ -492,146 +605,9 @@ export default function SettingsOverlay({
             </h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               In <strong>duel</strong> mode, Lab A stays conservative and Lab B explores more aggressively. In{" "}
-              <strong>independent</strong> mode, each lab uses its own style/toggles.
+              <strong>independent</strong> mode, each lab uses its own style/toggles. Lab bankroll and sizing live in the{" "}
+              <strong>Simulation labs</strong> section above.
             </p>
-            <div
-              key={`bulk-labs-${String(labA.paper_balance_cents ?? "")}-${String(labB.paper_balance_cents ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${String(labB.balance_fraction_per_window ?? "")}`}
-              style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}
-            >
-              <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="Uses PUT /api/config/lab-branches — does not depend on optimizer enable/disable.">
-                {"Lab A & B — bankroll / sizing (direct save)"}
-              </h3>
-              <p className="sub" style={{ marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-                Merge-only save for both labs in one request. Optionally wipe <strong>signals / trades / equity</strong> for
-                one or both lab branches first (same scope as per-lab reset buttons), then apply the numbers below.
-              </p>
-              <div className="field">
-                <label htmlFor="bulk_lab_reset" className="section-tip" title="Runs before applying the lab_* patches below.">
-                  Reset lab trading data first
-                </label>
-                <select id="bulk_lab_reset" defaultValue="none" disabled={busy}>
-                  <option value="none">No reset (config only)</option>
-                  <option value="lab_a">Lab A only</option>
-                  <option value="lab_b">Lab B only</option>
-                  <option value="both">Lab A + Lab B</option>
-                </select>
-              </div>
-              <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
-                <input id="bulk_lab_backup" type="checkbox" defaultChecked disabled={busy} />
-                <span>SQLite + JSONL backup when reset runs (first branch only if both)</span>
-              </label>
-              <div className="row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <strong style={{ fontSize: 12 }}>Lab A</strong>
-                  <div className="field" style={{ marginTop: 6 }}>
-                    <label htmlFor="bulk_la_paper" className="section-tip">
-                      Paper (cents)
-                    </label>
-                    <input id="bulk_la_paper" type="number" defaultValue={String(labA.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)} disabled={busy} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="bulk_la_frac" className="section-tip">
-                      Balance fraction
-                    </label>
-                    <input id="bulk_la_frac" type="text" defaultValue={String(labA.balance_fraction_per_window ?? 0.055)} disabled={busy} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="bulk_la_win" className="section-tip">
-                      Window (min)
-                    </label>
-                    <input id="bulk_la_win" type="number" defaultValue={String(labA.window_minutes ?? 15)} disabled={busy} />
-                  </div>
-                </div>
-                <div>
-                  <strong style={{ fontSize: 12 }}>Lab B</strong>
-                  <div className="field" style={{ marginTop: 6 }}>
-                    <label htmlFor="bulk_lb_paper" className="section-tip">
-                      Paper (cents)
-                    </label>
-                    <input id="bulk_lb_paper" type="number" defaultValue={String(labB.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)} disabled={busy} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="bulk_lb_frac" className="section-tip">
-                      Balance fraction
-                    </label>
-                    <input id="bulk_lb_frac" type="text" defaultValue={String(labB.balance_fraction_per_window ?? 0.09)} disabled={busy} />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="bulk_lb_win" className="section-tip">
-                      Window (min)
-                    </label>
-                    <input id="bulk_lb_win" type="number" defaultValue={String(labB.window_minutes ?? 12)} disabled={busy} />
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="primary"
-                style={{ marginTop: 12 }}
-                disabled={busy || optimizerSaving}
-                title="PUT /api/config/lab-branches — merge lab_a & lab_b; optional SQLite wipe for selected branches."
-                onClick={() => {
-                  const parseC = (id: string) =>
-                    Math.round(Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim()));
-                  const parseF = (id: string) => Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim());
-                  const resetVal = String((document.getElementById("bulk_lab_reset") as HTMLSelectElement | null)?.value || "none");
-                  const backupEl = document.getElementById("bulk_lab_backup") as HTMLInputElement | null;
-                  const backup = backupEl ? backupEl.checked : true;
-                  const laPaper = parseC("bulk_la_paper");
-                  const laFrac = parseF("bulk_la_frac");
-                  const laWin = parseC("bulk_la_win");
-                  const lbPaper = parseC("bulk_lb_paper");
-                  const lbFrac = parseF("bulk_lb_frac");
-                  const lbWin = parseC("bulk_lb_win");
-                  if (!Number.isFinite(laFrac) || laFrac < 0.0001 || laFrac > 1) {
-                    window.alert("Lab A balance fraction must be between 0.0001 and 1.");
-                    return;
-                  }
-                  if (!Number.isFinite(lbFrac) || lbFrac < 0.0001 || lbFrac > 1) {
-                    window.alert("Lab B balance fraction must be between 0.0001 and 1.");
-                    return;
-                  }
-                  if (!Number.isFinite(laWin) || laWin < 1 || laWin > 1440 || !Number.isInteger(laWin)) {
-                    window.alert("Lab A window must be an integer 1–1440 minutes.");
-                    return;
-                  }
-                  if (!Number.isFinite(lbWin) || lbWin < 1 || lbWin > 1440 || !Number.isInteger(lbWin)) {
-                    window.alert("Lab B window must be an integer 1–1440 minutes.");
-                    return;
-                  }
-                  if (!Number.isFinite(laPaper) || laPaper < 0 || !Number.isInteger(laPaper)) {
-                    window.alert("Lab A paper balance must be a non-negative integer (cents).");
-                    return;
-                  }
-                  if (!Number.isFinite(lbPaper) || lbPaper < 0 || !Number.isInteger(lbPaper)) {
-                    window.alert("Lab B paper balance must be a non-negative integer (cents).");
-                    return;
-                  }
-                  if (resetVal !== "none") {
-                    const ok = window.confirm(
-                      `Reset SQLite trading data for ${resetVal === "both" ? "Lab A and Lab B" : resetVal} before saving new bankroll/sizing? This cannot be undone (backups may run).`,
-                    );
-                    if (!ok) return;
-                  }
-                  void onApplyLabBranches({
-                    reset_data: resetVal,
-                    backup,
-                    lab_a: {
-                      paper_balance_cents: laPaper,
-                      balance_fraction_per_window: laFrac,
-                      window_minutes: laWin,
-                    },
-                    lab_b: {
-                      paper_balance_cents: lbPaper,
-                      balance_fraction_per_window: lbFrac,
-                      window_minutes: lbWin,
-                    },
-                  });
-                }}
-              >
-                {"Apply lab bankroll & sizing (both branches)"}
-              </button>
-            </div>
             <div className="field">
               <label>Mode</label>
               <select id="opt_mode" defaultValue={String(optimizerCfg?.mode || "duel")}>
