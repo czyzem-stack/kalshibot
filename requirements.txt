@@ -1,0 +1,9 @@
+# Use Python 3.11, 3.12, or 3.13. Python 3.14 often forces a pydantic-core source build; that needs
+# Rust plus MSVC link.exe (Visual Studio C++ build tools). Prefer 3.12/3.13 for painless pip installs.
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+cryptography==44.0.0
+pydantic==2.10.3
+aiosqlite==0.20.0
+python-dateutil==2.9.0.post0
