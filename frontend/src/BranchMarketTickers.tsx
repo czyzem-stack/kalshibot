@@ -29,7 +29,9 @@ function fmtNum$(v: unknown): string {
 }
 
 function ReturnBadge({ metrics }: { metrics: AnyObj }): ReactNode {
-  const x = Number(metrics?.return_vs_start_pct);
+  const rawMtm = metrics?.return_mtm_vs_start_pct;
+  const x =
+    rawMtm != null && Number.isFinite(Number(rawMtm)) ? Number(rawMtm) : Number(metrics?.return_vs_start_pct);
   if (!Number.isFinite(x)) return null;
   const arrow = x > 0 ? "▲" : x < 0 ? "▼" : "—";
   const sign = x > 0 ? "+" : "";
@@ -258,10 +260,10 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
     );
     return out;
   }
-  const eq = metrics.current_equity_dollars;
-  const eqS = eq != null && Number.isFinite(Number(eq)) ? fmt$(Number(eq)) : "—";
+  const dollars = metrics.current_mtm_dollars ?? metrics.current_equity_dollars;
+  const eqS = dollars != null && Number.isFinite(Number(dollars)) ? fmt$(Number(dollars)) : "—";
   const pnl = Number(metrics.total_pnl_dollars || 0);
-  const ret = metrics.return_vs_start_pct;
+  const ret = metrics.return_mtm_vs_start_pct ?? metrics.return_vs_start_pct;
   const retN = ret != null && Number.isFinite(Number(ret)) ? Number(ret) : NaN;
   const lab = branch === "lab_a" ? "Lab A" : branch === "lab_b" ? "Lab B" : "Live";
   const rt: Tone = !Number.isFinite(retN) ? "muted" : retN > 0 ? "pos" : retN < 0 ? "neg" : "muted";
@@ -451,22 +453,22 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const livePaper = Boolean(cfg.simulate);
   const portfolioLive = livePaper
-    ? fmtNum$(mLive.current_equity_dollars)
+    ? fmtNum$(mLive.current_mtm_dollars ?? mLive.current_equity_dollars)
     : fmtNum$(mLive.exchange_portfolio_value_dollars ?? (rb?.portfolio_value != null ? Number(rb.portfolio_value) / 100 : null));
   const cashLive =
     livePaper || !keys
       ? null
       : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
-  const labAeq = fmtNum$(mA.current_equity_dollars);
-  const labBeq = fmtNum$(mB.current_equity_dollars);
+  const labAeq = fmtNum$(mA.current_mtm_dollars ?? mA.current_equity_dollars);
+  const labBeq = fmtNum$(mB.current_mtm_dollars ?? mB.current_equity_dollars);
   const tipLive = livePaper
-    ? "Live paper equity (est.) from dashboard metrics."
+    ? "Live paper: headline $ is mark-to-market total (last equity snapshot); % uses MTM vs bankroll when available."
     : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
 
   return (
     <div
       className="branch-ticker-outer section-tip"
-      title="Scrolling readouts plus per-row snapshot (value + return vs start). Green/red = direction or PnL."
+      title="Scrolling readouts plus per-row snapshot: $ = MTM (cash + open marks) when the backend stores it; % matches MTM vs bankroll for paper branches."
       aria-label="Live, Lab A, and Lab B tickers with aligned snapshots"
     >
       <div className="branch-ticker-band">
@@ -489,8 +491,8 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       <div className="branch-ticker-band">
         <TickerRow label="LAB A" accent="#c4b5fd" segments={segBundles.lab_a} durationSec={dur(segBundles.lab_a)} />
         <TickerSnapAside
-          title="Lab A paper equity (est.)."
-          aria-label="Lab A paper equity and return vs start"
+          title="Lab A: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
+          aria-label="Lab A mark-to-market or equity and return vs start"
           value={labAeq}
           valueColor="#c4b5fd"
           metrics={mA}
@@ -499,8 +501,8 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       <div className="branch-ticker-band">
         <TickerRow label="LAB B" accent="#fdba74" segments={segBundles.lab_b} durationSec={dur(segBundles.lab_b)} />
         <TickerSnapAside
-          title="Lab B paper equity (est.)."
-          aria-label="Lab B paper equity and return vs start"
+          title="Lab B: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
+          aria-label="Lab B mark-to-market or equity and return vs start"
           value={labBeq}
           valueColor="#fdba74"
           metrics={mB}

@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import {
   CartesianGrid,
+  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -97,6 +106,184 @@ function metricEquityVsBankroll(eq: unknown, bank: unknown): MetricValueTone {
   const b = Number(bank);
   if (!Number.isFinite(e) || !Number.isFinite(b) || b <= 0) return "neu";
   return metricSignedTone(e - b);
+}
+
+/** Headline $ on MTM tiles: last snapshot MTM when API sends it, else cost-basis equity. */
+function dashboardMtmDollars(m: AnyObj): number {
+  const v = m.current_mtm_dollars ?? m.current_equity_dollars;
+  return Number(v ?? 0);
+}
+
+function dashboardMtmReturnPct(m: AnyObj): unknown {
+  return m.return_mtm_vs_start_pct ?? m.return_vs_start_pct;
+}
+
+function dashboardChartLastMtmOrEq(m: AnyObj): number | null {
+  const x = m.latest_mtm_snapshot_dollars ?? m.latest_equity_snapshot_dollars;
+  if (x == null || x === "") return null;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Stable signature for unresolved snap deltas (avoids resetting rotation on every poll when values unchanged). */
+function branchSnapStripSignature(m: AnyObj): string {
+  const cost = m.equity_snap_vs_calc_diff_dollars;
+  const mtmEdge = m.last_snap_mtm_minus_equity_dollars;
+  const c =
+    cost != null && Number.isFinite(Number(cost)) && Math.abs(Number(cost)) > 0.001 ? Number(cost) : null;
+  const e =
+    mtmEdge != null && Number.isFinite(Number(mtmEdge)) && Math.abs(Number(mtmEdge)) > 0.001
+      ? Number(mtmEdge)
+      : null;
+  if (c == null && e == null) return "";
+  return `${c ?? ""}\t${e ?? ""}`;
+}
+
+/** Absolute dollar gap under this is colored “good” (green); at or above → red. */
+const SNAP_RECON_AMOUNT_OK_UNDER = 1;
+
+const SNAP_RECON_GLOSSARY =
+  "Snap — Equity snapshot: one frozen row the engine saved (cost-basis equity, and sometimes MTM) for a tick; it is a point-in-time accounting capture, not a live quote. " +
+  "Cost snap off calc: dollars between that snapshot’s cost-basis total and the dashboard model (bankroll + realized PnL − committed open premium); differences are often tick timing or what was written vs what the UI recomputes. " +
+  "MTM — Mark-to-market: fair value of open positions at mids/marks vs cost on the same snapshot row when both columns exist; the gap is how much marking moved versus booked cost at that instant. " +
+  "Amount colors: green when |gap| is under $1 (minor); red when $1 or more (worth a closer look).";
+
+function snapReconAmountStyle(absDollars: number): CSSProperties {
+  const ok = Math.abs(absDollars) < SNAP_RECON_AMOUNT_OK_UNDER;
+  return {
+    color: ok ? "var(--ok)" : "var(--danger)",
+    fontVariantNumeric: "tabular-nums",
+    fontWeight: 600,
+  };
+}
+
+function snapReconAmountTitle(absDollars: number): string {
+  const mag = Math.abs(absDollars);
+  const ok = mag < SNAP_RECON_AMOUNT_OK_UNDER;
+  return ok
+    ? `Magnitude ${fmtMoney(mag)} (under $${SNAP_RECON_AMOUNT_OK_UNDER}) — treated as minor.`
+    : `Magnitude ${fmtMoney(mag)} is $${SNAP_RECON_AMOUNT_OK_UNDER} or more — worth verifying timing or open marks.`;
+}
+
+/** One branch line for the snap-reconcile strip (paper only); only dollar amounts are color-coded. */
+function renderBranchSnapLine(name: string, m: AnyObj): ReactNode | null {
+  const cost = m.equity_snap_vs_calc_diff_dollars;
+  const mtmEdge = m.last_snap_mtm_minus_equity_dollars;
+  const hasCost = cost != null && Number.isFinite(Number(cost)) && Math.abs(Number(cost)) > 0.001;
+  const hasMtm = mtmEdge != null && Number.isFinite(Number(mtmEdge)) && Math.abs(Number(mtmEdge)) > 0.001;
+  if (!hasCost && !hasMtm) return null;
+
+  const costN = hasCost ? Number(cost) : 0;
+  const mtmN = hasMtm ? Number(mtmEdge) : 0;
+
+  const pieces: ReactNode[] = [];
+  if (hasCost) {
+    pieces.push(
+      <span key="c1">cost snap </span>,
+      <span key="c2" style={snapReconAmountStyle(costN)} title={snapReconAmountTitle(costN)}>
+        {fmtMoney(costN)}
+      </span>,
+      <span key="c3"> off calc</span>,
+    );
+  }
+  if (hasMtm) {
+    if (pieces.length) pieces.push(<span key="dot"> · </span>);
+    pieces.push(
+      <span key="m1">MTM </span>,
+      <span key="m2" style={snapReconAmountStyle(mtmN)} title={snapReconAmountTitle(mtmN)}>
+        {fmtMoney(mtmN)}
+      </span>,
+      <span key="m3"> vs cost snap</span>,
+    );
+  }
+
+  return (
+    <>
+      {name} — {pieces}
+    </>
+  );
+}
+
+function SnapReconcileStrip({
+  cfg,
+  metrics,
+  metricsLabA,
+  metricsLabB,
+}: {
+  cfg: AnyObj;
+  metrics: AnyObj;
+  metricsLabA: AnyObj;
+  metricsLabB: AnyObj;
+}) {
+  const stripSig = `${branchSnapStripSignature(metrics)}|${branchSnapStripSignature(metricsLabA)}|${branchSnapStripSignature(metricsLabB)}`;
+
+  // stripSig encodes unresolved deltas so we do not rebuild bits every poll when values are unchanged.
+  const bits = useMemo(() => {
+    if (!cfg.simulate) return [] as ReactNode[];
+    return [
+      renderBranchSnapLine("Live", metrics),
+      renderBranchSnapLine("Lab A", metricsLabA),
+      renderBranchSnapLine("Lab B", metricsLabB),
+    ].filter(Boolean) as ReactNode[];
+  }, [cfg.simulate, stripSig]);
+
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    setIdx(0);
+  }, [stripSig]);
+
+  useEffect(() => {
+    if (bits.length <= 1) return;
+    const id = window.setInterval(() => setIdx((i) => (i + 1) % bits.length), 4500);
+    return () => window.clearInterval(id);
+  }, [bits.length, stripSig]);
+
+  if (!cfg.simulate || !bits.length) return null;
+
+  const line = bits[idx % bits.length];
+
+  return (
+    <div
+      className="section-tip"
+      style={{
+        marginTop: 10,
+        padding: "6px 12px",
+        borderRadius: 10,
+        border: "1px solid rgba(255, 200, 120, 0.38)",
+        background: "rgba(255, 200, 120, 0.09)",
+        color: "#ffc878",
+        fontSize: 12,
+        lineHeight: 1.35,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        minWidth: 0,
+      }}
+      title="Rotates between branches when more than one still has a snap gap above the hide threshold."
+    >
+      <strong style={{ fontWeight: 700, flexShrink: 0 }}>Snap reconcile</strong>
+      <button
+        type="button"
+        className="snap-recon-info"
+        aria-label="What snap reconcile and MTM mean"
+        title={SNAP_RECON_GLOSSARY}
+      >
+        i
+      </button>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {line}
+      </span>
+    </div>
+  );
 }
 
 function metricWinRateTone(pct: unknown): MetricValueTone {
@@ -274,6 +461,8 @@ function orderedAssetEntries(assetsObj: AnyObj | undefined): [string, AnyObj][] 
 
 type EquityGranularity = "intraday" | "dd" | "ww" | "mm" | "yy";
 
+type EquityChartRow = { t: string; equity: number; mtm: number | null };
+
 function mondayUtcKey(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -290,13 +479,22 @@ function buildEquityChartSeries(
   snaps: AnyObj[],
   mode: EquityGranularity,
   fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
-): { t: string; equity: number }[] {
+): EquityChartRow[] {
   const rows = snaps
-    .map((s) => ({
-      at: String(s.created_at || ""),
-      eq: Number(s.equity_cents || 0) / 100.0,
-      ts: new Date(String(s.created_at || "")).getTime(),
-    }))
+    .map((s) => {
+      const raw = s.mtm_equity_cents;
+      let mtm: number | null = null;
+      if (raw != null && raw !== "") {
+        const n = Number(raw);
+        if (Number.isFinite(n)) mtm = n / 100.0;
+      }
+      return {
+        at: String(s.created_at || ""),
+        eq: Number(s.equity_cents || 0) / 100.0,
+        mtm,
+        ts: new Date(String(s.created_at || "")).getTime(),
+      };
+    })
     .filter((r) => r.at && Number.isFinite(r.ts));
   rows.sort((a, b) => a.ts - b.ts);
 
@@ -304,6 +502,7 @@ function buildEquityChartSeries(
     return rows.slice(-400).map((r) => ({
       t: fmtIsoLocalFn(r.at, false),
       equity: r.eq,
+      mtm: r.mtm,
     }));
   }
 
@@ -320,12 +519,12 @@ function buildEquityChartSeries(
     return iso.slice(0, 10);
   };
 
-  const best = new Map<string, { ts: number; eq: number; sampleIso: string }>();
+  const best = new Map<string, { ts: number; eq: number; mtm: number | null; sampleIso: string }>();
   for (const r of rows) {
     const b = bucketKey(r.at);
     if (!b) continue;
     const cur = best.get(b);
-    if (!cur || r.ts >= cur.ts) best.set(b, { ts: r.ts, eq: r.eq, sampleIso: r.at });
+    if (!cur || r.ts >= cur.ts) best.set(b, { ts: r.ts, eq: r.eq, mtm: r.mtm, sampleIso: r.at });
   }
 
   const keys = [...best.keys()].sort();
@@ -352,8 +551,57 @@ function buildEquityChartSeries(
         })}`;
       }
     }
-    return { t, equity: cell.eq };
+    return { t, equity: cell.eq, mtm: cell.mtm };
   });
+}
+
+function EquityDualLineChart({
+  data,
+  equityStroke,
+  mtmStroke,
+}: {
+  data: EquityChartRow[];
+  equityStroke: string;
+  mtmStroke: string;
+}) {
+  // Recharts ignores null/undefined for Line points — synthesize a numeric series so MTM always draws.
+  const plotData = useMemo(
+    () =>
+      data.map((d) => ({
+        ...d,
+        mtmPlot: d.mtm != null && Number.isFinite(Number(d.mtm)) ? Number(d.mtm) : d.equity,
+      })),
+    [data],
+  );
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
+        <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
+        <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
+        <Tooltip
+          contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
+          formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
+        />
+        <Legend
+          verticalAlign="bottom"
+          height={28}
+          wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
+          formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
+        />
+        <Line type="monotone" dataKey="equity" name="Equity (cost basis)" stroke={equityStroke} strokeWidth={2} dot={false} />
+        <Line
+          type="monotone"
+          dataKey="mtmPlot"
+          name="MTM (cash + open marks)"
+          stroke={mtmStroke}
+          strokeWidth={2}
+          strokeDasharray="6 4"
+          dot={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
 }
 
 function SnapSentimentBar({ impliedYes01 }: { impliedYes01: number }) {
@@ -1033,6 +1281,7 @@ export default function App() {
             </a>
           </div>
           {dash ? <BranchMarketTickers dash={dash} cfg={cfg} /> : null}
+          {dash ? <SnapReconcileStrip cfg={cfg} metrics={metrics} metricsLabA={metricsLabA} metricsLabB={metricsLabB} /> : null}
           {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
         </div>
         <div className="toolbar-panel">
@@ -1217,7 +1466,7 @@ export default function App() {
           style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
           title={
             cfg.simulate
-              ? "Live branch is paper: simulated fills only. Equity = starting bankroll + realized settled PnL − premium tied up in open sim positions."
+              ? "Live branch is paper: simulated fills only. MTM (est.) tile = last snapshot mark-to-market; cost-basis equity = bankroll + realized PnL − open premium committed."
               : "Live branch posts real limit orders when the engine runs and rules match. Cash / portfolio value come from Kalshi signed portfolio reads."
           }
         >
@@ -1242,24 +1491,12 @@ export default function App() {
             style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "-4px 0 8px 0" }}
             title="Metrics use every row in SQLite for this branch (not just the Recent trades table). Equity = bankroll + realized PnL − committed open premium."
           >
-            <strong>Reconcile paper:</strong> <em>Equity (est.)</em> = bankroll + <em>Total PnL (realized)</em> −{" "}
-            <em>Committed</em>. Large realized PnL with negative return means a lot of premium is still tied up in open
-            contracts until they settle or swing-exit.
+            <strong>Reconcile paper:</strong> <em>MTM (est.)</em> below = last snapshot <strong>mark-to-market</strong> total
+            (cash + open positions at implied mid). <em>Equity (cost basis)</em> = bankroll + realized PnL − committed
+            premium. Large realized PnL with a down <strong>cost</strong> return usually means premium still tied up in
+            opens until settlement or swing-exit.
           </p>
         ) : null}
-        {metrics.equity_snap_vs_calc_diff_dollars != null &&
-        Number.isFinite(Number(metrics.equity_snap_vs_calc_diff_dollars)) &&
-        Math.abs(Number(metrics.equity_snap_vs_calc_diff_dollars)) > 0.001 ? (
-          <p
-            className="sub section-tip"
-            style={{ gridColumn: "1 / -1", fontSize: 11, color: "#ffc878", margin: "0 0 8px 0" }}
-            title="The last equity snapshot row differs from bankroll + PnL − committed; usually timing between ticks."
-          >
-            Note: last equity snapshot differs from estimated equity by{" "}
-            {fmtMoney(Number(metrics.equity_snap_vs_calc_diff_dollars))}.
-          </p>
-        ) : null}
-
         {cfg.simulate ? (
           <>
             <MetricTile
@@ -1268,12 +1505,14 @@ export default function App() {
               title="cfg.paper_balance_cents ÷ 100 — notional starting stack for the Live branch in simulate mode (Settings)."
             />
             <MetricTile
-              label="Equity (est.)"
-              value={fmtMoney(Number(metrics.current_equity_dollars ?? 0))}
-              title="paper_start + total settled PnL − open sim committed premium. Same formula the engine uses for paper equity snapshots."
-              sub={`Return vs start ${fmtPct(metrics.return_vs_start_pct)} · chart last ${metrics.latest_equity_snapshot_dollars != null ? fmtMoney(Number(metrics.latest_equity_snapshot_dollars)) : "—"}`}
-              valueTone={metricEquityVsBankroll(metrics.current_equity_dollars, metrics.paper_start_dollars)}
-              subTone={metricSignedTone(metrics.return_vs_start_pct)}
+              label="MTM (est.)"
+              value={fmtMoney(dashboardMtmDollars(metrics))}
+              title="Mark-to-market total from the latest equity snapshot (paper + realized − committed + fair value of open sims at mid). Falls back to cost-basis equity until the engine writes mtm_equity_cents."
+              sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metrics))} · chart last ${
+                dashboardChartLastMtmOrEq(metrics) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metrics))) : "—"
+              }`}
+              valueTone={metricEquityVsBankroll(dashboardMtmDollars(metrics), metrics.paper_start_dollars)}
+              subTone={metricSignedTone(dashboardMtmReturnPct(metrics))}
             />
             <MetricTile
               label="Total PnL (realized)"
@@ -1457,9 +1696,9 @@ export default function App() {
           style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
           title="Lab A equity uses full SQLite rollups for lab_a, not only the Recent tables."
         >
-          <strong>Reconcile Lab A:</strong> <em>Equity (est.)</em> = bankroll + <em>Total PnL (realized)</em> −{" "}
-          <em>Committed</em>. Positive realized PnL with a down return usually means premium still tied up in open Lab A
-          positions.
+          <strong>Reconcile Lab A:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
+          <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
+          usually means premium still tied up in open Lab A positions.
         </p>
         <MetricTile
           label="Lab A bankroll (start)"
@@ -1467,12 +1706,14 @@ export default function App() {
           title="Cumulative paper basis: lab_a.paper_lifetime_basis_cents after each auto wipe, else lab_a.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
         />
         <MetricTile
-          label="Lab A equity (est.)"
-          value={fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))}
-          title="Lab A bankroll + settled PnL − open committed."
-          sub={`Return vs start ${fmtPct(metricsLabA.return_vs_start_pct)} · chart last ${metricsLabA.latest_equity_snapshot_dollars != null ? fmtMoney(Number(metricsLabA.latest_equity_snapshot_dollars)) : "—"}`}
-          valueTone={metricEquityVsBankroll(metricsLabA.current_equity_dollars, metricsLabA.paper_start_dollars)}
-          subTone={metricSignedTone(metricsLabA.return_vs_start_pct)}
+          label="Lab A MTM (est.)"
+          value={fmtMoney(dashboardMtmDollars(metricsLabA))}
+          title="Lab A mark-to-market from the latest snapshot (bankroll + realized − committed + open marks at mid). Falls back to cost-basis equity if MTM not stored yet."
+          sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metricsLabA))} · chart last ${
+            dashboardChartLastMtmOrEq(metricsLabA) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metricsLabA))) : "—"
+          }`}
+          valueTone={metricEquityVsBankroll(dashboardMtmDollars(metricsLabA), metricsLabA.paper_start_dollars)}
+          subTone={metricSignedTone(dashboardMtmReturnPct(metricsLabA))}
         />
         <MetricTile
           label="Lab A total PnL"
@@ -1555,9 +1796,9 @@ export default function App() {
           style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
           title="Lab B equity uses full SQLite rollups for lab_b, not only the Recent tables."
         >
-          <strong>Reconcile Lab B:</strong> <em>Equity (est.)</em> = bankroll + <em>Total PnL (realized)</em> −{" "}
-          <em>Committed</em>. Positive realized PnL with a down return usually means premium still tied up in open Lab B
-          positions.
+          <strong>Reconcile Lab B:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
+          <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
+          usually means premium still tied up in open Lab B positions.
         </p>
         <MetricTile
           label="Lab B bankroll (start)"
@@ -1565,12 +1806,14 @@ export default function App() {
           title="Cumulative paper basis: lab_b.paper_lifetime_basis_cents after each auto wipe, else lab_b.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
         />
         <MetricTile
-          label="Lab B equity (est.)"
-          value={fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))}
-          title="Lab B bankroll + settled PnL − open committed."
-          sub={`Return vs start ${fmtPct(metricsLabB.return_vs_start_pct)} · chart last ${metricsLabB.latest_equity_snapshot_dollars != null ? fmtMoney(Number(metricsLabB.latest_equity_snapshot_dollars)) : "—"}`}
-          valueTone={metricEquityVsBankroll(metricsLabB.current_equity_dollars, metricsLabB.paper_start_dollars)}
-          subTone={metricSignedTone(metricsLabB.return_vs_start_pct)}
+          label="Lab B MTM (est.)"
+          value={fmtMoney(dashboardMtmDollars(metricsLabB))}
+          title="Lab B mark-to-market from the latest snapshot (bankroll + realized − committed + open marks at mid). Falls back to cost-basis equity if MTM not stored yet."
+          sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metricsLabB))} · chart last ${
+            dashboardChartLastMtmOrEq(metricsLabB) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metricsLabB))) : "—"
+          }`}
+          valueTone={metricEquityVsBankroll(dashboardMtmDollars(metricsLabB), metricsLabB.paper_start_dollars)}
+          subTone={metricSignedTone(dashboardMtmReturnPct(metricsLabB))}
         />
         <MetricTile
           label="Lab B total PnL"
@@ -1794,7 +2037,7 @@ export default function App() {
           <h2
             className="section-tip"
             style={{ marginTop: 0 }}
-            title="Equity from stored snapshots. Use the tabs to change bucketing; intraday shows raw points (last 400)."
+            title="Solid line: stored equity (paper bankroll + realized PnL − premium committed to open sims). Dashed: mark-to-market total (cash + open positions valued at implied mid from Kalshi). Live real: MTM uses portfolio_value when the API returns it."
           >
             Equity curves
           </h2>
@@ -1825,66 +2068,33 @@ export default function App() {
           <h3
             className="sub section-tip"
             style={{ marginTop: 14, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Live branch equity (paper or real balance depending on mode)."
+            title="Live branch: solid = stored equity; dashed = MTM when backend writes mtm_equity_cents (paper: cash + open contracts at mid; real: portfolio_value vs balance)."
           >
             Live branch
           </h3>
           <div className="chart" title="Live branch equity over time (tab controls bucketing). Hover points for values.">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ left: 6, right: 10, top: 10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
-                <Tooltip
-                  contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
-                  formatter={(v: any) => [`$${Number(v).toFixed(2)}`, "equity"]}
-                />
-                <Line type="monotone" dataKey="equity" stroke="#6ee7ff" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            <EquityDualLineChart data={chartData} equityStroke="#6ee7ff" mtmStroke="#38bdf8" />
           </div>
 
           <h3
             className="sub section-tip"
             style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Lab A paper equity curve (separate from Live)."
+            title="Lab A paper: solid = stored equity; dashed = MTM (bankroll + realized − committed + fair value of opens at implied mid)."
           >
             Lab A
           </h3>
           <div className="chart" title="Lab A equity over time (same tab as Live).">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartDataLabA} margin={{ left: 6, right: 10, top: 10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
-                <Tooltip
-                  contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
-                  formatter={(v: any) => [`$${Number(v).toFixed(2)}`, "lab_a"]}
-                />
-                <Line type="monotone" dataKey="equity" stroke="#a78bfa" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            <EquityDualLineChart data={chartDataLabA} equityStroke="#a78bfa" mtmStroke="#c4b5fd" />
           </div>
           <h3
             className="sub section-tip"
             style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Lab B paper equity curve (separate from Live)."
+            title="Lab B paper: solid = stored equity; dashed = MTM (bankroll + realized − committed + fair value of opens at implied mid)."
           >
             Lab B
           </h3>
           <div className="chart" title="Lab B equity over time (same tab as Live).">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartDataLabB} margin={{ left: 6, right: 10, top: 10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
-                <Tooltip
-                  contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
-                  formatter={(v: any) => [`$${Number(v).toFixed(2)}`, "lab_b"]}
-                />
-                <Line type="monotone" dataKey="equity" stroke="#f59e0b" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
+            <EquityDualLineChart data={chartDataLabB} equityStroke="#f59e0b" mtmStroke="#fcd34d" />
           </div>
 
           <h2

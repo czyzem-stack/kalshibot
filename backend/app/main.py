@@ -117,7 +117,10 @@ def _metrics_from_trade_rollup(roll: dict[str, Any], branch: str) -> dict[str, A
         try:
             t0 = dt.datetime.fromisoformat(str(t0s).replace("Z", "+00:00"))
             t1 = dt.datetime.fromisoformat(str(t1s).replace("Z", "+00:00"))
-            hours = max(1e-6, (t1 - t0).total_seconds() / 3600.0)
+            raw_h = max(0.0, (t1 - t0).total_seconds() / 3600.0)
+            # Bursts (first and last settle within seconds) made $/hour explode when dividing by ~0.
+            # Use at least one clock hour so Lab A/B and live rollups stay readable after resets.
+            hours = max(1.0, raw_h)
         except Exception:
             hours = 1.0
     avg_hourly = (total_pnl_cents / 100.0) / hours
@@ -147,6 +150,39 @@ def _latest_equity_snapshot_dollars(snaps: list[dict[str, Any]]) -> float | None
         return None
 
 
+def _inject_last_snap_mtm_minus_equity(m: dict[str, Any], snaps: list[dict[str, Any]]) -> None:
+    """How far the last row's MTM diverges from cost-basis equity on that same snapshot (open marks)."""
+    if not snaps:
+        return
+    row = snaps[-1]
+    if not isinstance(row, dict):
+        return
+    try:
+        ec = int(row.get("equity_cents") or 0)
+        raw = row.get("mtm_equity_cents")
+        if raw is None or raw == "":
+            return
+        mc = int(raw)
+        m["last_snap_mtm_minus_equity_dollars"] = round((mc - ec) / 100.0, 4)
+    except (TypeError, ValueError):
+        return
+
+
+def _latest_mtm_snapshot_dollars(snaps: list[dict[str, Any]]) -> float | None:
+    """Most recent snapshot row that has ``mtm_equity_cents`` (older rows pre-migration omit it)."""
+    for row in reversed(snaps or []):
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("mtm_equity_cents")
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw) / 100.0
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _balance_field_to_dollars(raw: Any) -> float | None:
     """Kalshi balance / portfolio_value are typically integer cents."""
     if raw is None or raw == "":
@@ -165,6 +201,7 @@ def _enrich_strategy_metrics(
     paper_start_cents: int | None,
     bal_json: dict[str, Any] | None,
     latest_equity_snap_dollars: float | None,
+    latest_mtm_snap_dollars: float | None = None,
 ) -> None:
     """Adds win rate, paper equity path, and (for Live real) exchange balance / portfolio value."""
     settled = int(m.get("settled_trades") or 0)
@@ -182,11 +219,17 @@ def _enrich_strategy_metrics(
     m["scratch_trades"] = scratches
     m["avg_realized_per_settled_dollars"] = (realized / settled) if settled else None
     m["latest_equity_snapshot_dollars"] = latest_equity_snap_dollars
+    m["latest_mtm_snapshot_dollars"] = latest_mtm_snap_dollars
 
     if not paper_mode:
         if isinstance(bal_json, dict):
             m["exchange_balance_dollars"] = _balance_field_to_dollars(bal_json.get("balance"))
             m["exchange_portfolio_value_dollars"] = _balance_field_to_dollars(bal_json.get("portfolio_value"))
+        pv_d = m.get("exchange_portfolio_value_dollars")
+        if pv_d is not None:
+            m["current_mtm_dollars"] = float(pv_d)
+        elif latest_mtm_snap_dollars is not None:
+            m["current_mtm_dollars"] = float(latest_mtm_snap_dollars)
         return
 
     if paper_start_cents is None:
@@ -198,6 +241,9 @@ def _enrich_strategy_metrics(
     m["return_vs_start_pct"] = ((eq - ps) / ps * 100.0) if ps > 0 else None
     m["realized_pnl_pct_of_start"] = ((realized / ps) * 100.0) if ps > 0 else None
     m["committed_pct_of_start"] = ((committed / ps) * 100.0) if ps > 0 else None
+    if latest_mtm_snap_dollars is not None:
+        m["current_mtm_dollars"] = float(latest_mtm_snap_dollars)
+        m["return_mtm_vs_start_pct"] = ((latest_mtm_snap_dollars - ps) / ps * 100.0) if ps > 0 else None
     if (
         latest_equity_snap_dollars is not None
         and ps > 0
@@ -583,6 +629,7 @@ async def dashboard() -> dict[str, Any]:
         paper_start_cents=int(cfg.get("paper_balance_cents") or 0),
         bal_json=bal_json if isinstance(bal_json, dict) else None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_live),
+        latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_live),
     )
     def _lab_paper_basis_cents(lab: dict[str, Any]) -> int:
         lt = lab.get("paper_lifetime_basis_cents")
@@ -597,6 +644,7 @@ async def dashboard() -> dict[str, Any]:
         paper_start_cents=lab_paper_basis_a,
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_a),
+        latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_a),
     )
     lab_paper_basis_b = _lab_paper_basis_cents(lab_b if isinstance(lab_b, dict) else {})
     _enrich_strategy_metrics(
@@ -605,7 +653,11 @@ async def dashboard() -> dict[str, Any]:
         paper_start_cents=lab_paper_basis_b,
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_b),
+        latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_b),
     )
+    _inject_last_snap_mtm_minus_equity(metrics_live, snaps_live)
+    _inject_last_snap_mtm_minus_equity(metrics_lab_a, snaps_lab_a)
+    _inject_last_snap_mtm_minus_equity(metrics_lab_b, snaps_lab_b)
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None

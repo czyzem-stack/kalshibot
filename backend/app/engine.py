@@ -1166,6 +1166,50 @@ def market_dict_from_public_response(data: Any) -> dict[str, Any]:
     return {}
 
 
+def _fair_value_open_sim_position_cents(m: dict[str, Any], *, side: str, contracts: float) -> int:
+    """Expected settlement value in cents at implied mid (contracts × $1 × risk-neutral prob)."""
+    if contracts <= 0 or not math.isfinite(contracts):
+        return 0
+    yb = dollars_to_float(m.get("yes_bid_dollars"))
+    ya = dollars_to_float(m.get("yes_ask_dollars"))
+    py = implied_yes_probability(yb, ya)
+    if py is None or not math.isfinite(py):
+        return 0
+    py = max(0.0, min(1.0, float(py)))
+    if str(side or "yes").lower() == "no":
+        py = 1.0 - py
+    return int(round(contracts * 100.0 * py))
+
+
+async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows: list[dict[str, Any]]) -> int:
+    """Sum mark-to-market cents for open simulated rows (one public market fetch per distinct ticker)."""
+    if not open_rows:
+        return 0
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for t in open_rows:
+        tk = str(t.get("ticker") or "").strip()
+        if not tk:
+            continue
+        by_ticker.setdefault(tk, []).append(t)
+    total = 0
+    for ticker, rows in by_ticker.items():
+        try:
+            data = await engine.client.get_public(f"/markets/{ticker}")
+        except Exception:
+            continue
+        m = market_dict_from_public_response(data)
+        if not m:
+            continue
+        for t in rows:
+            side = str(t.get("side") or "yes")
+            try:
+                contracts = float(str(t.get("contracts_fp") or "0"))
+            except (TypeError, ValueError):
+                contracts = 0.0
+            total += _fair_value_open_sim_position_cents(m, side=side, contracts=contracts)
+    return total
+
+
 def exit_bid_for_side_close(
     m: dict[str, Any],
     side: str,
@@ -1417,6 +1461,7 @@ async def snapshot_equity(engine: TradingEngine) -> None:
     settled_pnl = int(roll.get("total_pnl_cents") or 0)
     open_committed = int(roll.get("open_committed_cents") or 0)
 
+    mtm_equity: int
     if _is_lab_branch(branch) or (branch == BRANCH_LIVE and full_cfg.get("simulate")):
         if _is_lab_branch(branch):
             lab_key = "lab_a" if branch in (BRANCH_SIM_LAB, BRANCH_LAB_A) else "lab_b"
@@ -1426,15 +1471,29 @@ async def snapshot_equity(engine: TradingEngine) -> None:
             paper = int(full_cfg.get("paper_balance_cents") or 500_000)
         equity = paper + settled_pnl - open_committed
         mode = "simulate"
+        open_rows = await engine.store.open_sim_trades_for_branch(branch)
+        mark_sum = await compute_open_sim_mark_value_sum_cents(engine, open_rows)
+        mtm_equity = paper + settled_pnl - open_committed + mark_sum
     else:
         try:
             bal = await engine.client.get_private("/portfolio/balance")
             equity = int(bal.get("balance") or 0)
+            pv_raw = bal.get("portfolio_value")
+            if pv_raw is not None and str(pv_raw).strip() != "":
+                try:
+                    mtm_equity = int(float(str(pv_raw)))
+                except (TypeError, ValueError):
+                    mtm_equity = equity
+            else:
+                mtm_equity = equity
         except Exception:
             equity = 0
+            mtm_equity = 0
         mode = "live"
 
-    await engine.store.insert_equity_snapshot(iso(utc_now()), mode, equity, "auto", branch=branch)
+    await engine.store.insert_equity_snapshot(
+        iso(utc_now()), mode, equity, "auto", branch=branch, mtm_equity_cents=mtm_equity
+    )
 
 
 async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -> None:

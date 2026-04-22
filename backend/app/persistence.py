@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
   created_at TEXT NOT NULL,
   mode TEXT NOT NULL,
   equity_cents INTEGER NOT NULL,
+  mtm_equity_cents INTEGER,
   note TEXT,
   branch TEXT DEFAULT 'live'
 );
@@ -249,6 +250,9 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         have = await cols(table)
         if "branch" not in have:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN branch TEXT DEFAULT 'live'")
+    eq_have = await cols("equity_snapshots")
+    if "mtm_equity_cents" not in eq_have:
+        await db.execute("ALTER TABLE equity_snapshots ADD COLUMN mtm_equity_cents INTEGER")
     await db.commit()
 
 
@@ -521,12 +525,19 @@ class Store:
         )
 
     async def insert_equity_snapshot(
-        self, created_at: str, mode: str, equity_cents: int, note: str, branch: str = "live"
+        self,
+        created_at: str,
+        mode: str,
+        equity_cents: int,
+        note: str,
+        branch: str = "live",
+        *,
+        mtm_equity_cents: int | None = None,
     ) -> None:
         async with self._open_db() as db:
             await db.execute(
-                "INSERT INTO equity_snapshots (created_at, mode, equity_cents, note, branch) VALUES (?,?,?,?,?)",
-                (created_at, mode, equity_cents, note, branch),
+                "INSERT INTO equity_snapshots (created_at, mode, equity_cents, mtm_equity_cents, note, branch) VALUES (?,?,?,?,?,?)",
+                (created_at, mode, equity_cents, mtm_equity_cents, note, branch),
             )
             await db.commit()
         try:
@@ -538,6 +549,7 @@ class Store:
                     "created_at": created_at,
                     "mode": mode,
                     "equity_cents": equity_cents,
+                    "mtm_equity_cents": mtm_equity_cents,
                     "note": note,
                     "branch": branch,
                 }
