@@ -36,8 +36,8 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out = dict(oc or {})
     out.pop("max_bet_fraction", None)
     out.setdefault("enabled", False)
-    out.setdefault("interval_minutes", 120)
-    out.setdefault("lookback_hours", 72)
+    out.setdefault("interval_minutes", 20)
+    out.setdefault("lookback_hours", 48)
     out.setdefault("max_rows_per_table", 5000)
     out.setdefault("model", "claude-sonnet-4-5")
     out.setdefault("adaptive_enabled", True)
@@ -48,19 +48,19 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("lab_a_style", "blend")
     out.setdefault("lab_b_style", "conservative")
     out.setdefault("lab_c_style", "aggressive")
-    out.setdefault("loss_streak_trigger", 3)
-    out.setdefault("threshold_step_pct", 1)
-    out.setdefault("minute_step", 1)
+    out.setdefault("loss_streak_trigger", 1)
+    out.setdefault("threshold_step_pct", 2)
+    out.setdefault("minute_step", 2)
     out.setdefault("max_history", 120)
     out.setdefault("lab_a_yes_floor_pct", 57)
     out.setdefault("lab_b_yes_floor_pct", 55)
     out.setdefault("lab_a_min_minutes_left", 5)
     out.setdefault("lab_b_min_minutes_left", 3)
-    out.setdefault("min_trades_for_optimize", 25)
-    out.setdefault("min_profitable_trades", 8)
+    out.setdefault("min_trades_for_optimize", 8)
+    out.setdefault("min_profitable_trades", 2)
     out.setdefault("optimize_bet_size", True)
     out.setdefault("include_fees_in_score", True)
-    out.setdefault("regime_lookback_hours", 6)
+    out.setdefault("regime_lookback_hours", 4)
     out.setdefault("backtest_proposals", True)
     out.setdefault("change_history", [])
     return out
@@ -284,7 +284,7 @@ def _build_metrics_context(
     end: dt.datetime,
 ) -> dict[str, Any]:
     include_fees = bool(oc.get("include_fees_in_score", True))
-    regime_h = float(oc.get("regime_lookback_hours") or 6)
+    regime_h = float(oc.get("regime_lookback_hours") or 4)
     sa = _signals_sorted_desc(sg_a)
     sb = _signals_sorted_desc(sg_b)
     sc = _signals_sorted_desc(sg_c)
@@ -447,8 +447,8 @@ def _apply_adaptive_lab_tuning(
     if branch != BRANCH_LAB_A or not bool(oc.get("lab_a_enabled", True)):
         return None
     settled = [t for t in trades if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 25))
-    min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 8))
+    min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
+    min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
     if len(settled) < min_tr:
         return None
     profitable_n = sum(1 for t in settled if int(t.get("pnl_cents") or 0) > 0)
@@ -462,7 +462,7 @@ def _apply_adaptive_lab_tuning(
     cur_mins = max(0, _safe_int(oc.get(mins_key), 5))
     step_pct = max(1, min(5, _safe_int(oc.get("threshold_step_pct"), 1)))
     step_m = max(1, min(5, _safe_int(oc.get("minute_step"), 1)))
-    loss_trigger = max(2, min(12, _safe_int(oc.get("loss_streak_trigger"), 3)))
+    loss_trigger = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 1)))
     style = _branch_style(oc, branch)
 
     losses_at_threshold = 0
@@ -572,8 +572,8 @@ def _apply_claude_bet_recommendations(
     """Apply balance_fraction hints for Lab A staging only; B/C are read-only in the model output."""
     if not bool(oc.get("optimize_bet_size", True)):
         return []
-    min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 25))
-    min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 8))
+    min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
+    min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
@@ -607,7 +607,7 @@ def _apply_claude_bet_recommendations(
         lab_raw = cfg.get("lab_a")
         lab = dict(lab_raw) if isinstance(lab_raw, dict) else {}
         old_f = _safe_float(lab.get("balance_fraction_per_window"), 0.05)
-        if abs(new_f - old_f) < 0.0008:
+        if abs(new_f - old_f) < 0.0004:
             continue
         lab["balance_fraction_per_window"] = round(new_f, 4)
         cfg["lab_a"] = lab
@@ -684,7 +684,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     oc = _norm_opt_cfg(_opt_cfg(cfg))
     if not force and not bool(oc.get("enabled")):
         return {"ok": False, "skipped": True, "reason": "optimizer_disabled"}
-    lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 72)))
+    lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
     max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
     end = _utc_now()
     start = end - dt.timedelta(hours=lookback_h)
@@ -758,14 +758,16 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     model = str(oc.get("model") or "claude-sonnet-4-5")
     body = {
         "model": model,
-        "max_tokens": 2200,
-        "temperature": 0.2,
+        "max_tokens": 3200,
+        "temperature": 0.32,
         "system": (
             "You are a quant assistant for paper labs lab_a (staging / blend), lab_b (conservative), lab_c (aggressive). "
             "Never use live-branch data. Lab B and C are reference arms only: do not recommend persisted threshold/rule "
             "or bet-size changes for them. Use performance_metrics across all three. When optimize_bet_size is true, "
             "you may emit recommendations with field=balance_fraction_per_window and target lab_a only; keep suggested "
-            "values within 0.0001 and 1.0. Return concise JSON only, following the provided output_schema."
+            "values within 0.0001 and 1.0. Be decisive: when metrics clearly favor a sizing shift, emit a concrete "
+            "suggestion with confidence medium or high rather than hedging. Return concise JSON only, following the "
+            "provided output_schema."
         ),
         "messages": [{"role": "user", "content": json.dumps(payload)}],
     }

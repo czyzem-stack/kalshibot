@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.branch_config import BRANCH_LAB_A, BRANCH_LAB_B
+from app.branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C
 from app.optimizer_claude import _build_payload
 
 
@@ -15,10 +15,11 @@ class OptimizerGuardrailsTest(unittest.TestCase):
             metrics={"lab_a": {}, "lab_b": {}},
             oc={},
         )
-        self.assertEqual(payload.get("branches"), [BRANCH_LAB_A, BRANCH_LAB_B])
+        self.assertEqual(payload.get("branches"), [BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C])
         self.assertTrue(payload.get("live_branch_forbidden"))
         self.assertIn("lab_a", payload.get("current_config_excerpt", {}))
         self.assertIn("lab_b", payload.get("current_config_excerpt", {}))
+        self.assertIn("lab_c", payload.get("current_config_excerpt", {}))
         self.assertIn("performance_metrics", payload)
 
 

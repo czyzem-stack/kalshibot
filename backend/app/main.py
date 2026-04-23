@@ -81,7 +81,7 @@ async def _optimizer_loop(stop: asyncio.Event) -> None:
             cfg = await store.load_config()
             oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
             enabled = bool(oc.get("enabled"))
-            interval_m = max(5, min(24 * 60, int(oc.get("interval_minutes") or 120)))
+            interval_m = max(5, min(24 * 60, int(oc.get("interval_minutes") or 20)))
             if enabled:
                 try:
                     await run_optimizer_once(store, force=False)
@@ -1077,6 +1077,46 @@ async def dashboard() -> dict[str, Any]:
         assets_cfg, kalshi_pos_list, sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c
     )
 
+    opt_blk = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    ch_raw = opt_blk.get("change_history")
+    ch_slim: list[dict[str, Any]] = []
+    if isinstance(ch_raw, list):
+        for x in ch_raw[:50]:
+            if not isinstance(x, dict):
+                continue
+            ch_slim.append(
+                {
+                    "id": x.get("id"),
+                    "created_at": x.get("created_at"),
+                    "lab_label": x.get("lab_label"),
+                    "style": x.get("style"),
+                    "reason": x.get("reason"),
+                    "summary": x.get("summary"),
+                    "before": x.get("before"),
+                    "after": x.get("after"),
+                }
+            )
+    runs_raw = await store.recent_optimizer_recommendations(limit=40)
+    runs_slim: list[dict[str, Any]] = []
+    for row in runs_raw:
+        if not isinstance(row, dict):
+            continue
+        rj = row.get("recommendation_json")
+        nrec = 0
+        if isinstance(rj, dict):
+            recs = rj.get("recommendations")
+            nrec = len(recs) if isinstance(recs, list) else 0
+        runs_slim.append(
+            {
+                "id": row.get("id"),
+                "created_at": row.get("created_at"),
+                "window_start": row.get("window_start"),
+                "window_end": row.get("window_end"),
+                "summary": str(row.get("summary") or "")[:800],
+                "n_recommendations": nrec,
+            }
+        )
+
     return {
         "config": cfg,
         "storage": _storage_dict(),
@@ -1179,6 +1219,7 @@ async def dashboard() -> dict[str, Any]:
             lab_b_engine_on=lab_b_engine_on,
             lab_c_engine_on=lab_c_engine_on,
         ),
+        "optimizer_activity": {"change_history": ch_slim, "runs": runs_slim},
     }
 
 
@@ -1313,8 +1354,10 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         "mode",
         "lab_a_enabled",
         "lab_b_enabled",
+        "lab_c_enabled",
         "lab_a_style",
         "lab_b_style",
+        "lab_c_style",
         "loss_streak_trigger",
         "threshold_step_pct",
         "minute_step",
@@ -1323,6 +1366,8 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         "lab_b_yes_floor_pct",
         "lab_a_min_minutes_left",
         "lab_b_min_minutes_left",
+        "lab_c_yes_floor_pct",
+        "lab_c_min_minutes_left",
         "min_trades_for_optimize",
         "min_profitable_trades",
         "regime_lookback_hours",
@@ -1333,7 +1378,6 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         if k in body:
             v = body[k]
             if k in (
-                "lookback_hours",
                 "max_rows_per_table",
                 "max_history",
                 "min_trades_for_optimize",
@@ -1341,6 +1385,11 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
             ) and v is not None:
                 try:
                     nxt[k] = int(v)
+                except (TypeError, ValueError):
+                    nxt[k] = v
+            elif k == "lookback_hours" and v is not None:
+                try:
+                    nxt[k] = max(1, min(24 * 30, int(float(v))))
                 except (TypeError, ValueError):
                     nxt[k] = v
             elif k == "regime_lookback_hours" and v is not None:

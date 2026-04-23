@@ -9,6 +9,8 @@ import {
   type ReactNode,
 } from "react";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
   Legend,
   Line,
@@ -144,51 +146,155 @@ function LabThoughtScrollingLine({ text }: { text: string }) {
   );
 }
 
-/** One line at a time, rotating like Snap reconcile — Lab A / B / C “pulse” from /api/dashboard lab_thoughts. */
+/** All three labs at once (no rotation) — avoids skipping / overwriting a single rotating line. */
 function LabThoughtsStrip({ thoughts }: { thoughts: AnyObj | undefined }) {
-  const stripSig = useMemo(() => JSON.stringify(thoughts ?? null), [thoughts]);
-
-  const bits = useMemo(() => {
-    try {
-      const t = JSON.parse(stripSig) as AnyObj | null;
-      if (!t || typeof t !== "object") return [] as string[];
-      return [
-        `Lab A — ${labThoughtsToSentence(t.lab_a)}`,
-        `Lab B — ${labThoughtsToSentence(t.lab_b)}`,
-        `Lab C — ${labThoughtsToSentence(t.lab_c)}`,
-      ];
-    } catch {
-      return [] as string[];
-    }
-  }, [stripSig]);
-
-  const [idx, setIdx] = useState(0);
-
-  useEffect(() => {
-    setIdx(0);
-  }, [stripSig]);
-
-  useEffect(() => {
-    if (bits.length <= 1) return;
-    const id = window.setInterval(() => setIdx((i) => (i + 1) % bits.length), 4500);
-    return () => window.clearInterval(id);
-  }, [bits.length, stripSig]);
-
-  if (!bits.length) return null;
-
-  const line = bits[idx % bits.length];
+  const rows = useMemo(() => {
+    const t = thoughts && typeof thoughts === "object" ? (thoughts as AnyObj) : {};
+    return [
+      { lab: "Lab A", key: "lab_a", accent: "#c4b5fd" },
+      { lab: "Lab B", key: "lab_b", accent: "#fdba74" },
+      { lab: "Lab C", key: "lab_c", accent: "#f9a8d4" },
+    ].map(({ lab, key, accent }) => ({
+      lab,
+      accent,
+      text: labThoughtsToSentence(t[key]),
+    }));
+  }, [thoughts]);
 
   return (
     <div
-      className="lab-thoughts-strip section-tip"
-      role="status"
-      aria-live="polite"
-      aria-label="Rotating lab reasoning hints"
-      title="Cycles Lab A, B, and C — same idea as Snap reconcile: one sentence per branch from the latest dashboard poll."
+      className="lab-thoughts-stack section-tip"
+      role="region"
+      aria-label="Lab pulse — Live reasoning per lab from the latest dashboard poll"
+      title="Each row is one lab; text updates every dashboard refresh. No rotation, so nothing gets skipped between polls."
     >
-      <strong className="lab-thoughts-strip__label">Lab pulse</strong>
-      <LabThoughtScrollingLine text={line} />
+      <div className="lab-thoughts-stack__head">Lab pulse</div>
+      {rows.map((row) => (
+        <div key={row.lab} className="lab-thoughts-stack__row" title={row.text}>
+          <span className="lab-thoughts-stack__badge" style={{ color: row.accent }}>
+            {row.lab}
+          </span>
+          <div className="lab-thoughts-stack__marquee">
+            <LabThoughtScrollingLine text={row.text} />
+          </div>
+        </div>
+      ))}
     </div>
+  );
+}
+
+function formatOptimizerNotifBody(h: AnyObj): string {
+  const parts: string[] = [];
+  if (h?.summary) parts.push(String(h.summary));
+  if (h?.reason) parts.push(`Reason: ${String(h.reason)}`);
+  const before = h?.before;
+  const after = h?.after;
+  if (before && after && typeof before === "object" && typeof after === "object") {
+    const keys = new Set([...Object.keys(before as AnyObj), ...Object.keys(after as AnyObj)]);
+    for (const k of keys) {
+      const vb = (before as AnyObj)[k];
+      const va = (after as AnyObj)[k];
+      if (JSON.stringify(vb) !== JSON.stringify(va)) {
+        parts.push(`${k}: ${JSON.stringify(vb)} → ${JSON.stringify(va)}`);
+      }
+    }
+  }
+  return parts.join("\n").slice(0, 1400);
+}
+
+function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }) {
+  const floorSeries = useMemo(() => {
+    const ch = Array.isArray(activity?.change_history) ? (activity!.change_history as AnyObj[]) : [];
+    const asc = [...ch].reverse();
+    const pts: { t: string; floor: number }[] = [];
+    for (const h of asc) {
+      const after = h?.after;
+      if (!after || typeof after !== "object") continue;
+      const fl = Number((after as AnyObj).yes_floor_pct);
+      if (!Number.isFinite(fl)) continue;
+      pts.push({
+        t: fmtIsoLocal(String(h.created_at || ""), false),
+        floor: fl,
+      });
+    }
+    return pts;
+  }, [activity]);
+
+  const runSeries = useMemo(() => {
+    const runs = Array.isArray(activity?.runs) ? (activity!.runs as AnyObj[]) : [];
+    const asc = [...runs].reverse();
+    return asc.map((r) => ({
+      t: fmtIsoLocal(String(r.created_at || ""), false),
+      n: Number(r.n_recommendations) || 0,
+      summary: String(r.summary || "").slice(0, 120),
+    }));
+  }, [activity]);
+
+  if (!floorSeries.length && !runSeries.length) {
+    return (
+      <section className="dash-section optimizer-activity" aria-labelledby="dash-heading-opt-act">
+        <h2 id="dash-heading-opt-act" className="dash-section__title">
+          Optimizer activity
+        </h2>
+        <div className="dash-section__legend">
+          <p>No optimizer runs or threshold changes recorded yet. Enable the scheduler and wait for a cycle, or press Run once in the Optimizer panel.</p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="dash-section optimizer-activity" aria-labelledby="dash-heading-opt-act">
+      <h2 id="dash-heading-opt-act" className="dash-section__title">
+        Optimizer activity
+      </h2>
+      <div className="dash-section__legend">
+        <p>
+          <strong>Line</strong>: Lab A YES floor % after each adaptive / persisted threshold change (from change
+          history).
+        </p>
+        <p style={{ marginTop: 8 }}>
+          <strong>Bars</strong>: each Claude run — height = count of structured recommendations in that run (not all
+          become bet-size edits).
+        </p>
+      </div>
+      <div className="optimizer-activity-charts">
+        {floorSeries.length ? (
+          <div className="optimizer-activity-chart" title="Lab A YES floor over time">
+            <div className="optimizer-activity-chart__label">Lab A YES floor (%)</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={floorSeries} margin={{ left: 6, right: 10, top: 8, bottom: 28 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
+                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis stroke="#7f8ab5" tick={{ fontSize: 10 }} domain={["auto", "auto"]} />
+                <Tooltip
+                  contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
+                  formatter={(v: number) => [`${v}%`, "Floor"]}
+                />
+                <Line type="stepAfter" dataKey="floor" name="YES floor %" stroke="#a78bfa" strokeWidth={2} dot />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : null}
+        {runSeries.length ? (
+          <div className="optimizer-activity-chart" title="Claude optimizer runs">
+            <div className="optimizer-activity-chart__label">Claude runs (recommendation count)</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={runSeries} margin={{ left: 6, right: 10, top: 8, bottom: 28 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
+                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis stroke="#7f8ab5" tick={{ fontSize: 10 }} allowDecimals={false} />
+                <Tooltip
+                  contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
+                  formatter={(v: number) => [String(v), "Recommendations"]}
+                />
+                <Bar dataKey="n" name="Count" fill="#38bdf8" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -1118,8 +1224,19 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [optimizerOpen, loadOptimizer]);
 
+  const cfg = dash?.config || {};
+
+  const optimizerChangeHistoryMerged = useMemo(() => {
+    const oc = (cfg as AnyObj)?.optimizer;
+    const fromDash = oc?.change_history;
+    const fromPanel = optimizerCfg?.change_history;
+    if (Array.isArray(fromDash) && fromDash.length) return fromDash as AnyObj[];
+    if (Array.isArray(fromPanel) && fromPanel.length) return fromPanel as AnyObj[];
+    return [] as AnyObj[];
+  }, [cfg, optimizerCfg?.change_history]);
+
   useEffect(() => {
-    const history = Array.isArray(optimizerCfg?.change_history) ? (optimizerCfg.change_history as AnyObj[]) : [];
+    const history = optimizerChangeHistoryMerged;
     if (!history.length) return;
     const fresh = history.filter((h) => {
       const id = String(h?.id || "");
@@ -1131,8 +1248,8 @@ export default function App() {
       if (!id) continue;
       seenOptimizerEventIds.current.add(id);
       const title = String(h?.lab_label || h?.branch || "Lab optimizer");
-      const body = String(h?.summary || "Optimizer updated thresholds.");
-      setOptimizerNotifs((prev) => [{ id, title, body, created_at: h?.created_at }, ...prev].slice(0, 8));
+      const body = formatOptimizerNotifBody(h);
+      setOptimizerNotifs((prev) => [{ id, title, body, created_at: h?.created_at }, ...prev].slice(0, 10));
       if ("Notification" in window) {
         if (Notification.permission === "granted") {
           void new Notification(`${title} optimizer update`, { body });
@@ -1143,9 +1260,8 @@ export default function App() {
         }
       }
     }
-  }, [optimizerCfg?.change_history]);
+  }, [optimizerChangeHistoryMerged]);
 
-  const cfg = dash?.config || {};
   const metrics = dash?.metrics || {};
   const metricsLabA = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
@@ -1529,7 +1645,21 @@ export default function App() {
   return (
     <div className="page" title="Kalshi 15m bot — main dashboard. Hover controls for details.">
       {optimizerNotifs.length ? (
-        <div style={{ position: "fixed", top: 14, right: 14, zIndex: 1200, width: "min(360px, 92vw)", display: "grid", gap: 8 }}>
+        <div
+          style={{
+            position: "fixed",
+            bottom: 16,
+            right: 16,
+            top: "auto",
+            zIndex: 1200,
+            width: "min(400px, 94vw)",
+            maxHeight: "72vh",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column-reverse",
+            gap: 8,
+          }}
+        >
           {optimizerNotifs.map((n) => (
             <div key={String(n.id)} className="panel" style={{ padding: "10px 12px", borderColor: "#355091" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
@@ -1542,7 +1672,7 @@ export default function App() {
                   x
                 </button>
               </div>
-              <div className="sub" style={{ marginTop: 4, fontSize: 12, lineHeight: 1.35 }}>
+              <div className="sub" style={{ marginTop: 4, fontSize: 12, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>
                 {String(n.body)}
               </div>
             </div>
@@ -1700,7 +1830,7 @@ export default function App() {
                       try {
                         await apiPut("/api/optimizer/config", {
                           enabled: !Boolean(optimizerCfg?.enabled),
-                          interval_minutes: Number(optimizerCfg?.interval_minutes || 120),
+                          interval_minutes: Number(optimizerCfg?.interval_minutes || 20),
                         });
                         await loadOptimizer();
                       } catch (e: any) {
@@ -2143,6 +2273,8 @@ export default function App() {
         />
         </div>
       </div>
+
+      {dash ? <OptimizerActivitySection activity={dash.optimizer_activity as AnyObj | undefined} /> : null}
 
       <div className="grid">
         <div className="panel">

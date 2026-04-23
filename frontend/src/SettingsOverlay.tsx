@@ -741,6 +741,26 @@ export default function SettingsOverlay({
               <input id="opt_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.enabled)} disabled={busy} />
               <span>Enable scheduled optimizer loop</span>
             </label>
+            <div className="field">
+              <label>Scheduled run interval (minutes)</label>
+              <input
+                id="opt_interval_minutes"
+                type="number"
+                min={5}
+                max={1440}
+                defaultValue={String(optimizerCfg?.interval_minutes ?? 20)}
+              />
+            </div>
+            <div className="field">
+              <label>Optimizer data lookback (hours)</label>
+              <input
+                id="opt_lookback_hours"
+                type="number"
+                min={1}
+                max={720}
+                defaultValue={String(optimizerCfg?.lookback_hours ?? 48)}
+              />
+            </div>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_adaptive_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.adaptive_enabled ?? true)} disabled={busy} />
               <span>Enable adaptive threshold/time auto-correction</span>
@@ -782,16 +802,16 @@ export default function SettingsOverlay({
               </select>
             </div>
             <div className="field">
-              <label>Loss streak trigger before adjustment</label>
-              <input id="opt_loss_streak_trigger" type="number" min={2} max={12} defaultValue={String(optimizerCfg?.loss_streak_trigger ?? 3)} />
+              <label>Losses at/above YES floor before adaptive adjustment</label>
+              <input id="opt_loss_streak_trigger" type="number" min={1} max={12} defaultValue={String(optimizerCfg?.loss_streak_trigger ?? 1)} />
             </div>
             <div className="field">
               <label>YES threshold step (% points)</label>
-              <input id="opt_threshold_step_pct" type="number" min={1} max={5} defaultValue={String(optimizerCfg?.threshold_step_pct ?? 1)} />
+              <input id="opt_threshold_step_pct" type="number" min={1} max={5} defaultValue={String(optimizerCfg?.threshold_step_pct ?? 2)} />
             </div>
             <div className="field">
               <label>Time step (minutes)</label>
-              <input id="opt_minute_step" type="number" min={1} max={5} defaultValue={String(optimizerCfg?.minute_step ?? 1)} />
+              <input id="opt_minute_step" type="number" min={1} max={5} defaultValue={String(optimizerCfg?.minute_step ?? 2)} />
             </div>
             <div className="field">
               <label>Lab A YES floor (%)</label>
@@ -819,15 +839,15 @@ export default function SettingsOverlay({
             </div>
             <div className="field">
               <label>Min settled trades before optimize</label>
-              <input id="opt_min_trades_for_optimize" type="number" min={5} max={500} defaultValue={String(optimizerCfg?.min_trades_for_optimize ?? 25)} />
+              <input id="opt_min_trades_for_optimize" type="number" min={2} max={500} defaultValue={String(optimizerCfg?.min_trades_for_optimize ?? 8)} />
             </div>
             <div className="field">
               <label>Min profitable trades before optimize</label>
-              <input id="opt_min_profitable_trades" type="number" min={0} max={200} defaultValue={String(optimizerCfg?.min_profitable_trades ?? 8)} />
+              <input id="opt_min_profitable_trades" type="number" min={0} max={200} defaultValue={String(optimizerCfg?.min_profitable_trades ?? 2)} />
             </div>
             <div className="field">
               <label>Regime lookback (hours)</label>
-              <input id="opt_regime_lookback_hours" type="number" min={1} max={168} defaultValue={String(optimizerCfg?.regime_lookback_hours ?? 6)} />
+              <input id="opt_regime_lookback_hours" type="number" min={1} max={168} defaultValue={String(optimizerCfg?.regime_lookback_hours ?? 4)} />
             </div>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_optimize_bet_size" type="checkbox" defaultChecked={Boolean(optimizerCfg?.optimize_bet_size ?? true)} disabled={busy} />
@@ -848,6 +868,8 @@ export default function SettingsOverlay({
               onClick={() =>
                 void onSaveOptimizerConfig({
                   enabled: Boolean((document.getElementById("opt_enabled") as HTMLInputElement | null)?.checked),
+                  interval_minutes: Number((document.getElementById("opt_interval_minutes") as HTMLInputElement | null)?.value || 20),
+                  lookback_hours: Number((document.getElementById("opt_lookback_hours") as HTMLInputElement | null)?.value || 48),
                   adaptive_enabled: Boolean((document.getElementById("opt_adaptive_enabled") as HTMLInputElement | null)?.checked),
                   mode: String((document.getElementById("opt_mode") as HTMLSelectElement | null)?.value || "duel"),
                   lab_a_enabled: Boolean((document.getElementById("opt_lab_a_enabled") as HTMLInputElement | null)?.checked),
@@ -856,18 +878,18 @@ export default function SettingsOverlay({
                   lab_a_style: String((document.getElementById("opt_lab_a_style") as HTMLSelectElement | null)?.value || "blend"),
                   lab_b_style: String((document.getElementById("opt_lab_b_style") as HTMLSelectElement | null)?.value || "conservative"),
                   lab_c_style: String((document.getElementById("opt_lab_c_style") as HTMLSelectElement | null)?.value || "aggressive"),
-                  loss_streak_trigger: Number((document.getElementById("opt_loss_streak_trigger") as HTMLInputElement | null)?.value || 3),
-                  threshold_step_pct: Number((document.getElementById("opt_threshold_step_pct") as HTMLInputElement | null)?.value || 1),
-                  minute_step: Number((document.getElementById("opt_minute_step") as HTMLInputElement | null)?.value || 1),
+                  loss_streak_trigger: Number((document.getElementById("opt_loss_streak_trigger") as HTMLInputElement | null)?.value || 1),
+                  threshold_step_pct: Number((document.getElementById("opt_threshold_step_pct") as HTMLInputElement | null)?.value || 2),
+                  minute_step: Number((document.getElementById("opt_minute_step") as HTMLInputElement | null)?.value || 2),
                   lab_a_yes_floor_pct: Number((document.getElementById("opt_lab_a_yes_floor_pct") as HTMLInputElement | null)?.value || 57),
                   lab_b_yes_floor_pct: Number((document.getElementById("opt_lab_b_yes_floor_pct") as HTMLInputElement | null)?.value || 55),
                   lab_a_min_minutes_left: Number((document.getElementById("opt_lab_a_min_minutes_left") as HTMLInputElement | null)?.value || 5),
                   lab_b_min_minutes_left: Number((document.getElementById("opt_lab_b_min_minutes_left") as HTMLInputElement | null)?.value || 3),
                   lab_c_yes_floor_pct: Number((document.getElementById("opt_lab_c_yes_floor_pct") as HTMLInputElement | null)?.value || 52),
                   lab_c_min_minutes_left: Number((document.getElementById("opt_lab_c_min_minutes_left") as HTMLInputElement | null)?.value || 3),
-                  min_trades_for_optimize: Number((document.getElementById("opt_min_trades_for_optimize") as HTMLInputElement | null)?.value || 25),
-                  min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 8),
-                  regime_lookback_hours: Number((document.getElementById("opt_regime_lookback_hours") as HTMLInputElement | null)?.value || 6),
+                  min_trades_for_optimize: Number((document.getElementById("opt_min_trades_for_optimize") as HTMLInputElement | null)?.value || 8),
+                  min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 2),
+                  regime_lookback_hours: Number((document.getElementById("opt_regime_lookback_hours") as HTMLInputElement | null)?.value || 4),
                   optimize_bet_size: Boolean((document.getElementById("opt_optimize_bet_size") as HTMLInputElement | null)?.checked),
                   include_fees_in_score: Boolean((document.getElementById("opt_include_fees_in_score") as HTMLInputElement | null)?.checked),
                   backtest_proposals: Boolean((document.getElementById("opt_backtest_proposals") as HTMLInputElement | null)?.checked),

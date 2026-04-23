@@ -33,9 +33,9 @@ async def maybe_auto_optimize(store: Store, branch: str) -> None:
 
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     try:
-        min_settled = max(6, int(oc.get("min_trades_for_optimize") or 25))
+        min_settled = max(4, int(oc.get("min_trades_for_optimize") or 8))
     except (TypeError, ValueError):
-        min_settled = 25
+        min_settled = 8
 
     trades = await store.recent_trades(limit=400)
     settled = [
