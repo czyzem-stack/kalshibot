@@ -643,45 +643,173 @@ function fmtMarketSettle(iso: string | undefined | null) {
   return utc ? `${local} (${utc})` : local;
 }
 
-function summarizePositionRows(rows: unknown): string {
+/** One line per raw open row (for tooltips / debugging). */
+function summarizePositionRowsRaw(rows: unknown): string {
   const arr = Array.isArray(rows) ? (rows as AnyObj[]) : [];
-  if (!arr.length) return "—";
+  if (!arr.length) return "";
   return arr
     .map((r) => {
-      const t = String(r.ticker || "").slice(0, 40);
+      const t = String(r.ticker || "").trim();
       const q = r.position != null ? String(r.position) : String(r.contracts_fp ?? "");
       return `${t} (${q})`;
     })
-    .join("; ");
+    .join("\n");
 }
 
-function positionRowHasOpenExposure(row: unknown): boolean {
-  if (!row || typeof row !== "object") return false;
-  const o = row as AnyObj;
-  const nonempty = (x: unknown) => Array.isArray(x) && (x as AnyObj[]).length > 0;
-  return (
-    nonempty(o.kalshi_open) ||
-    nonempty(o.bot_sim_open_live) ||
-    nonempty(o.bot_sim_open_lab) ||
-    nonempty(o.bot_sim_open_lab_a) ||
-    nonempty(o.bot_sim_open_lab_b) ||
-    nonempty(o.bot_sim_open_lab_c)
-  );
+function _parsePositionQty(r: AnyObj): number {
+  const raw = r.position != null ? r.position : r.contracts_fp;
+  if (raw == null || raw === "") return 0;
+  const n = typeof raw === "number" ? raw : Number(String(raw).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : 0;
 }
 
-function exposureChannelLabels(row: unknown): string[] {
+function _fmtPositionQty(qty: number): string {
+  if (!Number.isFinite(qty)) return "0";
+  const r = Math.round(qty * 100) / 100;
+  if (Math.abs(r - Math.round(r)) < 1e-5) return String(Math.round(r));
+  return r.toFixed(2);
+}
+
+/**
+ * Holdings cell: merge multiple SQLite open rows on the **same** ticker into one size (sum of contracts)
+ * plus “N tickets” when N&gt;1. Raw rows remain in the API — the bot can legitimately hold several open
+ * tickets per contract (e.g. different budget windows / rules before caps).
+ */
+function summarizePositionRows(rows: unknown): { text: string; title: string } {
+  const arr = Array.isArray(rows) ? (rows as AnyObj[]) : [];
+  if (!arr.length) return { text: "—", title: "" };
+  const rawTitle = summarizePositionRowsRaw(rows);
+  const byTicker = new Map<string, { qty: number; n: number }>();
+  for (const r of arr) {
+    const t = String(r.ticker || "").trim();
+    if (!t) continue;
+    const q = _parsePositionQty(r);
+    const cur = byTicker.get(t) || { qty: 0, n: 0 };
+    cur.qty += q;
+    cur.n += 1;
+    byTicker.set(t, cur);
+  }
+  const parts = [...byTicker.entries()].map(([t, { qty, n }]) => {
+    const short = t.length > 40 ? `${t.slice(0, 37)}…` : t;
+    const ticketNote = n > 1 ? ` · ${n} open tickets` : "";
+    return `${short} (${_fmtPositionQty(qty)}${ticketNote})`;
+  });
+  return { text: parts.join("; "), title: rawTitle };
+}
+
+/** Open rows for the Assets-to-watch branch tab only (avoids Lab exposure highlighting on Live tab, etc.). */
+function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c"): AnyObj[] {
   if (!row || typeof row !== "object") return [];
   const o = row as AnyObj;
-  const out: string[] = [];
-  if (Array.isArray(o.kalshi_open) && o.kalshi_open.length) out.push("Kalshi");
-  if (Array.isArray(o.bot_sim_open_live) && o.bot_sim_open_live.length) out.push("Sim · Live");
-  const labA =
-    (Array.isArray(o.bot_sim_open_lab_a) && o.bot_sim_open_lab_a.length) ||
-    (Array.isArray(o.bot_sim_open_lab) && o.bot_sim_open_lab.length);
-  if (labA) out.push("Sim · Lab A");
-  if (Array.isArray(o.bot_sim_open_lab_b) && o.bot_sim_open_lab_b.length) out.push("Sim · Lab B");
-  if (Array.isArray(o.bot_sim_open_lab_c) && o.bot_sim_open_lab_c.length) out.push("Sim · Lab C");
+  const out: AnyObj[] = [];
+  const seen = new Set<string>();
+  const push = (arr: unknown, source: string) => {
+    if (!Array.isArray(arr)) return;
+    for (const raw of arr) {
+      if (!raw || typeof raw !== "object") continue;
+      const r = raw as AnyObj;
+      const tick = String(r.ticker || "");
+      const key = `${source}::${tick}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...r, _source: source });
+    }
+  };
+  if (tab === "live") {
+    push(o.kalshi_open, "Kalshi");
+    push(o.bot_sim_open_live, "Sim · Live");
+  } else if (tab === "a") {
+    push(o.bot_sim_open_lab_a, "Sim · Lab A");
+    push(o.bot_sim_open_lab, "Sim · Lab A");
+  } else if (tab === "b") {
+    push(o.bot_sim_open_lab_b, "Sim · Lab B");
+  } else {
+    push(o.bot_sim_open_lab_c, "Sim · Lab C");
+  }
   return out;
+}
+
+function positionTabHasOpenExposure(row: unknown, tab: "live" | "a" | "b" | "c"): boolean {
+  return assetWatchOpenRowsForTab(row, tab).length > 0;
+}
+
+function exposureLabelsForAssetWatchTab(row: unknown, tab: "live" | "a" | "b" | "c"): string[] {
+  const rows = assetWatchOpenRowsForTab(row, tab);
+  const uniq: string[] = [];
+  for (const r of rows) {
+    const s = String(r._source || "");
+    if (s && !uniq.includes(s)) uniq.push(s);
+  }
+  return uniq;
+}
+
+function formatYesDollarPx(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 1) return null;
+  return n.toFixed(3);
+}
+
+function firstKalshiAvgYesPx(row: AnyObj): string | null {
+  for (const k of [
+    "average_yes_price_dollars",
+    "average_price_dollars",
+    "yes_average_price_dollars",
+    "average_price",
+  ]) {
+    const s = formatYesDollarPx(row[k]);
+    if (s) return s;
+  }
+  return null;
+}
+
+/** One line per open row: entry/limit vs headline contract YES bid when tickers match. */
+function OpenExposureLinesForWatch({
+  rows,
+  headlineSnap,
+}: {
+  rows: AnyObj[];
+  headlineSnap: AnyObj | undefined;
+}) {
+  if (!rows.length) return null;
+  const headOk = Boolean(headlineSnap && headlineSnap.ok !== false);
+  const headTicker = headOk ? String(headlineSnap!.ticker || "") : "";
+  return (
+    <div
+      className="sub"
+      style={{ marginTop: 6, fontSize: 11, lineHeight: 1.55 }}
+      title="Open rows for the branch tab you selected. When the contract matches the headline snapshot, we compare your entry (sim limit or Kalshi average) to the current YES bid."
+    >
+      <strong>Open in this tab</strong>
+      {rows.map((r, i) => {
+        const tick = String(r.ticker || "");
+        const side = String(r.side || "yes").toLowerCase() === "no" ? "NO" : "YES";
+        const entrySim = formatYesDollarPx(r.entry_yes_dollars);
+        const entryKal = firstKalshiAvgYesPx(r);
+        const entryStr = entrySim || entryKal;
+        const same = Boolean(headTicker && tick && tick === headTicker);
+        const bidRaw = same && headOk && headlineSnap ? headlineSnap.yes_bid : null;
+        const bidNow = formatYesDollarPx(bidRaw);
+        let line: string;
+        if (same && entryStr && bidNow) {
+          line = `${side} bid @ ${entryStr} → now ${bidNow}`;
+        } else if (same && bidNow) {
+          line = `${side} bid now ${bidNow}` + (entryStr ? ` (avg/limit ${entryStr})` : "");
+        } else if (same && entryStr) {
+          line = `${side} @ ${entryStr} (headline contract — no usable YES bid in snapshot)`;
+        } else if (entryStr) {
+          line = `${side} @ ${entryStr} — snapshot above is a different contract (${tick.slice(0, 56)})`;
+        } else {
+          line = `${side} ${tick.slice(0, 56)} · size ${String(r.contracts_fp ?? r.position ?? "—")}`;
+        }
+        return (
+          <div key={`${tick}-${i}`} style={{ marginTop: 4 }}>
+            <span style={{ color: "var(--muted)" }}>{String(r._source || "")}:</span> {line}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 /** Normalize SQLite `branch` onto dashboard tabs (legacy sim_lab → Lab A). */
@@ -1010,9 +1138,14 @@ function EngineAssetSnapBlock({
     snap.implied_prob != null && Number.isFinite(Number(snap.implied_prob))
       ? Math.min(1, Math.max(0, Number(snap.implied_prob)))
       : null;
-  // Sentiment bar + YES/NO lean: use implied mid whenever present (do not require has_orderbook; avoids empty bar
-  // when backend relaxes book flags or after feed quirks).
-  const pYes = implied01;
+  const bidN = snap.yes_bid != null && snap.yes_bid !== "" ? Number(snap.yes_bid) : NaN;
+  const askN = snap.yes_ask != null && snap.yes_ask !== "" ? Number(snap.yes_ask) : NaN;
+  const bidOk = Number.isFinite(bidN) && bidN > 0 && bidN <= 1;
+  const askOk = Number.isFinite(askN) && askN > 0 && askN <= 1;
+  const midFromBook = bidOk && askOk ? (bidN + askN) / 2 : askOk ? askN : bidOk ? bidN : null;
+  const barYes01 = implied01 ?? midFromBook;
+  const fromBookOnly = implied01 == null && midFromBook != null;
+  const pYes = barYes01;
   const lean: "yes" | "no" | "neutral" =
     pYes == null ? "neutral" : pYes >= 0.5 ? "yes" : "no";
   const fmtPx = (v: unknown) => {
@@ -1052,7 +1185,15 @@ function EngineAssetSnapBlock({
                 <strong className="snap-lean-yes" title="Order book leans YES (implied YES ≥ 50%).">
                   YES
                 </strong>{" "}
-                <span title="Implied YES probability from order book (mid / bid-ask when both exist).">~{yesPctStr}</span>
+                <span
+                  title={
+                    fromBookOnly
+                      ? "YES probability estimated from bid/ask mid (no implied_prob on this row)."
+                      : "Implied YES probability from order book (mid / bid-ask when both exist)."
+                  }
+                >
+                  ~{yesPctStr}
+                </span>
                 <span style={{ color: "var(--muted)" }} title="Implied NO for the same contract.">
                   {" "}
                   · NO ~{noPctStr}
@@ -1101,7 +1242,20 @@ function EngineAssetSnapBlock({
           </>
         ) : null}
       </div>
-      {pYes != null ? <SnapSentimentBar impliedYes01={pYes} /> : null}
+      {barYes01 != null ? (
+        <SnapSentimentBar impliedYes01={barYes01} />
+      ) : (
+        <div className="snap-sentiment-wrap" title="No implied probability or usable YES bid/ask on this row yet.">
+          <div className="snap-sentiment-track" style={{ opacity: 0.35 }}>
+            <span className="snap-sentiment-midline" title="50% implied YES" />
+            <span className="snap-sentiment-marker" style={{ left: "50%" }} title="No book mid" />
+          </div>
+          <div className="snap-sentiment-labels" aria-hidden="true">
+            <span style={{ color: "var(--danger)" }}>NO</span>
+            <span style={{ color: "var(--ok)" }}>YES</span>
+          </div>
+        </div>
+      )}
       <div title="Contract ticker and time to market close.">
         <span className="sub">Contract</span> <code title="Market ticker.">{String(snap.ticker || "")}</code> ·{" "}
         <span title="Minutes until close from engine clock.">{mins}</span>
@@ -1116,7 +1270,10 @@ function EngineAssetSnapBlock({
       <div title="Which configured rule bands matched implied prob and time left (or DEV bypass when enabled).">
         <span className="sub">Rules matched</span>:{" "}
         {none ? (
-          <strong style={{ color: "#ffc878" }} title="No band matched this tick (or no book).">
+          <strong
+            style={{ color: "#ffc878" }}
+            title="No trade: every rule needs implied prob on the rule’s axis AND minutes-to-close inside that rule’s windows together. Gaps between rules (e.g. 52–55% YES) are normal until you widen bands."
+          >
             NONE
           </strong>
         ) : (
@@ -1126,6 +1283,15 @@ function EngineAssetSnapBlock({
         )}
         {stale}
       </div>
+      {none && snap.rule_match_hint ? (
+        <div
+          className="sub"
+          style={{ marginTop: 4, color: "#a5c4ff", fontSize: 11, lineHeight: 1.5 }}
+          title="Engine-side explanation when the book is usable but no rule’s prob×time window matched."
+        >
+          {String(snap.rule_match_hint)}
+        </div>
+      ) : null}
       <div className="sub" style={{ fontSize: 11, opacity: 0.9 }} title="As-of time for this snapshot.">
         {asOf}
       </div>
@@ -1169,13 +1335,20 @@ export default function App() {
   /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
   const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b" | "lab_c">("live");
 
-  /** Avoid stacked /api/dashboard calls when each poll takes longer than the interval (MTM hits Kalshi per branch). */
-  const dashboardFetchInFlight = useRef(false);
+  /**
+   * Latest dashboard fetch only: aborts the previous request so a slow poll cannot finish after a newer one
+   * (avoids stale ``setDash`` overwriting optimistic engine toggles). A monotonic epoch lets superseded or
+   * unmount-aborted fetches skip ``setDash``/``setErr`` so React Strict Mode and rapid Refresh clicks cannot strand
+   * the UI with no data and no error.
+   */
+  const dashboardAbortRef = useRef<AbortController | null>(null);
+  const dashboardFetchEpoch = useRef(0);
 
   const refresh = useCallback(async () => {
-    if (dashboardFetchInFlight.current) return;
-    dashboardFetchInFlight.current = true;
+    dashboardAbortRef.current?.abort();
+    const myEpoch = ++dashboardFetchEpoch.current;
     const ac = new AbortController();
+    dashboardAbortRef.current = ac;
     const maxMs = 90_000;
     const tid = window.setTimeout(() => ac.abort(), maxMs);
     try {
@@ -1183,11 +1356,14 @@ export default function App() {
       const r = await fetch("/api/dashboard", { signal: ac.signal });
       if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
       const d = (await r.json()) as AnyObj;
+      if (myEpoch !== dashboardFetchEpoch.current) return;
       setDash(d);
     } catch (e: any) {
-      const name = String(e?.name || "");
+      if (myEpoch !== dashboardFetchEpoch.current) return;
       const msg = String(e?.message || e);
-      if (name === "AbortError" || /aborted|AbortError/i.test(msg)) {
+      const aborted =
+        String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
+      if (aborted) {
         setErr(
           `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
         );
@@ -1204,15 +1380,63 @@ export default function App() {
       }
     } finally {
       window.clearTimeout(tid);
-      dashboardFetchInFlight.current = false;
+      if (dashboardAbortRef.current === ac) {
+        dashboardAbortRef.current = null;
+      }
     }
+  }, []);
+
+  /** Merge saved bot config into dashboard state without waiting on slow ``/api/dashboard`` (MTM, order books). */
+  const applyDashboardConfig = useCallback((nextConfig: AnyObj) => {
+    setDash((prev) => {
+      if (!prev) return prev;
+      const sim = Boolean(nextConfig.simulate);
+      const la = (nextConfig.lab_a || {}) as AnyObj;
+      const lb = (nextConfig.lab_b || {}) as AnyObj;
+      const lc = (nextConfig.lab_c || {}) as AnyObj;
+      const liveOn = Boolean(nextConfig.engine_running);
+      const labAOn = Boolean(la.engine_running);
+      const labBOn = Boolean(lb.engine_running);
+      const labCOn = Boolean(lc.engine_running);
+
+      const engine = { ...((prev.engine || {}) as AnyObj) };
+      const live = { ...((engine.live || {}) as AnyObj) };
+      live.engine_running = liveOn;
+      live.simulate_orders = sim;
+      engine.live = live;
+      const patchBranch = (key: string, on: boolean) => {
+        const cur = engine[key];
+        if (cur && typeof cur === "object") {
+          engine[key] = { ...cur, engine_running: on, simulate_orders: true };
+        }
+      };
+      patchBranch("lab_a", labAOn);
+      patchBranch("lab_b", labBOn);
+      patchBranch("lab_c", labCOn);
+      if (engine.sim_lab && typeof engine.sim_lab === "object") {
+        engine.sim_lab = { ...engine.sim_lab, engine_running: labAOn, simulate_orders: true };
+      }
+
+      const kalshi = { ...((prev.kalshi || {}) as AnyObj) };
+      kalshi.simulate_live = sim;
+      kalshi.polling_enabled = liveOn || labAOn || labBOn || labCOn;
+      if ("private_ok" in kalshi) {
+        kalshi.order_writes_live = Boolean(kalshi.private_ok) && !sim;
+      }
+
+      return { ...prev, config: nextConfig, engine, kalshi };
+    });
   }, []);
 
   useEffect(() => {
     void refresh();
     // Slower than before so a slow dashboard (MTM for Live + 3 labs) can finish before the next poll stacks up.
     const id = window.setInterval(() => void refresh(), 8000);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(id);
+      dashboardFetchEpoch.current += 1;
+      dashboardAbortRef.current?.abort();
+    };
   }, [refresh]);
 
   const loadOptimizer = useCallback(async () => {
@@ -1530,8 +1754,10 @@ export default function App() {
     }
     setBusy(true);
     try {
-      await apiPost(`/api/engine/toggle?simulate=${simulate ? "true" : "false"}`);
-      await refresh();
+      const out = (await apiPost(`/api/engine/toggle?simulate=${simulate ? "true" : "false"}`)) as AnyObj;
+      const cfgNext = out?.config;
+      if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
+      void refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1542,8 +1768,10 @@ export default function App() {
   const setRunning = async (running: boolean) => {
     setBusy(true);
     try {
-      await apiPost(`/api/engine/toggle?running=${running ? "true" : "false"}`);
-      await refresh();
+      const out = (await apiPost(`/api/engine/toggle?running=${running ? "true" : "false"}`)) as AnyObj;
+      const cfgNext = out?.config;
+      if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
+      void refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1555,8 +1783,10 @@ export default function App() {
     setBusy(true);
     try {
       const key = lab === "a" ? "lab_a_running" : lab === "b" ? "lab_b_running" : "lab_c_running";
-      await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`);
-      await refresh();
+      const out = (await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`)) as AnyObj;
+      const cfgNext = out?.config;
+      if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
+      void refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1893,7 +2123,7 @@ export default function App() {
                 <button
                   className="primary"
                   disabled={busy}
-                  title="Fetch /api/dashboard now (this page also auto-refreshes about every 8s; skips if a request is still in flight)."
+                  title="Fetch /api/dashboard now (auto every ~8s). A new refresh aborts an older in-flight poll so the latest snapshot always wins."
                   onClick={() => refresh()}
                 >
                   Refresh
@@ -2098,6 +2328,10 @@ export default function App() {
           ))}
         </div>
         <div className="dash-section__legend">
+          <p>
+            Tiles below (total PnL, settled count, open paper, fees) follow the branch tab you select here — each of
+            Live / Lab A / B / C is a separate SQLite rollup, not a blend across branches.
+          </p>
           <p>
             Settled = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim). Open (paper) =
             premium held in open sim rows (subtracted from estimated equity).
@@ -2389,15 +2623,24 @@ export default function App() {
           ) : (
             orderedAssetEntries(assets as AnyObj).map(([id, a]: [string, AnyObj]) => {
               const posRow = (acctSnap?.position_by_asset as AnyObj | undefined)?.[id] as AnyObj | undefined;
-              const hasExposure = positionRowHasOpenExposure(posRow);
-              const exposureLabels = exposureChannelLabels(posRow);
+              const openRowsTab = assetWatchOpenRowsForTab(posRow, assetWatchLab);
+              const hasExposureTab = openRowsTab.length > 0;
+              const exposureLabelsTab = exposureLabelsForAssetWatchTab(posRow, assetWatchLab);
+              const headlineSnap =
+                assetWatchLab === "live"
+                  ? (engineSnapsLive[id] as AnyObj | undefined)
+                  : assetWatchLab === "a"
+                    ? (engineSnapsLabA[id] as AnyObj | undefined)
+                    : assetWatchLab === "b"
+                      ? (engineSnapsLabB[id] as AnyObj | undefined)
+                      : (engineSnapsLabC[id] as AnyObj | undefined);
               return (
               <div
                 key={id}
-                className={hasExposure ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
+                className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
                 title={
-                  hasExposure
-                    ? `You have open exposure on this series (${exposureLabels.join(", ")}). Same highlight for every asset with positions or open sim trades.`
+                  hasExposureTab
+                    ? `Open exposure for the “${assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : "Lab C"}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
                     : `Asset ${id}: series ${String(a.series_ticker || "")}.`
                 }
               >
@@ -2418,12 +2661,13 @@ export default function App() {
                       (engine off for this series)
                     </span>
                   ) : null}
-                  {hasExposure ? (
+                  {hasExposureTab ? (
                     <span
                       className="asset-watch-exposure-badge"
-                      title={`Open positions / contracts: ${exposureLabels.join(" · ")}.`}
+                      title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
                     >
-                      Open: {exposureLabels.join(" · ")}
+                      Open ({assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : "Lab C"}):{" "}
+                      {exposureLabelsTab.join(" · ")}
                     </span>
                   ) : null}
                 </div>
@@ -2483,6 +2727,7 @@ export default function App() {
                       </div>
                     )
                   ) : null}
+                  <OpenExposureLinesForWatch rows={openRowsTab} headlineSnap={headlineSnap} />
                 </div>
               </div>
             );
@@ -2590,7 +2835,8 @@ export default function App() {
                   <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
                   identifier starts with that asset&apos;s <code>series_ticker</code>.{" "}
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for that series per branch.{" "}
-                  <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
+                  Sim cells merge the same ticker into one line (total contracts + ticket count); hover for each open
+                  row. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
                   positions and/or the bot has open sim trades for that asset&apos;s <code>series_ticker</code> prefix.
                   Symbols with tighter books tend to fill first; others stay &quot;—&quot; until the same is true, or
                   appear under <strong>Recent trades</strong> after sim fills.
@@ -2599,7 +2845,9 @@ export default function App() {
                 <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
                   <code>series_ticker</code>. The Kalshi column is omitted because the account is not linked; empty cells
-                  here are not evidence that you have no positions on the exchange.
+                  here are not evidence that you have no positions on the exchange. Each DB row is one open ticket — the
+                  table <strong>merges the same ticker</strong> into one total size and shows{" "}
+                  <strong>open tickets</strong> when there are multiple; hover a cell for the raw list.
                 </p>
               )}
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
@@ -2618,7 +2866,15 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {orderedAssetEntries(acctSnap.position_by_asset as AnyObj).map(([aid, row]: [string, AnyObj]) => (
+                    {orderedAssetEntries(acctSnap.position_by_asset as AnyObj).map(([aid, row]: [string, AnyObj]) => {
+                      const kal = summarizePositionRows(row.kalshi_open);
+                      const simLive = summarizePositionRows(row.bot_sim_open_live);
+                      const labA = summarizePositionRows(
+                        Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
+                      );
+                      const labB = summarizePositionRows(row.bot_sim_open_lab_b);
+                      const labC = summarizePositionRows(row.bot_sim_open_lab_c);
+                      return (
                       <tr key={aid} title={`Configured asset ${aid}`}>
                         <td title="Label from config.">{String(row.label || aid)}</td>
                         <td>
@@ -2628,45 +2884,42 @@ export default function App() {
                           <td
                             className="sub"
                             style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                            title={summarizePositionRows(row.kalshi_open)}
+                            title={kal.title || kal.text}
                           >
-                            {summarizePositionRows(row.kalshi_open)}
+                            {kal.text}
                           </td>
                         ) : null}
                         <td
                           className="sub"
                           style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={summarizePositionRows(row.bot_sim_open_live)}
+                          title={simLive.title || simLive.text}
                         >
-                          {summarizePositionRows(row.bot_sim_open_live)}
+                          {simLive.text}
                         </td>
                         <td
                           className="sub"
                           style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={summarizePositionRows(
-                            Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
-                          )}
+                          title={labA.title || labA.text}
                         >
-                          {summarizePositionRows(
-                            Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
-                          )}
+                          {labA.text}
                         </td>
                         <td
                           className="sub"
                           style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={summarizePositionRows(row.bot_sim_open_lab_b)}
+                          title={labB.title || labB.text}
                         >
-                          {summarizePositionRows(row.bot_sim_open_lab_b)}
+                          {labB.text}
                         </td>
                         <td
                           className="sub"
                           style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={summarizePositionRows(row.bot_sim_open_lab_c)}
+                          title={labC.title || labC.text}
                         >
-                          {summarizePositionRows(row.bot_sim_open_lab_c)}
+                          {labC.text}
                         </td>
                       </tr>
-                    ))}
+                    );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -3109,7 +3362,10 @@ function ApiLoadingCallout() {
         Loading dashboard…
       </h2>
       <p className="callout-body" title="If this never clears, start the Python API and use the Vite dev URL (proxied /api).">
-        Contacting the local API at /api/dashboard. If this stays here, the backend is not responding.
+        Contacting the local API at /api/dashboard. The first response can take a long time when Kalshi portfolio / MTM
+        work is heavy — wait up to about 90s before assuming the backend is down. If it never clears, start the Python
+        API and open this app at <code>http://localhost:5173</code> (not the API port alone) so <code>/api</code> is
+        proxied.
       </p>
     </div>
   );

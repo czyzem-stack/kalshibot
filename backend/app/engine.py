@@ -55,6 +55,30 @@ def window_id_for(now: dt.datetime, window_minutes: int) -> str:
     return str(epoch // step)
 
 
+# Per-asset trade cap: 15-minute resolution keyed off contract ``close_time`` (falls back to wall clock if missing).
+STUDY_TRADE_WINDOW_MINUTES = 15
+
+
+def _study_cap_key(*, asset_id: str, ticker: str, close_time_iso: str, study_wall_wid: str) -> str:
+    """In-memory dedupe: one new entry per (asset, contract ticker) per 15m close bucket within a process lifetime."""
+    aid = str(asset_id).strip()
+    tick = str(ticker or "").strip()
+    if not aid or not tick:
+        return ""
+    slot = study_wall_wid
+    raw = str(close_time_iso or "").strip()
+    if raw:
+        try:
+            cd = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if cd.tzinfo is None:
+                cd = cd.replace(tzinfo=dt.timezone.utc)
+            cd = cd.astimezone(dt.timezone.utc)
+            slot = window_id_for(cd, STUDY_TRADE_WINDOW_MINUTES)
+        except (TypeError, ValueError, OSError):
+            pass
+    return f"{aid}:{tick}:{slot}"
+
+
 def dollars_to_float(v: Any) -> float | None:
     if v is None:
         return None
@@ -307,18 +331,67 @@ def effective_no_ask(market: dict[str, Any], yes_bid: float | None) -> float | N
     return None
 
 
+def rule_axis_probability(prob_yes: float, rule: dict[str, Any]) -> float:
+    """Scalar on which ``min_prob``/``max_prob`` apply: implied YES, or implied NO when ``side`` is ``no``."""
+    return (1.0 - prob_yes) if rule_trade_side(rule) == "no" else prob_yes
+
+
 def rule_matches(
     prob_yes: float | None, mins: float | None, rule: dict[str, Any]
 ) -> bool:
-    """min_prob/max_prob apply to implied YES unless rule.side is \"no\" (then implied NO = 1 − YES mid)."""
+    """
+    True only when **both** hold (inclusive bounds):
+
+    - **Price band:** ``min_prob`` ≤ *axis* ≤ ``max_prob``, where *axis* is implied YES mid unless ``side: no``,
+      then *axis* is implied NO (= 1 − YES mid).
+    - **Time band:** ``min_minutes_left`` ≤ minutes to close ≤ ``max_minutes_left``.
+
+    Gaps **between** configured rules (e.g. YES 0.52 vs next band 0.55) mean **no** match — that is intentional
+    unless you widen or add a rule to cover the hole.
+    """
     if prob_yes is None or mins is None:
         return False
-    p = (1.0 - prob_yes) if rule_trade_side(rule) == "no" else prob_yes
+    p = rule_axis_probability(prob_yes, rule)
     if p < float(rule["min_prob"]) or p > float(rule["max_prob"]):
         return False
     if mins < float(rule["min_minutes_left"]) or mins > float(rule["max_minutes_left"]):
         return False
     return True
+
+
+def rule_match_miss_hint(prob_yes: float, mins: float, rules: list[Any]) -> str:
+    """
+    Human hint when the headline row has a book but ``rules_matched`` is empty — same prob/time geometry as
+    ``rule_matches`` (order-book side checks are applied separately when actually trading).
+    """
+    usable = [r for r in rules if isinstance(r, dict)]
+    if not usable:
+        return "No rules in config — add at least one rule band under Settings."
+    for r in usable:
+        p = rule_axis_probability(prob_yes, r)
+        in_p = float(r["min_prob"]) <= p <= float(r["max_prob"])
+        in_t = float(r["min_minutes_left"]) <= mins <= float(r["max_minutes_left"])
+        if in_p and not in_t:
+            return (
+                f"“{r.get('name')}”: probability on this rule’s axis is {p:.2f} (inside the band) but "
+                f"{mins:.1f}m to close is outside this rule’s "
+                f"[{float(r['min_minutes_left']):g},{float(r['max_minutes_left']):g}]m window — no trade."
+            )
+    for r in usable:
+        p = rule_axis_probability(prob_yes, r)
+        in_p = float(r["min_prob"]) <= p <= float(r["max_prob"])
+        in_t = float(r["min_minutes_left"]) <= mins <= float(r["max_minutes_left"])
+        if in_t and not in_p:
+            axis = "implied NO (1 − YES mid)" if rule_trade_side(r) == "no" else "implied YES mid"
+            return (
+                f"“{r.get('name')}”: time {mins:.1f}m is OK but {axis} = {p:.2f} is outside "
+                f"[{float(r['min_prob']):.2f},{float(r['max_prob']):.2f}] on that axis — no trade."
+            )
+    return (
+        f"No rule contains this outcome together: YES mid ≈{prob_yes:.2f} with {mins:.1f}m left vs each rule’s "
+        "probability **and** time windows. Stock defaults leave gaps (e.g. ~52–55% and ~72–78% YES between "
+        "Low/Mid/High). Widen bands or add a rule to cover the hole."
+    )
 
 
 @dataclass
@@ -342,6 +415,10 @@ class TradingEngine:
         self._tick_count: int = 0
         # One automatic branch wipe per error streak when lab auto-reset is enabled.
         self._paper_auto_reset_streak_handled: bool = False
+        # Legacy RAM cap (per contract close bucket); simulated orders also use SQLite ``has_open_sim_for_series_prefix``.
+        self._study_quarter_wid: str | None = None
+        self._study_asset_fired: set[str] = set()
+        self._study_cap_logged: set[str] = set()
 
 
 def _is_lab_branch(branch: str) -> bool:
@@ -363,6 +440,12 @@ async def tick_once(engine: TradingEngine) -> None:
     if engine._last_window_id != wid:
         engine._seen_keys.clear()
         engine._last_window_id = wid
+
+    study_wid = window_id_for(now, STUDY_TRADE_WINDOW_MINUTES)
+    if engine._study_quarter_wid != study_wid:
+        engine._study_asset_fired.clear()
+        engine._study_cap_logged.clear()
+        engine._study_quarter_wid = study_wid
 
     trade_mode = str(cfg.get("_trade_mode") or "simulate")
     branch = str(cfg.get("_branch") or "live")
@@ -448,11 +531,13 @@ async def tick_once(engine: TradingEngine) -> None:
                 branch=branch,
                 window_id=wid,
                 asset_id=str(asset_id),
+                series_ticker=series,
                 market=m,
                 rules=rules,
                 subtitle_filter=subtitle_filter,
                 exclude_substrings=exclude_substrings,
                 balance_cents=balance_cents,
+                study_wall_wid=study_wid,
                 trace=trace,
             )
             if kind == "no_rule":
@@ -530,6 +615,9 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         engine._seen_keys.clear()
         engine._last_window_id = None
         engine._tick_count = 0
+        engine._study_quarter_wid = None
+        engine._study_asset_fired.clear()
+        engine._study_cap_logged.clear()
     elif not err and not bust:
         engine._paper_auto_reset_streak_handled = False
 
@@ -691,6 +779,11 @@ def pick_asset_snapshot(
                 "implied_no_prob": implied_no_probability(yb, ya) if has_yes_rules or has_no_book else None,
                 "has_orderbook": has_priced_book,
                 "rules_matched": matched_names,
+                "rule_match_hint": (
+                    rule_match_miss_hint(prob, mins, rules)
+                    if (not matched_names and prob is not None and has_priced_book)
+                    else None
+                ),
                 "ok": True,
                 **market_display_fields(m),
             }
@@ -788,11 +881,13 @@ async def handle_market(
     branch: str,
     window_id: str,
     asset_id: str,
+    series_ticker: str,
     market: dict[str, Any],
     rules: list[dict[str, Any]],
     subtitle_filter: str,
     exclude_substrings: list[str],
     balance_cents: int,
+    study_wall_wid: str,
     trace: list[str],
 ) -> str | None:
     now = utc_now()
@@ -883,6 +978,44 @@ async def handle_market(
         )
         return None
 
+    cap_key = _study_cap_key(asset_id=asset_id, ticker=ticker, close_time_iso=close_time, study_wall_wid=study_wall_wid)
+    if cap_key and cap_key in engine._study_asset_fired:
+        if cap_key not in engine._study_cap_logged:
+            engine._study_cap_logged.add(cap_key)
+            _trace_append(
+                trace,
+                f"  {asset_id} {ticker[:40]}… 1 trade per contract per 15m close bucket (cap)",
+            )
+        return None
+
+    simulate = bool(cfg.get("_simulate_orders"))
+    if simulate and series_ticker.strip():
+        if await engine.store.has_open_sim_for_series_prefix(branch, trade_mode, series_ticker):
+            await log_signal(
+                engine,
+                window_id=window_id,
+                asset_id=asset_id,
+                ticker=ticker,
+                side=trade_side,
+                implied_prob=prob,
+                minutes_left=mins,
+                rule_name=str(matched_rule.get("name") or ""),
+                executed=False,
+                skip_reason="series_has_open_sim",
+                mode=trade_mode,
+                branch=branch,
+                extra={
+                    "series_ticker": series_ticker,
+                    "note": "At most one open simulated ticket per asset series per branch until it settles or is closed early.",
+                },
+            )
+            engine._seen_keys.add(dedupe_key)
+            _trace_append(
+                trace,
+                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for series {series_ticker} ({branch})",
+            )
+            return None
+
     window_minutes = int(cfg.get("window_minutes") or 15)
     spent = await spent_in_window(engine.store, window_id, trade_mode, window_minutes, branch)
     fraction = float(cfg.get("balance_fraction_per_window") or 0.03)
@@ -966,7 +1099,6 @@ async def handle_market(
     amount_cents = contracts * per_contract_cents
     contracts_fp = f"{contracts:.2f}"
 
-    simulate = bool(cfg.get("_simulate_orders"))
     if simulate:
         if fee_model in ("kalshi_taker", "kalshi_maker"):
             gross_amount_cents, _kb = kalshi_buy_debit_cents(
@@ -1041,6 +1173,8 @@ async def handle_market(
                 "branch": branch,
             }
         )
+        if cap_key:
+            engine._study_asset_fired.add(cap_key)
         engine._seen_keys.add(dedupe_key)
         _trace_append(
             trace,
@@ -1109,6 +1243,8 @@ async def handle_market(
                 "branch": branch,
             }
         )
+        if cap_key:
+            engine._study_asset_fired.add(cap_key)
         engine._seen_keys.add(dedupe_key)
         _trace_append(
             trace,

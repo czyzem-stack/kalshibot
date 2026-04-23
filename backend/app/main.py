@@ -603,6 +603,9 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
         eng._seen_keys.clear()
         eng._last_window_id = None
         eng._tick_count = 0
+        eng._study_quarter_wid = None
+        eng._study_asset_fired.clear()
+        eng._study_cap_logged.clear()
 
 
 @app.post("/api/data/reset")
@@ -689,15 +692,15 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
 
     cfg = await store.load_config()
     la = body.get("lab_a")
-    if isinstance(la, dict) and la:
+    if isinstance(la, dict):
         merged_a = merge_lab_branch_patch(dict(cfg.get("lab_a") or {}), la)
         cfg["lab_a"] = expand_partial_lab_branch("lab_a", merged_a)
     lb = body.get("lab_b")
-    if isinstance(lb, dict) and lb:
+    if isinstance(lb, dict):
         merged_b = merge_lab_branch_patch(dict(cfg.get("lab_b") or {}), lb)
         cfg["lab_b"] = expand_partial_lab_branch("lab_b", merged_b)
     lc = body.get("lab_c")
-    if isinstance(lc, dict) and lc:
+    if isinstance(lc, dict):
         merged_c = merge_lab_branch_patch(dict(cfg.get("lab_c") or {}), lc)
         cfg["lab_c"] = expand_partial_lab_branch("lab_c", merged_c)
     await store.save_config(cfg)
@@ -912,8 +915,32 @@ def _position_rows_for_series(series_upper: str, kalshi_positions: list[dict[str
             qty = p.get("position_fp")
             if qty is None:
                 qty = p.get("position")
-            rows.append({"ticker": p.get("ticker") or p.get("market_ticker"), "position": qty})
+            row: dict[str, Any] = {"ticker": p.get("ticker") or p.get("market_ticker"), "position": qty}
+            for k in (
+                "average_price_dollars",
+                "average_yes_price_dollars",
+                "yes_average_price_dollars",
+                "average_price",
+                "market_exposure_dollars",
+                "total_traded_dollars",
+            ):
+                if p.get(k) is not None and p.get(k) != "":
+                    row[k] = p.get(k)
+            rows.append(row)
     return rows[:16]
+
+
+def _entry_yes_from_open_sim_trade(t: dict[str, Any]) -> float | None:
+    raw = t.get("limit_yes_dollars")
+    if raw is None or raw == "":
+        return None
+    try:
+        v = float(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if 0 < v < 1:
+        return v
+    return None
 
 
 def _open_sim_rows_for_series(
@@ -923,11 +950,14 @@ def _open_sim_rows_for_series(
     for t in trades:
         tick = str(t.get("ticker") or "").upper()
         if series_upper and tick.startswith(series_upper):
+            entry = _entry_yes_from_open_sim_trade(t)
             rows.append(
                 {
                     "ticker": t.get("ticker"),
                     "contracts_fp": t.get("contracts_fp"),
                     "status": t.get("status"),
+                    "side": str(t.get("side") or "yes").strip().lower(),
+                    "entry_yes_dollars": entry,
                 }
             )
     return rows[:16]

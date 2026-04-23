@@ -740,6 +740,36 @@ class Store:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
+    async def has_open_sim_for_series_prefix(
+        self, branch: str, trade_mode: str, series_prefix: str
+    ) -> bool:
+        """
+        True if this branch already has any simulated open/resting row whose ``ticker`` starts with the asset’s
+        ``series_ticker`` (same series prefix as the dashboard). Prevents stacking multiple paper opens on one series
+        while a prior sim ticket is still open.
+        """
+        sp = (series_prefix or "").strip().upper()
+        if not sp:
+            return False
+        async with self._open_db() as db:
+            cur = await db.execute(
+                f"""
+                SELECT 1 FROM trades
+                WHERE simulated = 1
+                  AND LOWER(COALESCE(status, '')) IN ('open', 'resting')
+                  AND {_sql_branch_predicate(branch)}
+                  AND (
+                    mode = ?
+                    OR (? = 'simulate' AND COALESCE(mode, '') = '')
+                  )
+                  AND UPPER(ticker) LIKE ?
+                LIMIT 1
+                """,
+                (trade_mode, trade_mode, f"{sp}%"),
+            )
+            row = await cur.fetchone()
+        return row is not None
+
     async def open_committed_cents_for_branch_mode(self, branch: str, trade_mode: str) -> int:
         """
         Sum of premium tied up in open/resting simulated rows for one branch + mode.
