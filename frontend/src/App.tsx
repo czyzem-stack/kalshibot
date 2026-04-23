@@ -686,6 +686,7 @@ function exposureChannelLabels(row: unknown): string[] {
 
 /** Normalize SQLite `branch` onto dashboard tabs (legacy sim_lab → Lab A). */
 type ActivityBranchKey = "live" | "lab_a" | "lab_b" | "lab_c";
+type PerfBranchKey = "live" | "lab_a" | "lab_b" | "lab_c";
 
 function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   const s = String(b ?? "live").trim().toLowerCase();
@@ -1158,6 +1159,7 @@ export default function App() {
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
   const optimizerHistoryBootstrapped = useRef(false);
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c">("live");
+  const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
   /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
   const [notTradedBranch, setNotTradedBranch] = useState<ActivityBranchKey>("live");
@@ -1345,6 +1347,18 @@ export default function App() {
   }, [cfg.lab_c]);
   // Backward-compatible aliases while we expand UI sections incrementally.
   const simLab = labA;
+  const perfBranchMeta = useMemo(() => {
+    const map: Record<
+      PerfBranchKey,
+      { label: string; shortLabel: string; metrics: AnyObj; bankNoun: string; reconcileLabel: string; isLive: boolean }
+    > = {
+      live: { label: "Live", shortLabel: "Live", metrics: metrics as AnyObj, bankNoun: "bankroll", reconcileLabel: "paper", isLive: true },
+      lab_a: { label: "Lab A", shortLabel: "A", metrics: metricsLabA, bankNoun: "lab bankroll", reconcileLabel: "Lab A", isLive: false },
+      lab_b: { label: "Lab B", shortLabel: "B", metrics: metricsLabB, bankNoun: "lab bankroll", reconcileLabel: "Lab B", isLive: false },
+      lab_c: { label: "Lab C", shortLabel: "C", metrics: metricsLabC, bankNoun: "lab bankroll", reconcileLabel: "Lab C", isLive: false },
+    };
+    return map[perfBranch];
+  }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC]);
 
   const chartData = useMemo(
     () => equitySeriesWithLiveTail(snaps, equityGranularity, metrics, fmtIsoLocal),
@@ -1936,396 +1950,137 @@ export default function App() {
         <>
       <KalshiStatusBanner dash={dash} cfg={cfg} />
 
-      <section className="dash-section" aria-labelledby="dash-heading-live">
-        <h2 id="dash-heading-live" className="dash-section__title">
-          Live
+      <section className="dash-section" aria-labelledby="dash-heading-branch-performance">
+        <h2 id="dash-heading-branch-performance" className="dash-section__title">
+          Branch performance
         </h2>
+        <div className="chart-tabs" role="tablist" aria-label="Performance branch tabs" style={{ marginTop: 0 }}>
+          {[
+            { id: "live", label: "Live" },
+            { id: "lab_a", label: "Lab A" },
+            { id: "lab_b", label: "Lab B" },
+            { id: "lab_c", label: "Lab C" },
+          ].map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={perfBranch === t.id}
+              className={`chart-tab ${perfBranch === t.id ? "chart-tab--active" : ""}`}
+              onClick={() => setPerfBranch(t.id as PerfBranchKey)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
         <div className="dash-section__legend">
           <p>
             Settled = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim). Open (paper) =
             premium held in open sim rows (subtracted from estimated equity).
           </p>
-          {!cfg.simulate ? (
+          {!cfg.simulate && perfBranchMeta.isLive ? (
             <p>Cash / portfolio = Kalshi signed portfolio reads when API keys are configured.</p>
           ) : null}
-          {cfg.simulate ? (
+          {cfg.simulate || !perfBranchMeta.isLive ? (
             <p>
-              Reconcile paper: MTM (est.) below = last snapshot mark-to-market total (cash + open positions at implied
-              mid). Equity (cost basis) = bankroll + realized PnL − committed premium. Large realized PnL with a down
-              cost return usually means premium still tied up in opens until settlement or swing-exit.
+              Reconcile {perfBranchMeta.reconcileLabel}: MTM (est.) below = last snapshot mark-to-market total. Equity
+              (cost basis) = bankroll + realized PnL − committed premium.
             </p>
           ) : null}
         </div>
-
-        <div className="metrics" style={{ marginBottom: 8 }}>
-        {cfg.simulate ? (
-          <>
-            <MetricTile
-              label="Bankroll (start)"
-              value={fmtMoney(Number(metrics.paper_start_dollars ?? 0))}
-              title="cfg.paper_balance_cents ÷ 100 — notional starting stack for the Live branch in simulate mode (Settings)."
-            />
-            <MetricTile
-              label="MTM (est.)"
-              value={fmtMoney(dashboardMtmDollars(metrics))}
-              title="Mark-to-market total from the latest equity snapshot (paper + realized − committed + fair value of open sims at mid). Falls back to cost-basis equity until the engine writes mtm_equity_cents."
-              sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metrics))} · chart last ${
-                dashboardChartLastMtmOrEq(metrics) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metrics))) : "—"
-              }`}
-              valueTone={metricEquityVsBankroll(dashboardMtmDollars(metrics), metrics.paper_start_dollars)}
-              subTone={metricSignedTone(dashboardMtmReturnPct(metrics))}
-            />
-            <MetricTile
-              label="Total PnL (realized)"
-              value={fmtMoney(Number(metrics.total_pnl_dollars || 0))}
-              title="Sum of pnl_cents / 100 for Live-branch trades with status settled and mode matching Live (simulate)."
-              sub={`${fmtPct(metrics.realized_pnl_pct_of_start)} of starting bankroll`}
-              valueTone={metricSignedTone(metrics.total_pnl_dollars)}
-              subTone={metricSignedTone(metrics.realized_pnl_pct_of_start)}
-            />
-            <MetricTile
-              label="Total Kalshi fees"
-              value={fmtMoney(Number(metrics.total_kalshi_fees_dollars || 0))}
-              title="Modeled entry + exit fees accumulated from trade extra_json for this branch/mode."
-              valueTone="neg"
-            />
-            <MetricTile
-              label="Avg hourly (realized)"
-              value={fmtMoney(Number(metrics.avg_hourly_pnl_dollars || 0))}
-              title="total realized PnL divided by hours between first and last settled trade timestamps on this branch (min ~1h denominator)."
-              valueTone={metricSignedTone(metrics.avg_hourly_pnl_dollars)}
-            />
-            <MetricTile
-              label="Settled trades"
-              value={String(metrics.settled_trades ?? 0)}
-              title="Count of Live-branch settled rows in SQLite (simulated fills after Kalshi finalization)."
-            />
-            <WinLossRecordTile label="Win / loss · %" metrics={metrics} />
-            <MetricTile
-              label="Avg PnL / settled"
-              value={
-                metrics.avg_realized_per_settled_dollars != null
-                  ? fmtMoney(Number(metrics.avg_realized_per_settled_dollars))
-                  : "—"
-              }
-              title="total_pnl_dollars ÷ settled_trades — mean realized dollars per closed trade."
-              valueTone={metricSignedTone(metrics.avg_realized_per_settled_dollars)}
-            />
-            <MetricTile
-              label="Open (paper)"
-              value={String(metrics.open_sim_trades ?? 0)}
-              title="Simulated Live-branch trades still status open/resting until Kalshi market is finalized."
-            />
-            <MetricTile
-              label="Committed"
-              value={fmtMoney(Number(metrics.open_sim_committed_dollars || 0))}
-              title="Sum of amount_cents for those open sim trades ÷ 100 — premium tied up until settlement."
-              sub={fmtPct(metrics.committed_pct_of_start) + " of bankroll"}
-              subTone={metricSignedTone(-Number(metrics.committed_pct_of_start))}
-            />
-          </>
-        ) : (
-          <>
-            <MetricTile
-              label="Cash (Kalshi)"
-              value={
-                metrics.exchange_balance_dollars != null
-                  ? fmtMoney(Number(metrics.exchange_balance_dollars))
-                  : "—"
-              }
-              title="Signed GET /portfolio/balance — balance field as dollars (cents ÷ 100). Requires prod/demo keys matching KALSHI_ENV."
-            />
-            <MetricTile
-              label="Portfolio value"
-              value={
-                metrics.exchange_portfolio_value_dollars != null
-                  ? fmtMoney(Number(metrics.exchange_portfolio_value_dollars))
-                  : "—"
-              }
-              title="Same balance response: portfolio_value when Kalshi returns it (optional field; may be — if absent)."
-            />
-            <MetricTile
-              label="Bot settled PnL"
-              value={fmtMoney(Number(metrics.total_pnl_dollars || 0))}
-              title="Sum of realized pnl from this bot’s logged Live-branch live-mode fills (SQLite), not the entire exchange account."
-              valueTone={metricSignedTone(metrics.total_pnl_dollars)}
-            />
-            <MetricTile
-              label="Total Kalshi fees"
-              value={fmtMoney(Number(metrics.total_kalshi_fees_dollars || 0))}
-              title="Modeled entry + exit fees accumulated from trade extra_json for this branch/mode."
-              valueTone="neg"
-            />
-            <MetricTile
-              label="Avg hourly (bot)"
-              value={fmtMoney(Number(metrics.avg_hourly_pnl_dollars || 0))}
-              title="Bot realized PnL per wall-clock hour between first and last settled trade on Live live mode."
-              valueTone={metricSignedTone(metrics.avg_hourly_pnl_dollars)}
-            />
-            <MetricTile
-              label="Settled (bot)"
-              value={String(metrics.settled_trades ?? 0)}
-              title="Closed trades this bot recorded for Live branch, live mode."
-            />
-            <WinLossRecordTile label="Win / loss · %" metrics={metrics} />
-            <MetricTile
-              label="Avg PnL / settled"
-              value={
-                metrics.avg_realized_per_settled_dollars != null
-                  ? fmtMoney(Number(metrics.avg_realized_per_settled_dollars))
-                  : "—"
-              }
-              title="Mean realized dollars per closed bot trade."
-              valueTone={metricSignedTone(metrics.avg_realized_per_settled_dollars)}
-            />
-            <MetricTile
-              label="Open (paper)"
-              value={String(metrics.open_sim_trades ?? 0)}
-              title="Usually 0 in real mode; any leftover simulated opens if you switched modes mid-session."
-            />
-            <MetricTile
-              label="Committed"
-              value={fmtMoney(Number(metrics.open_sim_committed_dollars || 0))}
-              title="Open sim premium if any (see tooltip on Open)."
-            />
-          </>
-        )}
+        <div className="metrics" style={{ marginBottom: 14 }}>
+          {(!cfg.simulate && perfBranchMeta.isLive) ? (
+            <>
+              <MetricTile
+                label="Cash (Kalshi)"
+                value={
+                  perfBranchMeta.metrics.exchange_balance_dollars != null
+                    ? fmtMoney(Number(perfBranchMeta.metrics.exchange_balance_dollars))
+                    : "—"
+                }
+                title="Signed GET /portfolio/balance — balance field as dollars (cents ÷ 100)."
+              />
+              <MetricTile
+                label="Portfolio value"
+                value={
+                  perfBranchMeta.metrics.exchange_portfolio_value_dollars != null
+                    ? fmtMoney(Number(perfBranchMeta.metrics.exchange_portfolio_value_dollars))
+                    : "—"
+                }
+                title="Portfolio value from signed balance response when provided."
+              />
+            </>
+          ) : (
+            <>
+              <MetricTile
+                label={`${perfBranchMeta.label} bankroll (start)`}
+                value={fmtMoney(Number(perfBranchMeta.metrics.paper_start_dollars ?? 0))}
+                title="Starting/cumulative paper basis used for return percentages."
+              />
+              <MetricTile
+                label={`${perfBranchMeta.label} MTM (est.)`}
+                value={fmtMoney(dashboardMtmDollars(perfBranchMeta.metrics))}
+                title="Mark-to-market from latest snapshot; falls back to cost-basis equity when needed."
+                sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(perfBranchMeta.metrics))} · chart last ${
+                  dashboardChartLastMtmOrEq(perfBranchMeta.metrics) != null
+                    ? fmtMoney(Number(dashboardChartLastMtmOrEq(perfBranchMeta.metrics)))
+                    : "—"
+                }`}
+                valueTone={metricEquityVsBankroll(dashboardMtmDollars(perfBranchMeta.metrics), perfBranchMeta.metrics.paper_start_dollars)}
+                subTone={metricSignedTone(dashboardMtmReturnPct(perfBranchMeta.metrics))}
+              />
+            </>
+          )}
+          <MetricTile
+            label={perfBranchMeta.isLive && !cfg.simulate ? "Bot settled PnL" : `${perfBranchMeta.label} total PnL`}
+            value={fmtMoney(Number(perfBranchMeta.metrics.total_pnl_dollars || 0))}
+            title="Realized PnL from settled trades in this branch."
+            sub={!perfBranchMeta.isLive || cfg.simulate ? `${fmtPct(perfBranchMeta.metrics.realized_pnl_pct_of_start)} of ${perfBranchMeta.bankNoun}` : undefined}
+            valueTone={metricSignedTone(perfBranchMeta.metrics.total_pnl_dollars)}
+            subTone={metricSignedTone(perfBranchMeta.metrics.realized_pnl_pct_of_start)}
+          />
+          <MetricTile
+            label={perfBranchMeta.isLive && !cfg.simulate ? "Total Kalshi fees" : `${perfBranchMeta.label} fees`}
+            value={fmtMoney(Number(perfBranchMeta.metrics.total_kalshi_fees_dollars || 0))}
+            title="Modeled entry + exit fees accumulated for this branch."
+            valueTone="neg"
+          />
+          <MetricTile
+            label={perfBranchMeta.isLive && !cfg.simulate ? "Avg hourly (bot)" : `${perfBranchMeta.label} avg hourly`}
+            value={fmtMoney(Number(perfBranchMeta.metrics.avg_hourly_pnl_dollars || 0))}
+            title="Realized PnL divided by elapsed hours spanned by settled trades."
+            valueTone={metricSignedTone(perfBranchMeta.metrics.avg_hourly_pnl_dollars)}
+          />
+          <MetricTile
+            label={perfBranchMeta.isLive && !cfg.simulate ? "Settled (bot)" : `${perfBranchMeta.label} settled`}
+            value={String(perfBranchMeta.metrics.settled_trades ?? 0)}
+            title="Count of settled trades in this branch."
+          />
+          <WinLossRecordTile label={`${perfBranchMeta.label} win / loss · %`} metrics={perfBranchMeta.metrics} />
+          <MetricTile
+            label={`${perfBranchMeta.label} avg / settled`}
+            value={
+              perfBranchMeta.metrics.avg_realized_per_settled_dollars != null
+                ? fmtMoney(Number(perfBranchMeta.metrics.avg_realized_per_settled_dollars))
+                : "—"
+            }
+            title="Mean realized dollars per settled trade."
+            valueTone={metricSignedTone(perfBranchMeta.metrics.avg_realized_per_settled_dollars)}
+          />
+          <MetricTile
+            label={`${perfBranchMeta.label} open`}
+            value={String(perfBranchMeta.metrics.open_sim_trades ?? 0)}
+            title="Open simulated rows awaiting settlement."
+          />
+          <MetricTile
+            label={`${perfBranchMeta.label} committed`}
+            value={fmtMoney(Number(perfBranchMeta.metrics.open_sim_committed_dollars || 0))}
+            title="Premium tied up in open positions."
+            sub={fmtPct(perfBranchMeta.metrics.committed_pct_of_start) + ` of ${perfBranchMeta.bankNoun}`}
+            subTone={metricSignedTone(-Number(perfBranchMeta.metrics.committed_pct_of_start))}
+          />
         </div>
       </section>
-
-      <div className="dash-lab-block">
-        <h3 id="dash-heading-lab-a" className="dash-section__subtitle">
-          Lab A
-        </h3>
-        <div className="dash-section__legend">
-          <p>
-            Reconcile Lab A: MTM (est.) below = last snapshot mark-to-market total. Equity (cost basis) = bankroll +
-            realized PnL − committed. Positive realized PnL with a down cost return usually means premium still tied up
-            in open Lab A positions.
-          </p>
-        </div>
-        <div className="metrics" style={{ marginBottom: 14 }}>
-        <MetricTile
-          label="Lab A bankroll (start)"
-          value={fmtMoney(Number(metricsLabA.paper_start_dollars ?? 0))}
-          title="Cumulative paper basis: lab_a.paper_lifetime_basis_cents after each auto wipe, else lab_a.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
-        />
-        <MetricTile
-          label="Lab A MTM (est.)"
-          value={fmtMoney(dashboardMtmDollars(metricsLabA))}
-          title="Lab A mark-to-market from the latest snapshot (bankroll + realized − committed + open marks at mid). Falls back to cost-basis equity if MTM not stored yet."
-          sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metricsLabA))} · chart last ${
-            dashboardChartLastMtmOrEq(metricsLabA) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metricsLabA))) : "—"
-          }`}
-          valueTone={metricEquityVsBankroll(dashboardMtmDollars(metricsLabA), metricsLabA.paper_start_dollars)}
-          subTone={metricSignedTone(dashboardMtmReturnPct(metricsLabA))}
-        />
-        <MetricTile
-          label="Lab A total PnL"
-          value={fmtMoney(Number(metricsLabA.total_pnl_dollars || 0))}
-          title="Realized PnL for branch lab_a, mode simulate, status settled."
-          sub={`${fmtPct(metricsLabA.realized_pnl_pct_of_start)} of lab bankroll`}
-          valueTone={metricSignedTone(metricsLabA.total_pnl_dollars)}
-          subTone={metricSignedTone(metricsLabA.realized_pnl_pct_of_start)}
-        />
-        <MetricTile
-          label="Lab A fees"
-          value={fmtMoney(Number(metricsLabA.total_kalshi_fees_dollars || 0))}
-          title="Modeled entry + exit fees accumulated for Lab A."
-          valueTone="neg"
-        />
-        <MetricTile
-          label="Lab A avg hourly"
-          value={fmtMoney(Number(metricsLabA.avg_hourly_pnl_dollars || 0))}
-          title="Lab A realized PnL divided by hours spanned by settled lab_a trades (min ~1h denominator)."
-          valueTone={metricSignedTone(metricsLabA.avg_hourly_pnl_dollars)}
-        />
-        <MetricTile
-          label="Lab A settled"
-          value={String(metricsLabA.settled_trades ?? 0)}
-          title="Count of settled lab_a simulated trades."
-        />
-        <WinLossRecordTile label="Lab A win / loss · %" metrics={metricsLabA} />
-        <MetricTile
-          label="Lab A avg / settled"
-          value={
-            metricsLabA.avg_realized_per_settled_dollars != null
-              ? fmtMoney(Number(metricsLabA.avg_realized_per_settled_dollars))
-              : "—"
-          }
-          title="Lab A total realized PnL ÷ Lab A settled count."
-          valueTone={metricSignedTone(metricsLabA.avg_realized_per_settled_dollars)}
-        />
-        <MetricTile
-          label="Lab A open"
-          value={String(metricsLabA.open_sim_trades ?? 0)}
-          title="Open lab_a rows awaiting settlement."
-        />
-        <MetricTile
-          label="Lab A committed"
-          value={fmtMoney(Number(metricsLabA.open_sim_committed_dollars || 0))}
-          title="Premium tied up in open lab_a positions."
-          sub={fmtPct(metricsLabA.committed_pct_of_start) + " of lab bankroll"}
-          subTone={metricSignedTone(-Number(metricsLabA.committed_pct_of_start))}
-        />
-        </div>
-      </div>
-
-      <div className="dash-lab-block">
-        <h3 id="dash-heading-lab-b" className="dash-section__subtitle dash-section__subtitle--lab-b">
-          Lab B
-        </h3>
-        <div className="dash-section__legend">
-          <p>
-            Reconcile Lab B: MTM (est.) below = last snapshot mark-to-market total. Equity (cost basis) = bankroll +
-            realized PnL − committed. Positive realized PnL with a down cost return usually means premium still tied up
-            in open Lab B positions.
-          </p>
-        </div>
-        <div className="metrics" style={{ marginBottom: 14 }}>
-        <MetricTile
-          label="Lab B bankroll (start)"
-          value={fmtMoney(Number(metricsLabB.paper_start_dollars ?? 0))}
-          title="Cumulative paper basis: lab_b.paper_lifetime_basis_cents after each auto wipe, else lab_b.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
-        />
-        <MetricTile
-          label="Lab B MTM (est.)"
-          value={fmtMoney(dashboardMtmDollars(metricsLabB))}
-          title="Lab B mark-to-market from the latest snapshot (bankroll + realized − committed + open marks at mid). Falls back to cost-basis equity if MTM not stored yet."
-          sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metricsLabB))} · chart last ${
-            dashboardChartLastMtmOrEq(metricsLabB) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metricsLabB))) : "—"
-          }`}
-          valueTone={metricEquityVsBankroll(dashboardMtmDollars(metricsLabB), metricsLabB.paper_start_dollars)}
-          subTone={metricSignedTone(dashboardMtmReturnPct(metricsLabB))}
-        />
-        <MetricTile
-          label="Lab B total PnL"
-          value={fmtMoney(Number(metricsLabB.total_pnl_dollars || 0))}
-          title="Realized PnL for branch lab_b, mode simulate, status settled."
-          sub={`${fmtPct(metricsLabB.realized_pnl_pct_of_start)} of lab bankroll`}
-          valueTone={metricSignedTone(metricsLabB.total_pnl_dollars)}
-          subTone={metricSignedTone(metricsLabB.realized_pnl_pct_of_start)}
-        />
-        <MetricTile
-          label="Lab B fees"
-          value={fmtMoney(Number(metricsLabB.total_kalshi_fees_dollars || 0))}
-          title="Modeled entry + exit fees accumulated for Lab B."
-          valueTone="neg"
-        />
-        <MetricTile
-          label="Lab B avg hourly"
-          value={fmtMoney(Number(metricsLabB.avg_hourly_pnl_dollars || 0))}
-          title="Lab B realized PnL divided by hours spanned by settled lab_b trades (min ~1h denominator)."
-          valueTone={metricSignedTone(metricsLabB.avg_hourly_pnl_dollars)}
-        />
-        <MetricTile
-          label="Lab B settled"
-          value={String(metricsLabB.settled_trades ?? 0)}
-          title="Count of settled lab_b simulated trades."
-        />
-        <WinLossRecordTile label="Lab B win / loss · %" metrics={metricsLabB} />
-        <MetricTile
-          label="Lab B avg / settled"
-          value={
-            metricsLabB.avg_realized_per_settled_dollars != null
-              ? fmtMoney(Number(metricsLabB.avg_realized_per_settled_dollars))
-              : "—"
-          }
-          title="Lab B total realized PnL ÷ Lab B settled count."
-          valueTone={metricSignedTone(metricsLabB.avg_realized_per_settled_dollars)}
-        />
-        <MetricTile
-          label="Lab B open"
-          value={String(metricsLabB.open_sim_trades ?? 0)}
-          title="Open lab_b rows awaiting settlement."
-        />
-        <MetricTile
-          label="Lab B committed"
-          value={fmtMoney(Number(metricsLabB.open_sim_committed_dollars || 0))}
-          title="Premium tied up in open lab_b positions."
-          sub={fmtPct(metricsLabB.committed_pct_of_start) + " of lab bankroll"}
-          subTone={metricSignedTone(-Number(metricsLabB.committed_pct_of_start))}
-        />
-        </div>
-      </div>
-
-      <div className="dash-lab-block">
-        <h3 id="dash-heading-lab-c" className="dash-section__subtitle dash-section__subtitle--lab-c">
-          Lab C
-        </h3>
-        <div className="dash-section__legend">
-          <p>
-            Reconcile Lab C: MTM (est.) below = last snapshot mark-to-market total. Equity (cost basis) = bankroll +
-            realized PnL − committed. Positive realized PnL with a down cost return usually means premium still tied up
-            in open Lab C positions.
-          </p>
-        </div>
-        <div className="metrics" style={{ marginBottom: 14 }}>
-        <MetricTile
-          label="Lab C bankroll (start)"
-          value={fmtMoney(Number(metricsLabC.paper_start_dollars ?? 0))}
-          title="Cumulative paper basis: lab_c.paper_lifetime_basis_cents after each auto wipe, else lab_c.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
-        />
-        <MetricTile
-          label="Lab C MTM (est.)"
-          value={fmtMoney(dashboardMtmDollars(metricsLabC))}
-          title="Lab C mark-to-market from the latest snapshot (bankroll + realized − committed + open marks at mid). Falls back to cost-basis equity if MTM not stored yet."
-          sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metricsLabC))} · chart last ${
-            dashboardChartLastMtmOrEq(metricsLabC) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metricsLabC))) : "—"
-          }`}
-          valueTone={metricEquityVsBankroll(dashboardMtmDollars(metricsLabC), metricsLabC.paper_start_dollars)}
-          subTone={metricSignedTone(dashboardMtmReturnPct(metricsLabC))}
-        />
-        <MetricTile
-          label="Lab C total PnL"
-          value={fmtMoney(Number(metricsLabC.total_pnl_dollars || 0))}
-          title="Realized PnL for branch lab_c, mode simulate, status settled."
-          sub={`${fmtPct(metricsLabC.realized_pnl_pct_of_start)} of lab bankroll`}
-          valueTone={metricSignedTone(metricsLabC.total_pnl_dollars)}
-          subTone={metricSignedTone(metricsLabC.realized_pnl_pct_of_start)}
-        />
-        <MetricTile
-          label="Lab C fees"
-          value={fmtMoney(Number(metricsLabC.total_kalshi_fees_dollars || 0))}
-          title="Modeled entry + exit fees accumulated for Lab C."
-          valueTone="neg"
-        />
-        <MetricTile
-          label="Lab C avg hourly"
-          value={fmtMoney(Number(metricsLabC.avg_hourly_pnl_dollars || 0))}
-          title="Lab C realized PnL divided by hours spanned by settled lab_c trades (min ~1h denominator)."
-          valueTone={metricSignedTone(metricsLabC.avg_hourly_pnl_dollars)}
-        />
-        <MetricTile
-          label="Lab C settled"
-          value={String(metricsLabC.settled_trades ?? 0)}
-          title="Count of settled lab_c simulated trades."
-        />
-        <WinLossRecordTile label="Lab C win / loss · %" metrics={metricsLabC} />
-        <MetricTile
-          label="Lab C avg / settled"
-          value={
-            metricsLabC.avg_realized_per_settled_dollars != null
-              ? fmtMoney(Number(metricsLabC.avg_realized_per_settled_dollars))
-              : "—"
-          }
-          title="Lab C total realized PnL ÷ Lab C settled count."
-          valueTone={metricSignedTone(metricsLabC.avg_realized_per_settled_dollars)}
-        />
-        <MetricTile
-          label="Lab C open"
-          value={String(metricsLabC.open_sim_trades ?? 0)}
-          title="Open lab_c rows awaiting settlement."
-        />
-        <MetricTile
-          label="Lab C committed"
-          value={fmtMoney(Number(metricsLabC.open_sim_committed_dollars || 0))}
-          title="Premium tied up in open lab_c positions."
-          sub={fmtPct(metricsLabC.committed_pct_of_start) + " of lab bankroll"}
-          subTone={metricSignedTone(-Number(metricsLabC.committed_pct_of_start))}
-        />
-        </div>
-      </div>
 
       {dash ? <OptimizerActivitySection activity={dash.optimizer_activity as AnyObj | undefined} /> : null}
 
