@@ -578,7 +578,8 @@ def _position_by_asset(
 async def dashboard() -> dict[str, Any]:
     cfg = await store.load_config()
     mode_live = "simulate" if cfg.get("simulate") else "live"
-    trades = await store.recent_trades(limit=80)
+    # Pull enough rows for the dashboard to filter by branch in the UI (recent slice was mostly one branch).
+    trades = await store.recent_trades(limit=500)
     signals = await store.recent_signals(limit=500)
     snaps_live = await store.equity_series(limit=2000, branch=BRANCH_LIVE)
     snaps_lab_a = await store.equity_series(limit=2000, branch=BRANCH_LAB_A)
@@ -744,9 +745,9 @@ async def dashboard() -> dict[str, Any]:
         "equity_snapshots_sim_lab": snaps_lab_a,
         "equity_snapshots_lab_a": snaps_lab_a,
         "equity_snapshots_lab_b": snaps_lab_b,
-        "recent_signals": signals[:80],
-        "not_traded_signals": not_traded[:80],
-        "recent_trades": trades[:80],
+        "recent_signals": signals[:500],
+        "not_traded_signals": not_traded[:200],
+        "recent_trades": trades[:500],
         "remote_balance": bal_json,
         "account_snapshot": {
             "position_count": int(portfolio.get("position_count") or 0),

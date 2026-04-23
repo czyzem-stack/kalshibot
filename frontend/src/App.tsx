@@ -344,6 +344,32 @@ function MetricTile({
   );
 }
 
+const WIN_LOSS_RECORD_TITLE =
+  "Wins and losses use settled PnL sign; flat = exactly $0 (not counted as win or loss). " +
+  "Win % and loss % share the same denominator: wins ÷ (wins + losses) and losses ÷ (wins + losses) when there is at least one decisive outcome; otherwise wins ÷ settled and losses ÷ settled. Same SQL scope as Total PnL.";
+
+/** Replaces separate Win/loss, Win rate, and Loss rate tiles. */
+function WinLossRecordTile({ label, metrics }: { label: string; metrics: AnyObj }) {
+  const wr = decisiveWinRatePct(metrics);
+  const lr = decisiveLossRatePct(metrics);
+  const scratches = Number(metrics.scratch_trades) > 0 ? ` · ${String(metrics.scratch_trades)} flat` : "";
+  const sub = (
+    <>
+      <span className={metricSubClass(metricWinRateTone(wr))}>Win {fmtPct(wr)}</span>
+      <span style={{ color: "var(--muted)" }}> · </span>
+      <span className={metricSubClass(metricSignedTone(50 - Number(lr)))}>Loss {fmtPct(lr)}</span>
+    </>
+  );
+  return (
+    <MetricTile
+      label={label}
+      value={`${String(metrics.wins ?? 0)} / ${String(metrics.losses ?? 0)}${scratches}`}
+      title={WIN_LOSS_RECORD_TITLE}
+      sub={sub}
+    />
+  );
+}
+
 /** Dashboard shows `kalshi.env` from the backend — demo/stage hosts are not production order books. */
 function kalshiIsNonProd(env: unknown): boolean {
   const e = String(env ?? "").trim().toLowerCase();
@@ -446,6 +472,42 @@ function activityBranchTabLabel(b: ActivityBranchKey): string {
   if (b === "live") return "Live";
   if (b === "lab_a") return "Lab A";
   return "Lab B";
+}
+
+const ACTIVITY_BRANCH_TAB_ORDER: ActivityBranchKey[] = ["live", "lab_a", "lab_b"];
+
+const ACTIVITY_BRANCH_TAB_TITLE: Record<ActivityBranchKey, string> = {
+  live: "Rows where branch is live (or unset legacy rows treated as Live).",
+  lab_a: "Rows where branch is lab_a or legacy sim_lab.",
+  lab_b: "Rows where branch is lab_b.",
+};
+
+function ActivityBranchTabs({
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  value: ActivityBranchKey;
+  onChange: (b: ActivityBranchKey) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="chart-tabs" role="tablist" aria-label={ariaLabel} style={{ margin: 0 }}>
+      {ACTIVITY_BRANCH_TAB_ORDER.map((b) => (
+        <button
+          key={b}
+          type="button"
+          role="tab"
+          aria-selected={value === b}
+          className={`chart-tab ${value === b ? "chart-tab--active" : ""}`}
+          title={ACTIVITY_BRANCH_TAB_TITLE[b]}
+          onClick={() => onChange(b)}
+        >
+          {activityBranchTabLabel(b)}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /** BTC first, ETH second, then remaining asset ids A–Z. */
@@ -814,7 +876,11 @@ export default function App() {
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b">("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
+  /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
+  const [notTradedBranch, setNotTradedBranch] = useState<ActivityBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
+  /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
+  const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b">("live");
 
   const refresh = async () => {
     try {
@@ -943,8 +1009,8 @@ export default function App() {
 
   const notTradedFiltered = useMemo(() => {
     const nt = (dash?.not_traded_signals || []) as AnyObj[];
-    return nt.filter((r) => normalizeSignalTradeBranch(r.branch) === activityBranch);
-  }, [dash?.not_traded_signals, activityBranch]);
+    return nt.filter((r) => normalizeSignalTradeBranch(r.branch) === notTradedBranch);
+  }, [dash?.not_traded_signals, notTradedBranch]);
 
   const saveRules = async (rules: AnyObj[]) => {
     setBusy(true);
@@ -1539,19 +1605,7 @@ export default function App() {
               value={String(metrics.settled_trades ?? 0)}
               title="Count of Live-branch settled rows in SQLite (simulated fills after Kalshi finalization)."
             />
-            <MetricTile
-              label="Win / loss"
-              value={`${String(metrics.wins ?? 0)} / ${String(metrics.losses ?? 0)}${
-                Number(metrics.scratch_trades) > 0 ? ` · ${String(metrics.scratch_trades)} flat` : ""
-              }`}
-              title="Wins and losses use settled PnL sign. Flat = settled at exactly $0 (swing scratch or even money); not counted in win/loss columns."
-            />
-            <MetricTile
-              label="Win rate"
-              value={fmtPct(decisiveWinRatePct(metrics))}
-              title="wins ÷ (wins + losses) when there is at least one decisive outcome; otherwise wins ÷ settled. Full-table SQL, same scope as Total PnL."
-              valueTone={metricWinRateTone(decisiveWinRatePct(metrics))}
-            />
+            <WinLossRecordTile label="Win / loss · %" metrics={metrics} />
             <MetricTile
               label="Avg PnL / settled"
               value={
@@ -1561,12 +1615,6 @@ export default function App() {
               }
               title="total_pnl_dollars ÷ settled_trades — mean realized dollars per closed trade."
               valueTone={metricSignedTone(metrics.avg_realized_per_settled_dollars)}
-            />
-            <MetricTile
-              label="Loss rate"
-              value={fmtPct(decisiveLossRatePct(metrics))}
-              title="losses ÷ (wins + losses) when decisive outcomes exist; else losses ÷ settled."
-              valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metrics)))}
             />
             <MetricTile
               label="Open (paper)"
@@ -1624,19 +1672,7 @@ export default function App() {
               value={String(metrics.settled_trades ?? 0)}
               title="Closed trades this bot recorded for Live branch, live mode."
             />
-            <MetricTile
-              label="Win / loss"
-              value={`${String(metrics.wins ?? 0)} / ${String(metrics.losses ?? 0)}${
-                Number(metrics.scratch_trades) > 0 ? ` · ${String(metrics.scratch_trades)} flat` : ""
-              }`}
-              title="Among bot-settled trades on Live live mode; flat = $0 PnL."
-            />
-            <MetricTile
-              label="Win rate"
-              value={fmtPct(decisiveWinRatePct(metrics))}
-              title="wins ÷ (wins + losses) when decisive; else wins ÷ settled (full-table SQL)."
-              valueTone={metricWinRateTone(decisiveWinRatePct(metrics))}
-            />
+            <WinLossRecordTile label="Win / loss · %" metrics={metrics} />
             <MetricTile
               label="Avg PnL / settled"
               value={
@@ -1646,12 +1682,6 @@ export default function App() {
               }
               title="Mean realized dollars per closed bot trade."
               valueTone={metricSignedTone(metrics.avg_realized_per_settled_dollars)}
-            />
-            <MetricTile
-              label="Loss rate"
-              value={fmtPct(decisiveLossRatePct(metrics))}
-              title="losses ÷ (wins + losses) when decisive; else losses ÷ settled."
-              valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metrics)))}
             />
             <MetricTile
               label="Open (paper)"
@@ -1740,19 +1770,7 @@ export default function App() {
           value={String(metricsLabA.settled_trades ?? 0)}
           title="Count of settled lab_a simulated trades."
         />
-        <MetricTile
-          label="Lab A W / L"
-          value={`${String(metricsLabA.wins ?? 0)} / ${String(metricsLabA.losses ?? 0)}${
-            Number(metricsLabA.scratch_trades) > 0 ? ` · ${String(metricsLabA.scratch_trades)} flat` : ""
-          }`}
-          title="Wins and losses among settled lab_a rows."
-        />
-        <MetricTile
-          label="Lab A win rate"
-          value={fmtPct(decisiveWinRatePct(metricsLabA))}
-          title="Lab A wins ÷ (wins + losses) when decisive outcomes exist."
-          valueTone={metricWinRateTone(decisiveWinRatePct(metricsLabA))}
-        />
+        <WinLossRecordTile label="Lab A win / loss · %" metrics={metricsLabA} />
         <MetricTile
           label="Lab A avg / settled"
           value={
@@ -1762,12 +1780,6 @@ export default function App() {
           }
           title="Lab A total realized PnL ÷ Lab A settled count."
           valueTone={metricSignedTone(metricsLabA.avg_realized_per_settled_dollars)}
-        />
-        <MetricTile
-          label="Lab A loss rate"
-          value={fmtPct(decisiveLossRatePct(metricsLabA))}
-          title="Lab A losses ÷ (wins + losses) when decisive outcomes exist."
-          valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metricsLabA)))}
         />
         <MetricTile
           label="Lab A open"
@@ -1840,19 +1852,7 @@ export default function App() {
           value={String(metricsLabB.settled_trades ?? 0)}
           title="Count of settled lab_b simulated trades."
         />
-        <MetricTile
-          label="Lab B W / L"
-          value={`${String(metricsLabB.wins ?? 0)} / ${String(metricsLabB.losses ?? 0)}${
-            Number(metricsLabB.scratch_trades) > 0 ? ` · ${String(metricsLabB.scratch_trades)} flat` : ""
-          }`}
-          title="Wins and losses among settled lab_b rows."
-        />
-        <MetricTile
-          label="Lab B win rate"
-          value={fmtPct(decisiveWinRatePct(metricsLabB))}
-          title="Lab B wins ÷ (wins + losses) when decisive outcomes exist."
-          valueTone={metricWinRateTone(decisiveWinRatePct(metricsLabB))}
-        />
+        <WinLossRecordTile label="Lab B win / loss · %" metrics={metricsLabB} />
         <MetricTile
           label="Lab B avg / settled"
           value={
@@ -1862,12 +1862,6 @@ export default function App() {
           }
           title="Lab B total realized PnL ÷ Lab B settled count."
           valueTone={metricSignedTone(metricsLabB.avg_realized_per_settled_dollars)}
-        />
-        <MetricTile
-          label="Lab B loss rate"
-          value={fmtPct(decisiveLossRatePct(metricsLabB))}
-          title="Lab B losses ÷ (wins + losses) when decisive outcomes exist."
-          valueTone={metricSignedTone(50 - Number(decisiveLossRatePct(metricsLabB)))}
         />
         <MetricTile
           label="Lab B open"
@@ -2263,6 +2257,14 @@ export default function App() {
           <h2 className="section-tip" style={{ marginTop: 16 }} title="Polling engines: market scan, rules, logging. Tick traces show the last engine loop output.">
             Engines
           </h2>
+          <p
+            className="sub section-tip"
+            style={{ fontSize: 11, lineHeight: 1.45, margin: "4px 0 10px 0" }}
+            title="dual_engine_loop runs tick_once per branch when that branch’s engine toggle is on. Each tick loads Kalshi for the same configured assets, then applies branch-specific rules, bankroll, dedupe keys, and SQLite writes."
+          >
+            <strong>Same market data</strong> for every branch (one Kalshi catalog per asset list).{" "}
+            <strong>Separate runs</strong> for Live vs Lab A vs Lab B: different rules, sizing, bankroll, dedupe windows, and trade rows — so scan counts often match even when behavior diverges.
+          </p>
           <div className="sub" title="Engine polling status from /api/dashboard.">
             <div title="Live branch: engine on/off, paper vs real orders, last tick time, markets scanned this tick.">
               <strong title="Main trading branch tied to Live mode.">Live</strong> engine {dash?.engine?.live?.engine_running ? "on" : "off"} ·
@@ -2279,79 +2281,148 @@ export default function App() {
                 Live: {String(dash?.engine?.live?.last_error)}
               </div>
             ) : null}
-            <EngineTickTrace title="Live — last tick log" lines={dash?.engine?.live?.last_tick_trace} />
-            <div
-              style={{ marginTop: 10 }}
-              title="Sim lab branch: always simulated; last tick and scan count."
-            >
-              <strong title="Paper-only experimental branch.">Sim lab</strong> engine {dash?.engine?.sim_lab?.engine_running ? "on" : "off"} · always
-              simulated · last tick:{" "}
-              {dash?.engine?.sim_lab?.last_tick_at
-                ? fmtIsoLocal(String(dash?.engine?.sim_lab?.last_tick_at))
-                : "—"}{" "}
-              · scanned{" "}
-              {String(dash?.engine?.sim_lab?.markets_scanned ?? "—")}
+            <div style={{ marginTop: 10 }} title="Lab A (branch lab_a): always simulated; separate config and SQLite from Live.">
+              <strong title="Paper-only branch lab_a.">Lab A</strong> engine {engineLabA?.engine_running ? "on" : "off"} · always simulated · last
+              tick:{" "}
+              {engineLabA?.last_tick_at ? fmtIsoLocal(String(engineLabA.last_tick_at)) : "—"} · scanned{" "}
+              {String(engineLabA?.markets_scanned ?? "—")}
             </div>
-            {dash?.engine?.sim_lab?.last_error ? (
-              <div className="error" style={{ marginTop: 6 }} title="Last Sim lab engine error string.">
-                Lab: {String(dash?.engine?.sim_lab?.last_error)}
+            {engineLabA?.last_error ? (
+              <div className="error" style={{ marginTop: 6 }} title="Last Lab A engine error string.">
+                Lab A: {String(engineLabA.last_error)}
               </div>
             ) : null}
-            <EngineTickTrace title="Sim lab — last tick log" lines={dash?.engine?.sim_lab?.last_tick_trace} />
+            <div style={{ marginTop: 10 }} title="Lab B (branch lab_b): always simulated; parallel A/B lab.">
+              <strong title="Paper-only branch lab_b.">Lab B</strong> engine {engineLabB?.engine_running ? "on" : "off"} · always simulated · last
+              tick:{" "}
+              {engineLabB?.last_tick_at ? fmtIsoLocal(String(engineLabB.last_tick_at)) : "—"} · scanned{" "}
+              {String(engineLabB?.markets_scanned ?? "—")}
+            </div>
+            {engineLabB?.last_error ? (
+              <div className="error" style={{ marginTop: 6 }} title="Last Lab B engine error string.">
+                Lab B: {String(engineLabB.last_error)}
+              </div>
+            ) : null}
+            <div className="chart-tabs" role="tablist" aria-label="Last tick log branch" style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={engineTraceBranch === "live"}
+                className={`chart-tab ${engineTraceBranch === "live" ? "chart-tab--active" : ""}`}
+                title="Show the last tick trace for the Live engine."
+                onClick={() => setEngineTraceBranch("live")}
+              >
+                Live log
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={engineTraceBranch === "lab_a"}
+                className={`chart-tab ${engineTraceBranch === "lab_a" ? "chart-tab--active" : ""}`}
+                title="Show the last tick trace for Lab A (same engine as legacy sim_lab in the API)."
+                onClick={() => setEngineTraceBranch("lab_a")}
+              >
+                Lab A log
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={engineTraceBranch === "lab_b"}
+                className={`chart-tab ${engineTraceBranch === "lab_b" ? "chart-tab--active" : ""}`}
+                title="Show the last tick trace for Lab B."
+                onClick={() => setEngineTraceBranch("lab_b")}
+              >
+                Lab B log
+              </button>
+            </div>
+            <EngineTickTrace
+              title={
+                engineTraceBranch === "live"
+                  ? "Live — last tick log"
+                  : engineTraceBranch === "lab_a"
+                    ? "Lab A — last tick log"
+                    : "Lab B — last tick log"
+              }
+              lines={
+                engineTraceBranch === "live"
+                  ? dash?.engine?.live?.last_tick_trace
+                  : engineTraceBranch === "lab_a"
+                    ? engineLabA?.last_tick_trace
+                    : engineLabB?.last_tick_trace
+              }
+            />
           </div>
         </div>
       </div>
 
       <div style={{ marginTop: 14 }}>
-        <div className="panel" style={{ marginBottom: 14, padding: "12px 14px" }}>
+        <h2
+          className="section-tip"
+          style={{ margin: "0 0 6px 0" }}
+          title="Recent signals and trades use one branch filter; Bets not traded has its own filter below."
+        >
+          Activity log
+        </h2>
+        <p className="sub section-tip" style={{ margin: "0 0 14px 0", fontSize: 12, lineHeight: 1.45 }}>
+          The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose{" "}
+          <code>branch</code> matches (legacy <code>sim_lab</code> counts as Lab A).
+        </p>
+
+        <div className="panel" style={{ marginTop: 0 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
             <h2
               className="section-tip"
-              style={{ margin: 0 }}
-              title="Filter recent signals, trades, and matched-but-not-executed rows by SQLite branch (live vs paper labs)."
+              style={{ margin: 0, fontSize: 16 }}
+              title="Subset of signals where a rule matched but execution did not run (e.g. over budget), for the branch selected in the tabs."
             >
-              Activity log
+              Bets not traded — {activityBranchTabLabel(notTradedBranch)}
             </h2>
-            <div className="chart-tabs" role="tablist" aria-label="Activity log branch" style={{ margin: 0 }}>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activityBranch === "live"}
-                className={`chart-tab ${activityBranch === "live" ? "chart-tab--active" : ""}`}
-                title="Rows where branch is live (or unset legacy rows treated as Live)."
-                onClick={() => setActivityBranch("live")}
-              >
-                Live
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activityBranch === "lab_a"}
-                className={`chart-tab ${activityBranch === "lab_a" ? "chart-tab--active" : ""}`}
-                title="Rows where branch is lab_a or legacy sim_lab."
-                onClick={() => setActivityBranch("lab_a")}
-              >
-                Lab A
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activityBranch === "lab_b"}
-                className={`chart-tab ${activityBranch === "lab_b" ? "chart-tab--active" : ""}`}
-                title="Rows where branch is lab_b."
-                onClick={() => setActivityBranch("lab_b")}
-              >
-                Lab B
-              </button>
-            </div>
+            <ActivityBranchTabs
+              value={notTradedBranch}
+              onChange={setNotTradedBranch}
+              ariaLabel="Bets not traded branch"
+            />
           </div>
-          <p className="sub section-tip" style={{ marginTop: 8, marginBottom: 0, fontSize: 12, lineHeight: 1.45 }}>
-            Showing <strong>{activityBranchTabLabel(activityBranch)}</strong> only — each row&apos;s <code>branch</code> field
-            must match (legacy <code>sim_lab</code> counts as Lab A).
+          <p className="sub section-tip" style={{ marginTop: 8, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
+            Showing <strong>{activityBranchTabLabel(notTradedBranch)}</strong> only — tabs here do not change Recent
+            signals/trades.
           </p>
+          <SignalsTable
+            rows={notTradedFiltered}
+            emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(notTradedBranch)} yet.`}
+          />
+          <ActivityHints
+            kind="not_traded"
+            dash={dash}
+            cfg={cfg}
+            simLab={simLab}
+            activityBranch={notTradedBranch}
+            branchRowCount={notTradedFiltered.length}
+            totalRowCount={(dash?.not_traded_signals || []).length}
+            totalSignalsCount={(dash?.recent_signals || []).length}
+          />
         </div>
 
-        <div className="grid">
+        <div className="grid" style={{ marginTop: 14 }}>
+          <div
+            style={{
+              gridColumn: "1 / -1",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              marginBottom: 4,
+            }}
+          >
+            <h3 className="section-tip" style={{ margin: 0, fontSize: 14 }} title="Filter recent signals and trades by SQLite branch.">
+              Recent signals and trades
+            </h3>
+            <ActivityBranchTabs value={activityBranch} onChange={setActivityBranch} ariaLabel="Signals and trades branch" />
+          </div>
+          <p className="sub section-tip" style={{ gridColumn: "1 / -1", margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
+            Showing <strong>{activityBranchTabLabel(activityBranch)}</strong> only.
+          </p>
           <div className="panel">
             <h3
               className="section-tip"
@@ -2396,29 +2467,6 @@ export default function App() {
               totalRowCount={(dash?.recent_trades || []).length}
             />
           </div>
-        </div>
-
-        <div className="panel" style={{ marginTop: 14 }}>
-          <h2
-            className="section-tip"
-            title="Subset of Recent signals where a rule matched but execution did not run (e.g. over budget), for the selected branch only."
-          >
-            Bets not traded — {activityBranchTabLabel(activityBranch)}
-          </h2>
-          <SignalsTable
-            rows={notTradedFiltered}
-            emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(activityBranch)} yet.`}
-          />
-          <ActivityHints
-            kind="not_traded"
-            dash={dash}
-            cfg={cfg}
-            simLab={simLab}
-            activityBranch={activityBranch}
-            branchRowCount={notTradedFiltered.length}
-            totalRowCount={(dash?.not_traded_signals || []).length}
-            totalSignalsCount={(dash?.recent_signals || []).length}
-          />
         </div>
       </div>
 
@@ -2792,9 +2840,9 @@ function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj })
   if (!polling && k.public_ok) {
     blocks.push({
       tone: "info",
-      text: "No engine polling yet — turn Live or Sim lab on for ticks.",
+      text: "No engine polling yet — turn Live and/or Lab A / Lab B on in the toolbar for ticks.",
       detail:
-        "Turn Live engine or Sim lab on so markets_scanned and signals update.",
+        "At least one branch engine must be running so the dual loop scans markets and writes signals. Labs use the same Kalshi feed as Live but keep separate paper ledgers.",
     });
   }
 
