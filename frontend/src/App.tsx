@@ -1142,6 +1142,8 @@ function EngineAssetSnapBlock({
 }
 
 export default function App() {
+  const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
+  const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
   const [dash, setDash] = useState<AnyObj | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1153,6 +1155,8 @@ export default function App() {
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
+  const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
+  const optimizerHistoryBootstrapped = useRef(false);
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c">("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
   /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
@@ -1236,11 +1240,55 @@ export default function App() {
   }, [cfg, optimizerCfg?.change_history]);
 
   useEffect(() => {
+    try {
+      const rawSeen = window.sessionStorage.getItem(OPTIMIZER_SEEN_IDS_KEY);
+      if (rawSeen) {
+        const arr = JSON.parse(rawSeen);
+        if (Array.isArray(arr)) {
+          for (const id of arr) {
+            const s = String(id || "");
+            if (s) seenOptimizerEventIds.current.add(s);
+          }
+        }
+      }
+      const rawDismissed = window.sessionStorage.getItem(OPTIMIZER_DISMISSED_IDS_KEY);
+      if (rawDismissed) {
+        const arr = JSON.parse(rawDismissed);
+        if (Array.isArray(arr)) {
+          for (const id of arr) {
+            const s = String(id || "");
+            if (s) dismissedOptimizerEventIds.current.add(s);
+          }
+        }
+      }
+    } catch {
+      // Ignore storage parsing errors.
+    }
+  }, []);
+
+  useEffect(() => {
     const history = optimizerChangeHistoryMerged;
     if (!history.length) return;
+    // First load after refresh: mark current history as seen; do not replay all old toasts.
+    if (!optimizerHistoryBootstrapped.current) {
+      for (const h of history) {
+        const id = String(h?.id || "");
+        if (id) seenOptimizerEventIds.current.add(id);
+      }
+      optimizerHistoryBootstrapped.current = true;
+      try {
+        window.sessionStorage.setItem(
+          OPTIMIZER_SEEN_IDS_KEY,
+          JSON.stringify(Array.from(seenOptimizerEventIds.current).slice(-600)),
+        );
+      } catch {
+        // Ignore storage errors.
+      }
+      return;
+    }
     const fresh = history.filter((h) => {
       const id = String(h?.id || "");
-      return id && !seenOptimizerEventIds.current.has(id);
+      return id && !seenOptimizerEventIds.current.has(id) && !dismissedOptimizerEventIds.current.has(id);
     });
     if (!fresh.length) return;
     for (const h of fresh) {
@@ -1259,6 +1307,14 @@ export default function App() {
           });
         }
       }
+    }
+    try {
+      window.sessionStorage.setItem(
+        OPTIMIZER_SEEN_IDS_KEY,
+        JSON.stringify(Array.from(seenOptimizerEventIds.current).slice(-600)),
+      );
+    } catch {
+      // Ignore storage errors.
     }
   }, [optimizerChangeHistoryMerged]);
 
@@ -1413,7 +1469,6 @@ export default function App() {
     const frac = Number(String(fracRaw ?? "").replace(/,/g, "").trim());
     const win = Math.round(Number(String(winRaw ?? "").replace(/,/g, "").trim()));
     const paper = Math.round(Number(String(paperRaw ?? "").replace(/,/g, "").trim()));
-    const opt = Boolean((document.getElementById(`${p}_opt`) as HTMLInputElement | null)?.checked);
     const autoReset = Boolean((document.getElementById(`${p}_auto_reset_failure`) as HTMLInputElement | null)?.checked);
     if (!Number.isFinite(frac) || frac < 0.0001 || frac > 1) {
       setErr("Lab balance fraction must be between 0.0001 and 1 (e.g. 0.055).");
@@ -1433,7 +1488,6 @@ export default function App() {
         balance_fraction_per_window: frac,
         window_minutes: win,
         paper_balance_cents: paper,
-        auto_optimize: opt,
         auto_reset_paper_on_tick_failure: autoReset,
       };
       await apiPutLabBranches({
@@ -1667,7 +1721,21 @@ export default function App() {
                 <button
                   type="button"
                   style={{ padding: "2px 8px", fontSize: 11 }}
-                  onClick={() => setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== String(n.id)))}
+                  onClick={() => {
+                    const id = String(n.id || "");
+                    if (id) {
+                      dismissedOptimizerEventIds.current.add(id);
+                      try {
+                        window.sessionStorage.setItem(
+                          OPTIMIZER_DISMISSED_IDS_KEY,
+                          JSON.stringify(Array.from(dismissedOptimizerEventIds.current).slice(-600)),
+                        );
+                      } catch {
+                        // Ignore storage errors.
+                      }
+                    }
+                    setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== String(n.id)));
+                  }}
                 >
                   x
                 </button>
@@ -1712,7 +1780,6 @@ export default function App() {
           {dash ? (
             <SnapReconcileStrip cfg={cfg} metrics={metrics} metricsLabA={metricsLabA} metricsLabB={metricsLabB} metricsLabC={metricsLabC} />
           ) : null}
-          {dash ? <LabThoughtsStrip thoughts={dash.lab_thoughts as AnyObj | undefined} /> : null}
         </div>
         <div className="toolbar-panel">
           <div className="toolbar toolbar--dock">
@@ -2498,7 +2565,7 @@ export default function App() {
               data={chartData}
               equityStroke="#6ee7ff"
               mtmStroke="#38bdf8"
-              revision={equityChartRevision(snaps, chartData, metrics)}
+              revision={`${equityChartRevision(snaps, chartData, metrics)}|tick=${String(dash?.engine?.live?.last_tick_at || "")}`}
             />
           </div>
 
@@ -2514,7 +2581,7 @@ export default function App() {
               data={chartDataLabA}
               equityStroke="#a78bfa"
               mtmStroke="#c4b5fd"
-              revision={equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}
+              revision={`${equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}|tick=${String(engineLabA?.last_tick_at || "")}`}
             />
           </div>
           <h3
@@ -2529,7 +2596,7 @@ export default function App() {
               data={chartDataLabB}
               equityStroke="#f59e0b"
               mtmStroke="#fcd34d"
-              revision={equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}
+              revision={`${equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}|tick=${String(engineLabB?.last_tick_at || "")}`}
             />
           </div>
           <h3
@@ -2544,7 +2611,7 @@ export default function App() {
               data={chartDataLabC}
               equityStroke="#f472b6"
               mtmStroke="#fbcfe8"
-              revision={equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}
+              revision={`${equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}|tick=${String(engineLabC?.last_tick_at || "")}`}
             />
           </div>
 

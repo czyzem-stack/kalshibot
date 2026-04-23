@@ -103,7 +103,7 @@ function LabBranchPanel({
 
   return (
     <div
-      key={`lab-${branch}-fields-${String(lab.paper_balance_cents ?? "")}-${String(lab.window_minutes ?? "")}-${String(lab.balance_fraction_per_window ?? "")}-${lab.auto_optimize ? 1 : 0}-${lab.auto_reset_paper_on_tick_failure ? 1 : 0}`}
+      key={`lab-${branch}-fields-${String(lab.paper_balance_cents ?? "")}-${String(lab.window_minutes ?? "")}-${String(lab.balance_fraction_per_window ?? "")}-${lab.auto_reset_paper_on_tick_failure ? 1 : 0}`}
       className="panel settings-nested-panel"
       style={{ padding: "12px 14px", ...style }}
     >
@@ -111,14 +111,10 @@ function LabBranchPanel({
         {title}
       </h3>
       <p className="sub" style={{ marginTop: 8, marginBottom: 0, fontSize: 12, lineHeight: 1.45 }}>
-        Bankroll, fraction, and window are in the <strong>Simulation labs</strong> row above. Here: auto-optimize (per-lab fraction nudger), auto-reset,
-        rule bands, and save. Scheduled optimizer persists adaptive tuning to <strong>Lab A only</strong>; B/C stay reference arms.
+        Bankroll, fraction, and window are in the <strong>Simulation labs</strong> row above. Here: auto-reset, rule bands, and save.
+        Scheduled optimizer persists adaptive tuning to <strong>Lab A only</strong>; B/C stay reference arms.
       </p>
-      <label className="checkbox section-tip" style={{ border: "none", marginTop: 12 }} title="Legacy per-lab fraction nudger when the scheduled Claude optimizer is off.">
-        <input id={`${p}_opt`} type="checkbox" defaultChecked={Boolean(lab.auto_optimize)} disabled={busy} />
-        <span>Auto-optimize</span>
-      </label>
-      <label className="checkbox section-tip" style={{ border: "none", marginTop: 6 }} title={autoResetTitle}>
+      <label className="checkbox section-tip" style={{ border: "none", marginTop: 12 }} title={autoResetTitle}>
         <input id={`${p}_auto_reset_failure`} type="checkbox" defaultChecked={Boolean(lab.auto_reset_paper_on_tick_failure)} disabled={busy} />
         <span>Auto-reset paper data on tick failure (loop testing)</span>
       </label>
@@ -160,7 +156,7 @@ function LabBranchPanel({
         className="primary"
         style={{ marginTop: 10 }}
         disabled={busy}
-        title={`Save ${title} optimizer toggles and auto-reset (sizing uses values in the row above).`}
+        title={`Save ${title} options (sizing uses values in the row above).`}
         onClick={() => void onSaveLabFromSliders()}
       >
         Save {title} options
@@ -587,12 +583,16 @@ export default function SettingsOverlay({
                   type="button"
                   className="primary"
                   disabled={busy || optimizerSaving}
-                  title="PUT /api/config/lab-branches — reads lab_a_* / lab_b_* / lab_c_* from the sizing row."
+                  title="PUT /api/config/lab-branches — applies bankroll/sizing (and lab toggles) from this row without wiping data."
                   onClick={() => {
                     const parseC = (id: string) =>
                       Math.round(Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim()));
                     const parseF = (id: string) =>
                       Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim());
+                    const readBool = (id: string, fallback: boolean) => {
+                      const el = document.getElementById(id) as HTMLInputElement | null;
+                      return el ? Boolean(el.checked) : fallback;
+                    };
                     const resetVal = String((document.getElementById("bulk_lab_reset") as HTMLSelectElement | null)?.value || "none");
                     const backupEl = document.getElementById("bulk_lab_backup") as HTMLInputElement | null;
                     const backup = backupEl ? backupEl.checked : true;
@@ -605,6 +605,10 @@ export default function SettingsOverlay({
                     const lcPaper = parseC("lab_c_paper");
                     const lcFrac = parseF("lab_c_frac");
                     const lcWin = parseC("lab_c_win");
+                    // If a checkbox isn't rendered in this tab, keep current backend value instead of forcing false.
+                    const laAutoReset = readBool("lab_a_auto_reset_failure", Boolean(labA?.auto_reset_paper_on_tick_failure));
+                    const lbAutoReset = readBool("lab_b_auto_reset_failure", Boolean(labB?.auto_reset_paper_on_tick_failure));
+                    const lcAutoReset = readBool("lab_c_auto_reset_failure", Boolean(labC?.auto_reset_paper_on_tick_failure));
                     if (!Number.isFinite(laFrac) || laFrac < 0.0001 || laFrac > 1) {
                       window.alert("Lab A balance fraction must be between 0.0001 and 1.");
                       return;
@@ -660,21 +664,24 @@ export default function SettingsOverlay({
                         paper_balance_cents: laPaper,
                         balance_fraction_per_window: laFrac,
                         window_minutes: laWin,
+                        auto_reset_paper_on_tick_failure: laAutoReset,
                       },
                       lab_b: {
                         paper_balance_cents: lbPaper,
                         balance_fraction_per_window: lbFrac,
                         window_minutes: lbWin,
+                        auto_reset_paper_on_tick_failure: lbAutoReset,
                       },
                       lab_c: {
                         paper_balance_cents: lcPaper,
                         balance_fraction_per_window: lcFrac,
                         window_minutes: lcWin,
+                        auto_reset_paper_on_tick_failure: lcAutoReset,
                       },
                     });
                   }}
                 >
-                  Apply reset (if any) + bankroll / sizing
+                  Save all labs (no reset if "No reset" selected)
                 </button>
               </div>
             ) : null}

@@ -101,13 +101,11 @@ function orderedAssets(assetsObj: AnyObj | undefined): [string, AnyObj][] {
 /** One asset line: label + ticker + YES% (green/red vs 50%) + bid/ask + time — only if useful data. */
 function monitoringSegments(assets: [string, AnyObj][], snaps: Record<string, AnyObj>): TickerSeg[] {
   const out: TickerSeg[] = [];
-  let any = false;
   for (const [assetId, acfg] of assets) {
     if (!acfg?.enabled) continue;
     const label = String(acfg.label || assetId).toUpperCase();
     const s = snaps[assetId];
     if (!s || !snapIsUseful(s)) continue;
-    any = true;
     if (out.length) out.push(dot());
     const tick = String(s.ticker || "").slice(0, 28);
     const y =
@@ -119,18 +117,81 @@ function monitoringSegments(assets: [string, AnyObj][], snaps: Record<string, An
         ? `${Number(s.minutes_left).toFixed(1)}m`
         : "—";
     const rules = Array.isArray(s.rules_matched) ? (s.rules_matched as string[]).filter(Boolean) : [];
-    out.push(seg(`${label} `, "muted"), seg(tick || "—", "muted"), seg(" YES ", "muted"));
+    const askN = Number(ask);
+    const bidN = Number(bid);
+    const bookTone: Tone = Number.isFinite(askN) && Number.isFinite(bidN) && askN > 0 && bidN > 0 ? "pos" : "muted";
+    out.push(seg(`${label} `, "warn"), seg(tick || "—", "muted"), seg(" YES ", "muted"));
     if (y != null) {
       const lean: Tone = y >= 50 ? "yes" : "no";
       out.push(seg(`${y}%`, lean));
     } else out.push(seg("—%", "muted"));
-    out.push(seg(` bid ${bid} ask ${ask} `, "muted"), seg(mins, "muted"));
+    out.push(seg(` bid ${bid} ask ${ask} `, bookTone), seg(mins, "muted"));
     if (rules.length) {
-      out.push(seg(" rules ", "muted"), seg(rules.join(", "), "muted"));
+      out.push(seg(" rules ", "muted"), seg(rules.join(", "), "yes"));
     }
   }
-  if (!any) return [seg("Scanning…", "muted")];
   return out;
+}
+
+function parsePulseFields(lines: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!Array.isArray(lines)) return out;
+  for (const raw of lines as unknown[]) {
+    const s = String(raw || "");
+    const chunks = s.split("|").map((x) => x.trim()).filter(Boolean);
+    for (const c of chunks) {
+      const i = c.indexOf("=");
+      if (i <= 0) continue;
+      const k = c.slice(0, i).trim();
+      const v = c.slice(i + 1).trim();
+      if (!k) continue;
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function toneForPct(raw: string): Tone {
+  const n = Number(String(raw || "").replace("%", "").trim());
+  if (!Number.isFinite(n)) return "muted";
+  if (n > 0) return "pos";
+  if (n < 0) return "neg";
+  return "muted";
+}
+
+function toneForYes(raw: string): Tone {
+  const n = Number(String(raw || "").replace("%", "").trim());
+  if (!Number.isFinite(n)) return "muted";
+  return n >= 50 ? "yes" : "no";
+}
+
+function labPulseFallbackSegments(branch: BranchKey, labThoughts: AnyObj | undefined): TickerSeg[] {
+  const lt = labThoughts && typeof labThoughts === "object" ? labThoughts : {};
+  const key = branch === "lab_a" ? "lab_a" : branch === "lab_b" ? "lab_b" : branch === "lab_c" ? "lab_c" : "lab_a";
+  const rows = Array.isArray((lt as AnyObj)[key]) ? ((lt as AnyObj)[key] as unknown[]) : [];
+  const f = parsePulseFields(rows);
+  if (!Object.keys(f).length) return [seg("No market update yet.", "muted")];
+  const tag = branch === "live" ? "Lab pulse (A)" : branch === "lab_a" ? "Lab pulse (A)" : branch === "lab_b" ? "Lab pulse (B)" : "Lab pulse (C)";
+  const yes = f.implied_yes_latest || "na";
+  const ret = f.return || "na";
+  const streak = f.streak || "0";
+  const trig = f.trigger_remaining || "na";
+  const pnl = f.last_settle_pnl_cents || "na";
+  const pnlN = Number(pnl);
+  const pnlTone: Tone = Number.isFinite(pnlN) ? (pnlN > 0 ? "pos" : pnlN < 0 ? "neg" : "muted") : "muted";
+  return [
+    seg(`${tag} | no market feed `, "warn"),
+    seg("YES ", "muted"),
+    seg(yes, toneForYes(yes)),
+    seg(" · Return ", "muted"),
+    seg(ret, toneForPct(ret)),
+    seg(" · Streak ", "muted"),
+    seg(streak, Number(streak) >= 2 ? "warn" : "muted"),
+    seg(" · Trigger ", "muted"),
+    seg(trig, Number(trig) === 0 ? "warn" : "muted"),
+    seg(" · LastPnL ", "muted"),
+    seg(pnl, pnlTone),
+  ];
 }
 
 function qtyTone(q: number): Tone {
@@ -292,8 +353,9 @@ function buildBranchSegments(args: {
   recentTrades: AnyObj[];
   positionByAsset: AnyObj | undefined;
   kalshiPrivateOk: boolean;
+  labThoughts: AnyObj | undefined;
 }): TickerSeg[] {
-  const { branch, cfg, metrics, snaps, engineBlock, recentTrades, positionByAsset, kalshiPrivateOk } = args;
+  const { branch, cfg, metrics, snaps, engineBlock, recentTrades, positionByAsset, kalshiPrivateOk, labThoughts } = args;
   const parts: TickerSeg[][] = [];
 
   parts.push(headlineSegments(branch, cfg, metrics, kalshiPrivateOk));
@@ -309,7 +371,11 @@ function buildBranchSegments(args: {
   }
 
   const mon = monitoringSegments(orderedAssets(cfg.assets), snaps);
-  if (mon.length) parts.push([dot(), ...mon]);
+  if (mon.length) {
+    parts.push([dot(), ...mon]);
+  } else {
+    parts.push([dot(), ...labPulseFallbackSegments(branch, labThoughts)]);
+  }
 
   const pos = positionSegmentsForBranch(positionByAsset, branch, kalshiPrivateOk);
   if (pos.length) parts.push([dot(), ...pos]);
@@ -415,6 +481,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
   const mA = ((dash?.metrics_lab_a || dash?.metrics_sim_lab) || {}) as AnyObj;
   const mB = (dash?.metrics_lab_b || {}) as AnyObj;
   const mC = (dash?.metrics_lab_c || {}) as AnyObj;
+  const labThoughts = (dash?.lab_thoughts || {}) as AnyObj;
 
   const segBundles = useMemo(() => {
     const live = buildBranchSegments({
@@ -426,6 +493,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       recentTrades,
       positionByAsset: posBy,
       kalshiPrivateOk,
+      labThoughts,
     });
     const a = buildBranchSegments({
       branch: "lab_a",
@@ -436,6 +504,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       recentTrades,
       positionByAsset: posBy,
       kalshiPrivateOk,
+      labThoughts,
     });
     const b = buildBranchSegments({
       branch: "lab_b",
@@ -446,6 +515,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       recentTrades,
       positionByAsset: posBy,
       kalshiPrivateOk,
+      labThoughts,
     });
     const c = buildBranchSegments({
       branch: "lab_c",
@@ -456,9 +526,10 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       recentTrades,
       positionByAsset: posBy,
       kalshiPrivateOk,
+      labThoughts,
     });
     return { live, lab_a: a, lab_b: b, lab_c: c };
-  }, [cfg, mLive, mA, mB, mC, snapsLive, snapsA, snapsB, snapsC, eng, recentTrades, posBy, kalshiPrivateOk]);
+  }, [cfg, mLive, mA, mB, mC, snapsLive, snapsA, snapsB, snapsC, eng, recentTrades, posBy, kalshiPrivateOk, labThoughts]);
 
   const dur = (segs: TickerSeg[]) => {
     const len = segs.reduce((n, s) => n + s.text.length, 0);
