@@ -223,6 +223,58 @@ input[type="number"] {
   color: var(--text);
 }
 
+.pill--engine-on {
+  border-color: rgba(94, 243, 169, 0.45);
+  background: rgba(94, 243, 169, 0.12);
+  color: #9feec9;
+}
+
+.pill--engine-on strong {
+  color: #c8ffe4;
+}
+
+.pill--engine-off {
+  border-color: var(--border);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--muted);
+}
+
+.pill--engine-off strong {
+  color: var(--text);
+}
+
+.settings-lab-engines-panel {
+  margin-top: 10px;
+  padding: 10px 12px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(10, 16, 36, 0.65);
+}
+
+.settings-lab-engines-panel__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.settings-lab-engine-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-top: 10px;
+  align-items: center;
+}
+
+.settings-lab-engine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  align-items: center;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -297,11 +349,105 @@ input[type="number"] {
   min-width: 0;
 }
 
+.hero-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+
+.hero-head .title {
+  margin: 0;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.hero-head .kalshi-setup-orbs {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+
 .hero-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* Lab “pulse” strip — same layout idea as Snap reconcile (one line, ellipsis, rotate). */
+.lab-thoughts-strip {
+  margin-top: 10px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 2px solid rgba(198, 40, 40, 0.75);
+  background: rgba(198, 40, 40, 0.1);
+  color: #ffc9c9;
+  font-size: 12px;
+  line-height: 1.35;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lab-thoughts-strip__label {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: #ff8a8a;
+}
+
+.lab-thoughts-strip__marquee {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  color: #dff7e8;
+  mask-image: linear-gradient(90deg, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+}
+
+.lab-thoughts-strip__track {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.lab-thoughts-strip__track--scroll {
+  animation-name: lab-thought-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.lab-thoughts-strip__track--static .lab-thoughts-strip__seg {
+  padding-right: 0;
+}
+
+.lab-thoughts-strip__seg {
+  display: inline-block;
+  padding-right: 2.5rem;
+  white-space: nowrap;
+}
+
+@keyframes lab-thought-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lab-thoughts-strip__track--scroll {
+    animation: none;
+  }
+
+  .lab-thoughts-strip__marquee {
+    overflow-x: auto;
+    mask-image: none;
+  }
 }
 
 .env-pill {

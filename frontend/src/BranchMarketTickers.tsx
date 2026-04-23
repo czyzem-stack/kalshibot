@@ -489,7 +489,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       aria-label="Live, Lab A, Lab B, and Lab C tickers with aligned snapshots"
     >
       <div className="branch-ticker-band">
-        <TickerRow label="LIVE" accent="#6ee7ff" segments={segBundles.live} durationSec={dur(segBundles.live)} />
+        <TickerRow label="Live" accent="#6ee7ff" segments={segBundles.live} durationSec={dur(segBundles.live)} />
         <TickerSnapAside
           title={tipLive}
           aria-label="Live portfolio or paper equity and return vs start"
@@ -506,7 +506,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         </TickerSnapAside>
       </div>
       <div className="branch-ticker-band">
-        <TickerRow label="LAB A" accent="#c4b5fd" segments={segBundles.lab_a} durationSec={dur(segBundles.lab_a)} />
+        <TickerRow label="Lab A" accent="#c4b5fd" segments={segBundles.lab_a} durationSec={dur(segBundles.lab_a)} />
         <TickerSnapAside
           title="Lab A: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
           aria-label="Lab A mark-to-market or equity and return vs start"
@@ -516,7 +516,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         />
       </div>
       <div className="branch-ticker-band">
-        <TickerRow label="LAB B" accent="#fdba74" segments={segBundles.lab_b} durationSec={dur(segBundles.lab_b)} />
+        <TickerRow label="Lab B" accent="#fdba74" segments={segBundles.lab_b} durationSec={dur(segBundles.lab_b)} />
         <TickerSnapAside
           title="Lab B: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
           aria-label="Lab B mark-to-market or equity and return vs start"
@@ -526,7 +526,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         />
       </div>
       <div className="branch-ticker-band">
-        <TickerRow label="LAB C" accent="#f9a8d4" segments={segBundles.lab_c} durationSec={dur(segBundles.lab_c)} />
+        <TickerRow label="Lab C" accent="#f9a8d4" segments={segBundles.lab_c} durationSec={dur(segBundles.lab_c)} />
         <TickerSnapAside
           title="Lab C: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
           aria-label="Lab C mark-to-market or equity and return vs start"

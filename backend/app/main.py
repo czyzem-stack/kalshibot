@@ -4,6 +4,7 @@ import asyncio
 import csv
 import datetime as dt
 import io
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -274,6 +275,232 @@ def _enrich_strategy_metrics(
         and abs(latest_equity_snap_dollars - eq) > 0.02
     ):
         m["equity_snap_vs_calc_diff_dollars"] = round(latest_equity_snap_dollars - eq, 4)
+
+
+def _trade_extra_dict(t: dict[str, Any]) -> dict[str, Any]:
+    raw = t.get("extra_json")
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(str(raw))
+    except Exception:
+        return {}
+
+
+def _trade_matches_lab_branch(t: dict[str, Any], branch_key: str) -> bool:
+    b = str(t.get("branch") or "live").strip().lower()
+    if branch_key == BRANCH_LAB_A:
+        return b in ("lab_a", "sim_lab")
+    return b == branch_key
+
+
+def _trade_is_paper_sim_row(t: dict[str, Any]) -> bool:
+    mode = str(t.get("mode") or "").strip().lower()
+    sim = int(t.get("simulated") or 0)
+    return mode == "simulate" or (mode == "" and sim == 1)
+
+
+def _trade_is_settled_row(t: dict[str, Any]) -> bool:
+    if str(t.get("status") or "").strip().lower() != "settled":
+        return False
+    return t.get("pnl_cents") is not None
+
+
+def _lab_settled_paper_rows(trades: list[dict[str, Any]], branch_key: str) -> list[dict[str, Any]]:
+    """Recent trades are newest-first; keep only settled simulated rows for one lab branch."""
+    out: list[dict[str, Any]] = []
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+        if not _trade_matches_lab_branch(t, branch_key):
+            continue
+        if not _trade_is_paper_sim_row(t) or not _trade_is_settled_row(t):
+            continue
+        out.append(t)
+    return out
+
+
+def _loss_streak_newest_first(settled_newest_first: list[dict[str, Any]]) -> int:
+    streak = 0
+    for t in settled_newest_first:
+        try:
+            pnl = int(t.get("pnl_cents") or 0)
+        except (TypeError, ValueError):
+            break
+        if pnl < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _entry_implied_yes_pct(t: dict[str, Any]) -> int | None:
+    ex = _trade_extra_dict(t)
+    raw = ex.get("entry_implied_yes")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(round(float(raw) * 100.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_yes_rule_floor_pct(lab: dict[str, Any], cfg: dict[str, Any]) -> int | None:
+    rules = lab.get("rules") if isinstance(lab.get("rules"), list) and lab.get("rules") else cfg.get("rules")
+    if not isinstance(rules, list):
+        return None
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        side = str(r.get("side") or "yes").strip().lower()
+        if side == "no":
+            continue
+        lo = r.get("min_prob")
+        if lo is None or lo == "":
+            continue
+        try:
+            return int(round(float(lo) * 100.0))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _lab_thought_lines(
+    *,
+    label: str,
+    branch_key: str,
+    lab: dict[str, Any],
+    cfg: dict[str, Any],
+    trades: list[dict[str, Any]],
+    metrics: dict[str, Any],
+    engine_on: bool,
+) -> list[str]:
+    lines: list[str] = []
+    settled_rows = _lab_settled_paper_rows(trades, branch_key)
+    settled_n = int(metrics.get("settled_trades") or 0)
+    open_n = int(metrics.get("open_sim_trades") or 0)
+    ret_pct = metrics.get("return_mtm_vs_start_pct")
+    if ret_pct is None:
+        ret_pct = metrics.get("return_vs_start_pct")
+    try:
+        ret_s = f"{float(ret_pct):.1f}%" if ret_pct is not None else "—"
+    except (TypeError, ValueError):
+        ret_s = "—"
+    wr = metrics.get("win_rate_pct")
+    try:
+        wr_s = f"{float(wr):.0f}% win rate" if wr is not None and settled_n else "win rate n/a"
+    except (TypeError, ValueError):
+        wr_s = "win rate n/a"
+
+    if not engine_on:
+        lines.append(
+            f"{label} engine is off — idle; {settled_n} settled in DB, {open_n} open sims; last return vs basis ≈ {ret_s}."
+        )
+    else:
+        lines.append(
+            f"{label} scanning — {settled_n} settled, {open_n} open sim, return vs basis ≈ {ret_s} ({wr_s})."
+        )
+
+    streak = _loss_streak_newest_first(settled_rows)
+    floor_pct = _first_yes_rule_floor_pct(lab if isinstance(lab, dict) else {}, cfg if isinstance(cfg, dict) else {})
+    auto_opt = bool(lab.get("auto_optimize")) if isinstance(lab, dict) else False
+
+    if streak >= 1 and settled_rows:
+        last_loss = settled_rows[0]
+        try:
+            last_pnl = int(last_loss.get("pnl_cents") or 0)
+        except (TypeError, ValueError):
+            last_pnl = 0
+        entry_pct = _entry_implied_yes_pct(last_loss) if last_pnl < 0 else None
+        if streak >= 2 and entry_pct is not None:
+            nudge = min(95, entry_pct + 1) if floor_pct is None else min(95, max(entry_pct + 1, floor_pct + 1))
+            if auto_opt:
+                lines.append(
+                    f"{label} lost {streak} in a row with last entry near {entry_pct}% implied YES — "
+                    f"considering whether to tighten bands toward ~{nudge}% floor (auto-optimize may nudge sizing on eligible ticks)."
+                )
+            else:
+                lines.append(
+                    f"{label} lost {streak} in a row with last entry near {entry_pct}% implied YES — "
+                    f"review YES rule floors (currently ~{floor_pct if floor_pct is not None else 'unset'}%) vs recent entries."
+                )
+        elif streak >= 2 and entry_pct is None:
+            lines.append(
+                f"{label} lost {streak} in a row — comparing recent fills to configured YES/NO bands and open risk."
+            )
+        elif streak >= 1 and entry_pct is not None and last_pnl < 0:
+            lines.append(
+                f"{label} last settle was a loss near {entry_pct}% implied YES — watching for a second loss before suggesting a floor nudge."
+            )
+        elif streak == 0 and settled_rows:
+            try:
+                last_win_pnl = int(settled_rows[0].get("pnl_cents") or 0)
+            except (TypeError, ValueError):
+                last_win_pnl = 0
+            if last_win_pnl >= 0:
+                lines.append(f"{label} last settle was flat or green — loss streak reset.")
+
+    note = lab.get("optimizer_note") if isinstance(lab, dict) else None
+    if note:
+        lines.append(f"{label} optimizer note: {str(note).strip()}")
+
+    if floor_pct is not None and len(lines) < 4:
+        lines.append(f"{label} primary YES band floor ≈ {floor_pct}% (from active rules).")
+
+    if settled_n == 0 and len(lines) < 4:
+        lines.append(f"{label} no settled paper rows yet — waiting for rules, liquidity, and windows to align.")
+
+    return lines[:4]
+
+
+def _lab_thought_stream(
+    cfg: dict[str, Any],
+    trades: list[dict[str, Any]],
+    *,
+    lab_a: dict[str, Any],
+    lab_b: dict[str, Any],
+    lab_c: dict[str, Any],
+    metrics_lab_a: dict[str, Any],
+    metrics_lab_b: dict[str, Any],
+    metrics_lab_c: dict[str, Any],
+    lab_a_engine_on: bool,
+    lab_b_engine_on: bool,
+    lab_c_engine_on: bool,
+) -> dict[str, list[str]]:
+    la = lab_a if isinstance(lab_a, dict) else {}
+    lb = lab_b if isinstance(lab_b, dict) else {}
+    lc = lab_c if isinstance(lab_c, dict) else {}
+    return {
+        "lab_a": _lab_thought_lines(
+            label="Lab A",
+            branch_key=BRANCH_LAB_A,
+            lab=la,
+            cfg=cfg,
+            trades=trades,
+            metrics=metrics_lab_a,
+            engine_on=lab_a_engine_on,
+        ),
+        "lab_b": _lab_thought_lines(
+            label="Lab B",
+            branch_key=BRANCH_LAB_B,
+            lab=lb,
+            cfg=cfg,
+            trades=trades,
+            metrics=metrics_lab_b,
+            engine_on=lab_b_engine_on,
+        ),
+        "lab_c": _lab_thought_lines(
+            label="Lab C",
+            branch_key=BRANCH_LAB_C,
+            lab=lc,
+            cfg=cfg,
+            trades=trades,
+            metrics=metrics_lab_c,
+            engine_on=lab_c_engine_on,
+        ),
+    }
 
 
 @asynccontextmanager
@@ -926,6 +1153,19 @@ async def dashboard() -> dict[str, Any]:
         "lab_a_config": lab_a,
         "lab_b_config": lab_b,
         "lab_c_config": lab_c,
+        "lab_thoughts": _lab_thought_stream(
+            cfg,
+            trades,
+            lab_a=lab_a if isinstance(lab_a, dict) else {},
+            lab_b=lab_b if isinstance(lab_b, dict) else {},
+            lab_c=lab_c if isinstance(lab_c, dict) else {},
+            metrics_lab_a=metrics_lab_a,
+            metrics_lab_b=metrics_lab_b,
+            metrics_lab_c=metrics_lab_c,
+            lab_a_engine_on=lab_a_engine_on,
+            lab_b_engine_on=lab_b_engine_on,
+            lab_c_engine_on=lab_c_engine_on,
+        ),
     }
 
 

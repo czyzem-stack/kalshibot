@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -94,6 +95,101 @@ async function apiPostJson(path: string, body: AnyObj = {}): Promise<AnyObj> {
     throw new Error(detail ? `${path} ${r.status}: ${detail}` : `${path} ${r.status}`);
   }
   return (await r.json()) as AnyObj;
+}
+
+function labThoughtsToSentence(lines: unknown): string {
+  if (!Array.isArray(lines) || lines.length === 0) return "Watching paper metrics and recent settles.";
+  const parts = (lines as string[]).map((s) => String(s).trim()).filter(Boolean);
+  return parts.join(" · ").replace(/\s+/g, " ").trim();
+}
+
+/** When text is wider than the strip, scroll horizontally (marquee); otherwise show static one line. */
+function LabThoughtScrollingLine({ text }: { text: string }) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const firstRef = useRef<HTMLSpanElement>(null);
+  const [needsScroll, setNeedsScroll] = useState(false);
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const first = firstRef.current;
+    if (!wrap || !first) return;
+    const measure = () => {
+      setNeedsScroll(first.getBoundingClientRect().width > wrap.clientWidth + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(wrap);
+    ro.observe(first);
+    return () => ro.disconnect();
+  }, [text]);
+
+  const durSec = Math.max(16, Math.min(100, Math.round(text.length * 0.065)));
+
+  return (
+    <div ref={wrapRef} className="lab-thoughts-strip__marquee" title={text}>
+      <div
+        className={`lab-thoughts-strip__track${needsScroll ? " lab-thoughts-strip__track--scroll" : " lab-thoughts-strip__track--static"}`}
+        style={needsScroll ? { animationDuration: `${durSec}s` } : undefined}
+      >
+        <span ref={firstRef} className="lab-thoughts-strip__seg">
+          {text}
+        </span>
+        {needsScroll ? (
+          <span className="lab-thoughts-strip__seg" aria-hidden>
+            {text}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** One line at a time, rotating like Snap reconcile — Lab A / B / C “pulse” from /api/dashboard lab_thoughts. */
+function LabThoughtsStrip({ thoughts }: { thoughts: AnyObj | undefined }) {
+  const stripSig = useMemo(() => JSON.stringify(thoughts ?? null), [thoughts]);
+
+  const bits = useMemo(() => {
+    try {
+      const t = JSON.parse(stripSig) as AnyObj | null;
+      if (!t || typeof t !== "object") return [] as string[];
+      return [
+        `Lab A — ${labThoughtsToSentence(t.lab_a)}`,
+        `Lab B — ${labThoughtsToSentence(t.lab_b)}`,
+        `Lab C — ${labThoughtsToSentence(t.lab_c)}`,
+      ];
+    } catch {
+      return [] as string[];
+    }
+  }, [stripSig]);
+
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    setIdx(0);
+  }, [stripSig]);
+
+  useEffect(() => {
+    if (bits.length <= 1) return;
+    const id = window.setInterval(() => setIdx((i) => (i + 1) % bits.length), 4500);
+    return () => window.clearInterval(id);
+  }, [bits.length, stripSig]);
+
+  if (!bits.length) return null;
+
+  const line = bits[idx % bits.length];
+
+  return (
+    <div
+      className="lab-thoughts-strip section-tip"
+      role="status"
+      aria-live="polite"
+      aria-label="Rotating lab reasoning hints"
+      title="Cycles Lab A, B, and C — same idea as Snap reconcile: one sentence per branch from the latest dashboard poll."
+    >
+      <strong className="lab-thoughts-strip__label">Lab pulse</strong>
+      <LabThoughtScrollingLine text={line} />
+    </div>
+  );
 }
 
 function fmtMoney(n: number) {
@@ -1447,12 +1543,15 @@ export default function App() {
       ) : null}
       <div className="top">
         <div className="hero">
-          <h1
-            className="title section-tip"
-            title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
-          >
-            Kalshi 15m crypto bot
-          </h1>
+          <div className="hero-head">
+            <h1
+              className="title section-tip"
+              title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
+            >
+              Kalshi 15m crypto bot
+            </h1>
+            {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
+          </div>
           <div className="hero-meta" title="Kalshi REST host and environment loaded by the backend from .env.">
             <span className="env-pill" title="Base URL the backend uses for Kalshi (demo vs prod).">
               API:{" "}
@@ -1475,7 +1574,7 @@ export default function App() {
           {dash ? (
             <SnapReconcileStrip cfg={cfg} metrics={metrics} metricsLabA={metricsLabA} metricsLabB={metricsLabB} metricsLabC={metricsLabC} />
           ) : null}
-          {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
+          {dash ? <LabThoughtsStrip thoughts={dash.lab_thoughts as AnyObj | undefined} /> : null}
         </div>
         <div className="toolbar-panel">
           <div className="toolbar toolbar--dock">
@@ -1525,43 +1624,6 @@ export default function App() {
                   onClick={() => setRunning(!Boolean(cfg.engine_running))}
                 >
                   Engine {cfg.engine_running ? "on" : "off"}
-                </button>
-              </div>
-            </div>
-            <div className="toolbar-block" title="Always-paper engines with their own parameters.">
-              <div className="toolbar-label">Labs</div>
-              <div className="toolbar-group">
-                <button
-                  className="primary"
-                  disabled={busy}
-                  title="Staging / blend paper engine (optimizer tuning applies here before Live)."
-                  onClick={() => setSimLabRunning(!Boolean(engineLabA?.engine_running ?? simLab.engine_running))}
-                >
-                  A {labABranchEngineOn ? "on" : "off"}
-                </button>
-                <button
-                  className="primary"
-                  disabled={busy}
-                  title="Conservative reference arm — parallel paper; optimizer does not auto-apply rules here."
-                  onClick={() => setLabRunning("b", !Boolean(labB.engine_running))}
-                >
-                  B {labBBranchEngineOn ? "on" : "off"}
-                </button>
-                <button
-                  className="primary"
-                  disabled={busy}
-                  title="Aggressive reference arm — parallel paper; optimizer does not auto-apply rules here."
-                  onClick={() => setLabRunning("c", !Boolean(labC.engine_running))}
-                >
-                  C {labCBranchEngineOn ? "on" : "off"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  title="Add $100.00 to each lab’s paper_balance_cents; if paper_lifetime_basis_cents is set, bump it by the same amount so return % vs basis matches the larger bankroll. Optimizer, rules, and SQLite trades unchanged."
-                  onClick={() => void addAllLabsPaperBankroll()}
-                >
-                  All +$100
                 </button>
               </div>
             </div>
@@ -2817,6 +2879,13 @@ export default function App() {
         optimizerSaving={optimizerSaving}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
+        labEngineAOn={labABranchEngineOn}
+        labEngineBOn={labBBranchEngineOn}
+        labEngineCOn={labCBranchEngineOn}
+        onToggleLabA={() => void setSimLabRunning(!labABranchEngineOn)}
+        onToggleLabB={() => void setLabRunning("b", !labBBranchEngineOn)}
+        onToggleLabC={() => void setLabRunning("c", !labCBranchEngineOn)}
+        onAddAllLabsPaper={() => void addAllLabsPaperBankroll()}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
         </>

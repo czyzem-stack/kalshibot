@@ -198,6 +198,14 @@ export type SettingsOverlayProps = {
   onResetTradingData: (branch: "all" | "live" | "lab_a" | "lab_b" | "lab_c", backup: boolean) => void | Promise<void>;
   /** Direct ``PUT /api/config/lab-branches`` (merge + optional branch data reset); independent of optimizer. */
   onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
+  /** Paper lab engine toggles + shared bankroll bump (same actions as the former hero rail). */
+  labEngineAOn: boolean;
+  labEngineBOn: boolean;
+  labEngineCOn: boolean;
+  onToggleLabA: () => void | Promise<void>;
+  onToggleLabB: () => void | Promise<void>;
+  onToggleLabC: () => void | Promise<void>;
+  onAddAllLabsPaper: () => void | Promise<void>;
 };
 
 export default function SettingsOverlay({
@@ -228,6 +236,13 @@ export default function SettingsOverlay({
   optimizerSaving = false,
   onResetTradingData,
   onApplyLabBranches,
+  labEngineAOn,
+  labEngineBOn,
+  labEngineCOn,
+  onToggleLabA,
+  onToggleLabB,
+  onToggleLabC,
+  onAddAllLabsPaper,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   useEffect(() => {
@@ -481,6 +496,49 @@ export default function SettingsOverlay({
             <h2 className="section-tip" style={{ marginTop: 0 }} title="Parallel paper labs with separate sizing, rules, and bankroll.">
               Simulation labs
             </h2>
+            <div
+              className="section-tip settings-lab-engines-panel"
+              title="Starts or stops each lab’s paper engine loop and adds $100 to every lab’s paper bankroll (and lifetime basis when configured). Status reflects the last dashboard poll."
+            >
+              <div className="settings-lab-engines-panel__title-row">
+                <strong style={{ fontSize: 11, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--muted)" }}>
+                  Lab engines
+                </strong>
+                <span className="sub" style={{ fontSize: 11 }}>
+                  Paper A / B / C — state from dashboard
+                </span>
+              </div>
+              <div className="settings-lab-engine-status" aria-label="Lab engine running state">
+                <span className={`pill ${labEngineAOn ? "pill--engine-on" : "pill--engine-off"}`}>
+                  Lab A · <strong>{labEngineAOn ? "Active" : "Stopped"}</strong>
+                </span>
+                <span className={`pill ${labEngineBOn ? "pill--engine-on" : "pill--engine-off"}`}>
+                  Lab B · <strong>{labEngineBOn ? "Active" : "Stopped"}</strong>
+                </span>
+                <span className={`pill ${labEngineCOn ? "pill--engine-on" : "pill--engine-off"}`}>
+                  Lab C · <strong>{labEngineCOn ? "Active" : "Stopped"}</strong>
+                </span>
+              </div>
+              <div className="settings-lab-engine-actions">
+                <button type="button" className="primary" disabled={busy} title="Lab A — staging paper engine." onClick={() => void onToggleLabA()}>
+                  Turn A {labEngineAOn ? "off" : "on"}
+                </button>
+                <button type="button" className="primary" disabled={busy} title="Lab B — conservative reference arm." onClick={() => void onToggleLabB()}>
+                  Turn B {labEngineBOn ? "off" : "on"}
+                </button>
+                <button type="button" className="primary" disabled={busy} title="Lab C — aggressive reference arm." onClick={() => void onToggleLabC()}>
+                  Turn C {labEngineCOn ? "off" : "on"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Add $100 to each lab’s paper balance and lifetime basis (when set); trades and rules unchanged."
+                  onClick={() => void onAddAllLabsPaper()}
+                >
+                  All +$100
+                </button>
+              </div>
+            </div>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               <strong>Lab A</strong> = staging (scheduled optimizer persists adaptive tuning here). <strong>Lab B</strong> = conservative and{" "}
               <strong>Lab C</strong> = aggressive reference arms (same data to Claude for context; no auto-applied rule changes on B/C). Bankroll
