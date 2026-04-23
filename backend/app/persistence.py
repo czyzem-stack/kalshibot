@@ -240,6 +240,7 @@ def default_bot_config() -> dict[str, Any]:
             "include_fees_in_score": True,
             "regime_lookback_hours": 4,
             "backtest_proposals": True,
+            "adaptive_skip_backtest_gate": False,
             "change_history": [],
             "last_run_at": None,
             "last_status": "",

@@ -1158,6 +1158,8 @@ export default function App() {
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
   const optimizerHistoryBootstrapped = useRef(false);
+  /** Last ``optimizer.last_run_at`` ISO we have already notified for (avoids duplicate toasts on dashboard re-poll). */
+  const optimizerLastRunNotifiedAt = useRef<string>("");
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c">("live");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
@@ -1234,12 +1236,22 @@ export default function App() {
 
   const optimizerChangeHistoryMerged = useMemo(() => {
     const oc = (cfg as AnyObj)?.optimizer;
-    const fromDash = oc?.change_history;
-    const fromPanel = optimizerCfg?.change_history;
-    if (Array.isArray(fromDash) && fromDash.length) return fromDash as AnyObj[];
-    if (Array.isArray(fromPanel) && fromPanel.length) return fromPanel as AnyObj[];
-    return [] as AnyObj[];
-  }, [cfg, optimizerCfg?.change_history]);
+    const fromDash = Array.isArray(oc?.change_history) ? (oc.change_history as AnyObj[]) : [];
+    const fromActivity = Array.isArray((dash as AnyObj | null)?.optimizer_activity?.change_history)
+      ? ((dash as AnyObj).optimizer_activity.change_history as AnyObj[])
+      : [];
+    const fromPanel = Array.isArray(optimizerCfg?.change_history) ? (optimizerCfg.change_history as AnyObj[]) : [];
+    const byId = new Map<string, AnyObj>();
+    for (const row of [...fromPanel, ...fromActivity, ...fromDash]) {
+      if (!row || typeof row !== "object") continue;
+      const id = String((row as AnyObj).id || "").trim();
+      if (!id) continue;
+      if (!byId.has(id)) byId.set(id, row as AnyObj);
+    }
+    const merged = Array.from(byId.values());
+    merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+    return merged;
+  }, [cfg, dash, optimizerCfg?.change_history]);
 
   useEffect(() => {
     try {
@@ -1270,14 +1282,14 @@ export default function App() {
 
   useEffect(() => {
     const history = optimizerChangeHistoryMerged;
-    if (!history.length) return;
-    // First load after refresh: mark current history as seen; do not replay all old toasts.
+    // First dashboard snapshot: mark whatever history exists now as seen (possibly empty), so the next
+    // new row after hours of silence still toasts — older logic returned early on [] and never bootstrapped.
     if (!optimizerHistoryBootstrapped.current) {
+      optimizerHistoryBootstrapped.current = true;
       for (const h of history) {
         const id = String(h?.id || "");
         if (id) seenOptimizerEventIds.current.add(id);
       }
-      optimizerHistoryBootstrapped.current = true;
       try {
         window.sessionStorage.setItem(
           OPTIMIZER_SEEN_IDS_KEY,
@@ -1288,6 +1300,7 @@ export default function App() {
       }
       return;
     }
+    if (!history.length) return;
     const fresh = history.filter((h) => {
       const id = String(h?.id || "");
       return id && !seenOptimizerEventIds.current.has(id) && !dismissedOptimizerEventIds.current.has(id);
@@ -1320,10 +1333,87 @@ export default function App() {
     }
   }, [optimizerChangeHistoryMerged]);
 
+  useEffect(() => {
+    const oc = (cfg as AnyObj)?.optimizer as AnyObj | undefined;
+    const lr = String(oc?.last_run_at || "").trim();
+    if (!lr) return;
+    if (optimizerLastRunNotifiedAt.current === "") {
+      optimizerLastRunNotifiedAt.current = lr;
+      return;
+    }
+    if (optimizerLastRunNotifiedAt.current === lr) return;
+    optimizerLastRunNotifiedAt.current = lr;
+    const id = `opt-run-${lr}`;
+    if (seenOptimizerEventIds.current.has(id)) return;
+    seenOptimizerEventIds.current.add(id);
+    const st = String(oc?.last_status || "unknown");
+    const err = String(oc?.last_error || "").trim();
+    const lc = String(oc?.last_change_at || "").trim();
+    const parts = [`Status: ${st}`];
+    if (lc) parts.push(`last config change ${fmtIsoLocal(lc)}`);
+    if (err) parts.push(err.slice(0, 240));
+    const body = parts.join(" · ");
+    setOptimizerNotifs((prev) => [{ id, title: "Optimizer run finished", body, created_at: lr }, ...prev].slice(0, 10));
+    if ("Notification" in window) {
+      if (Notification.permission === "granted") {
+        void new Notification("Optimizer run finished", { body });
+      } else if (Notification.permission === "default") {
+        void Notification.requestPermission().then((p) => {
+          if (p === "granted") void new Notification("Optimizer run finished", { body });
+        });
+      }
+    }
+    try {
+      window.sessionStorage.setItem(
+        OPTIMIZER_SEEN_IDS_KEY,
+        JSON.stringify(Array.from(seenOptimizerEventIds.current).slice(-600)),
+      );
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [cfg]);
+
   const metrics = dash?.metrics || {};
   const metricsLabA = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
+
+  const promoteLabAToLive = async () => {
+    const pnlA = Number(metricsLabA.total_pnl_dollars ?? 0);
+    const pnlB = Number(metricsLabB.total_pnl_dollars ?? 0);
+    const pnlC = Number(metricsLabC.total_pnl_dollars ?? 0);
+    const ahead = pnlA > pnlB && pnlA > pnlC;
+    if (!ahead) {
+      setErr("Lab A settled PnL must exceed both Lab B and Lab C before promoting to Live.");
+      return;
+    }
+    const sim = Boolean(cfg.simulate);
+    const msg = sim
+      ? `Copy Lab A trading settings (rules, window, bet fraction, filters, fees) to the Live branch?\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} settled PnL.`
+      : `LIVE / REAL MONEY: Copy Lab A settings onto the Live branch. Live uses Real $ when the engine is on.\n\nYou will be asked to type APPLY_LIVE next.\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} settled PnL.`;
+    if (!window.confirm(msg)) return;
+    let ack = "";
+    if (!sim) {
+      ack = String(window.prompt('Confirm by typing APPLY_LIVE (exactly) to copy Lab A into Live while in "Real $" mode.', "") || "").trim();
+      if (ack !== "APPLY_LIVE") {
+        setErr("Promote cancelled — ack phrase did not match.");
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      await apiPostJson("/api/config/promote-lab-a-to-live", {
+        confirm: true,
+        ack_live: ack,
+      });
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const snaps = (dash?.equity_snapshots || []) as AnyObj[];
   const equitySnapsLabA = (dash?.equity_snapshots_lab_a || dash?.equity_snapshots_sim_lab || []) as AnyObj[];
   const equitySnapsLabB = (dash?.equity_snapshots_lab_b || []) as AnyObj[];
@@ -1956,6 +2046,38 @@ export default function App() {
         <h2 id="dash-heading-branch-performance" className="dash-section__title">
           Branch performance
         </h2>
+        <div
+          className="sub"
+          style={{
+            marginBottom: 12,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "8px 14px",
+            alignItems: "center",
+            lineHeight: 1.45,
+          }}
+        >
+          <span title="Settled closed trades in SQLite (same basis as the promote-to-Live API gate).">
+            Settled PnL: <strong>Lab A</strong> {fmtMoney(Number(metricsLabA.total_pnl_dollars ?? 0))} · <strong>B</strong>{" "}
+            {fmtMoney(Number(metricsLabB.total_pnl_dollars ?? 0))} · <strong>C</strong>{" "}
+            {fmtMoney(Number(metricsLabC.total_pnl_dollars ?? 0))}
+          </span>
+          <button
+            type="button"
+            className="primary"
+            disabled={
+              busy ||
+              !(
+                Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabB.total_pnl_dollars ?? 0) &&
+                Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabC.total_pnl_dollars ?? 0)
+              )
+            }
+            title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds both B and C. Extra confirmation when Live is in Real $ mode."
+            onClick={() => void promoteLabAToLive()}
+          >
+            Apply Lab A to Live
+          </button>
+        </div>
         <div className="chart-tabs dash-split-panel__tabs" role="tablist" aria-label="Performance branch tabs">
           {[
             { id: "live", label: "Live" },

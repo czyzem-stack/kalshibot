@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import csv
 import datetime as dt
 import io
@@ -703,6 +704,53 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "config": await store.load_config()}
 
 
+@app.post("/api/config/promote-lab-a-to-live")
+async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """
+    Copy Lab A trading overlays (rules, sizing, filters, etc.) onto top-level Live config.
+
+    By default requires settled paper PnL (cents) on Lab A to exceed both Lab B and Lab C.
+    When ``simulate`` is false (real Kalshi orders), ``ack_live`` must match the UI confirmation token.
+    """
+    if not bool(body.get("confirm")):
+        raise HTTPException(status_code=400, detail="confirm must be true")
+    cfg = await store.load_config()
+    simulate = bool(cfg.get("simulate", True))
+    if not simulate:
+        if str(body.get("ack_live") or "").strip() != "APPLY_LIVE":
+            raise HTTPException(
+                status_code=400,
+                detail="ack_live must be APPLY_LIVE when simulate is false (real-money Live branch).",
+            )
+    skip_gate = bool(body.get("skip_pnl_gate"))
+    if not skip_gate:
+        roll_a = await store.dashboard_branch_trade_rollups(BRANCH_LAB_A, "simulate")
+        roll_b = await store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate")
+        roll_c = await store.dashboard_branch_trade_rollups(BRANCH_LAB_C, "simulate")
+        pa = int(roll_a.get("total_pnl_cents") or 0)
+        pb = int(roll_b.get("total_pnl_cents") or 0)
+        pc = int(roll_c.get("total_pnl_cents") or 0)
+        if not (pa > pb and pa > pc):
+            raise HTTPException(
+                status_code=400,
+                detail="lab_a_settled_pnl_cents_must_exceed_lab_b_and_lab_c",
+            )
+    lab_a = cfg.get("lab_a")
+    if not isinstance(lab_a, dict):
+        raise HTTPException(status_code=400, detail="lab_a_not_configured")
+    for k in LAB_BRANCH_OVERLAY_KEYS:
+        if k not in lab_a:
+            continue
+        v = lab_a[k]
+        if v is None:
+            continue
+        if k == "assets" and isinstance(v, dict) and len(v) == 0:
+            continue
+        cfg[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
+    await store.save_config(cfg)
+    return {"ok": True, "config": await store.load_config()}
+
+
 @app.post("/api/config/labs/add-paper-bankroll")
 async def add_labs_paper_bankroll(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     """
@@ -1374,6 +1422,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         "optimize_bet_size",
         "include_fees_in_score",
         "backtest_proposals",
+        "adaptive_skip_backtest_gate",
     ):
         if k in body:
             v = body[k]
@@ -1402,7 +1451,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                     nxt[k] = max(5, min(24 * 60, int(float(v))))
                 except (TypeError, ValueError):
                     nxt[k] = v
-            elif k in ("optimize_bet_size", "include_fees_in_score", "backtest_proposals"):
+            elif k in ("optimize_bet_size", "include_fees_in_score", "backtest_proposals", "adaptive_skip_backtest_gate"):
                 nxt[k] = bool(v)
             else:
                 nxt[k] = v

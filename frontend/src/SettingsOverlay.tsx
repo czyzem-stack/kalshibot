@@ -868,6 +868,17 @@ export default function SettingsOverlay({
               <input id="opt_backtest_proposals" type="checkbox" defaultChecked={Boolean(optimizerCfg?.backtest_proposals ?? true)} disabled={busy} />
               <span>Backtest adaptive rule proposals before applying</span>
             </label>
+            <label className="checkbox" style={{ border: "none" }}>
+              <input
+                id="opt_adaptive_skip_backtest_gate"
+                type="checkbox"
+                defaultChecked={Boolean(optimizerCfg?.adaptive_skip_backtest_gate ?? false)}
+                disabled={busy}
+              />
+              <span title="When backtesting is on, still allow adaptive threshold moves even if replay PnL does not improve (use when the replay gate blocks all changes during a drawdown).">
+                Allow adaptive changes when replay does not beat baseline (risky)
+              </span>
+            </label>
             <button
               className="primary"
               disabled={busy || optimizerSaving}
@@ -900,6 +911,9 @@ export default function SettingsOverlay({
                   optimize_bet_size: Boolean((document.getElementById("opt_optimize_bet_size") as HTMLInputElement | null)?.checked),
                   include_fees_in_score: Boolean((document.getElementById("opt_include_fees_in_score") as HTMLInputElement | null)?.checked),
                   backtest_proposals: Boolean((document.getElementById("opt_backtest_proposals") as HTMLInputElement | null)?.checked),
+                  adaptive_skip_backtest_gate: Boolean(
+                    (document.getElementById("opt_adaptive_skip_backtest_gate") as HTMLInputElement | null)?.checked,
+                  ),
                 })
               }
             >

@@ -515,7 +515,7 @@ def _apply_adaptive_lab_tuning(
         new_pnl, _, _ = _replay_pnl_under_rules(
             settled, proposed_rules, sig_desc, include_fees_in_score=fee_flag
         )
-        if new_pnl <= base_pnl:
+        if new_pnl <= base_pnl and not bool(oc.get("adaptive_skip_backtest_gate", False)):
             return None
 
     lab = dict(lab_base)
