@@ -1950,11 +1950,13 @@ export default function App() {
         <>
       <KalshiStatusBanner dash={dash} cfg={cfg} />
 
-      <section className="dash-section" aria-labelledby="dash-heading-branch-performance">
+      <div className="dash-main-4grid">
+        <div className="dash-split-row__col dash-split-row__col--metrics dash-split-card">
+      <section className="dash-section dash-section--split-card" aria-labelledby="dash-heading-branch-performance">
         <h2 id="dash-heading-branch-performance" className="dash-section__title">
           Branch performance
         </h2>
-        <div className="chart-tabs" role="tablist" aria-label="Performance branch tabs" style={{ marginTop: 0 }}>
+        <div className="chart-tabs dash-split-panel__tabs" role="tablist" aria-label="Performance branch tabs">
           {[
             { id: "live", label: "Live" },
             { id: "lab_a", label: "Lab A" },
@@ -1988,7 +1990,7 @@ export default function App() {
             </p>
           ) : null}
         </div>
-        <div className="metrics" style={{ marginBottom: 14 }}>
+        <div className="metrics metrics--in-split-card" style={{ marginBottom: 14 }}>
           {(!cfg.simulate && perfBranchMeta.isLive) ? (
             <>
               <MetricTile
@@ -2082,19 +2084,127 @@ export default function App() {
         </div>
       </section>
 
-      {dash ? <OptimizerActivitySection activity={dash.optimizer_activity as AnyObj | undefined} /> : null}
+      <OptimizerActivitySection activity={dash.optimizer_activity as AnyObj | undefined} />
+        </div>
 
-      <div className="grid">
-        <div className="panel">
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
+          <h2
+            id="dash-heading-equity-curves"
+            className="dash-section__title dash-equity-panel__title"
+            title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
+          >
+            Equity curves
+          </h2>
+          <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
+            {(
+              [
+                ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
+                ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
+                ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
+                ["mm", "M / M", "Last snapshot per UTC calendar month."],
+                ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
+              ] as const
+            ).map(([id, label, tip]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={equityGranularity === id}
+                className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
+                title={tip}
+                onClick={() => setEquityGranularity(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="dash-section__legend dash-equity-panel__legend">
+            <p>
+              Live and Labs A–C always shown. <strong>Book value</strong> (solid) vs <strong>MTM</strong> (dashed). The
+              time scale above applies to all four charts.
+            </p>
+          </div>
+          <div className="dash-equity-charts">
+            <div className="dash-equity-chart-block">
+              <h3
+                className="dash-equity-branch-head section-tip"
+                title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed). Intraday tail updates every dashboard poll; paper Live MTM is refreshed from Kalshi on each poll.`}
+              >
+                {activityBranchTabLabel("live")}
+              </h3>
+              <div
+                className="chart chart--equity-stack"
+                title={`${activityBranchTabLabel("live")} equity over time. Hover points for values.`}
+              >
+                <EquityDualLineChart
+                  data={chartData}
+                  equityStroke="#6ee7ff"
+                  mtmStroke="#38bdf8"
+                  revision={`${equityChartRevision(snaps, chartData, metrics)}|tick=${String(dash?.engine?.live?.last_tick_at || "")}`}
+                />
+              </div>
+            </div>
+            <div className="dash-equity-chart-block">
+              <h3
+                className="dash-equity-branch-head section-tip"
+                title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
+              >
+                {activityBranchTabLabel("lab_a")}
+              </h3>
+              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_a")} equity over time.`}>
+                <EquityDualLineChart
+                  data={chartDataLabA}
+                  equityStroke="#a78bfa"
+                  mtmStroke="#c4b5fd"
+                  revision={`${equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}|tick=${String(engineLabA?.last_tick_at || "")}`}
+                />
+              </div>
+            </div>
+            <div className="dash-equity-chart-block">
+              <h3
+                className="dash-equity-branch-head section-tip"
+                title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
+              >
+                {activityBranchTabLabel("lab_b")}
+              </h3>
+              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_b")} equity over time.`}>
+                <EquityDualLineChart
+                  data={chartDataLabB}
+                  equityStroke="#f59e0b"
+                  mtmStroke="#fcd34d"
+                  revision={`${equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}|tick=${String(engineLabB?.last_tick_at || "")}`}
+                />
+              </div>
+            </div>
+            <div className="dash-equity-chart-block">
+              <h3
+                className="dash-equity-branch-head section-tip"
+                title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
+              >
+                {activityBranchTabLabel("lab_c")}
+              </h3>
+              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_c")} equity over time.`}>
+                <EquityDualLineChart
+                  data={chartDataLabC}
+                  equityStroke="#f472b6"
+                  mtmStroke="#fbcfe8"
+                  revision={`${equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}|tick=${String(engineLabC?.last_tick_at || "")}`}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel dashboard-grid-panel">
+          <div className="dashboard-grid-panel__head">
             <h2
-              className="section-tip"
-              style={{ margin: 0 }}
+              id="dash-heading-assets"
+              className="dash-section__title dashboard-grid-panel__title"
               title="Snapshots per series (BTC first, ETH second, then A–Z). Which series the engine scans is controlled by each asset’s enabled flag in bot config (PUT /api/config); dashboard toggles were removed to avoid glitchy reloads. NONE = no rule band matched this tick."
             >
               Assets to watch
             </h2>
-            <div className="chart-tabs" role="tablist" aria-label="Asset snapshot branch" style={{ margin: 0 }}>
+            <div className="chart-tabs dashboard-grid-panel__tabs" role="tablist" aria-label="Asset snapshot branch">
               <button
                 type="button"
                 role="tab"
@@ -2259,114 +2369,28 @@ export default function App() {
 
         </div>
 
-        <div className="panel">
-          <h2
-            className="section-tip"
-            style={{ marginTop: 0 }}
-            title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
-          >
-            Equity curves
-          </h2>
-          <div className="chart-tabs" role="tablist" aria-label="Equity time scale">
-            {(
-              [
-                ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
-                ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
-                ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
-                ["mm", "M / M", "Last snapshot per UTC calendar month."],
-                ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
-              ] as const
-            ).map(([id, label, tip]) => (
-              <button
-                key={id}
-                type="button"
-                role="tab"
-                aria-selected={equityGranularity === id}
-                className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
-                title={tip}
-                onClick={() => setEquityGranularity(id)}
+        <div className="panel dashboard-grid-panel">
+          <div className="dashboard-grid-panel__head">
+            <h2
+              id="dash-heading-account"
+              className="dash-section__title dashboard-grid-panel__title"
+              title={
+                accountLinked
+                  ? "Balance/positions from signed Kalshi portfolio reads. Writes: Live branch POSTs orders only in Real $ mode when a rule fires."
+                  : "No signed portfolio access — markets and engine use public Kalshi data; sim trades stay in local SQLite."
+              }
+            >
+              Account
+            </h2>
+            <div className="dashboard-grid-panel__meta" aria-label="Kalshi link status">
+              <span
+                className={`dashboard-grid-panel__badge${accountLinked ? " dashboard-grid-panel__badge--ok" : ""}`}
+                title={accountLinked ? "Signed portfolio reads enabled for this backend." : "No exchange credentials on this backend; public market data only."}
               >
-                {label}
-              </button>
-            ))}
+                {accountLinked ? "Kalshi linked" : "Public data only"}
+              </span>
+            </div>
           </div>
-
-          <h3
-            className="sub section-tip"
-            style={{ marginTop: 14, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed). Intraday tail updates every dashboard poll; paper Live MTM is refreshed from Kalshi on each poll.`}
-          >
-            {activityBranchTabLabel("live")}
-          </h3>
-          <div
-            className="chart"
-            title={`${activityBranchTabLabel("live")} equity over time (same branch labels as Activity log). Hover points for values.`}
-          >
-            <EquityDualLineChart
-              data={chartData}
-              equityStroke="#6ee7ff"
-              mtmStroke="#38bdf8"
-              revision={`${equityChartRevision(snaps, chartData, metrics)}|tick=${String(dash?.engine?.live?.last_tick_at || "")}`}
-            />
-          </div>
-
-          <h3
-            className="sub section-tip"
-            style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
-          >
-            {activityBranchTabLabel("lab_a")}
-          </h3>
-          <div className="chart" title={`${activityBranchTabLabel("lab_a")} equity over time (Activity log branch lab_a).`}>
-            <EquityDualLineChart
-              data={chartDataLabA}
-              equityStroke="#a78bfa"
-              mtmStroke="#c4b5fd"
-              revision={`${equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}|tick=${String(engineLabA?.last_tick_at || "")}`}
-            />
-          </div>
-          <h3
-            className="sub section-tip"
-            style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
-          >
-            {activityBranchTabLabel("lab_b")}
-          </h3>
-          <div className="chart" title={`${activityBranchTabLabel("lab_b")} equity over time (Activity log branch lab_b).`}>
-            <EquityDualLineChart
-              data={chartDataLabB}
-              equityStroke="#f59e0b"
-              mtmStroke="#fcd34d"
-              revision={`${equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}|tick=${String(engineLabB?.last_tick_at || "")}`}
-            />
-          </div>
-          <h3
-            className="sub section-tip"
-            style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
-          >
-            {activityBranchTabLabel("lab_c")}
-          </h3>
-          <div className="chart" title={`${activityBranchTabLabel("lab_c")} equity over time (Activity log branch lab_c).`}>
-            <EquityDualLineChart
-              data={chartDataLabC}
-              equityStroke="#f472b6"
-              mtmStroke="#fbcfe8"
-              revision={`${equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}|tick=${String(engineLabC?.last_tick_at || "")}`}
-            />
-          </div>
-
-          <h2
-            className="section-tip"
-            style={{ marginTop: 22 }}
-            title={
-              accountLinked
-                ? "Balance/positions from signed Kalshi portfolio reads. Writes: Live branch POSTs orders only in Real $ mode when a rule fires."
-                : "No signed portfolio access — markets and engine use public Kalshi data; sim trades stay in local SQLite."
-            }
-          >
-            {accountLinked ? "Account (Kalshi linked)" : "Account (public data only)"}
-          </h2>
           {!remoteBal ? (
             <div
               className="sub"

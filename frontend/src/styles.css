@@ -137,6 +137,66 @@ button.snap-recon-info:hover {
   color: var(--muted);
 }
 
+/* Assets | Account: same header rhythm as Branch / Equity (dash-section__title + tabs / badge) */
+.dashboard-grid-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  /* flex-start: chart tabs are taller than the title line; center would push the left title down vs Account+badge */
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.dashboard-grid-panel.panel .dashboard-grid-panel__head .dash-section__title.dashboard-grid-panel__title {
+  margin: 0;
+  flex: 1 1 200px;
+  min-width: 0;
+  text-transform: none;
+  font-size: 1.125rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  padding: 2px 0 2px 12px;
+  line-height: 1.25;
+}
+
+.dashboard-grid-panel__tabs {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+/* Later `.chart-tabs { margin-top: 10px }` is for stacked chart sections; row headers must stay flush. */
+.dashboard-grid-panel__head .chart-tabs.dashboard-grid-panel__tabs {
+  margin-top: 0;
+}
+
+.dashboard-grid-panel__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.dashboard-grid-panel__badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 138, 181, 0.45);
+  color: #b9c3e3;
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.dashboard-grid-panel__badge--ok {
+  border-color: rgba(52, 211, 153, 0.45);
+  color: #bbf7d0;
+  background: rgba(6, 78, 59, 0.22);
+}
+
 .row {
   display: flex;
   gap: 10px;
@@ -330,6 +390,113 @@ input[type="number"] {
 
 .dash-lab-block {
   margin-bottom: 18px;
+}
+
+/* Branch performance + optimizer (left) beside equity curves (right), under hero / toolbar */
+.dash-split-card {
+  background: rgba(18, 26, 51, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dash-section--split-card {
+  margin-bottom: 12px;
+}
+
+.dash-section--split-card:last-of-type {
+  margin-bottom: 0;
+}
+
+.dash-split-card .metrics--in-split-card {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* One grid for Branch+Optimizer | Equity and Assets | Account so the center gutter is one line */
+.dash-main-4grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.dash-main-4grid > * {
+  min-width: 0;
+}
+
+@media (min-width: 980px) {
+  .dash-main-4grid {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+    gap: 20px 14px;
+  }
+
+  .dash-split-row__col--metrics .optimizer-activity-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dash-split-row__col--metrics .optimizer-activity {
+  margin-bottom: 0;
+}
+
+/* Equity column: same chrome as left; title uses dash-section__title (not .panel h2) */
+.dash-split-card.dash-equity-panel > h2.dash-section__title.dash-equity-panel__title {
+  margin: 0 0 10px 0;
+}
+
+.dash-split-panel__tabs {
+  margin: 0 0 10px 0;
+}
+
+.dash-equity-panel__legend {
+  margin-bottom: 12px;
+}
+
+.dash-split-card > .dash-section.optimizer-activity {
+  margin-bottom: 0;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(36, 48, 86, 0.85);
+}
+
+.dash-equity-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.dash-equity-chart-block {
+  min-width: 0;
+}
+
+.dash-equity-branch-head {
+  margin: 0 0 6px 0;
+  padding: 0 0 0 10px;
+  border-left: 3px solid var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.dash-equity-chart-block:nth-child(2) .dash-equity-branch-head {
+  border-left-color: #a78bfa;
+}
+
+.dash-equity-chart-block:nth-child(3) .dash-equity-branch-head {
+  border-left-color: #f59e0b;
+}
+
+.dash-equity-chart-block:nth-child(4) .dash-equity-branch-head {
+  border-left-color: #f472b6;
+}
+
+.chart.chart--equity-stack {
+  height: 200px;
 }
 
 .metrics {
