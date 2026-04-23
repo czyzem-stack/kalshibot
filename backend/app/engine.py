@@ -14,8 +14,9 @@ from dateutil import parser as dateparser
 from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
+    BRANCH_LAB_C,
     BRANCH_LIVE,
-    BRANCH_SIM_LAB,
+    _lab_key_for_branch,
     effective_paper_fee_bps,
     effective_swing_exit_implied_drop_pct,
     kalshi_fee_multiplier_from_cfg,
@@ -39,7 +40,7 @@ def _trade_row_matches_branch(row_branch: Any, target_branch: str) -> bool:
     """True if a SQLite trade/signal row belongs to the engine's logical branch (lab_a includes legacy sim_lab)."""
     b = str(row_branch or "live").strip().lower()
     t = str(target_branch or "live").strip().lower()
-    if t in (BRANCH_LAB_A, BRANCH_SIM_LAB, "lab_a"):
+    if t == BRANCH_LAB_A:
         return b in ("lab_a", "sim_lab")
     return b == t
 
@@ -344,7 +345,7 @@ class TradingEngine:
 
 
 def _is_lab_branch(branch: str) -> bool:
-    return branch in (BRANCH_SIM_LAB, BRANCH_LAB_A, BRANCH_LAB_B)
+    return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C)
 
 
 async def tick_once(engine: TradingEngine) -> None:
@@ -368,7 +369,7 @@ async def tick_once(engine: TradingEngine) -> None:
 
     balance_cents = 0
     if _is_lab_branch(branch):
-        lab_key = "lab_a" if branch in (BRANCH_SIM_LAB, BRANCH_LAB_A) else "lab_b"
+        lab_key = _lab_key_for_branch(branch) or "lab_a"
         lab = full_cfg.get(lab_key) or {}
         balance_cents = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
     elif trade_mode == "simulate" or bool(cfg.get("_simulate_orders")):
@@ -489,7 +490,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
             engine._paper_auto_reset_streak_handled = False
         return
 
-    lab_key = "lab_a" if br_engine in (BRANCH_SIM_LAB, BRANCH_LAB_A) else "lab_b"
+    lab_key = _lab_key_for_branch(br_engine) or "lab_a"
     lab = full_cfg.get(lab_key) if isinstance(full_cfg.get(lab_key), dict) else {}
     if not bool(lab.get("auto_reset_paper_on_tick_failure")):
         if not engine.state.last_error:
@@ -509,7 +510,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
 
     should_wipe = (bool(err) or bust) and not engine._paper_auto_reset_streak_handled
     if should_wipe:
-        rb = BRANCH_LAB_A if br_engine in (BRANCH_SIM_LAB, BRANCH_LAB_A) else BRANCH_LAB_B
+        rb = br_engine
         await engine.store.reset_trading_data(backup=False, branch=rb)
         await engine.store.bump_lab_paper_lifetime_basis(rb)
         engine._paper_auto_reset_streak_handled = True
@@ -1464,7 +1465,7 @@ async def snapshot_equity(engine: TradingEngine) -> None:
     mtm_equity: int
     if _is_lab_branch(branch) or (branch == BRANCH_LIVE and full_cfg.get("simulate")):
         if _is_lab_branch(branch):
-            lab_key = "lab_a" if branch in (BRANCH_SIM_LAB, BRANCH_LAB_A) else "lab_b"
+            lab_key = _lab_key_for_branch(branch) or "lab_a"
             lab = full_cfg.get(lab_key) or {}
             paper = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
         else:
@@ -1505,10 +1506,11 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             eng_live = engines[BRANCH_LIVE]
             cfg = await eng_live.store.load_config()
             poll_candidates: list[float] = [float(cfg.get("poll_seconds") or 8)]
-            branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B]
+            branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C]
             lab_conf = {
                 BRANCH_LAB_A: cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {},
                 BRANCH_LAB_B: cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {},
+                BRANCH_LAB_C: cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {},
             }
             for bk, bcfg in lab_conf.items():
                 if isinstance(bcfg, dict):
@@ -1526,13 +1528,13 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
 
             if cfg.get("engine_running"):
                 await tick_once(engines[BRANCH_LIVE])
-            for br in (BRANCH_LAB_A, BRANCH_LAB_B):
+            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
-                    # Legacy Lab A fraction nudger — do not run while main optimizer is enabled (avoids fighting Claude/adaptive).
+                    # Per-lab fraction nudger when auto_optimize is on — disabled while scheduled optimizer runs.
                     oc0 = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
                     if tick % 25 == 0 and bool(lc.get("auto_optimize")) and not bool(oc0.get("enabled")):
-                        await maybe_auto_optimize(eng_live.store)
+                        await maybe_auto_optimize(eng_live.store, br)
                     if cfg.get("engine_running"):
                         await asyncio.sleep(0.4)
                     await tick_once(engines[br])
@@ -1548,10 +1550,18 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             elif snap_period and cfg.get("engine_running"):
                 await snapshot_equity(eng_live)
 
-            for br in (BRANCH_LAB_A, BRANCH_LAB_B):
+            # Paper lab charts: write one equity row per engine loop while the lab is on (same cadence for A/B/C).
+            # Previously gated on ``tick % 5`` + settle/swing, so quiet labs (e.g. fewer settlements) updated charts
+            # ~5× slower than busy labs despite identical poll rates.
+            lab_snap_tasks: list[Any] = []
+            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
-                if n_settled.get(br, 0) > 0 or n_swing.get(br, 0) > 0 or (snap_period and lc.get("engine_running")):
-                    await snapshot_equity(engines[br])
+                if lc.get("engine_running"):
+                    eng = engines.get(br)
+                    if eng:
+                        lab_snap_tasks.append(snapshot_equity(eng))
+            if lab_snap_tasks:
+                await asyncio.gather(*lab_snap_tasks)
         except Exception as e:
             err = str(e)
             _data_log(
@@ -1565,7 +1575,8 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
         poll_live = float(cfg.get("poll_seconds") or 8)
         poll_lab_a = float(((cfg.get("lab_a") or {}) if isinstance(cfg.get("lab_a"), dict) else {}).get("poll_seconds") or poll_live)
         poll_lab_b = float(((cfg.get("lab_b") or {}) if isinstance(cfg.get("lab_b"), dict) else {}).get("poll_seconds") or poll_live)
-        poll = max(poll_live, poll_lab_a, poll_lab_b)
+        poll_lab_c = float(((cfg.get("lab_c") or {}) if isinstance(cfg.get("lab_c"), dict) else {}).get("poll_seconds") or poll_live)
+        poll = max(poll_live, poll_lab_a, poll_lab_b, poll_lab_c)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=poll)
         except TimeoutError:

@@ -5,9 +5,8 @@ from typing import Any
 BRANCH_LIVE = "live"
 BRANCH_LAB_A = "lab_a"
 BRANCH_LAB_B = "lab_b"
-# Backward-compatible alias used by older frontend/API clients.
-BRANCH_SIM_LAB = BRANCH_LAB_A
-BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B)
+BRANCH_LAB_C = "lab_c"
+BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C)
 
 # Same bounds as ``BotConfigPayload.balance_fraction_per_window`` (API / dashboard).
 MIN_BALANCE_FRACTION_PER_WINDOW = 0.0001
@@ -24,7 +23,7 @@ def clamp_balance_fraction_per_window(raw: Any) -> float:
     return max(MIN_BALANCE_FRACTION_PER_WINDOW, min(MAX_BALANCE_FRACTION_PER_WINDOW, v))
 
 
-SIM_LAB_OVERLAY_KEYS = (
+LAB_BRANCH_OVERLAY_KEYS = (
     "balance_fraction_per_window",
     "window_minutes",
     "poll_seconds",
@@ -44,10 +43,12 @@ SIM_LAB_OVERLAY_KEYS = (
 
 
 def _lab_key_for_branch(branch: str) -> str | None:
-    if branch in (BRANCH_LAB_A, BRANCH_SIM_LAB):
+    if branch == BRANCH_LAB_A:
         return "lab_a"
     if branch == BRANCH_LAB_B:
         return "lab_b"
+    if branch == BRANCH_LAB_C:
+        return "lab_c"
     return None
 
 
@@ -59,11 +60,14 @@ def pulse_effective_config(full_cfg: dict[str, Any], branch: str) -> dict[str, A
     raw_lab = full_cfg.get(lab_key)
     lab: dict[str, Any] = raw_lab if isinstance(raw_lab, dict) else {}
     out = dict(full_cfg)
-    for k in SIM_LAB_OVERLAY_KEYS:
+    for k in LAB_BRANCH_OVERLAY_KEYS:
         if k not in lab:
             continue
         v = lab[k]
         if v is None:
+            continue
+        # Empty per-lab ``assets`` must not wipe the global asset universe (would scan 0 markets).
+        if k == "assets" and isinstance(v, dict) and len(v) == 0:
             continue
         out[k] = v
     return out
@@ -87,11 +91,13 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
         if not isinstance(lab, dict) or not lab.get("engine_running"):
             return None
         out = dict(full_cfg)
-        for k in SIM_LAB_OVERLAY_KEYS:
+        for k in LAB_BRANCH_OVERLAY_KEYS:
             if k not in lab:
                 continue
             v = lab[k]
             if v is None:
+                continue
+            if k == "assets" and isinstance(v, dict) and len(v) == 0:
                 continue
             out[k] = v
         out["_branch"] = branch
@@ -105,7 +111,7 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
 def effective_swing_exit_implied_drop_pct(full_cfg: dict[str, Any], branch: str) -> float:
     """
     Minimum adverse move in implied YES (percentage points, e.g. 50.0 = 0.50 probability) to trigger
-    a paper swing exit. 0 = disabled. Sim lab may override via sim_lab.swing_exit_implied_drop_pct.
+    a paper swing exit. 0 = disabled. Lab branches may override via ``lab_* .swing_exit_implied_drop_pct``.
     """
     lab_key = _lab_key_for_branch(branch)
     raw_swing = full_cfg.get(lab_key) if lab_key else None
@@ -190,7 +196,7 @@ def effective_paper_fee_bps(full_cfg: dict[str, Any], branch: str) -> float:
     """
     Paper fee rate in basis points applied to each simulated execution notional.
     Example: 20 bps = 0.20%.
-    Sim lab may override via sim_lab.paper_fee_bps.
+    Lab branches may override via ``lab_* .paper_fee_bps``.
     """
     return paper_fee_bps_from_cfg(effective_trading_cfg_for_fees(full_cfg, branch))
 

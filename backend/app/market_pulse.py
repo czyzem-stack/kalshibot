@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .branch_config import BRANCH_SIM_LAB, pulse_effective_config
+from .branch_config import _lab_key_for_branch, pulse_effective_config
 from .engine import (
     asset_cfg_enabled,
     build_effective_rules,
@@ -60,9 +60,11 @@ async def fetch_market_pulse(
     now = utc_now()
     wid = window_id_for(now, window_minutes)
 
-    if branch == BRANCH_SIM_LAB:
+    lk = _lab_key_for_branch(branch)
+    if lk is not None:
         trade_mode = "simulate"
-        paper_cents = int((full.get("sim_lab") or {}).get("paper_balance_cents") or full.get("paper_balance_cents") or 500_000)
+        lab_blk = full.get(lk) if isinstance(full.get(lk), dict) else {}
+        paper_cents = int(lab_blk.get("paper_balance_cents") or full.get("paper_balance_cents") or 500_000)
     else:
         trade_mode = "simulate" if bool(full.get("simulate")) else "live"
         paper_cents = int(full.get("paper_balance_cents") or 500_000)

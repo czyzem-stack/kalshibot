@@ -9,12 +9,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .api_models import BotConfigPayload, merge_lab_branch_patch
-from .branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LIVE, BRANCH_SIM_LAB, merge_branch_config
+from .branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LIVE, merge_branch_config
 from .engine import TradingEngine, compute_open_sim_mark_value_sum_cents, dual_engine_loop, exclude_subtitle_parts_from_cfg
 from .kalshi_client import KalshiClient
 from .kalshi_portfolio import fetch_portfolio_snapshot
@@ -29,10 +29,12 @@ store = Store()
 engine_live = TradingEngine(store, BRANCH_LIVE)
 engine_lab_a = TradingEngine(store, BRANCH_LAB_A)
 engine_lab_b = TradingEngine(store, BRANCH_LAB_B)
+engine_lab_c = TradingEngine(store, BRANCH_LAB_C)
 ENGINES: dict[str, TradingEngine] = {
     BRANCH_LIVE: engine_live,
     BRANCH_LAB_A: engine_lab_a,
     BRANCH_LAB_B: engine_lab_b,
+    BRANCH_LAB_C: engine_lab_c,
 }
 stop_event = asyncio.Event()
 _bg_task: asyncio.Task[None] | None = None
@@ -353,7 +355,7 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
     if branch_scope == "all":
         keys = list(ENGINES.keys())
     else:
-        m = {"live": BRANCH_LIVE, "lab_a": BRANCH_LAB_A, "lab_b": BRANCH_LAB_B}
+        m = {"live": BRANCH_LIVE, "lab_a": BRANCH_LAB_A, "lab_b": BRANCH_LAB_B, "lab_c": BRANCH_LAB_C}
         k = m.get(branch_scope)
         keys = [k] if k else []
     for key in keys:
@@ -374,7 +376,7 @@ async def data_reset(
     backup: bool = Query(True, description="Copy sqlite + JSONL table dumps before delete"),
     branch: str = Query(
         "all",
-        description="all | live | lab_a | lab_b — scope of DELETE on signals/trades/equity_snapshots",
+        description="all | live | lab_a | lab_b | lab_c — scope of DELETE on signals/trades/equity_snapshots",
     ),
 ) -> dict[str, Any]:
     """
@@ -390,8 +392,8 @@ async def data_reset(
     if tok and request.headers.get("x-reset-token") != tok:
         raise HTTPException(status_code=403, detail="Set header X-Reset-Token to match DATA_RESET_TOKEN in .env.")
     br = str(branch or "all").strip().lower()
-    if br not in ("all", "live", "lab_a", "lab_b"):
-        raise HTTPException(status_code=400, detail="branch must be all, live, lab_a, or lab_b")
+    if br not in ("all", "live", "lab_a", "lab_b", "lab_c"):
+        raise HTTPException(status_code=400, detail="branch must be all, live, lab_a, lab_b, or lab_c")
     try:
         out = await store.reset_trading_data(backup=backup, branch=None if br == "all" else br)
     except ValueError as e:
@@ -416,14 +418,20 @@ async def put_config(body: BotConfigPayload) -> dict[str, Any]:
 @app.put("/api/config/lab-branches")
 async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     """
-    Merge ``lab_a`` / ``lab_b`` settings without the general ``BotConfigPayload`` shape (reliable for nested lab saves).
+    Merge ``lab_a`` / ``lab_b`` / ``lab_c`` without the general ``BotConfigPayload`` shape.
 
-    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``both`` — wipes signals/trades/equity for those
-    branches before applying config patches. ``backup`` (default true) is passed to ``reset_trading_data``.
+    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``lab_c`` | ``both`` (A+B) | ``all_labs`` (A+B+C).
+    ``backup`` (default true) is passed to the first wipe in a multi-branch reset.
     """
     reset = str(body.get("reset_data") or "none").strip().lower()
     backup = bool(body.get("backup", True))
-    if reset == "both":
+    if reset == "all_labs":
+        await store.reset_trading_data(backup=backup, branch="lab_a")
+        await store.reset_trading_data(backup=False, branch="lab_b")
+        await store.reset_trading_data(backup=False, branch="lab_c")
+        for br in ("lab_a", "lab_b", "lab_c"):
+            _clear_engine_mem_after_reset(br)
+    elif reset == "both":
         await store.reset_trading_data(backup=backup, branch="lab_a")
         await store.reset_trading_data(backup=False, branch="lab_b")
         _clear_engine_mem_after_reset("lab_a")
@@ -434,21 +442,94 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     elif reset == "lab_b":
         await store.reset_trading_data(backup=backup, branch="lab_b")
         _clear_engine_mem_after_reset("lab_b")
+    elif reset == "lab_c":
+        await store.reset_trading_data(backup=backup, branch="lab_c")
+        _clear_engine_mem_after_reset("lab_c")
     elif reset not in ("none", ""):
-        raise HTTPException(status_code=400, detail="reset_data must be none, lab_a, lab_b, or both")
+        raise HTTPException(
+            status_code=400,
+            detail="reset_data must be none, lab_a, lab_b, lab_c, both, or all_labs",
+        )
 
     cfg = await store.load_config()
     la = body.get("lab_a")
     if isinstance(la, dict) and la:
         merged_a = merge_lab_branch_patch(dict(cfg.get("lab_a") or {}), la)
         cfg["lab_a"] = expand_partial_lab_branch("lab_a", merged_a)
-        cfg["sim_lab"] = dict(cfg["lab_a"])
     lb = body.get("lab_b")
     if isinstance(lb, dict) and lb:
         merged_b = merge_lab_branch_patch(dict(cfg.get("lab_b") or {}), lb)
         cfg["lab_b"] = expand_partial_lab_branch("lab_b", merged_b)
+    lc = body.get("lab_c")
+    if isinstance(lc, dict) and lc:
+        merged_c = merge_lab_branch_patch(dict(cfg.get("lab_c") or {}), lc)
+        cfg["lab_c"] = expand_partial_lab_branch("lab_c", merged_c)
     await store.save_config(cfg)
     return {"ok": True, "config": await store.load_config()}
+
+
+@app.post("/api/config/labs/add-paper-bankroll")
+async def add_labs_paper_bankroll(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    """
+    Add the same amount to Lab A / B / C ``paper_balance_cents`` (default **10_000** = $100.00 each).
+
+    When ``paper_lifetime_basis_cents`` is set on a lab, it is increased by the same amount so dashboard
+    return % and other vs-start KPIs use **prior basis + deposit**. If lifetime basis is unset, KPIs already
+    fall back to ``paper_balance_cents`` (also increased). Does **not** change ``optimizer``, rules, engines,
+    or SQLite rows.
+    """
+    raw = body.get("add_cents")
+    if raw is None:
+        add_cents = 10_000
+    else:
+        try:
+            add_cents = int(raw)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="add_cents must be an integer") from e
+    if add_cents < 0 or add_cents > 100_000_000:
+        raise HTTPException(status_code=400, detail="add_cents out of allowed range")
+    cfg = await store.load_config()
+    updates: list[tuple[str, dict[str, Any], int]] = []
+    for br_key in ("lab_a", "lab_b", "lab_c"):
+        lab = dict(cfg.get(br_key) or {}) if isinstance(cfg.get(br_key), dict) else {}
+        cur = lab.get("paper_balance_cents")
+        try:
+            cur_i = int(cur) if cur is not None else 0
+        except (TypeError, ValueError):
+            cur_i = 0
+        new_bal = cur_i + add_cents
+        if new_bal > 100_000_000:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{br_key}: paper_balance_cents would exceed maximum ({new_bal} > 100000000)",
+            )
+        lt_raw = lab.get("paper_lifetime_basis_cents")
+        if lt_raw is not None:
+            try:
+                new_lt = int(lt_raw) + add_cents
+            except (TypeError, ValueError):
+                new_lt = new_bal
+            if new_lt > 100_000_000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{br_key}: paper_lifetime_basis_cents would exceed maximum ({new_lt} > 100000000)",
+                )
+            lab["paper_lifetime_basis_cents"] = new_lt
+        updates.append((br_key, lab, new_bal))
+    for br_key, lab, new_bal in updates:
+        lab["paper_balance_cents"] = new_bal
+        cfg[br_key] = expand_partial_lab_branch(br_key, lab)
+    await store.save_config(cfg)
+    out_lt: dict[str, int | None] = {}
+    for br_key, lab, _new_bal in updates:
+        v = lab.get("paper_lifetime_basis_cents")
+        out_lt[br_key] = int(v) if v is not None else None
+    return {
+        "ok": True,
+        "add_cents": add_cents,
+        "paper_balance_cents": {k: n for k, _, n in updates},
+        "paper_lifetime_basis_cents": out_lt,
+    }
 
 
 @app.get("/api/engine/status")
@@ -456,6 +537,7 @@ async def engine_status() -> dict[str, Any]:
     cfg = await store.load_config()
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
+    lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     return {
         "live": _engine_status_block(
             engine_live,
@@ -475,11 +557,11 @@ async def engine_status() -> dict[str, Any]:
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_b.get("auto_optimize")), "optimizer_note": lab_b.get("optimizer_note")},
         ),
-        "sim_lab": _engine_status_block(
-            engine_lab_a,
-            engine_running=bool(lab_a.get("engine_running")),
+        "lab_c": _engine_status_block(
+            engine_lab_c,
+            engine_running=bool(lab_c.get("engine_running")),
             simulate_orders=True,
-            extra={"auto_optimize": bool(lab_a.get("auto_optimize")), "optimizer_note": lab_a.get("optimizer_note")},
+            extra={"auto_optimize": bool(lab_c.get("auto_optimize")), "optimizer_note": lab_c.get("optimizer_note")},
         ),
     }
 
@@ -503,9 +585,11 @@ async def markets_pulse(
     branch: str = Query("live"),
     include_unpriced: bool = Query(False),
 ) -> dict[str, Any]:
-    b = branch if branch in (BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_SIM_LAB) else BRANCH_LIVE
-    if b == BRANCH_SIM_LAB:
+    b = str(branch or "live").strip().lower()
+    if b == "sim_lab":
         b = BRANCH_LAB_A
+    if b not in (BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
+        b = BRANCH_LIVE
     return await fetch_market_pulse(store, branch=b, include_unpriced=include_unpriced)
 
 
@@ -572,6 +656,7 @@ def _position_by_asset(
     sim_open_live: list[dict[str, Any]],
     sim_open_lab_a: list[dict[str, Any]],
     sim_open_lab_b: list[dict[str, Any]],
+    sim_open_lab_c: list[dict[str, Any]],
 ) -> dict[str, Any]:
     kalshi_positions = [p for p in kalshi_positions_raw if isinstance(p, dict)]
     out: dict[str, Any] = {}
@@ -583,15 +668,17 @@ def _position_by_asset(
             continue
         lab_a_rows = _open_sim_rows_for_series(st, sim_open_lab_a)
         lab_b_rows = _open_sim_rows_for_series(st, sim_open_lab_b)
+        lab_c_rows = _open_sim_rows_for_series(st, sim_open_lab_c)
         out[str(aid)] = {
             "label": str(acfg.get("label") or aid),
             "series_ticker": acfg.get("series_ticker"),
             "kalshi_open": _position_rows_for_series(st, kalshi_positions),
             "bot_sim_open_live": _open_sim_rows_for_series(st, sim_open_live),
-            # bot_sim_open_lab = Lab A only (historical name); split columns use *_a / *_b.
+            # bot_sim_open_lab = Lab A (historical name); split columns use *_a / *_b / *_c.
             "bot_sim_open_lab": lab_a_rows,
             "bot_sim_open_lab_a": lab_a_rows,
             "bot_sim_open_lab_b": lab_b_rows,
+            "bot_sim_open_lab_c": lab_c_rows,
         }
     return out
 
@@ -606,6 +693,7 @@ async def dashboard() -> dict[str, Any]:
     snaps_live = await store.equity_series(limit=2000, branch=BRANCH_LIVE)
     snaps_lab_a = await store.equity_series(limit=2000, branch=BRANCH_LAB_A)
     snaps_lab_b = await store.equity_series(limit=2000, branch=BRANCH_LAB_B)
+    snaps_lab_c = await store.equity_series(limit=2000, branch=BRANCH_LAB_C)
 
     roll_live = await store.dashboard_branch_trade_rollups(BRANCH_LIVE, mode_live)
     metrics_live = _metrics_from_trade_rollup(roll_live, BRANCH_LIVE)
@@ -613,14 +701,18 @@ async def dashboard() -> dict[str, Any]:
     metrics_lab_a = _metrics_from_trade_rollup(roll_lab_a, BRANCH_LAB_A)
     roll_lab_b = await store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate")
     metrics_lab_b = _metrics_from_trade_rollup(roll_lab_b, BRANCH_LAB_B)
+    roll_lab_c = await store.dashboard_branch_trade_rollups(BRANCH_LAB_C, "simulate")
+    metrics_lab_c = _metrics_from_trade_rollup(roll_lab_c, BRANCH_LAB_C)
 
     not_traded = [s for s in signals if not int(s.get("executed") or 0)]
 
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
+    lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     live_engine_on = bool(cfg.get("engine_running"))
     lab_a_engine_on = bool(lab_a.get("engine_running")) if isinstance(lab_a, dict) else False
     lab_b_engine_on = bool(lab_b.get("engine_running")) if isinstance(lab_b, dict) else False
+    lab_c_engine_on = bool(lab_c.get("engine_running")) if isinstance(lab_c, dict) else False
 
     client = KalshiClient()
     public_ok = False
@@ -681,38 +773,69 @@ async def dashboard() -> dict[str, Any]:
     _inject_last_snap_mtm_minus_equity(metrics_live, snaps_live)
     _inject_last_snap_mtm_minus_equity(metrics_lab_a, snaps_lab_a)
     _inject_last_snap_mtm_minus_equity(metrics_lab_b, snaps_lab_b)
+    lab_paper_basis_c = _lab_paper_basis_cents(lab_c if isinstance(lab_c, dict) else {})
+    _enrich_strategy_metrics(
+        metrics_lab_c,
+        paper_mode=True,
+        paper_start_cents=lab_paper_basis_c,
+        bal_json=None,
+        latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_c),
+        latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_c),
+    )
+    _inject_last_snap_mtm_minus_equity(metrics_lab_c, snaps_lab_c)
 
-    # Paper MTM on tiles + chart tail: refresh from Kalshi order books every dashboard poll (between snapshot ticks).
+    # Paper MTM on tiles + chart tail: refresh from Kalshi order books every dashboard poll (parallel per branch).
+    mtm_tasks: list[Any] = []
     if simulate_live:
-        await _refresh_paper_mtm_from_marks(
-            engine_live,
-            paper_start_cents=int(cfg.get("paper_balance_cents") or 0),
-            roll=roll_live,
-            out_metrics=metrics_live,
+        mtm_tasks.append(
+            _refresh_paper_mtm_from_marks(
+                engine_live,
+                paper_start_cents=int(cfg.get("paper_balance_cents") or 0),
+                roll=roll_live,
+                out_metrics=metrics_live,
+            )
         )
-    await _refresh_paper_mtm_from_marks(
-        engine_lab_a,
-        paper_start_cents=lab_paper_basis_a,
-        roll=roll_lab_a,
-        out_metrics=metrics_lab_a,
+    mtm_tasks.extend(
+        [
+            _refresh_paper_mtm_from_marks(
+                engine_lab_a,
+                paper_start_cents=lab_paper_basis_a,
+                roll=roll_lab_a,
+                out_metrics=metrics_lab_a,
+            ),
+            _refresh_paper_mtm_from_marks(
+                engine_lab_b,
+                paper_start_cents=lab_paper_basis_b,
+                roll=roll_lab_b,
+                out_metrics=metrics_lab_b,
+            ),
+            _refresh_paper_mtm_from_marks(
+                engine_lab_c,
+                paper_start_cents=lab_paper_basis_c,
+                roll=roll_lab_c,
+                out_metrics=metrics_lab_c,
+            ),
+        ]
     )
-    await _refresh_paper_mtm_from_marks(
-        engine_lab_b,
-        paper_start_cents=lab_paper_basis_b,
-        roll=roll_lab_b,
-        out_metrics=metrics_lab_b,
-    )
+    if mtm_tasks:
+        await asyncio.gather(*mtm_tasks)
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
     eff_lab_b = merge_branch_config(cfg, BRANCH_LAB_B) if lab_b_engine_on else None
+    eff_lab_c = merge_branch_config(cfg, BRANCH_LAB_C) if lab_c_engine_on else None
 
     kalshi_pos_list = [p for p in (portfolio.get("positions") or []) if isinstance(p, dict)]
-    sim_open_live = await store.open_sim_trades_for_branch(BRANCH_LIVE)
-    sim_open_lab_a = await store.open_sim_trades_for_branch(BRANCH_LAB_A)
-    sim_open_lab_b = await store.open_sim_trades_for_branch(BRANCH_LAB_B)
+    sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c = await asyncio.gather(
+        store.open_sim_trades_for_branch(BRANCH_LIVE),
+        store.open_sim_trades_for_branch(BRANCH_LAB_A),
+        store.open_sim_trades_for_branch(BRANCH_LAB_B),
+        store.open_sim_trades_for_branch(BRANCH_LAB_C),
+    )
     assets_cfg = cfg.get("assets") if isinstance(cfg.get("assets"), dict) else {}
-    position_by_asset = _position_by_asset(assets_cfg, kalshi_pos_list, sim_open_live, sim_open_lab_a, sim_open_lab_b)
+    position_by_asset = _position_by_asset(
+        assets_cfg, kalshi_pos_list, sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c
+    )
 
     return {
         "config": cfg,
@@ -725,7 +848,7 @@ async def dashboard() -> dict[str, Any]:
             "private_ok": portfolio_read_ok,
             "private_error": private_err,
             "portfolio_notes": portfolio_notes,
-            "polling_enabled": live_engine_on or lab_a_engine_on or lab_b_engine_on,
+            "polling_enabled": live_engine_on or lab_a_engine_on or lab_b_engine_on or lab_c_engine_on,
             "credentials": creds,
             "simulate_live": simulate_live,
             "portfolio_read_ok": portfolio_read_ok,
@@ -758,36 +881,38 @@ async def dashboard() -> dict[str, Any]:
                 "markets_scanned": engine_lab_b.state.markets_scanned,
                 "last_tick_trace": engine_lab_b.state.last_tick_trace,
             },
-            "sim_lab": {
-                "engine_running": lab_a_engine_on,
-                "simulate_orders": bool(eff_lab_a.get("_simulate_orders")) if eff_lab_a else True,
-                "last_tick_at": engine_lab_a.state.last_tick_at,
-                "last_error": engine_lab_a.state.last_error,
-                "markets_scanned": engine_lab_a.state.markets_scanned,
-                "last_tick_trace": engine_lab_a.state.last_tick_trace,
+            "lab_c": {
+                "engine_running": lab_c_engine_on,
+                "simulate_orders": bool(eff_lab_c.get("_simulate_orders")) if eff_lab_c else True,
+                "last_tick_at": engine_lab_c.state.last_tick_at,
+                "last_error": engine_lab_c.state.last_error,
+                "markets_scanned": engine_lab_c.state.markets_scanned,
+                "last_tick_trace": engine_lab_c.state.last_tick_trace,
             },
         },
         "asset_snapshots": {
             "live": engine_live.state.asset_snapshots or {},
             "lab_a": engine_lab_a.state.asset_snapshots or {},
             "lab_b": engine_lab_b.state.asset_snapshots or {},
-            "sim_lab": engine_lab_a.state.asset_snapshots or {},
+            "lab_c": engine_lab_c.state.asset_snapshots or {},
         },
         "rule_suggestions": rule_suggestions_from_snapshots(
             engine_live.state.asset_snapshots or {},
             engine_lab_a.state.asset_snapshots or {},
+            engine_lab_b.state.asset_snapshots or {},
+            engine_lab_c.state.asset_snapshots or {},
         ),
         "metrics": {
             "mode": mode_live,
             **metrics_live,
         },
-        "metrics_sim_lab": metrics_lab_a,
         "metrics_lab_a": metrics_lab_a,
         "metrics_lab_b": metrics_lab_b,
+        "metrics_lab_c": metrics_lab_c,
         "equity_snapshots": snaps_live,
-        "equity_snapshots_sim_lab": snaps_lab_a,
         "equity_snapshots_lab_a": snaps_lab_a,
         "equity_snapshots_lab_b": snaps_lab_b,
+        "equity_snapshots_lab_c": snaps_lab_c,
         "recent_signals": signals[:500],
         "not_traded_signals": not_traded[:200],
         "recent_trades": trades[:500],
@@ -798,9 +923,9 @@ async def dashboard() -> dict[str, Any]:
             "portfolio_error": portfolio.get("error"),
             "position_by_asset": position_by_asset,
         },
-        "sim_lab_config": lab_a,
         "lab_a_config": lab_a,
         "lab_b_config": lab_b,
+        "lab_c_config": lab_c,
     }
 
 
@@ -811,6 +936,7 @@ async def engine_toggle(
     sim_lab_running: bool | None = Query(None),
     lab_a_running: bool | None = Query(None),
     lab_b_running: bool | None = Query(None),
+    lab_c_running: bool | None = Query(None),
 ) -> dict[str, Any]:
     cfg = await store.load_config()
     if running is not None:
@@ -818,19 +944,21 @@ async def engine_toggle(
     if simulate is not None:
         cfg["simulate"] = bool(simulate)
     if sim_lab_running is not None:
-        lab = dict(cfg.get("lab_a") or cfg.get("sim_lab") or {})
+        lab = dict(cfg.get("lab_a") or {})
         lab["engine_running"] = bool(sim_lab_running)
         cfg["lab_a"] = lab
-        cfg["sim_lab"] = dict(lab)
     if lab_a_running is not None:
         lab = dict(cfg.get("lab_a") or {})
         lab["engine_running"] = bool(lab_a_running)
         cfg["lab_a"] = lab
-        cfg["sim_lab"] = dict(lab)
     if lab_b_running is not None:
         lab = dict(cfg.get("lab_b") or {})
         lab["engine_running"] = bool(lab_b_running)
         cfg["lab_b"] = lab
+    if lab_c_running is not None:
+        lab = dict(cfg.get("lab_c") or {})
+        lab["engine_running"] = bool(lab_c_running)
+        cfg["lab_c"] = lab
     await store.save_config(cfg)
     return {"ok": True, "config": cfg}
 

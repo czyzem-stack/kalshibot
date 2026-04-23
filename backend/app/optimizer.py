@@ -4,16 +4,30 @@ import random
 
 from .branch_config import (
     BRANCH_LAB_A,
+    BRANCH_LAB_B,
+    BRANCH_LAB_C,
     MAX_BALANCE_FRACTION_PER_WINDOW,
     MIN_BALANCE_FRACTION_PER_WINDOW,
+    _lab_key_for_branch,
 )
 from .persistence import Store
 
 
-async def maybe_auto_optimize(store: Store) -> None:
-    """Tiny rule-based tuner for Lab A paper only (not an LLM). Nudges balance fraction from recent lab_a PnL."""
+def _trade_branch_matches_lab_row(row_branch: Any, engine_branch: str) -> bool:
+    b = str(row_branch or "live").strip().lower()
+    if engine_branch == BRANCH_LAB_A:
+        return b in ("lab_a", "sim_lab")
+    return b == engine_branch
+
+
+async def maybe_auto_optimize(store: Store, branch: str) -> None:
+    """Tiny rule-based tuner per lab paper (not an LLM). Nudges balance fraction from recent settled PnL."""
+    br = str(branch or "").strip().lower()
+    if br not in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
+        return
     cfg = await store.load_config()
-    lab = cfg.get("lab_a")
+    lk = _lab_key_for_branch(br) or "lab_a"
+    lab = cfg.get(lk)
     if not isinstance(lab, dict) or not lab.get("auto_optimize"):
         return
 
@@ -27,7 +41,7 @@ async def maybe_auto_optimize(store: Store) -> None:
     settled = [
         t
         for t in trades
-        if str(t.get("branch") or "live") == BRANCH_LAB_A
+        if _trade_branch_matches_lab_row(t.get("branch"), br)
         and t.get("pnl_cents") is not None
         and str(t.get("status") or "").lower() == "settled"
     ]
@@ -54,6 +68,6 @@ async def maybe_auto_optimize(store: Store) -> None:
     lab["balance_fraction_per_window"] = round(frac, 4)
     lab["optimizer_note"] = f"mean_pnl_cents={pnl:.1f} -> fraction={frac}"
     cfg = dict(cfg)
-    cfg["lab_a"] = lab
+    cfg[lk] = lab
     await store.save_config(cfg)
 

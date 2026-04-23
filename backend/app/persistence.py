@@ -60,6 +60,8 @@ def _sql_branch_predicate(branch: str) -> str:
         return "COALESCE(branch,'live') IN ('lab_a','sim_lab')"
     if b == "lab_b":
         return "COALESCE(branch,'live') = 'lab_b'"
+    if b == "lab_c":
+        return "COALESCE(branch,'live') = 'lab_c'"
     if b == "live":
         return "COALESCE(branch,'live') = 'live'"
     raise ValueError(f"unsupported branch for SQL filter: {branch!r}")
@@ -172,6 +174,7 @@ def default_bot_config() -> dict[str, Any]:
         "kalshi_fee_multiplier": 1.0,
         "paper_fee_bps": 0,
         "paper_balance_cents": 500_000,
+        # Lab A: staging / blend before Live — internal auto-tune may adjust sizing from PnL.
         "lab_a": {
             "engine_running": False,
             "auto_optimize": True,
@@ -183,11 +186,24 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
+        # Lab B: conservative paper reference (does not apply scheduled optimizer rule changes).
         "lab_b": {
             "engine_running": False,
-            "auto_optimize": True,
+            "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
-            "balance_fraction_per_window": 0.09,
+            "balance_fraction_per_window": 0.04,
+            "window_minutes": 18,
+            "paper_fee_model": "kalshi_taker",
+            "kalshi_fee_multiplier": 1.0,
+            "paper_fee_bps": 0,
+            "paper_balance_cents": 500_000,
+        },
+        # Lab C: aggressive paper reference (does not apply scheduled optimizer rule changes).
+        "lab_c": {
+            "engine_running": False,
+            "auto_optimize": False,
+            "auto_reset_paper_on_tick_failure": False,
+            "balance_fraction_per_window": 0.11,
             "window_minutes": 12,
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
@@ -204,16 +220,20 @@ def default_bot_config() -> dict[str, Any]:
             "mode": "duel",
             "lab_a_enabled": True,
             "lab_b_enabled": True,
-            "lab_a_style": "conservative",
-            "lab_b_style": "aggressive",
+            "lab_c_enabled": True,
+            "lab_a_style": "blend",
+            "lab_b_style": "conservative",
+            "lab_c_style": "aggressive",
             "loss_streak_trigger": 3,
             "threshold_step_pct": 1,
             "minute_step": 1,
             "max_history": 120,
             "lab_a_yes_floor_pct": 56,
-            "lab_b_yes_floor_pct": 52,
+            "lab_b_yes_floor_pct": 58,
+            "lab_c_yes_floor_pct": 52,
             "lab_a_min_minutes_left": 5,
-            "lab_b_min_minutes_left": 3,
+            "lab_b_min_minutes_left": 6,
+            "lab_c_min_minutes_left": 3,
             "min_trades_for_optimize": 25,
             "min_profitable_trades": 8,
             "optimize_bet_size": True,
@@ -233,10 +253,12 @@ def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any
     Shallow-merge ``lab`` over ``default_bot_config()[branch]`` so thin saves (e.g. only paper / fraction / window)
     cannot strip ``engine_running``, fee keys, or other lab defaults.
     """
-    if branch not in ("lab_a", "lab_b"):
-        raise ValueError(f"branch must be lab_a or lab_b, got {branch!r}")
+    if branch not in ("lab_a", "lab_b", "lab_c"):
+        raise ValueError(f"branch must be lab_a, lab_b, or lab_c, got {branch!r}")
     base = dict(default_bot_config().get(branch) or {})
     base.update(lab)
+    if isinstance(base.get("assets"), dict) and len(base["assets"]) == 0:
+        del base["assets"]
     return base
 
 
@@ -304,6 +326,14 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": 15,
             "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
         }
+    if "lab_c" not in cfg or not isinstance(cfg.get("lab_c"), dict):
+        cfg["lab_c"] = {
+            "engine_running": False,
+            "auto_optimize": False,
+            "balance_fraction_per_window": 0.08,
+            "window_minutes": 12,
+            "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
+        }
     dopt = dict(default_bot_config().get("optimizer") or {})
     cur_o = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     merged_o = {**dopt, **cur_o}
@@ -336,7 +366,17 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         cfg["lab_a"] = expand_partial_lab_branch("lab_a", dict(cfg["lab_a"]))
     if isinstance(cfg.get("lab_b"), dict):
         cfg["lab_b"] = expand_partial_lab_branch("lab_b", dict(cfg["lab_b"]))
-    cfg["sim_lab"] = dict(cfg.get("lab_a") or {})
+    if isinstance(cfg.get("lab_c"), dict):
+        cfg["lab_c"] = expand_partial_lab_branch("lab_c", dict(cfg["lab_c"]))
+    # Per-lab ``assets: {}`` would override globals at merge time and disable all scanning for that lab.
+    for lk in ("lab_a", "lab_b", "lab_c"):
+        block = cfg.get(lk)
+        if isinstance(block, dict) and isinstance(block.get("assets"), dict) and len(block["assets"]) == 0:
+            del block["assets"]
+            cfg[lk] = block
+    # Drop legacy mirror key from persisted config (clients use lab_a only).
+    if "sim_lab" in cfg:
+        del cfg["sim_lab"]
     return cfg
 
 
@@ -383,10 +423,10 @@ class Store:
         ``paper_balance_cents``) then reflects all capital ever re-seeded into that lab.
         """
         br = str(branch or "").strip().lower()
-        if br not in ("lab_a", "lab_b"):
+        if br not in ("lab_a", "lab_b", "lab_c"):
             return
         cfg = await self.load_config()
-        lab_key = "lab_a" if br == "lab_a" else "lab_b"
+        lab_key = {"lab_a": "lab_a", "lab_b": "lab_b", "lab_c": "lab_c"}[br]
         lab = dict(cfg.get(lab_key) or {})
         seed = int(lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
         prev = int(lab.get("paper_lifetime_basis_cents") or 0)
@@ -698,13 +738,15 @@ class Store:
         async with self._open_db() as db:
             if branch:
                 cur = await db.execute(
-                    f"SELECT * FROM equity_snapshots WHERE {_sql_branch_predicate(branch)} ORDER BY id ASC LIMIT ?",
+                    f"SELECT * FROM equity_snapshots WHERE {_sql_branch_predicate(branch)} ORDER BY id DESC LIMIT ?",
                     (limit,),
                 )
-            else:
-                cur = await db.execute(
-                    "SELECT * FROM equity_snapshots ORDER BY id ASC LIMIT ?", (limit,)
-                )
+                rows = await cur.fetchall()
+                # Newest-first query → reverse to chronological order for charts / slopes.
+                return [dict(r) for r in reversed(rows)]
+            cur = await db.execute(
+                "SELECT * FROM equity_snapshots ORDER BY id ASC LIMIT ?", (limit,)
+            )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
@@ -728,8 +770,8 @@ class Store:
             bn = str(branch).strip().lower()
             if bn == "sim_lab":
                 bn = "lab_a"
-            if bn not in ("live", "lab_a", "lab_b"):
-                raise ValueError(f"branch filter must be live, lab_a, lab_b, or sim_lab (got {branch!r})")
+            if bn not in ("live", "lab_a", "lab_b", "lab_c"):
+                raise ValueError(f"branch filter must be live, lab_a, lab_b, lab_c, or sim_lab (legacy) (got {branch!r})")
             where.append(_sql_branch_predicate(bn))
         if mode and table in {"signals", "trades", "equity_snapshots"}:
             where.append("mode = ?")
@@ -825,7 +867,7 @@ class Store:
         Delete signals, trades, and equity snapshots. Keeps ``bot_config``.
 
         * ``branch`` is None / ``\"all\"`` / empty: delete **all** rows (legacy behaviour).
-        * ``branch`` in ``live`` / ``lab_a`` / ``lab_b``: delete only rows for that branch
+        * ``branch`` in ``live`` / ``lab_a`` / ``lab_b`` / ``lab_c``: delete only rows for that branch
           (Lab A predicate includes legacy ``sim_lab``).
 
         When ``backup`` is True, copies the SQLite file and exports JSONL dumps under ``DATA_LOG_DIR/exports``.
@@ -853,7 +895,7 @@ class Store:
                 exports.append(f"jsonl_export_error:{e}")
         br_arg = str(branch or "").strip().lower()
         scope = "all" if br_arg in ("", "all") else br_arg
-        if scope not in ("all", "live", "lab_a", "lab_b"):
+        if scope not in ("all", "live", "lab_a", "lab_b", "lab_c"):
             raise ValueError(f"invalid reset branch: {branch!r}")
         pred = None if scope == "all" else _sql_branch_predicate(scope)
         async with self._open_db() as db:

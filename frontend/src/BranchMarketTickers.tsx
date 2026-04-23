@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from "react";
 
 type AnyObj = Record<string, any>;
 
-type BranchKey = "live" | "lab_a" | "lab_b";
+type BranchKey = "live" | "lab_a" | "lab_b" | "lab_c";
 
 type Tone = "pos" | "neg" | "yes" | "no" | "muted" | "warn";
 
@@ -194,8 +194,10 @@ function positionSegmentsForBranch(
     } else if (branch === "lab_a") {
       const rows = r.bot_sim_open_lab_a || r.bot_sim_open_lab;
       if (Array.isArray(rows) && rows.length) blocks.push(simOpenSegments(rows, lab, "Lab A"));
-    } else if (Array.isArray(r.bot_sim_open_lab_b) && r.bot_sim_open_lab_b.length) {
+    } else if (branch === "lab_b" && Array.isArray(r.bot_sim_open_lab_b) && r.bot_sim_open_lab_b.length) {
       blocks.push(simOpenSegments(r.bot_sim_open_lab_b, lab, "Lab B"));
+    } else if (branch === "lab_c" && Array.isArray(r.bot_sim_open_lab_c) && r.bot_sim_open_lab_c.length) {
+      blocks.push(simOpenSegments(r.bot_sim_open_lab_c, lab, "Lab C"));
     }
   }
   if (!blocks.length) return [];
@@ -211,6 +213,7 @@ function normBranch(b: unknown): BranchKey {
   const s = String(b ?? "live").trim().toLowerCase();
   if (s === "lab_a" || s === "sim_lab") return "lab_a";
   if (s === "lab_b") return "lab_b";
+  if (s === "lab_c") return "lab_c";
   return "live";
 }
 
@@ -265,7 +268,8 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
   const pnl = Number(metrics.total_pnl_dollars || 0);
   const ret = metrics.return_mtm_vs_start_pct ?? metrics.return_vs_start_pct;
   const retN = ret != null && Number.isFinite(Number(ret)) ? Number(ret) : NaN;
-  const lab = branch === "lab_a" ? "Lab A" : branch === "lab_b" ? "Lab B" : "Live";
+  const lab =
+    branch === "lab_a" ? "Lab A" : branch === "lab_b" ? "Lab B" : branch === "lab_c" ? "Lab C" : "Live";
   const rt: Tone = !Number.isFinite(retN) ? "muted" : retN > 0 ? "pos" : retN < 0 ? "neg" : "muted";
   return [
     seg(`${lab} · `, "muted"),
@@ -405,10 +409,12 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
   const snapsLive = (assetSnaps.live || {}) as Record<string, AnyObj>;
   const snapsA = ((assetSnaps.lab_a || assetSnaps.sim_lab) || {}) as Record<string, AnyObj>;
   const snapsB = (assetSnaps.lab_b || {}) as Record<string, AnyObj>;
+  const snapsC = (assetSnaps.lab_c || {}) as Record<string, AnyObj>;
   const eng = dash?.engine || {};
   const mLive = (dash?.metrics || {}) as AnyObj;
   const mA = ((dash?.metrics_lab_a || dash?.metrics_sim_lab) || {}) as AnyObj;
   const mB = (dash?.metrics_lab_b || {}) as AnyObj;
+  const mC = (dash?.metrics_lab_c || {}) as AnyObj;
 
   const segBundles = useMemo(() => {
     const live = buildBranchSegments({
@@ -441,8 +447,18 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       positionByAsset: posBy,
       kalshiPrivateOk,
     });
-    return { live, lab_a: a, lab_b: b };
-  }, [cfg, mLive, mA, mB, snapsLive, snapsA, snapsB, eng, recentTrades, posBy, kalshiPrivateOk]);
+    const c = buildBranchSegments({
+      branch: "lab_c",
+      cfg,
+      metrics: mC,
+      snaps: snapsC,
+      engineBlock: eng.lab_c,
+      recentTrades,
+      positionByAsset: posBy,
+      kalshiPrivateOk,
+    });
+    return { live, lab_a: a, lab_b: b, lab_c: c };
+  }, [cfg, mLive, mA, mB, mC, snapsLive, snapsA, snapsB, snapsC, eng, recentTrades, posBy, kalshiPrivateOk]);
 
   const dur = (segs: TickerSeg[]) => {
     const len = segs.reduce((n, s) => n + s.text.length, 0);
@@ -461,6 +477,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
       : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
   const labAeq = fmtNum$(mA.current_mtm_dollars ?? mA.current_equity_dollars);
   const labBeq = fmtNum$(mB.current_mtm_dollars ?? mB.current_equity_dollars);
+  const labCeq = fmtNum$(mC.current_mtm_dollars ?? mC.current_equity_dollars);
   const tipLive = livePaper
     ? "Live paper: headline $ is mark-to-market total (last equity snapshot); % uses MTM vs bankroll when available."
     : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
@@ -469,7 +486,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
     <div
       className="branch-ticker-outer section-tip"
       title="Scrolling readouts plus per-row snapshot: $ = MTM (cash + open marks) when the backend stores it; % matches MTM vs bankroll for paper branches."
-      aria-label="Live, Lab A, and Lab B tickers with aligned snapshots"
+      aria-label="Live, Lab A, Lab B, and Lab C tickers with aligned snapshots"
     >
       <div className="branch-ticker-band">
         <TickerRow label="LIVE" accent="#6ee7ff" segments={segBundles.live} durationSec={dur(segBundles.live)} />
@@ -506,6 +523,16 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
           value={labBeq}
           valueColor="#fdba74"
           metrics={mB}
+        />
+      </div>
+      <div className="branch-ticker-band">
+        <TickerRow label="LAB C" accent="#f9a8d4" segments={segBundles.lab_c} durationSec={dur(segBundles.lab_c)} />
+        <TickerSnapAside
+          title="Lab C: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
+          aria-label="Lab C mark-to-market or equity and return vs start"
+          value={labCeq}
+          valueColor="#f9a8d4"
+          metrics={mC}
         />
       </div>
     </div>

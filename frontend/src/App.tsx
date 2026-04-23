@@ -77,6 +77,25 @@ async function apiPost(path: string) {
   return await r.json();
 }
 
+async function apiPostJson(path: string, body: AnyObj = {}): Promise<AnyObj> {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = "";
+    try {
+      const j = (await r.json()) as AnyObj;
+      detail = typeof j?.detail === "string" ? j.detail : JSON.stringify(j?.detail ?? j);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail ? `${path} ${r.status}: ${detail}` : `${path} ${r.status}`);
+  }
+  return (await r.json()) as AnyObj;
+}
+
 function fmtMoney(n: number) {
   const sign = n < 0 ? "-" : "";
   const v = Math.abs(n);
@@ -209,13 +228,15 @@ function SnapReconcileStrip({
   metrics,
   metricsLabA,
   metricsLabB,
+  metricsLabC,
 }: {
   cfg: AnyObj;
   metrics: AnyObj;
   metricsLabA: AnyObj;
   metricsLabB: AnyObj;
+  metricsLabC: AnyObj;
 }) {
-  const stripSig = `${branchSnapStripSignature(metrics)}|${branchSnapStripSignature(metricsLabA)}|${branchSnapStripSignature(metricsLabB)}`;
+  const stripSig = `${branchSnapStripSignature(metrics)}|${branchSnapStripSignature(metricsLabA)}|${branchSnapStripSignature(metricsLabB)}|${branchSnapStripSignature(metricsLabC)}`;
 
   // stripSig encodes unresolved deltas so we do not rebuild bits every poll when values are unchanged.
   const bits = useMemo(() => {
@@ -224,6 +245,7 @@ function SnapReconcileStrip({
       renderBranchSnapLine("Live", metrics),
       renderBranchSnapLine("Lab A", metricsLabA),
       renderBranchSnapLine("Lab B", metricsLabB),
+      renderBranchSnapLine("Lab C", metricsLabC),
     ].filter(Boolean) as ReactNode[];
   }, [cfg.simulate, stripSig]);
 
@@ -440,7 +462,8 @@ function positionRowHasOpenExposure(row: unknown): boolean {
     nonempty(o.bot_sim_open_live) ||
     nonempty(o.bot_sim_open_lab) ||
     nonempty(o.bot_sim_open_lab_a) ||
-    nonempty(o.bot_sim_open_lab_b)
+    nonempty(o.bot_sim_open_lab_b) ||
+    nonempty(o.bot_sim_open_lab_c)
   );
 }
 
@@ -455,31 +478,35 @@ function exposureChannelLabels(row: unknown): string[] {
     (Array.isArray(o.bot_sim_open_lab) && o.bot_sim_open_lab.length);
   if (labA) out.push("Sim · Lab A");
   if (Array.isArray(o.bot_sim_open_lab_b) && o.bot_sim_open_lab_b.length) out.push("Sim · Lab B");
+  if (Array.isArray(o.bot_sim_open_lab_c) && o.bot_sim_open_lab_c.length) out.push("Sim · Lab C");
   return out;
 }
 
 /** Normalize SQLite `branch` onto dashboard tabs (legacy sim_lab → Lab A). */
-type ActivityBranchKey = "live" | "lab_a" | "lab_b";
+type ActivityBranchKey = "live" | "lab_a" | "lab_b" | "lab_c";
 
 function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   const s = String(b ?? "live").trim().toLowerCase();
   if (s === "lab_a" || s === "sim_lab") return "lab_a";
   if (s === "lab_b") return "lab_b";
+  if (s === "lab_c") return "lab_c";
   return "live";
 }
 
 function activityBranchTabLabel(b: ActivityBranchKey): string {
   if (b === "live") return "Live";
   if (b === "lab_a") return "Lab A";
-  return "Lab B";
+  if (b === "lab_b") return "Lab B";
+  return "Lab C";
 }
 
-const ACTIVITY_BRANCH_TAB_ORDER: ActivityBranchKey[] = ["live", "lab_a", "lab_b"];
+const ACTIVITY_BRANCH_TAB_ORDER: ActivityBranchKey[] = ["live", "lab_a", "lab_b", "lab_c"];
 
 const ACTIVITY_BRANCH_TAB_TITLE: Record<ActivityBranchKey, string> = {
   live: "Rows where branch is live (or unset legacy rows treated as Live).",
   lab_a: "Rows where branch is lab_a or legacy sim_lab.",
   lab_b: "Rows where branch is lab_b.",
+  lab_c: "Rows where branch is lab_c.",
 };
 
 function ActivityBranchTabs({
@@ -916,22 +943,37 @@ export default function App() {
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
-  const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b">("live");
+  const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c">("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
   /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
   const [notTradedBranch, setNotTradedBranch] = useState<ActivityBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
   /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
-  const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b">("live");
+  const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b" | "lab_c">("live");
 
-  const refresh = async () => {
+  /** Avoid stacked /api/dashboard calls when each poll takes longer than the interval (MTM hits Kalshi per branch). */
+  const dashboardFetchInFlight = useRef(false);
+
+  const refresh = useCallback(async () => {
+    if (dashboardFetchInFlight.current) return;
+    dashboardFetchInFlight.current = true;
+    const ac = new AbortController();
+    const maxMs = 90_000;
+    const tid = window.setTimeout(() => ac.abort(), maxMs);
     try {
       setErr(null);
-      const d = await apiGet<AnyObj>("/api/dashboard");
+      const r = await fetch("/api/dashboard", { signal: ac.signal });
+      if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
+      const d = (await r.json()) as AnyObj;
       setDash(d);
     } catch (e: any) {
+      const name = String(e?.name || "");
       const msg = String(e?.message || e);
-      if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
+      if (name === "AbortError" || /aborted|AbortError/i.test(msg)) {
+        setErr(
+          `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
+        );
+      } else if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
         setErr(
           "Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app at http://localhost:5173 — not the API port alone.",
         );
@@ -942,14 +984,18 @@ export default function App() {
       } else {
         setErr(msg);
       }
+    } finally {
+      window.clearTimeout(tid);
+      dashboardFetchInFlight.current = false;
     }
-  };
+  }, []);
 
   useEffect(() => {
-    refresh();
-    const id = window.setInterval(refresh, 2500);
+    void refresh();
+    // Slower than before so a slow dashboard (MTM for Live + 3 labs) can finish before the next poll stacks up.
+    const id = window.setInterval(() => void refresh(), 8000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [refresh]);
 
   const loadOptimizer = useCallback(async () => {
     try {
@@ -999,9 +1045,11 @@ export default function App() {
   const metrics = dash?.metrics || {};
   const metricsLabA = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
+  const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
   const snaps = (dash?.equity_snapshots || []) as AnyObj[];
   const equitySnapsLabA = (dash?.equity_snapshots_lab_a || dash?.equity_snapshots_sim_lab || []) as AnyObj[];
   const equitySnapsLabB = (dash?.equity_snapshots_lab_b || []) as AnyObj[];
+  const equitySnapsLabC = (dash?.equity_snapshots_lab_c || []) as AnyObj[];
   const labA = useMemo((): AnyObj => {
     const a = cfg.lab_a;
     if (a && typeof a === "object") return a as AnyObj;
@@ -1014,6 +1062,11 @@ export default function App() {
     if (b && typeof b === "object") return b as AnyObj;
     return EMPTY_LAB;
   }, [cfg.lab_b]);
+  const labC = useMemo((): AnyObj => {
+    const c = cfg.lab_c;
+    if (c && typeof c === "object") return c as AnyObj;
+    return EMPTY_LAB;
+  }, [cfg.lab_c]);
   // Backward-compatible aliases while we expand UI sections incrementally.
   const simLab = labA;
 
@@ -1030,14 +1083,24 @@ export default function App() {
     () => equitySeriesWithLiveTail(equitySnapsLabB, equityGranularity, metricsLabB, fmtIsoLocal),
     [equitySnapsLabB, equityGranularity, metricsLabB, fmtIsoLocal],
   );
+  const chartDataLabC = useMemo(
+    () => equitySeriesWithLiveTail(equitySnapsLabC, equityGranularity, metricsLabC, fmtIsoLocal),
+    [equitySnapsLabC, equityGranularity, metricsLabC, fmtIsoLocal],
+  );
 
   const assets = (cfg.assets || {}) as AnyObj;
   const assetSnaps = (dash?.asset_snapshots || {}) as AnyObj;
   const engineSnapsLive = (assetSnaps.live || {}) as AnyObj;
   const engineSnapsLabA = ((assetSnaps.lab_a || assetSnaps.sim_lab) || {}) as AnyObj;
   const engineSnapsLabB = (assetSnaps.lab_b || {}) as AnyObj;
+  const engineSnapsLabC = (assetSnaps.lab_c || {}) as AnyObj;
   const engineLabA = (dash?.engine?.lab_a ?? dash?.engine?.sim_lab) as AnyObj | undefined;
   const engineLabB = dash?.engine?.lab_b as AnyObj | undefined;
+  const engineLabC = dash?.engine?.lab_c as AnyObj | undefined;
+  /** Dashboard ``engine.*`` can lag; fall back to config (same idea as Lab A toolbar toggle). */
+  const labABranchEngineOn = Boolean(engineLabA?.engine_running ?? simLab.engine_running);
+  const labBBranchEngineOn = Boolean(engineLabB?.engine_running ?? labB.engine_running);
+  const labCBranchEngineOn = Boolean(engineLabC?.engine_running ?? labC.engine_running);
 
   const recentSignalsFiltered = useMemo(() => {
     const rs = (dash?.recent_signals || []) as AnyObj[];
@@ -1108,10 +1171,10 @@ export default function App() {
     }
   };
 
-  const setLabRunning = async (lab: "a" | "b", running: boolean) => {
+  const setLabRunning = async (lab: "a" | "b" | "c", running: boolean) => {
     setBusy(true);
     try {
-      const key = lab === "a" ? "lab_a_running" : "lab_b_running";
+      const key = lab === "a" ? "lab_a_running" : lab === "b" ? "lab_b_running" : "lab_c_running";
       await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`);
       await refresh();
     } catch (e: any) {
@@ -1122,8 +1185,8 @@ export default function App() {
   };
   const setSimLabRunning = async (running: boolean) => setLabRunning("a", running);
 
-  const saveLabFromSliders = async (lab: "a" | "b") => {
-    const p = `lab_${lab}`;
+  const saveLabFromSliders = async (lab: "a" | "b" | "c") => {
+    const p = lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : "lab_c";
     const fracRaw = (document.getElementById(`${p}_frac`) as HTMLInputElement | null)?.value;
     const winRaw = (document.getElementById(`${p}_win`) as HTMLInputElement | null)?.value;
     const paperRaw = (document.getElementById(`${p}_paper`) as HTMLInputElement | null)?.value;
@@ -1155,7 +1218,7 @@ export default function App() {
       };
       await apiPutLabBranches({
         reset_data: "none",
-        ...(lab === "a" ? { lab_a: patch } : { lab_b: patch }),
+        ...(lab === "a" ? { lab_a: patch } : lab === "b" ? { lab_b: patch } : { lab_c: patch }),
       });
       await refresh();
     } catch (e: any) {
@@ -1167,13 +1230,14 @@ export default function App() {
   const saveSimLabFromSliders = async () => saveLabFromSliders("a");
   const saveLabAFromSliders = async () => saveLabFromSliders("a");
   const saveLabBFromSliders = async () => saveLabFromSliders("b");
+  const saveLabCFromSliders = async () => saveLabFromSliders("c");
 
-  const saveLabRules = async (lab: "a" | "b", rules: AnyObj[]) => {
+  const saveLabRules = async (lab: "a" | "b" | "c", rules: AnyObj[]) => {
     setBusy(true);
     try {
       await apiPutLabBranches({
         reset_data: "none",
-        ...(lab === "a" ? { lab_a: { rules } } : { lab_b: { rules } }),
+        ...(lab === "a" ? { lab_a: { rules } } : lab === "b" ? { lab_b: { rules } } : { lab_c: { rules } }),
       });
       await refresh();
     } catch (e: any) {
@@ -1184,6 +1248,7 @@ export default function App() {
   };
   const saveLabARules = async (rules: AnyObj[]) => saveLabRules("a", rules);
   const saveLabBRules = async (rules: AnyObj[]) => saveLabRules("b", rules);
+  const saveLabCRules = async (rules: AnyObj[]) => saveLabRules("c", rules);
 
   const saveSizing = async () => {
     const frac = Number((document.getElementById("frac") as HTMLInputElement)?.value);
@@ -1310,7 +1375,7 @@ export default function App() {
     }
   };
 
-  const resetTradingData = async (branch: "all" | "live" | "lab_a" | "lab_b", backup: boolean) => {
+  const resetTradingData = async (branch: "all" | "live" | "lab_a" | "lab_b" | "lab_c", backup: boolean) => {
     setBusy(true);
     try {
       const q = new URLSearchParams({
@@ -1326,6 +1391,24 @@ export default function App() {
       }
       const r = await fetch(`/api/data/reset?${q.toString()}`, { method: "POST", headers });
       if (!r.ok) throw new Error((await r.text()) || `reset ${r.status}`);
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addAllLabsPaperBankroll = async () => {
+    if (
+      !window.confirm(
+        "Add $100.00 to Lab A, B, and C paper balance each?\n\nReturn % and other vs-start KPIs will treat the cumulative basis as your previous basis plus $100 per lab (where a lifetime basis is stored, it is increased by the same amount). Optimizer settings, rules, engines, and trade history are unchanged."
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      await apiPostJson("/api/config/labs/add-paper-bankroll", {});
       await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -1389,7 +1472,9 @@ export default function App() {
             </a>
           </div>
           {dash ? <BranchMarketTickers dash={dash} cfg={cfg} /> : null}
-          {dash ? <SnapReconcileStrip cfg={cfg} metrics={metrics} metricsLabA={metricsLabA} metricsLabB={metricsLabB} /> : null}
+          {dash ? (
+            <SnapReconcileStrip cfg={cfg} metrics={metrics} metricsLabA={metricsLabA} metricsLabB={metricsLabB} metricsLabC={metricsLabC} />
+          ) : null}
           {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
         </div>
         <div className="toolbar-panel">
@@ -1400,7 +1485,7 @@ export default function App() {
                 <button
                   className="primary"
                   disabled={busy}
-                  title="Fetch /api/dashboard now (this page also auto-refreshes every ~2.5s)."
+                  title="Fetch /api/dashboard now (this page also auto-refreshes about every 8s; skips if a request is still in flight)."
                   onClick={() => refresh()}
                 >
                   Refresh
@@ -1449,23 +1534,39 @@ export default function App() {
                 <button
                   className="primary"
                   disabled={busy}
-                  title="Parallel paper engine with its own sizing/window; uses the same market data as Live. Always simulated."
+                  title="Staging / blend paper engine (optimizer tuning applies here before Live)."
                   onClick={() => setSimLabRunning(!Boolean(engineLabA?.engine_running ?? simLab.engine_running))}
                 >
-                  A {engineLabA?.engine_running ? "on" : "off"}
+                  A {labABranchEngineOn ? "on" : "off"}
                 </button>
                 <button
                   className="primary"
                   disabled={busy}
-                  title="Second parallel paper engine for A/B testing."
+                  title="Conservative reference arm — parallel paper; optimizer does not auto-apply rules here."
                   onClick={() => setLabRunning("b", !Boolean(labB.engine_running))}
                 >
-                  B {engineLabB?.engine_running ? "on" : "off"}
+                  B {labBBranchEngineOn ? "on" : "off"}
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy}
+                  title="Aggressive reference arm — parallel paper; optimizer does not auto-apply rules here."
+                  onClick={() => setLabRunning("c", !Boolean(labC.engine_running))}
+                >
+                  C {labCBranchEngineOn ? "on" : "off"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="Add $100.00 to each lab’s paper_balance_cents; if paper_lifetime_basis_cents is set, bump it by the same amount so return % vs basis matches the larger bankroll. Optimizer, rules, and SQLite trades unchanged."
+                  onClick={() => void addAllLabsPaperBankroll()}
+                >
+                  All +$100
                 </button>
               </div>
             </div>
           </div>
-          <div className="toolbar-optimizer-foot" title="Anthropic-backed recommendations from Lab A/B data only.">
+          <div className="toolbar-optimizer-foot" title="Anthropic-backed analysis on A/B/C paper data; auto-applied tuning targets Lab A only.">
             <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
               <button
                 type="button"
@@ -1574,16 +1675,16 @@ export default function App() {
           style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
           title={
             cfg.simulate
-              ? "Live branch is paper: simulated fills only. MTM (est.) tile = last snapshot mark-to-market; cost-basis equity = bankroll + realized PnL − open premium committed."
-              : "Live branch posts real limit orders when the engine runs and rules match. Cash / portfolio value come from Kalshi signed portfolio reads."
+              ? `${activityBranchTabLabel("live")} (Activity log tab): SQLite branch live — paper mode, simulated fills only. MTM (est.) = last snapshot mark-to-market; cost-basis equity = bankroll + realized PnL − open premium committed.`
+              : `${activityBranchTabLabel("live")} (Activity log tab): SQLite branch live — real fills when the engine runs. Cash / portfolio from Kalshi signed portfolio reads.`
           }
         >
-          Live strategy ({cfg.simulate ? "paper" : "real fills"})
+          {activityBranchTabLabel("live")}
         </div>
         <p
           className="sub section-tip"
           style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title="Paper: settled = Kalshi finalized the contract; open = still waiting. Real: bot PnL is still from this app’s trade log for the Live branch."
+          title={`Paper: settled = Kalshi finalized the contract; open = still waiting. Real: bot PnL from this app’s trade log for ${activityBranchTabLabel("live")} (branch live).`}
         >
           <strong>Settled</strong> = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim).{" "}
           <strong>Open (paper)</strong> = premium held in open sim rows (subtracted from estimated equity).{" "}
@@ -1742,35 +1843,38 @@ export default function App() {
       <div
         className="section-tip"
         style={{ marginBottom: 8, color: "var(--muted)", fontSize: 12 }}
-        title="Paper-only A/B engines: separate SQLite branches, sizing, rules, and bankrolls. No real order posts."
+        title="Lab A, Lab B, Lab C — same labels as Activity log tabs. Each uses its own SQLite branch, sizing, rules, and bankroll (always paper; no real order posts)."
       >
-        Simulation labs overview
+        Labs ({activityBranchTabLabel("lab_a")} / {activityBranchTabLabel("lab_b")} / {activityBranchTabLabel("lab_c")})
       </div>
       <p
         className="sub section-tip"
         style={{ margin: "0 0 14px 0", fontSize: 11, lineHeight: 1.45 }}
-        title="Each block below is scoped to one branch only, same layout idea as Live strategy metrics."
+        title="Each metrics block matches one Activity log tab; filters use the same branch keys as Recent signals and trades."
       >
-        Metrics below are <strong>not mixed</strong>: Lab A uses only <code>branch=lab_a</code> (legacy <code>sim_lab</code> counts as Lab A); Lab B uses only{" "}
-        <code>branch=lab_b</code>. Lab <strong>bankroll (start)</strong> is cumulative capital injected (including each auto-reseed); return % is vs that basis.
+        Metrics below are <strong>not mixed</strong>: they line up with{" "}
+        <strong>{activityBranchTabLabel("lab_a")}</strong> (<code>branch=lab_a</code>, legacy <code>sim_lab</code> rolls up here),{" "}
+        <strong>{activityBranchTabLabel("lab_b")}</strong> (<code>branch=lab_b</code>), and <strong>{activityBranchTabLabel("lab_c")}</strong> (
+        <code>branch=lab_c</code>). Scheduled optimizer auto-applies tuning to {activityBranchTabLabel("lab_a")} only; {activityBranchTabLabel("lab_b")} and{" "}
+        {activityBranchTabLabel("lab_c")} stay reference arms. <strong>Bankroll (start)</strong> is cumulative capital injected (including each auto-reseed); return % is vs that basis.
       </p>
 
       <div className="metrics" style={{ marginBottom: 14 }}>
         <div
           className="section-tip"
           style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
-          title="Lab A paper branch: lab_a (legacy sim_lab rollups align here)."
+          title={`${activityBranchTabLabel("lab_a")} (Activity log tab): SQLite branch lab_a — always paper; legacy sim_lab rollups align here.`}
         >
-          Lab A (always paper, branch lab_a)
+          {activityBranchTabLabel("lab_a")}
         </div>
         <p
           className="sub section-tip"
           style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title="Lab A equity uses full SQLite rollups for lab_a, not only the Recent tables."
+          title={`${activityBranchTabLabel("lab_a")} equity uses full SQLite rollups for lab_a, not only the Recent tables.`}
         >
-          <strong>Reconcile Lab A:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
+          <strong>Reconcile {activityBranchTabLabel("lab_a")}:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
           <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
-          usually means premium still tied up in open Lab A positions.
+          usually means premium still tied up in open {activityBranchTabLabel("lab_a")} positions.
         </p>
         <MetricTile
           label="Lab A bankroll (start)"
@@ -1841,18 +1945,18 @@ export default function App() {
         <div
           className="section-tip"
           style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
-          title="Lab B paper branch: lab_b only."
+          title={`${activityBranchTabLabel("lab_b")} (Activity log tab): SQLite branch lab_b — always paper.`}
         >
-          Lab B (always paper, branch lab_b)
+          {activityBranchTabLabel("lab_b")}
         </div>
         <p
           className="sub section-tip"
           style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title="Lab B equity uses full SQLite rollups for lab_b, not only the Recent tables."
+          title={`${activityBranchTabLabel("lab_b")} equity uses full SQLite rollups for lab_b, not only the Recent tables.`}
         >
-          <strong>Reconcile Lab B:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
+          <strong>Reconcile {activityBranchTabLabel("lab_b")}:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
           <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
-          usually means premium still tied up in open Lab B positions.
+          usually means premium still tied up in open {activityBranchTabLabel("lab_b")} positions.
         </p>
         <MetricTile
           label="Lab B bankroll (start)"
@@ -1919,6 +2023,88 @@ export default function App() {
         />
       </div>
 
+      <div className="metrics" style={{ marginBottom: 14 }}>
+        <div
+          className="section-tip"
+          style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
+          title={`${activityBranchTabLabel("lab_c")} (Activity log tab): SQLite branch lab_c — always paper (aggressive reference arm).`}
+        >
+          {activityBranchTabLabel("lab_c")}
+        </div>
+        <p
+          className="sub section-tip"
+          style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
+          title={`${activityBranchTabLabel("lab_c")} equity uses full SQLite rollups for lab_c, not only the Recent tables.`}
+        >
+          <strong>Reconcile {activityBranchTabLabel("lab_c")}:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
+          <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
+          usually means premium still tied up in open {activityBranchTabLabel("lab_c")} positions.
+        </p>
+        <MetricTile
+          label="Lab C bankroll (start)"
+          value={fmtMoney(Number(metricsLabC.paper_start_dollars ?? 0))}
+          title="Cumulative paper basis: lab_c.paper_lifetime_basis_cents after each auto wipe, else lab_c.paper_balance_cents, else global paper_balance_cents. Return % uses this denominator."
+        />
+        <MetricTile
+          label="Lab C MTM (est.)"
+          value={fmtMoney(dashboardMtmDollars(metricsLabC))}
+          title="Lab C mark-to-market from the latest snapshot (bankroll + realized − committed + open marks at mid). Falls back to cost-basis equity if MTM not stored yet."
+          sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(metricsLabC))} · chart last ${
+            dashboardChartLastMtmOrEq(metricsLabC) != null ? fmtMoney(Number(dashboardChartLastMtmOrEq(metricsLabC))) : "—"
+          }`}
+          valueTone={metricEquityVsBankroll(dashboardMtmDollars(metricsLabC), metricsLabC.paper_start_dollars)}
+          subTone={metricSignedTone(dashboardMtmReturnPct(metricsLabC))}
+        />
+        <MetricTile
+          label="Lab C total PnL"
+          value={fmtMoney(Number(metricsLabC.total_pnl_dollars || 0))}
+          title="Realized PnL for branch lab_c, mode simulate, status settled."
+          sub={`${fmtPct(metricsLabC.realized_pnl_pct_of_start)} of lab bankroll`}
+          valueTone={metricSignedTone(metricsLabC.total_pnl_dollars)}
+          subTone={metricSignedTone(metricsLabC.realized_pnl_pct_of_start)}
+        />
+        <MetricTile
+          label="Lab C fees"
+          value={fmtMoney(Number(metricsLabC.total_kalshi_fees_dollars || 0))}
+          title="Modeled entry + exit fees accumulated for Lab C."
+          valueTone="neg"
+        />
+        <MetricTile
+          label="Lab C avg hourly"
+          value={fmtMoney(Number(metricsLabC.avg_hourly_pnl_dollars || 0))}
+          title="Lab C realized PnL divided by hours spanned by settled lab_c trades (min ~1h denominator)."
+          valueTone={metricSignedTone(metricsLabC.avg_hourly_pnl_dollars)}
+        />
+        <MetricTile
+          label="Lab C settled"
+          value={String(metricsLabC.settled_trades ?? 0)}
+          title="Count of settled lab_c simulated trades."
+        />
+        <WinLossRecordTile label="Lab C win / loss · %" metrics={metricsLabC} />
+        <MetricTile
+          label="Lab C avg / settled"
+          value={
+            metricsLabC.avg_realized_per_settled_dollars != null
+              ? fmtMoney(Number(metricsLabC.avg_realized_per_settled_dollars))
+              : "—"
+          }
+          title="Lab C total realized PnL ÷ Lab C settled count."
+          valueTone={metricSignedTone(metricsLabC.avg_realized_per_settled_dollars)}
+        />
+        <MetricTile
+          label="Lab C open"
+          value={String(metricsLabC.open_sim_trades ?? 0)}
+          title="Open lab_c rows awaiting settlement."
+        />
+        <MetricTile
+          label="Lab C committed"
+          value={fmtMoney(Number(metricsLabC.open_sim_committed_dollars || 0))}
+          title="Premium tied up in open lab_c positions."
+          sub={fmtPct(metricsLabC.committed_pct_of_start) + " of lab bankroll"}
+          subTone={metricSignedTone(-Number(metricsLabC.committed_pct_of_start))}
+        />
+      </div>
+
       <div className="grid">
         <div className="panel">
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
@@ -1955,10 +2141,20 @@ export default function App() {
                 role="tab"
                 aria-selected={assetWatchLab === "b"}
                 className={`chart-tab ${assetWatchLab === "b" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab B."
+                title="Per-asset engine snapshot for Lab B (conservative reference)."
                 onClick={() => setAssetWatchLab("b")}
               >
                 Lab B
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "c"}
+                className={`chart-tab ${assetWatchLab === "c" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab C (aggressive reference)."
+                onClick={() => setAssetWatchLab("c")}
+              >
+                Lab C
               </button>
             </div>
           </div>
@@ -2037,30 +2233,45 @@ export default function App() {
                       engineOn={Boolean(cfg.engine_running)}
                     />
                   ) : assetWatchLab === "a" ? (
-                    Boolean(engineLabA?.engine_running) ? (
+                    labABranchEngineOn ? (
                       <EngineAssetSnapBlock
                         label="Sim · Lab A"
                         snap={engineSnapsLabA[id]}
                         lastTick={engineLabA?.last_tick_at}
-                        engineOn={Boolean(engineLabA?.engine_running)}
+                        engineOn={labABranchEngineOn}
                       />
                     ) : (
                       <div className="sub" style={{ fontSize: 12 }} title="Turn Lab A on in the toolbar to populate lab snapshots.">
                         <strong>Sim · Lab A</strong> — engine off (no snapshot for this series).
                       </div>
                     )
-                  ) : Boolean(engineLabB?.engine_running) ? (
-                    <EngineAssetSnapBlock
-                      label="Sim · Lab B"
-                      snap={engineSnapsLabB[id]}
-                      lastTick={engineLabB?.last_tick_at}
-                      engineOn={Boolean(engineLabB?.engine_running)}
-                    />
-                  ) : (
-                    <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
-                      <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
-                    </div>
-                  )}
+                  ) : assetWatchLab === "b" ? (
+                    labBBranchEngineOn ? (
+                      <EngineAssetSnapBlock
+                        label="Sim · Lab B"
+                        snap={engineSnapsLabB[id]}
+                        lastTick={engineLabB?.last_tick_at}
+                        engineOn={labBBranchEngineOn}
+                      />
+                    ) : (
+                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
+                        <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
+                      </div>
+                    )
+                  ) : assetWatchLab === "c" ? (
+                    labCBranchEngineOn ? (
+                      <EngineAssetSnapBlock
+                        label="Sim · Lab C"
+                        snap={engineSnapsLabC[id]}
+                        lastTick={engineLabC?.last_tick_at}
+                        engineOn={labCBranchEngineOn}
+                      />
+                    ) : (
+                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
+                        <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
+                      </div>
+                    )
+                  ) : null}
                 </div>
               </div>
             );
@@ -2104,11 +2315,14 @@ export default function App() {
           <h3
             className="sub section-tip"
             style={{ marginTop: 14, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Live branch: book value (solid) vs current worth / MTM (dashed). Intraday tail updates every dashboard poll; paper Live MTM is refreshed from Kalshi on each poll."
+            title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed). Intraday tail updates every dashboard poll; paper Live MTM is refreshed from Kalshi on each poll.`}
           >
-            Live branch
+            {activityBranchTabLabel("live")}
           </h3>
-          <div className="chart" title="Live branch equity over time (tab controls bucketing). Hover points for values.">
+          <div
+            className="chart"
+            title={`${activityBranchTabLabel("live")} equity over time (same branch labels as Activity log). Hover points for values.`}
+          >
             <EquityDualLineChart
               data={chartData}
               equityStroke="#6ee7ff"
@@ -2120,11 +2334,11 @@ export default function App() {
           <h3
             className="sub section-tip"
             style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Lab A paper: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll."
+            title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
           >
-            Lab A
+            {activityBranchTabLabel("lab_a")}
           </h3>
-          <div className="chart" title="Lab A equity over time (same tab as Live).">
+          <div className="chart" title={`${activityBranchTabLabel("lab_a")} equity over time (Activity log branch lab_a).`}>
             <EquityDualLineChart
               data={chartDataLabA}
               equityStroke="#a78bfa"
@@ -2135,16 +2349,31 @@ export default function App() {
           <h3
             className="sub section-tip"
             style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Lab B paper: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll."
+            title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
           >
-            Lab B
+            {activityBranchTabLabel("lab_b")}
           </h3>
-          <div className="chart" title="Lab B equity over time (same tab as Live).">
+          <div className="chart" title={`${activityBranchTabLabel("lab_b")} equity over time (Activity log branch lab_b).`}>
             <EquityDualLineChart
               data={chartDataLabB}
               equityStroke="#f59e0b"
               mtmStroke="#fcd34d"
               revision={equityChartRevision(chartDataLabB)}
+            />
+          </div>
+          <h3
+            className="sub section-tip"
+            style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
+            title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll.`}
+          >
+            {activityBranchTabLabel("lab_c")}
+          </h3>
+          <div className="chart" title={`${activityBranchTabLabel("lab_c")} equity over time (Activity log branch lab_c).`}>
+            <EquityDualLineChart
+              data={chartDataLabC}
+              equityStroke="#f472b6"
+              mtmStroke="#fbcfe8"
+              revision={equityChartRevision(chartDataLabC)}
             />
           </div>
 
@@ -2235,7 +2464,7 @@ export default function App() {
                 <p className="sub" style={{ marginBottom: 8 }} title="Why some assets have data and others show dashes.">
                   <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
                   identifier starts with that asset&apos;s <code>series_ticker</code>.{" "}
-                  <strong>Sim (Live / Lab A / Lab B)</strong> = open simulated trades in SQLite for that series per branch.{" "}
+                  <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for that series per branch.{" "}
                   <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
                   positions and/or the bot has open sim trades for that asset&apos;s <code>series_ticker</code> prefix.
                   Symbols with tighter books tend to fill first; others stay &quot;—&quot; until the same is true, or
@@ -2243,7 +2472,7 @@ export default function App() {
                 </p>
               ) : (
                 <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
-                  <strong>Sim (Live / Lab A / Lab B)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
+                  <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
                   <code>series_ticker</code>. The Kalshi column is omitted because the account is not linked; empty cells
                   here are not evidence that you have no positions on the exchange.
                 </p>
@@ -2260,6 +2489,7 @@ export default function App() {
                       <th title="Open simulated trades (branch live) in SQLite.">Sim open (Live)</th>
                       <th title="Open simulated trades (branch lab_a / sim_lab) in SQLite.">Sim open (Lab A)</th>
                       <th title="Open simulated trades (branch lab_b) in SQLite.">Sim open (Lab B)</th>
+                      <th title="Open simulated trades (branch lab_c) in SQLite.">Sim open (Lab C)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2303,6 +2533,13 @@ export default function App() {
                         >
                           {summarizePositionRows(row.bot_sim_open_lab_b)}
                         </td>
+                        <td
+                          className="sub"
+                          style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
+                          title={summarizePositionRows(row.bot_sim_open_lab_c)}
+                        >
+                          {summarizePositionRows(row.bot_sim_open_lab_c)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -2339,7 +2576,7 @@ export default function App() {
               </div>
             ) : null}
             <div style={{ marginTop: 10 }} title="Lab A (branch lab_a): always simulated; separate config and SQLite from Live.">
-              <strong title="Paper-only branch lab_a.">Lab A</strong> engine {engineLabA?.engine_running ? "on" : "off"} · always simulated · last
+              <strong title="Paper-only branch lab_a.">Lab A</strong> engine {labABranchEngineOn ? "on" : "off"} · always simulated · last
               tick:{" "}
               {engineLabA?.last_tick_at ? fmtIsoLocal(String(engineLabA.last_tick_at)) : "—"} · scanned{" "}
               {String(engineLabA?.markets_scanned ?? "—")}
@@ -2349,8 +2586,8 @@ export default function App() {
                 Lab A: {String(engineLabA.last_error)}
               </div>
             ) : null}
-            <div style={{ marginTop: 10 }} title="Lab B (branch lab_b): always simulated; parallel A/B lab.">
-              <strong title="Paper-only branch lab_b.">Lab B</strong> engine {engineLabB?.engine_running ? "on" : "off"} · always simulated · last
+            <div style={{ marginTop: 10 }} title="Lab B (branch lab_b): always simulated; conservative reference arm.">
+              <strong title="Paper-only branch lab_b.">Lab B</strong> engine {labBBranchEngineOn ? "on" : "off"} · always simulated · last
               tick:{" "}
               {engineLabB?.last_tick_at ? fmtIsoLocal(String(engineLabB.last_tick_at)) : "—"} · scanned{" "}
               {String(engineLabB?.markets_scanned ?? "—")}
@@ -2358,6 +2595,17 @@ export default function App() {
             {engineLabB?.last_error ? (
               <div className="error" style={{ marginTop: 6 }} title="Last Lab B engine error string.">
                 Lab B: {String(engineLabB.last_error)}
+              </div>
+            ) : null}
+            <div style={{ marginTop: 10 }} title="Lab C (branch lab_c): always simulated; aggressive reference arm.">
+              <strong title="Paper-only branch lab_c.">Lab C</strong> engine {labCBranchEngineOn ? "on" : "off"} · always simulated · last
+              tick:{" "}
+              {engineLabC?.last_tick_at ? fmtIsoLocal(String(engineLabC.last_tick_at)) : "—"} · scanned{" "}
+              {String(engineLabC?.markets_scanned ?? "—")}
+            </div>
+            {engineLabC?.last_error ? (
+              <div className="error" style={{ marginTop: 6 }} title="Last Lab C engine error string.">
+                Lab C: {String(engineLabC.last_error)}
               </div>
             ) : null}
             <div className="chart-tabs" role="tablist" aria-label="Last tick log branch" style={{ marginTop: 12 }}>
@@ -2391,6 +2639,16 @@ export default function App() {
               >
                 Lab B log
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={engineTraceBranch === "lab_c"}
+                className={`chart-tab ${engineTraceBranch === "lab_c" ? "chart-tab--active" : ""}`}
+                title="Show the last tick trace for Lab C."
+                onClick={() => setEngineTraceBranch("lab_c")}
+              >
+                Lab C log
+              </button>
             </div>
             <EngineTickTrace
               title={
@@ -2398,14 +2656,18 @@ export default function App() {
                   ? "Live — last tick log"
                   : engineTraceBranch === "lab_a"
                     ? "Lab A — last tick log"
-                    : "Lab B — last tick log"
+                    : engineTraceBranch === "lab_b"
+                      ? "Lab B — last tick log"
+                      : "Lab C — last tick log"
               }
               lines={
                 engineTraceBranch === "live"
                   ? dash?.engine?.live?.last_tick_trace
                   : engineTraceBranch === "lab_a"
                     ? engineLabA?.last_tick_trace
-                    : engineLabB?.last_tick_trace
+                    : engineTraceBranch === "lab_b"
+                      ? engineLabB?.last_tick_trace
+                      : engineLabC?.last_tick_trace
               }
             />
           </div>
@@ -2422,7 +2684,7 @@ export default function App() {
         </h2>
         <p className="sub section-tip" style={{ margin: "0 0 14px 0", fontSize: 12, lineHeight: 1.45 }}>
           The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose{" "}
-          <code>branch</code> matches (legacy <code>sim_lab</code> counts as Lab A).
+          <code>branch</code> matches (legacy <code>sim_lab</code> counts as Lab A). Use the Lab C tab for <code>lab_c</code> rows.
         </p>
 
         <div className="grid" style={{ marginTop: 0 }}>
@@ -2534,6 +2796,7 @@ export default function App() {
         cfg={cfg}
         labA={labA}
         labB={labB}
+        labC={labC}
         busy={busy}
         onSaveRules={saveRules}
         onSaveYesSubtitleFilter={saveYesSubtitleFilter}
@@ -2541,8 +2804,10 @@ export default function App() {
         onSaveSizing={saveSizing}
         onSaveLabAFromSliders={saveLabAFromSliders}
         onSaveLabBFromSliders={saveLabBFromSliders}
+        onSaveLabCFromSliders={saveLabCFromSliders}
         onSaveLabARules={saveLabARules}
         onSaveLabBRules={saveLabBRules}
+        onSaveLabCRules={saveLabCRules}
         onSaveDevSimHighYesPct={saveDevSimHighYesPct}
         onSaveNoBetWhenYesBelow={saveNoBetWhenYesBelow}
         onSaveSwingExitImpliedDropPct={saveSwingExitImpliedDropPct}
@@ -2584,13 +2849,16 @@ function ActivityHints({
 
   const liveOn = Boolean(cfg.engine_running);
   const labAOn = Boolean(dash?.engine?.lab_a?.engine_running ?? dash?.engine?.sim_lab?.engine_running ?? simLab.engine_running);
-  const labBOn = Boolean(dash?.engine?.lab_b?.engine_running);
+  const labBOn = Boolean(dash?.engine?.lab_b?.engine_running ?? (cfg.lab_b as AnyObj | undefined)?.engine_running);
+  const labCOn = Boolean(dash?.engine?.lab_c?.engine_running ?? (cfg.lab_c as AnyObj | undefined)?.engine_running);
   const liveTick = dash?.engine?.live?.last_tick_at;
   const labATick = dash?.engine?.lab_a?.last_tick_at ?? dash?.engine?.sim_lab?.last_tick_at;
   const labBTick = dash?.engine?.lab_b?.last_tick_at;
+  const labCTick = dash?.engine?.lab_c?.last_tick_at;
   const scannedLive = dash?.engine?.live?.markets_scanned;
   const scannedLabA = dash?.engine?.lab_a?.markets_scanned ?? dash?.engine?.sim_lab?.markets_scanned;
   const scannedLabB = dash?.engine?.lab_b?.markets_scanned;
+  const scannedLabC = dash?.engine?.lab_c?.markets_scanned;
 
   const lines: string[] = [];
   const branchName = activityBranchTabLabel(activityBranch);
@@ -2619,7 +2887,8 @@ function ActivityHints({
     const needLive = activityBranch === "live";
     const needA = activityBranch === "lab_a";
     const needB = activityBranch === "lab_b";
-    if ((needLive && !liveOn) || (needA && !labAOn) || (needB && !labBOn)) {
+    const needC = activityBranch === "lab_c";
+    if ((needLive && !liveOn) || (needA && !labAOn) || (needB && !labBOn) || (needC && !labCOn)) {
       lines.push(`Turn the ${branchName} engine on in the toolbar — otherwise this branch’s ticks (and rows) stay idle.`);
     } else {
       if (needLive && liveOn) {
@@ -2635,6 +2904,11 @@ function ActivityHints({
       if (needB && labBOn) {
         lines.push(
           `Lab B last tick: ${labBTick ? fmtIsoLocal(String(labBTick)) : "—"} · markets scanned: ${scannedLabB ?? "—"}.`,
+        );
+      }
+      if (needC && labCOn) {
+        lines.push(
+          `Lab C last tick: ${labCTick ? fmtIsoLocal(String(labCTick)) : "—"} · markets scanned: ${scannedLabC ?? "—"}.`,
         );
       }
       lines.push(
@@ -2942,7 +3216,7 @@ function SignalsTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: strin
         <thead>
           <tr>
             <th title="Signal creation time (local).">Time</th>
-            <th title="live, lab_a (legacy sim_lab), or lab_b.">Br</th>
+            <th title="live, lab_a (legacy sim_lab), lab_b, or lab_c.">Br</th>
             <th title="Configured asset id.">Asset</th>
             <th title="Market ticker.">Ticker</th>
             <th title="Matched rule name (or DEV bypass).">Rule</th>
@@ -2990,7 +3264,7 @@ function TradesTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: string
         <thead>
           <tr>
             <th title="Trade or order creation time.">Time</th>
-            <th title="live, lab_a (legacy sim_lab), or lab_b.">Branch</th>
+            <th title="live, lab_a (legacy sim_lab), lab_b, or lab_c.">Branch</th>
             <th title="simulate vs live trade mode.">Mode</th>
             <th title="Market ticker.">Ticker</th>
             <th title="Whether the fill was simulated.">Sim</th>

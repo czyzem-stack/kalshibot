@@ -8,6 +8,8 @@ from uuid import uuid4
 from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
+    BRANCH_LAB_C,
+    _lab_key_for_branch,
     clamp_balance_fraction_per_window,
 )
 from .engine import rule_matches
@@ -42,8 +44,10 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("mode", "duel")  # duel | independent
     out.setdefault("lab_a_enabled", True)
     out.setdefault("lab_b_enabled", True)
-    out.setdefault("lab_a_style", "conservative")
-    out.setdefault("lab_b_style", "aggressive")
+    out.setdefault("lab_c_enabled", True)
+    out.setdefault("lab_a_style", "blend")
+    out.setdefault("lab_b_style", "conservative")
+    out.setdefault("lab_c_style", "aggressive")
     out.setdefault("loss_streak_trigger", 3)
     out.setdefault("threshold_step_pct", 1)
     out.setdefault("minute_step", 1)
@@ -82,10 +86,16 @@ def _safe_int(v: Any, d: int) -> int:
 def _branch_style(oc: dict[str, Any], branch: str) -> str:
     mode = str(oc.get("mode") or "duel").strip().lower()
     if mode == "duel":
-        return "conservative" if branch == BRANCH_LAB_A else "aggressive"
+        if branch == BRANCH_LAB_B:
+            return "conservative"
+        if branch == BRANCH_LAB_C:
+            return "aggressive"
+        return "blend"
     if branch == BRANCH_LAB_A:
-        return str(oc.get("lab_a_style") or "conservative").strip().lower()
-    return str(oc.get("lab_b_style") or "aggressive").strip().lower()
+        return str(oc.get("lab_a_style") or "blend").strip().lower()
+    if branch == BRANCH_LAB_B:
+        return str(oc.get("lab_b_style") or "conservative").strip().lower()
+    return str(oc.get("lab_c_style") or "aggressive").strip().lower()
 
 
 def _index_signals_by_ticker(signals: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -264,24 +274,32 @@ def _build_metrics_context(
     oc: dict[str, Any],
     tr_a: list[dict[str, Any]],
     tr_b: list[dict[str, Any]],
+    tr_c: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
     sg_b: list[dict[str, Any]],
+    sg_c: list[dict[str, Any]],
     eq_a: list[dict[str, Any]],
     eq_b: list[dict[str, Any]],
+    eq_c: list[dict[str, Any]],
     end: dt.datetime,
 ) -> dict[str, Any]:
     include_fees = bool(oc.get("include_fees_in_score", True))
     regime_h = float(oc.get("regime_lookback_hours") or 6)
     sa = _signals_sorted_desc(sg_a)
     sb = _signals_sorted_desc(sg_b)
+    sc = _signals_sorted_desc(sg_c)
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     _, rules_a = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     _, rules_b = _ensure_lab_rules(cfg, BRANCH_LAB_B)
+    _, rules_c = _ensure_lab_rules(cfg, BRANCH_LAB_C)
     rep_a = _replay_pnl_under_rules(st_a, rules_a, sa, include_fees_in_score=include_fees)
     rep_b = _replay_pnl_under_rules(st_b, rules_b, sb, include_fees_in_score=include_fees)
+    rep_c = _replay_pnl_under_rules(st_c, rules_c, sc, include_fees_in_score=include_fees)
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
+    lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     def _pf_var(rows: list[dict[str, Any]]) -> dict[str, Any]:
         gross_win = sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) > 0)
         gross_loss = abs(sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) < 0))
@@ -329,6 +347,21 @@ def _build_metrics_context(
             "regime_last_4h": _regime_volatility(sg_b, hours=4.0, end=end),
             "regime_last_24h": _regime_volatility(sg_b, hours=24.0, end=end),
         },
+        "lab_c": {
+            "settled_trades": len(st_c),
+            "profitable_trades": sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0),
+            "balance_fraction_per_window": lab_c.get("balance_fraction_per_window"),
+            "window_minutes": lab_c.get("window_minutes"),
+            "replay_under_current_rules_pnl_cents": rep_c[0],
+            "replay_matched_trades": rep_c[1],
+            "per_rule_stats_48h": _per_rule_stats_48h(st_c, end=end),
+            "profit_factor_and_variance": _pf_var(st_c),
+            "equity_slope_dollars_per_hour": _equity_slope_dollars_per_hour(eq_c),
+            "regime_primary_hours": regime_h,
+            "regime": _regime_volatility(sg_c, hours=regime_h, end=end),
+            "regime_last_4h": _regime_volatility(sg_c, hours=4.0, end=end),
+            "regime_last_24h": _regime_volatility(sg_c, hours=24.0, end=end),
+        },
         "optimizer_guards": {
             "min_trades_for_optimize": oc.get("min_trades_for_optimize"),
             "min_profitable_trades": oc.get("min_profitable_trades"),
@@ -339,7 +372,7 @@ def _build_metrics_context(
 
 
 def _ensure_lab_rules(cfg: dict[str, Any], branch: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    lk = "lab_a" if branch == BRANCH_LAB_A else "lab_b"
+    lk = _lab_key_for_branch(branch) or "lab_a"
     lab = cfg.get(lk)
     if not isinstance(lab, dict):
         lab = {}
@@ -369,8 +402,11 @@ def _apply_rule_thresholds(rules: list[dict[str, Any]], *, yes_floor_pct: int, m
         cur_maxm = _safe_int(nr.get("max_minutes_left"), max(cur_minm, minm))
         if style == "conservative":
             cur_minm = max(cur_minm, minm)
-        else:
+        elif style == "aggressive":
             cur_minm = min(cur_minm, minm)
+        else:
+            # blend: interpolate between current and conservative tightening
+            cur_minm = int(round((cur_minm + max(cur_minm, minm)) / 2.0))
         if cur_maxm < cur_minm:
             cur_maxm = cur_minm
         nr["min_prob"] = round(lo, 4)
@@ -382,7 +418,7 @@ def _apply_rule_thresholds(rules: list[dict[str, Any]], *, yes_floor_pct: int, m
 
 
 def _history_item(*, at_iso: str, branch: str, style: str, reason: str, before_floor: int, after_floor: int, before_minm: int, after_minm: int) -> dict[str, Any]:
-    lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B"
+    lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B" if branch == BRANCH_LAB_B else "Lab C"
     return {
         "id": uuid4().hex,
         "created_at": at_iso,
@@ -407,9 +443,8 @@ def _apply_adaptive_lab_tuning(
 ) -> dict[str, Any] | None:
     if not bool(oc.get("adaptive_enabled", True)):
         return None
-    if branch == BRANCH_LAB_A and not bool(oc.get("lab_a_enabled", True)):
-        return None
-    if branch == BRANCH_LAB_B and not bool(oc.get("lab_b_enabled", True)):
+    # Staging only: adaptive rule/threshold tuning persists on Lab A; B/C stay fixed reference arms.
+    if branch != BRANCH_LAB_A or not bool(oc.get("lab_a_enabled", True)):
         return None
     settled = [t for t in trades if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 25))
@@ -421,10 +456,10 @@ def _apply_adaptive_lab_tuning(
         return None
 
     sig_idx = _index_signals_by_ticker(signals)
-    floor_key = "lab_a_yes_floor_pct" if branch == BRANCH_LAB_A else "lab_b_yes_floor_pct"
-    mins_key = "lab_a_min_minutes_left" if branch == BRANCH_LAB_A else "lab_b_min_minutes_left"
-    cur_floor = max(1, min(99, _safe_int(oc.get(floor_key), 57 if branch == BRANCH_LAB_A else 55)))
-    cur_mins = max(0, _safe_int(oc.get(mins_key), 5 if branch == BRANCH_LAB_A else 3))
+    floor_key = "lab_a_yes_floor_pct"
+    mins_key = "lab_a_min_minutes_left"
+    cur_floor = max(1, min(99, _safe_int(oc.get(floor_key), 57)))
+    cur_mins = max(0, _safe_int(oc.get(mins_key), 5))
     step_pct = max(1, min(5, _safe_int(oc.get("threshold_step_pct"), 1)))
     step_m = max(1, min(5, _safe_int(oc.get("minute_step"), 1)))
     loss_trigger = max(2, min(12, _safe_int(oc.get("loss_streak_trigger"), 3)))
@@ -455,9 +490,14 @@ def _apply_adaptive_lab_tuning(
     if style == "conservative":
         cur_floor = min(95, cur_floor + step_pct)
         cur_mins = min(30, cur_mins + step_m)
-    else:
+    elif style == "aggressive":
         cur_floor = max(45, cur_floor - step_pct)
         cur_mins = max(0, cur_mins - step_m)
+    else:
+        half_p = max(1, int(round(step_pct / 2)))
+        half_m = max(1, int(round(step_m / 2)))
+        cur_floor = min(95, cur_floor + half_p)
+        cur_mins = min(30, cur_mins + half_m)
 
     if cur_floor == before_floor and cur_mins == before_mins:
         return None
@@ -480,7 +520,7 @@ def _apply_adaptive_lab_tuning(
 
     lab = dict(lab_base)
     lab["rules"] = proposed_rules
-    lk = "lab_a" if branch == BRANCH_LAB_A else "lab_b"
+    lk = _lab_key_for_branch(branch) or "lab_a"
     cfg[lk] = lab
     oc[floor_key] = cur_floor
     oc[mins_key] = cur_mins
@@ -505,7 +545,7 @@ def _history_bet_item(
     before_f: float,
     after_f: float,
 ) -> dict[str, Any]:
-    lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B"
+    lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B" if branch == BRANCH_LAB_B else "Lab C"
     return {
         "id": uuid4().hex,
         "created_at": at_iso,
@@ -526,19 +566,23 @@ def _apply_claude_bet_recommendations(
     rec: dict[str, Any],
     tr_a: list[dict[str, Any]],
     tr_b: list[dict[str, Any]],
+    tr_c: list[dict[str, Any]],
     at_iso: str,
 ) -> list[dict[str, Any]]:
-    """Apply balance_fraction_per_window hints from Claude when optimize_bet_size is on and guards pass."""
+    """Apply balance_fraction hints for Lab A staging only; B/C are read-only in the model output."""
     if not bool(oc.get("optimize_bet_size", True)):
         return []
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 25))
     min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 8))
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    if len(st_a) + len(st_b) < min_tr:
+    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    if len(st_a) + len(st_b) + len(st_c) < min_tr:
         return []
-    prof = sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0) + sum(
-        1 for t in st_b if int(t.get("pnl_cents") or 0) > 0
+    prof = (
+        sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_b if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0)
     )
     if prof < min_prof:
         return []
@@ -551,21 +595,23 @@ def _apply_claude_bet_recommendations(
             continue
         tgt = str(item.get("target") or "").strip().lower()
         field = str(item.get("field") or "").strip().lower()
-        if tgt not in ("lab_a", "lab_b") or field != "balance_fraction_per_window":
+        if field != "balance_fraction_per_window":
+            continue
+        if tgt != "lab_a":
             continue
         sug = item.get("suggested")
         new_f = _safe_float(sug, -1.0)
         if new_f < 0:
             continue
         new_f = clamp_balance_fraction_per_window(new_f)
-        lab_raw = cfg.get(tgt)
+        lab_raw = cfg.get("lab_a")
         lab = dict(lab_raw) if isinstance(lab_raw, dict) else {}
         old_f = _safe_float(lab.get("balance_fraction_per_window"), 0.05)
         if abs(new_f - old_f) < 0.0008:
             continue
         lab["balance_fraction_per_window"] = round(new_f, 4)
-        cfg[tgt] = lab
-        br = BRANCH_LAB_A if tgt == "lab_a" else BRANCH_LAB_B
+        cfg["lab_a"] = lab
+        br = BRANCH_LAB_A
         out_hist.append(
             _history_bet_item(
                 at_iso=at_iso,
@@ -591,11 +637,13 @@ def _build_payload(
             "Simulation-only quant: maximize risk-adjusted edge. Prefer higher profit factor × win rate with "
             "lower variance of per-trade outcomes; respect regime volatility and fee drag when include_fees_in_score is true."
         ),
-        "branches": [BRANCH_LAB_A, BRANCH_LAB_B],
+        "branches": [BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C],
         "live_branch_forbidden": True,
+        "persisted_tuning_target": "lab_a_only",
         "current_config_excerpt": {
             "lab_a": cfg.get("lab_a") or {},
             "lab_b": cfg.get("lab_b") or {},
+            "lab_c": cfg.get("lab_c") or {},
             "shared": {
                 "rules": cfg.get("rules") or [],
                 "balance_fraction_per_window": cfg.get("balance_fraction_per_window"),
@@ -618,7 +666,7 @@ def _build_payload(
             "summary": "string",
             "recommendations": [
                 {
-                    "target": "live|lab_a|lab_b",
+                    "target": "lab_a (only branch whose balance_fraction may be auto-applied)",
                     "field": "string (e.g. balance_fraction_per_window, lab_yes_floor_pct)",
                     "current": "any",
                     "suggested": "any",
@@ -643,24 +691,21 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     start_iso = _iso(start)
     end_iso = _iso(end)
 
-    # Hard guardrail: optimizer reads only lab_a/lab_b rows.
+    # Paper labs only (no live rows).
     tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
-    # Adaptive auto-correct loop: adjust per-lab YES floor/time guardrails when losses cluster.
+    # Adaptive auto-correct: Lab A staging only (B/C stay fixed reference arms).
     changes: list[dict[str, Any]] = []
     ca = _apply_adaptive_lab_tuning(
         cfg=cfg, oc=oc, branch=BRANCH_LAB_A, trades=tr_a, signals=sg_a, at_iso=end_iso
     )
     if ca:
         changes.append(ca)
-    cb = _apply_adaptive_lab_tuning(
-        cfg=cfg, oc=oc, branch=BRANCH_LAB_B, trades=tr_b, signals=sg_b, at_iso=end_iso
-    )
-    if cb:
-        changes.append(cb)
     if changes:
         hist = oc.get("change_history")
         old_hist = hist if isinstance(hist, list) else []
@@ -688,19 +733,27 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
 
     eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
     eq_b = await store.equity_series(limit=500, branch=BRANCH_LAB_B)
+    eq_c = await store.equity_series(limit=500, branch=BRANCH_LAB_C)
     metrics = _build_metrics_context(
         cfg=cfg,
         oc=oc,
         tr_a=tr_a,
         tr_b=tr_b,
+        tr_c=tr_c,
         sg_a=sg_a,
         sg_b=sg_b,
+        sg_c=sg_c,
         eq_a=eq_a,
         eq_b=eq_b,
+        eq_c=eq_c,
         end=end,
     )
     payload = _build_payload(
-        cfg=cfg, trades=[*tr_a, *tr_b], signals=[*sg_a, *sg_b], metrics=metrics, oc=oc
+        cfg=cfg,
+        trades=[*tr_a, *tr_b, *tr_c],
+        signals=[*sg_a, *sg_b, *sg_c],
+        metrics=metrics,
+        oc=oc,
     )
     model = str(oc.get("model") or "claude-sonnet-4-5")
     body = {
@@ -708,12 +761,11 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "max_tokens": 2200,
         "temperature": 0.2,
         "system": (
-            "You are a quant assistant for simulation only (lab_a / lab_b). Never use live-branch data. "
-            "Use performance_metrics: per-rule win rates, replay PnL under current rules, equity slopes, and regime buckets. "
-            "When optimize_bet_size is true, you may emit recommendations with "
-            "field=balance_fraction_per_window and target lab_a or lab_b; keep suggested values within "
-            "0.0001 and 1.0 (same bounds as dashboard balance fraction per window). "
-            "Return concise JSON only, following the provided output_schema."
+            "You are a quant assistant for paper labs lab_a (staging / blend), lab_b (conservative), lab_c (aggressive). "
+            "Never use live-branch data. Lab B and C are reference arms only: do not recommend persisted threshold/rule "
+            "or bet-size changes for them. Use performance_metrics across all three. When optimize_bet_size is true, "
+            "you may emit recommendations with field=balance_fraction_per_window and target lab_a only; keep suggested "
+            "values within 0.0001 and 1.0. Return concise JSON only, following the provided output_schema."
         ),
         "messages": [{"role": "user", "content": json.dumps(payload)}],
     }
@@ -748,13 +800,19 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         created_at=_iso(end),
         window_start=start_iso,
         window_end=end_iso,
-        source_branches=[BRANCH_LAB_A, BRANCH_LAB_B],
+        source_branches=[BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C],
         summary=str(rec.get("summary") or "")[:2000],
         recommendation_json=rec if isinstance(rec, dict) else {"raw": rec},
         raw_json=out if isinstance(out, dict) else None,
     )
     bet_hist = _apply_claude_bet_recommendations(
-        cfg=cfg, oc=oc, rec=rec if isinstance(rec, dict) else {}, tr_a=tr_a, tr_b=tr_b, at_iso=_iso(end)
+        cfg=cfg,
+        oc=oc,
+        rec=rec if isinstance(rec, dict) else {},
+        tr_a=tr_a,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        at_iso=_iso(end),
     )
     if bet_hist:
         hist2 = oc.get("change_history")

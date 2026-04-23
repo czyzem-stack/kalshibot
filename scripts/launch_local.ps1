@@ -31,20 +31,23 @@ $port = 8765
 if ($env:KALSHI_BOT_PORT -and $env:KALSHI_BOT_PORT -match "^\d+$") {
     $port = [int]$env:KALSHI_BOT_PORT
 }
-Write-Host "Waiting for API on port $port..." -ForegroundColor DarkGray
+Write-Host "Waiting for API (http://127.0.0.1:$port/api/health)..." -ForegroundColor DarkGray
 $ready = $false
-for ($i = 0; $i -lt 40; $i++) {
+$healthUrl = "http://127.0.0.1:$port/api/health"
+for ($i = 0; $i -lt 60; $i++) {
     try {
-        $t = Test-NetConnection -ComputerName 127.0.0.1 -Port $port -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-        if ($t.TcpTestSucceeded) {
+        $r = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        if ($r.StatusCode -eq 200) {
             $ready = $true
             break
         }
-    } catch { }
+    } catch {
+        # uvicorn still starting or port in use elsewhere
+    }
     Start-Sleep -Milliseconds 500
 }
 if (-not $ready) {
-    Write-Warning "API did not accept connections on $port yet. If the UI shows an error, wait a few seconds and click Refresh, or check the backend window for Python errors."
+    Write-Warning "API did not respond on $healthUrl yet. If the UI shows an error, wait a few seconds and click Refresh, or check the backend window for Python errors."
 }
 
 $frontend = Join-Path $RepoRoot "frontend"

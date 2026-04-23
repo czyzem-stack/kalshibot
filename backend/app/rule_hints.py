@@ -23,16 +23,17 @@ def _gather_probs_mins(snapshots: dict[str, Any] | None) -> tuple[list[float], l
 
 def rule_suggestions_from_snapshots(
     snaps_live: dict[str, Any] | None,
-    snaps_lab: dict[str, Any] | None,
+    *snaps_labs: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """
     Heuristic band ideas from recent engine snapshots (not ML / not financial advice).
     Widen or shift bands when observed implied YES sits outside typical defaults.
     """
     probs, mins = _gather_probs_mins(snaps_live)
-    p2, m2 = _gather_probs_mins(snaps_lab)
-    probs.extend(p2)
-    mins.extend(m2)
+    for sl in snaps_labs:
+        p2, m2 = _gather_probs_mins(sl)
+        probs.extend(p2)
+        mins.extend(m2)
 
     if len(probs) < 1:
         return {

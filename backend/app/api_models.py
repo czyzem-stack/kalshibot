@@ -67,6 +67,7 @@ class BotConfigPayload(BaseModel):
     min_contracts: int | None = Field(None, ge=1, le=10000)
     lab_a: dict[str, Any] | None = None
     lab_b: dict[str, Any] | None = None
+    lab_c: dict[str, Any] | None = None
     sim_lab: dict[str, Any] | None = None
     optimizer: dict[str, Any] | None = None
 
@@ -135,14 +136,15 @@ class BotConfigPayload(BaseModel):
         if self.sim_lab is not None:
             cur = merge_lab_branch_patch(dict(out.get("lab_a") or out.get("sim_lab") or {}), self.sim_lab)
             out["lab_a"] = expand_partial_lab_branch("lab_a", cur)
-            out["sim_lab"] = dict(out["lab_a"])
         if self.lab_a is not None:
             cur = merge_lab_branch_patch(dict(out.get("lab_a") or {}), self.lab_a)
             out["lab_a"] = expand_partial_lab_branch("lab_a", cur)
-            out["sim_lab"] = dict(out["lab_a"])
         if self.lab_b is not None:
             cur = merge_lab_branch_patch(dict(out.get("lab_b") or {}), self.lab_b)
             out["lab_b"] = expand_partial_lab_branch("lab_b", cur)
+        if self.lab_c is not None:
+            cur = merge_lab_branch_patch(dict(out.get("lab_c") or {}), self.lab_c)
+            out["lab_c"] = expand_partial_lab_branch("lab_c", cur)
         if self.optimizer is not None:
             cur = dict(out.get("optimizer") or {})
             for k, v in self.optimizer.items():
