@@ -275,6 +275,63 @@ input[type="number"] {
   align-items: center;
 }
 
+/* Dashboard: readable section titles + legend copy (not only tooltips / muted grid rows) */
+.dash-section {
+  margin-bottom: 20px;
+}
+.dash-section__title {
+  margin: 0 0 10px 0;
+  font-size: 1.125rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  border-left: 3px solid var(--accent);
+  padding: 2px 0 2px 12px;
+  line-height: 1.25;
+}
+.dash-section__subtitle {
+  margin: 0 0 8px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e4e9ff;
+  border-left: 3px solid #a78bfa;
+  padding: 2px 0 2px 12px;
+  line-height: 1.25;
+}
+.dash-section__subtitle--lab-b {
+  border-left-color: #fdba74;
+}
+.dash-section__subtitle--lab-c {
+  border-left-color: #f9a8d4;
+}
+.dash-section__legend {
+  margin: 0 0 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(28, 40, 78, 0.65) 0%, rgba(11, 18, 40, 0.85) 100%);
+  color: #b9c3e3;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.dash-section__legend p {
+  margin: 0;
+}
+.dash-section__legend p + p {
+  margin-top: 10px;
+}
+.dash-section__legend code {
+  font-size: 12px;
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  background: #121a33;
+  color: #e2e9ff;
+}
+
+.dash-lab-block {
+  margin-bottom: 18px;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

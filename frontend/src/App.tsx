@@ -773,10 +773,18 @@ function equitySeriesWithLiveTail(
   return [...base, { t: tailT, equity, mtm, synthetic: true }];
 }
 
-function equityChartRevision(rows: EquityChartRow[]): string {
-  if (!rows.length) return "0";
+/** Stable fingerprint so Recharts remounts whenever snapshots, tail time, metrics, or values change. */
+function equityChartRevision(snaps: AnyObj[], rows: EquityChartRow[], metrics?: AnyObj): string {
+  const tailSnap =
+    snaps && snaps.length
+      ? `${String((snaps[snaps.length - 1] as AnyObj).id ?? "")}:${String((snaps[snaps.length - 1] as AnyObj).created_at ?? "")}`
+      : "";
+  const m = metrics
+    ? `liveMtm=${String(metrics.current_mtm_dollars ?? "")}:liveEq=${String(metrics.current_equity_dollars ?? "")}`
+    : "";
+  if (!rows.length) return `0|${tailSnap}|${m}`;
   const L = rows[rows.length - 1];
-  return `${L.equity}:${L.mtm ?? ""}:${L.synthetic ? 1 : 0}`;
+  return `${tailSnap}|n=${rows.length}|t=${L.t}|eq=${L.equity}|mtm=${L.mtm ?? ""}|syn=${L.synthetic ? 1 : 0}|${m}`;
 }
 
 function EquityDualLineChart({
@@ -798,11 +806,11 @@ function EquityDualLineChart({
         ...d,
         mtmPlot: d.mtm != null && Number.isFinite(Number(d.mtm)) ? Number(d.mtm) : d.equity,
       })),
-    [data],
+    [data, revision],
   );
   return (
     <ResponsiveContainer key={revision || "eq"} width="100%" height="100%">
-      <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+      <LineChart key={revision || "lc"} data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
         <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
@@ -1731,43 +1739,28 @@ export default function App() {
         <>
       <KalshiStatusBanner dash={dash} cfg={cfg} />
 
-      <div className="metrics" style={{ marginBottom: 8 }}>
-        <div
-          className="section-tip"
-          style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
-          title={
-            cfg.simulate
-              ? `${activityBranchTabLabel("live")} (Activity log tab): SQLite branch live — paper mode, simulated fills only. MTM (est.) = last snapshot mark-to-market; cost-basis equity = bankroll + realized PnL − open premium committed.`
-              : `${activityBranchTabLabel("live")} (Activity log tab): SQLite branch live — real fills when the engine runs. Cash / portfolio from Kalshi signed portfolio reads.`
-          }
-        >
-          {activityBranchTabLabel("live")}
-        </div>
-        <p
-          className="sub section-tip"
-          style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title={`Paper: settled = Kalshi finalized the contract; open = still waiting. Real: bot PnL from this app’s trade log for ${activityBranchTabLabel("live")} (branch live).`}
-        >
-          <strong>Settled</strong> = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim).{" "}
-          <strong>Open (paper)</strong> = premium held in open sim rows (subtracted from estimated equity).{" "}
-          {!cfg.simulate ? (
-            <>
-              <strong>Cash / portfolio</strong> = Kalshi balance API (needs linked keys).
-            </>
-          ) : null}
-        </p>
-        {cfg.simulate ? (
-          <p
-            className="sub section-tip"
-            style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "-4px 0 8px 0" }}
-            title="Metrics use every row in SQLite for this branch (not just the Recent trades table). Equity = bankroll + realized PnL − committed open premium."
-          >
-            <strong>Reconcile paper:</strong> <em>MTM (est.)</em> below = last snapshot <strong>mark-to-market</strong> total
-            (cash + open positions at implied mid). <em>Equity (cost basis)</em> = bankroll + realized PnL − committed
-            premium. Large realized PnL with a down <strong>cost</strong> return usually means premium still tied up in
-            opens until settlement or swing-exit.
+      <section className="dash-section" aria-labelledby="dash-heading-live">
+        <h2 id="dash-heading-live" className="dash-section__title">
+          Live
+        </h2>
+        <div className="dash-section__legend">
+          <p>
+            Settled = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim). Open (paper) =
+            premium held in open sim rows (subtracted from estimated equity).
           </p>
-        ) : null}
+          {!cfg.simulate ? (
+            <p>Cash / portfolio = Kalshi signed portfolio reads when API keys are configured.</p>
+          ) : null}
+          {cfg.simulate ? (
+            <p>
+              Reconcile paper: MTM (est.) below = last snapshot mark-to-market total (cash + open positions at implied
+              mid). Equity (cost basis) = bankroll + realized PnL − committed premium. Large realized PnL with a down
+              cost return usually means premium still tied up in opens until settlement or swing-exit.
+            </p>
+          ) : null}
+        </div>
+
+        <div className="metrics" style={{ marginBottom: 8 }}>
         {cfg.simulate ? (
           <>
             <MetricTile
@@ -1900,44 +1893,35 @@ export default function App() {
             />
           </>
         )}
-      </div>
-
-      <div
-        className="section-tip"
-        style={{ marginBottom: 8, color: "var(--muted)", fontSize: 12 }}
-        title="Lab A, Lab B, Lab C — same labels as Activity log tabs. Each uses its own SQLite branch, sizing, rules, and bankroll (always paper; no real order posts)."
-      >
-        Labs ({activityBranchTabLabel("lab_a")} / {activityBranchTabLabel("lab_b")} / {activityBranchTabLabel("lab_c")})
-      </div>
-      <p
-        className="sub section-tip"
-        style={{ margin: "0 0 14px 0", fontSize: 11, lineHeight: 1.45 }}
-        title="Each metrics block matches one Activity log tab; filters use the same branch keys as Recent signals and trades."
-      >
-        Metrics below are <strong>not mixed</strong>: they line up with{" "}
-        <strong>{activityBranchTabLabel("lab_a")}</strong> (<code>branch=lab_a</code>, legacy <code>sim_lab</code> rolls up here),{" "}
-        <strong>{activityBranchTabLabel("lab_b")}</strong> (<code>branch=lab_b</code>), and <strong>{activityBranchTabLabel("lab_c")}</strong> (
-        <code>branch=lab_c</code>). Scheduled optimizer auto-applies tuning to {activityBranchTabLabel("lab_a")} only; {activityBranchTabLabel("lab_b")} and{" "}
-        {activityBranchTabLabel("lab_c")} stay reference arms. <strong>Bankroll (start)</strong> is cumulative capital injected (including each auto-reseed); return % is vs that basis.
-      </p>
-
-      <div className="metrics" style={{ marginBottom: 14 }}>
-        <div
-          className="section-tip"
-          style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
-          title={`${activityBranchTabLabel("lab_a")} (Activity log tab): SQLite branch lab_a — always paper; legacy sim_lab rollups align here.`}
-        >
-          {activityBranchTabLabel("lab_a")}
         </div>
-        <p
-          className="sub section-tip"
-          style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title={`${activityBranchTabLabel("lab_a")} equity uses full SQLite rollups for lab_a, not only the Recent tables.`}
-        >
-          <strong>Reconcile {activityBranchTabLabel("lab_a")}:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
-          <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
-          usually means premium still tied up in open {activityBranchTabLabel("lab_a")} positions.
-        </p>
+      </section>
+
+      <section className="dash-section" aria-labelledby="dash-heading-labs">
+        <h2 id="dash-heading-labs" className="dash-section__title">
+          Labs (Lab A / Lab B / Lab C)
+        </h2>
+        <div className="dash-section__legend">
+          <p>
+            Metrics below are not mixed: they line up with Lab A (<code>branch=lab_a</code>, legacy <code>sim_lab</code>{" "}
+            rolls up here), Lab B (<code>branch=lab_b</code>), and Lab C (<code>branch=lab_c</code>). Scheduled optimizer
+            auto-applies tuning to Lab A only; Lab B and Lab C stay reference arms. Bankroll (start) is cumulative
+            capital injected (including each auto-reseed); return % is vs that basis.
+          </p>
+        </div>
+      </section>
+
+      <div className="dash-lab-block">
+        <h3 id="dash-heading-lab-a" className="dash-section__subtitle">
+          Lab A
+        </h3>
+        <div className="dash-section__legend">
+          <p>
+            Reconcile Lab A: MTM (est.) below = last snapshot mark-to-market total. Equity (cost basis) = bankroll +
+            realized PnL − committed. Positive realized PnL with a down cost return usually means premium still tied up
+            in open Lab A positions.
+          </p>
+        </div>
+        <div className="metrics" style={{ marginBottom: 14 }}>
         <MetricTile
           label="Lab A bankroll (start)"
           value={fmtMoney(Number(metricsLabA.paper_start_dollars ?? 0))}
@@ -2001,25 +1985,21 @@ export default function App() {
           sub={fmtPct(metricsLabA.committed_pct_of_start) + " of lab bankroll"}
           subTone={metricSignedTone(-Number(metricsLabA.committed_pct_of_start))}
         />
+        </div>
       </div>
 
-      <div className="metrics" style={{ marginBottom: 14 }}>
-        <div
-          className="section-tip"
-          style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
-          title={`${activityBranchTabLabel("lab_b")} (Activity log tab): SQLite branch lab_b — always paper.`}
-        >
-          {activityBranchTabLabel("lab_b")}
+      <div className="dash-lab-block">
+        <h3 id="dash-heading-lab-b" className="dash-section__subtitle dash-section__subtitle--lab-b">
+          Lab B
+        </h3>
+        <div className="dash-section__legend">
+          <p>
+            Reconcile Lab B: MTM (est.) below = last snapshot mark-to-market total. Equity (cost basis) = bankroll +
+            realized PnL − committed. Positive realized PnL with a down cost return usually means premium still tied up
+            in open Lab B positions.
+          </p>
         </div>
-        <p
-          className="sub section-tip"
-          style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title={`${activityBranchTabLabel("lab_b")} equity uses full SQLite rollups for lab_b, not only the Recent tables.`}
-        >
-          <strong>Reconcile {activityBranchTabLabel("lab_b")}:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
-          <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
-          usually means premium still tied up in open {activityBranchTabLabel("lab_b")} positions.
-        </p>
+        <div className="metrics" style={{ marginBottom: 14 }}>
         <MetricTile
           label="Lab B bankroll (start)"
           value={fmtMoney(Number(metricsLabB.paper_start_dollars ?? 0))}
@@ -2083,25 +2063,21 @@ export default function App() {
           sub={fmtPct(metricsLabB.committed_pct_of_start) + " of lab bankroll"}
           subTone={metricSignedTone(-Number(metricsLabB.committed_pct_of_start))}
         />
+        </div>
       </div>
 
-      <div className="metrics" style={{ marginBottom: 14 }}>
-        <div
-          className="section-tip"
-          style={{ gridColumn: "1 / -1", color: "var(--muted)", fontSize: 12, marginBottom: 6 }}
-          title={`${activityBranchTabLabel("lab_c")} (Activity log tab): SQLite branch lab_c — always paper (aggressive reference arm).`}
-        >
-          {activityBranchTabLabel("lab_c")}
+      <div className="dash-lab-block">
+        <h3 id="dash-heading-lab-c" className="dash-section__subtitle dash-section__subtitle--lab-c">
+          Lab C
+        </h3>
+        <div className="dash-section__legend">
+          <p>
+            Reconcile Lab C: MTM (est.) below = last snapshot mark-to-market total. Equity (cost basis) = bankroll +
+            realized PnL − committed. Positive realized PnL with a down cost return usually means premium still tied up
+            in open Lab C positions.
+          </p>
         </div>
-        <p
-          className="sub section-tip"
-          style={{ gridColumn: "1 / -1", fontSize: 11, lineHeight: 1.45, margin: "0 0 8px 0" }}
-          title={`${activityBranchTabLabel("lab_c")} equity uses full SQLite rollups for lab_c, not only the Recent tables.`}
-        >
-          <strong>Reconcile {activityBranchTabLabel("lab_c")}:</strong> <em>MTM (est.)</em> below = last snapshot mark-to-market total.{" "}
-          <em>Equity (cost basis)</em> = bankroll + realized PnL − committed. Positive realized PnL with a down cost return
-          usually means premium still tied up in open {activityBranchTabLabel("lab_c")} positions.
-        </p>
+        <div className="metrics" style={{ marginBottom: 14 }}>
         <MetricTile
           label="Lab C bankroll (start)"
           value={fmtMoney(Number(metricsLabC.paper_start_dollars ?? 0))}
@@ -2165,6 +2141,7 @@ export default function App() {
           sub={fmtPct(metricsLabC.committed_pct_of_start) + " of lab bankroll"}
           subTone={metricSignedTone(-Number(metricsLabC.committed_pct_of_start))}
         />
+        </div>
       </div>
 
       <div className="grid">
@@ -2389,7 +2366,7 @@ export default function App() {
               data={chartData}
               equityStroke="#6ee7ff"
               mtmStroke="#38bdf8"
-              revision={equityChartRevision(chartData)}
+              revision={equityChartRevision(snaps, chartData, metrics)}
             />
           </div>
 
@@ -2405,7 +2382,7 @@ export default function App() {
               data={chartDataLabA}
               equityStroke="#a78bfa"
               mtmStroke="#c4b5fd"
-              revision={equityChartRevision(chartDataLabA)}
+              revision={equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}
             />
           </div>
           <h3
@@ -2420,7 +2397,7 @@ export default function App() {
               data={chartDataLabB}
               equityStroke="#f59e0b"
               mtmStroke="#fcd34d"
-              revision={equityChartRevision(chartDataLabB)}
+              revision={equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}
             />
           </div>
           <h3
@@ -2435,7 +2412,7 @@ export default function App() {
               data={chartDataLabC}
               equityStroke="#f472b6"
               mtmStroke="#fbcfe8"
-              revision={equityChartRevision(chartDataLabC)}
+              revision={equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}
             />
           </div>
 
@@ -2736,18 +2713,20 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <h2
-          className="section-tip"
-          style={{ margin: "0 0 6px 0" }}
-          title="Recent signals and trades use one branch filter; Bets not traded sits at the bottom with its own branch tabs."
-        >
+      <section className="dash-section" style={{ marginTop: 14 }} aria-labelledby="dash-heading-activity">
+        <h2 id="dash-heading-activity" className="dash-section__title">
           Activity log
         </h2>
-        <p className="sub section-tip" style={{ margin: "0 0 14px 0", fontSize: 12, lineHeight: 1.45 }}>
-          The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose{" "}
-          <code>branch</code> matches (legacy <code>sim_lab</code> counts as Lab A). Use the Lab C tab for <code>lab_c</code> rows.
-        </p>
+        <div className="dash-section__legend">
+          <p>
+            The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose branch
+            matches (legacy sim_lab counts as Lab A). Use the Lab C tab for lab_c rows.
+          </p>
+          <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
+            Recent signals and trades use one branch filter; <strong>Bets not traded</strong> sits below with its own
+            branch tabs.
+          </p>
+        </div>
 
         <div className="grid" style={{ marginTop: 0 }}>
           <div
@@ -2849,7 +2828,7 @@ export default function App() {
             totalSignalsCount={(dash?.recent_signals || []).length}
           />
         </div>
-      </div>
+      </section>
 
       <SettingsOverlay
         open={settingsOpen}
