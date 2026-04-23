@@ -2093,20 +2093,6 @@ export default function App() {
         </div>
       </section>
 
-      <section className="dash-section" aria-labelledby="dash-heading-labs">
-        <h2 id="dash-heading-labs" className="dash-section__title">
-          Labs (Lab A / Lab B / Lab C)
-        </h2>
-        <div className="dash-section__legend">
-          <p>
-            Metrics below are not mixed: they line up with Lab A (<code>branch=lab_a</code>, legacy <code>sim_lab</code>{" "}
-            rolls up here), Lab B (<code>branch=lab_b</code>), and Lab C (<code>branch=lab_c</code>). Scheduled optimizer
-            auto-applies tuning to Lab A only; Lab B and Lab C stay reference arms. Bankroll (start) is cumulative
-            capital injected (including each auto-reseed); return % is vs that basis.
-          </p>
-        </div>
-      </section>
-
       <div className="dash-lab-block">
         <h3 id="dash-heading-lab-a" className="dash-section__subtitle">
           Lab A
