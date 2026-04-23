@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import io
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,8 @@ from .persistence import Store, expand_partial_lab_branch
 from .optimizer_claude import run_optimizer_once
 from .settings_env import env, kalshi_credentials_report
 
+
+logger = logging.getLogger("kalshibot.api")
 
 store = Store()
 engine_live = TradingEngine(store, BRANCH_LIVE)
@@ -594,6 +597,11 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
         eng.state.markets_scanned = 0
         eng.state.last_error = None
         eng._paper_auto_reset_streak_handled = False
+        # Critical: DB reset removed rows but dedupe keys lived only in RAM — without this,
+        # the engine can skip all signals/trades until the clock window rolls.
+        eng._seen_keys.clear()
+        eng._last_window_id = None
+        eng._tick_count = 0
 
 
 @app.post("/api/data/reset")
@@ -1045,7 +1053,12 @@ async def dashboard() -> dict[str, Any]:
         ]
     )
     if mtm_tasks:
-        await asyncio.gather(*mtm_tasks)
+        try:
+            await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=55.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "dashboard MTM refresh hit 55s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
+            )
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None

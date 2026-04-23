@@ -390,6 +390,8 @@ class Store:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
+            # Avoid ``database is locked`` flakes when the engine loop and /api/dashboard overlap.
+            await db.execute("PRAGMA busy_timeout=10000")
             await db.executescript(SCHEMA)
             await _migrate_columns(db)
             cur = await db.execute("SELECT COUNT(*) c FROM bot_config WHERE id=1")
@@ -408,7 +410,36 @@ class Store:
             row = await cur.fetchone()
             if not row:
                 return default_bot_config()
-            return _normalize_loaded_config(json.loads(row["json"]))
+            raw = row["json"]
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                merged = default_bot_config()
+                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                await db.commit()
+                _data_log(
+                    "system",
+                    {
+                        "event": "bot_config_json_repaired",
+                        "reason": "invalid_or_unreadable_json",
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                return _normalize_loaded_config(merged)
+            if not isinstance(parsed, dict):
+                merged = default_bot_config()
+                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                await db.commit()
+                _data_log(
+                    "system",
+                    {
+                        "event": "bot_config_json_repaired",
+                        "reason": "json_not_object",
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                return _normalize_loaded_config(merged)
+            return _normalize_loaded_config(parsed)
 
     async def save_config(self, cfg: dict[str, Any]) -> None:
         async with self._open_db() as db:
@@ -861,7 +892,7 @@ class Store:
         return written
 
     async def reset_trading_data(
-        self, *, backup: bool = True, branch: str | None = None
+        self, *, backup: bool = True, branch: str | None = None, vacuum: bool = False
     ) -> dict[str, Any]:
         """
         Delete signals, trades, and equity snapshots. Keeps ``bot_config``.
@@ -871,6 +902,9 @@ class Store:
           (Lab A predicate includes legacy ``sim_lab``).
 
         When ``backup`` is True, copies the SQLite file and exports JSONL dumps under ``DATA_LOG_DIR/exports``.
+
+        ``vacuum`` defaults to False: ``VACUUM`` can fail or stall on Windows when the file is busy;
+        ordinary deletes are enough for correctness.
         """
         exports: list[str] = []
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -908,17 +942,19 @@ class Store:
                 await db.execute(f"DELETE FROM signals WHERE {pred}")
                 await db.execute(f"DELETE FROM trades WHERE {pred}")
             await db.commit()
-            try:
-                await db.execute("VACUUM")
-                await db.commit()
-            except Exception:
-                pass
+            if vacuum:
+                try:
+                    await db.execute("VACUUM")
+                    await db.commit()
+                except Exception as e:
+                    exports.append(f"vacuum_skipped:{e}")
         _data_log(
             "system",
             {
                 "event": "reset_trading_data",
                 "backup": backup,
                 "branch": scope,
+                "vacuum": vacuum,
                 "exports": exports,
                 "at": datetime.now(timezone.utc).isoformat(),
             },

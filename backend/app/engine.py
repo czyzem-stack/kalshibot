@@ -528,6 +528,8 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         _data_log("system", payload)
         engine.state.last_error = None
         engine._seen_keys.clear()
+        engine._last_window_id = None
+        engine._tick_count = 0
     elif not err and not bust:
         engine._paper_auto_reset_streak_handled = False
 
@@ -1192,22 +1194,41 @@ async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows
         if not tk:
             continue
         by_ticker.setdefault(tk, []).append(t)
-    total = 0
-    for ticker, rows in by_ticker.items():
-        try:
-            data = await engine.client.get_public(f"/markets/{ticker}")
-        except Exception:
-            continue
-        m = market_dict_from_public_response(data)
-        if not m:
-            continue
-        for t in rows:
-            side = str(t.get("side") or "yes")
+
+    # Parallelize with a cap: sequential per-ticker calls (each up to the HTTP client timeout) made
+    # /api/dashboard easy to exceed the browser's ~90s fetch budget when many open sims exist.
+    sem = asyncio.Semaphore(12)
+
+    async def mark_one(ticker: str, rows: list[dict[str, Any]]) -> int:
+        async with sem:
+            sub = 0
             try:
-                contracts = float(str(t.get("contracts_fp") or "0"))
-            except (TypeError, ValueError):
-                contracts = 0.0
-            total += _fair_value_open_sim_position_cents(m, side=side, contracts=contracts)
+                data = await asyncio.wait_for(
+                    engine.client.get_public(f"/markets/{ticker}"),
+                    timeout=6.0,
+                )
+            except Exception:
+                return 0
+            m = market_dict_from_public_response(data)
+            if not m:
+                return 0
+            for t in rows:
+                side = str(t.get("side") or "yes")
+                try:
+                    contracts = float(str(t.get("contracts_fp") or "0"))
+                except (TypeError, ValueError):
+                    contracts = 0.0
+                sub += _fair_value_open_sim_position_cents(m, side=side, contracts=contracts)
+            return sub
+
+    parts = await asyncio.gather(
+        *[mark_one(ticker, rows) for ticker, rows in by_ticker.items()],
+        return_exceptions=True,
+    )
+    total = 0
+    for p in parts:
+        if isinstance(p, int):
+            total += p
     return total
 
 

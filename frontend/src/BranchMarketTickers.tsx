@@ -492,7 +492,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         <TickerRow label="Live" accent="#6ee7ff" segments={segBundles.live} durationSec={dur(segBundles.live)} />
         <TickerSnapAside
           title={tipLive}
-          aria-label="Live portfolio or paper equity and return vs start"
+          ariaLabel="Live portfolio or paper equity and return vs start"
           value={portfolioLive}
           valueColor="#6ee7ff"
           metrics={mLive}
@@ -509,7 +509,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         <TickerRow label="Lab A" accent="#c4b5fd" segments={segBundles.lab_a} durationSec={dur(segBundles.lab_a)} />
         <TickerSnapAside
           title="Lab A: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
-          aria-label="Lab A mark-to-market or equity and return vs start"
+          ariaLabel="Lab A mark-to-market or equity and return vs start"
           value={labAeq}
           valueColor="#c4b5fd"
           metrics={mA}
@@ -519,7 +519,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         <TickerRow label="Lab B" accent="#fdba74" segments={segBundles.lab_b} durationSec={dur(segBundles.lab_b)} />
         <TickerSnapAside
           title="Lab B: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
-          aria-label="Lab B mark-to-market or equity and return vs start"
+          ariaLabel="Lab B mark-to-market or equity and return vs start"
           value={labBeq}
           valueColor="#fdba74"
           metrics={mB}
@@ -529,7 +529,7 @@ export function BranchMarketTickers({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }
         <TickerRow label="Lab C" accent="#f9a8d4" segments={segBundles.lab_c} durationSec={dur(segBundles.lab_c)} />
         <TickerSnapAside
           title="Lab C: $ = MTM from last snapshot when present, else cost-basis equity; % = MTM vs bankroll when present."
-          aria-label="Lab C mark-to-market or equity and return vs start"
+          ariaLabel="Lab C mark-to-market or equity and return vs start"
           value={labCeq}
           valueColor="#f9a8d4"
           metrics={mC}
