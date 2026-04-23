@@ -523,7 +523,7 @@ function orderedAssetEntries(assetsObj: AnyObj | undefined): [string, AnyObj][] 
 
 type EquityGranularity = "intraday" | "dd" | "ww" | "mm" | "yy";
 
-type EquityChartRow = { t: string; equity: number; mtm: number | null };
+type EquityChartRow = { t: string; equity: number; mtm: number | null; synthetic?: boolean };
 
 function mondayUtcKey(iso: string): string {
   const d = new Date(iso);
@@ -617,14 +617,56 @@ function buildEquityChartSeries(
   });
 }
 
+/** Intraday: append one point from latest dashboard metrics so the curve moves on every /api/dashboard poll. */
+function equitySeriesWithLiveTail(
+  snaps: AnyObj[],
+  mode: EquityGranularity,
+  metrics: AnyObj,
+  fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
+): EquityChartRow[] {
+  const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
+  if (mode !== "intraday") return base;
+
+  const ce = metrics?.current_equity_dollars;
+  let equity: number | null = ce != null && Number.isFinite(Number(ce)) ? Number(ce) : null;
+  if (equity == null && snaps.length) {
+    const n = Number((snaps[snaps.length - 1] as AnyObj).equity_cents || 0);
+    equity = Number.isFinite(n) ? n / 100.0 : null;
+  }
+  if (equity == null || !Number.isFinite(equity)) return base;
+
+  const cm = metrics?.current_mtm_dollars;
+  let mtm: number | null = cm != null && Number.isFinite(Number(cm)) ? Number(cm) : null;
+  if (mtm == null && snaps.length) {
+    const raw = (snaps[snaps.length - 1] as AnyObj).mtm_equity_cents;
+    if (raw != null && raw !== "") {
+      const n = Number(raw);
+      if (Number.isFinite(n)) mtm = n / 100.0;
+    }
+  }
+  if (mtm == null) mtm = equity;
+
+  const tailT = fmtIsoLocalFn(new Date().toISOString(), true);
+  return [...base, { t: tailT, equity, mtm, synthetic: true }];
+}
+
+function equityChartRevision(rows: EquityChartRow[]): string {
+  if (!rows.length) return "0";
+  const L = rows[rows.length - 1];
+  return `${L.equity}:${L.mtm ?? ""}:${L.synthetic ? 1 : 0}`;
+}
+
 function EquityDualLineChart({
   data,
   equityStroke,
   mtmStroke,
+  revision = "",
 }: {
   data: EquityChartRow[];
   equityStroke: string;
   mtmStroke: string;
+  /** Bumps when the live tail values change so Recharts redraws after each dashboard poll. */
+  revision?: string;
 }) {
   // Recharts ignores null/undefined for Line points — synthesize a numeric series so MTM always draws.
   const plotData = useMemo(
@@ -636,7 +678,7 @@ function EquityDualLineChart({
     [data],
   );
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer key={revision || "eq"} width="100%" height="100%">
       <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
@@ -651,11 +693,11 @@ function EquityDualLineChart({
           wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
           formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
         />
-        <Line type="monotone" dataKey="equity" name="Equity (cost basis)" stroke={equityStroke} strokeWidth={2} dot={false} />
+        <Line type="monotone" dataKey="equity" name="Book value (cost basis)" stroke={equityStroke} strokeWidth={2} dot={false} />
         <Line
           type="monotone"
           dataKey="mtmPlot"
-          name="MTM (cash + open marks)"
+          name="Current worth (MTM)"
           stroke={mtmStroke}
           strokeWidth={2}
           strokeDasharray="6 4"
@@ -976,17 +1018,17 @@ export default function App() {
   const simLab = labA;
 
   const chartData = useMemo(
-    () => buildEquityChartSeries(snaps, equityGranularity, fmtIsoLocal),
-    [snaps, equityGranularity],
+    () => equitySeriesWithLiveTail(snaps, equityGranularity, metrics, fmtIsoLocal),
+    [snaps, equityGranularity, metrics, fmtIsoLocal],
   );
 
   const chartDataLabA = useMemo(
-    () => buildEquityChartSeries(equitySnapsLabA, equityGranularity, fmtIsoLocal),
-    [equitySnapsLabA, equityGranularity],
+    () => equitySeriesWithLiveTail(equitySnapsLabA, equityGranularity, metricsLabA, fmtIsoLocal),
+    [equitySnapsLabA, equityGranularity, metricsLabA, fmtIsoLocal],
   );
   const chartDataLabB = useMemo(
-    () => buildEquityChartSeries(equitySnapsLabB, equityGranularity, fmtIsoLocal),
-    [equitySnapsLabB, equityGranularity],
+    () => equitySeriesWithLiveTail(equitySnapsLabB, equityGranularity, metricsLabB, fmtIsoLocal),
+    [equitySnapsLabB, equityGranularity, metricsLabB, fmtIsoLocal],
   );
 
   const assets = (cfg.assets || {}) as AnyObj;
@@ -2031,7 +2073,7 @@ export default function App() {
           <h2
             className="section-tip"
             style={{ marginTop: 0 }}
-            title="Solid line: stored equity (paper bankroll + realized PnL − premium committed to open sims). Dashed: mark-to-market total (cash + open positions valued at implied mid from Kalshi). Live real: MTM uses portfolio_value when the API returns it."
+            title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
           >
             Equity curves
           </h2>
@@ -2062,33 +2104,48 @@ export default function App() {
           <h3
             className="sub section-tip"
             style={{ marginTop: 14, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Live branch: solid = stored equity; dashed = MTM when backend writes mtm_equity_cents (paper: cash + open contracts at mid; real: portfolio_value vs balance)."
+            title="Live branch: book value (solid) vs current worth / MTM (dashed). Intraday tail updates every dashboard poll; paper Live MTM is refreshed from Kalshi on each poll."
           >
             Live branch
           </h3>
           <div className="chart" title="Live branch equity over time (tab controls bucketing). Hover points for values.">
-            <EquityDualLineChart data={chartData} equityStroke="#6ee7ff" mtmStroke="#38bdf8" />
+            <EquityDualLineChart
+              data={chartData}
+              equityStroke="#6ee7ff"
+              mtmStroke="#38bdf8"
+              revision={equityChartRevision(chartData)}
+            />
           </div>
 
           <h3
             className="sub section-tip"
             style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Lab A paper: solid = stored equity; dashed = MTM (bankroll + realized − committed + fair value of opens at implied mid)."
+            title="Lab A paper: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll."
           >
             Lab A
           </h3>
           <div className="chart" title="Lab A equity over time (same tab as Live).">
-            <EquityDualLineChart data={chartDataLabA} equityStroke="#a78bfa" mtmStroke="#c4b5fd" />
+            <EquityDualLineChart
+              data={chartDataLabA}
+              equityStroke="#a78bfa"
+              mtmStroke="#c4b5fd"
+              revision={equityChartRevision(chartDataLabA)}
+            />
           </div>
           <h3
             className="sub section-tip"
             style={{ marginTop: 16, marginBottom: 6, fontSize: 14, color: "var(--text)" }}
-            title="Lab B paper: solid = stored equity; dashed = MTM (bankroll + realized − committed + fair value of opens at implied mid)."
+            title="Lab B paper: book value (solid) vs current worth (dashed). MTM refreshed from Kalshi on each dashboard poll."
           >
             Lab B
           </h3>
           <div className="chart" title="Lab B equity over time (same tab as Live).">
-            <EquityDualLineChart data={chartDataLabB} equityStroke="#f59e0b" mtmStroke="#fcd34d" />
+            <EquityDualLineChart
+              data={chartDataLabB}
+              equityStroke="#f59e0b"
+              mtmStroke="#fcd34d"
+              revision={equityChartRevision(chartDataLabB)}
+            />
           </div>
 
           <h2
@@ -2359,7 +2416,7 @@ export default function App() {
         <h2
           className="section-tip"
           style={{ margin: "0 0 6px 0" }}
-          title="Recent signals and trades use one branch filter; Bets not traded has its own filter below."
+          title="Recent signals and trades use one branch filter; Bets not traded sits at the bottom with its own branch tabs."
         >
           Activity log
         </h2>
@@ -2368,42 +2425,7 @@ export default function App() {
           <code>branch</code> matches (legacy <code>sim_lab</code> counts as Lab A).
         </p>
 
-        <div className="panel" style={{ marginTop: 0 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <h2
-              className="section-tip"
-              style={{ margin: 0, fontSize: 16 }}
-              title="Subset of signals where a rule matched but execution did not run (e.g. over budget), for the branch selected in the tabs."
-            >
-              Bets not traded — {activityBranchTabLabel(notTradedBranch)}
-            </h2>
-            <ActivityBranchTabs
-              value={notTradedBranch}
-              onChange={setNotTradedBranch}
-              ariaLabel="Bets not traded branch"
-            />
-          </div>
-          <p className="sub section-tip" style={{ marginTop: 8, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-            Showing <strong>{activityBranchTabLabel(notTradedBranch)}</strong> only — tabs here do not change Recent
-            signals/trades.
-          </p>
-          <SignalsTable
-            rows={notTradedFiltered}
-            emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(notTradedBranch)} yet.`}
-          />
-          <ActivityHints
-            kind="not_traded"
-            dash={dash}
-            cfg={cfg}
-            simLab={simLab}
-            activityBranch={notTradedBranch}
-            branchRowCount={notTradedFiltered.length}
-            totalRowCount={(dash?.not_traded_signals || []).length}
-            totalSignalsCount={(dash?.recent_signals || []).length}
-          />
-        </div>
-
-        <div className="grid" style={{ marginTop: 14 }}>
+        <div className="grid" style={{ marginTop: 0 }}>
           <div
             style={{
               gridColumn: "1 / -1",
@@ -2467,6 +2489,41 @@ export default function App() {
               totalRowCount={(dash?.recent_trades || []).length}
             />
           </div>
+        </div>
+
+        <div className="panel" style={{ marginTop: 14 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <h2
+              className="section-tip"
+              style={{ margin: 0, fontSize: 16 }}
+              title="Subset of signals where a rule matched but execution did not run (e.g. over budget), for the branch selected in the tabs."
+            >
+              Bets not traded — {activityBranchTabLabel(notTradedBranch)}
+            </h2>
+            <ActivityBranchTabs
+              value={notTradedBranch}
+              onChange={setNotTradedBranch}
+              ariaLabel="Bets not traded branch"
+            />
+          </div>
+          <p className="sub section-tip" style={{ marginTop: 8, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
+            Showing <strong>{activityBranchTabLabel(notTradedBranch)}</strong> only — tabs here do not change Recent
+            signals/trades.
+          </p>
+          <SignalsTable
+            rows={notTradedFiltered}
+            emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(notTradedBranch)} yet.`}
+          />
+          <ActivityHints
+            kind="not_traded"
+            dash={dash}
+            cfg={cfg}
+            simLab={simLab}
+            activityBranch={notTradedBranch}
+            branchRowCount={notTradedFiltered.length}
+            totalRowCount={(dash?.not_traded_signals || []).length}
+            totalSignalsCount={(dash?.recent_signals || []).length}
+          />
         </div>
       </div>
 

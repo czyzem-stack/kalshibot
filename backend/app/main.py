@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .api_models import BotConfigPayload, merge_lab_branch_patch
 from .branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LIVE, BRANCH_SIM_LAB, merge_branch_config
-from .engine import TradingEngine, dual_engine_loop, exclude_subtitle_parts_from_cfg
+from .engine import TradingEngine, compute_open_sim_mark_value_sum_cents, dual_engine_loop, exclude_subtitle_parts_from_cfg
 from .kalshi_client import KalshiClient
 from .kalshi_portfolio import fetch_portfolio_snapshot
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
@@ -192,6 +192,28 @@ def _balance_field_to_dollars(raw: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return cents / 100.0
+
+
+async def _refresh_paper_mtm_from_marks(
+    engine: TradingEngine,
+    *,
+    paper_start_cents: int,
+    roll: dict[str, Any],
+    out_metrics: dict[str, Any],
+) -> None:
+    """Recompute mark-to-market from latest Kalshi public mids on each dashboard poll (no new snapshot row)."""
+    try:
+        settled_pnl = int(roll.get("total_pnl_cents") or 0)
+        open_committed = int(roll.get("open_committed_cents") or 0)
+        ps = max(0, int(paper_start_cents))
+        open_rows = await store.open_sim_trades_for_branch(engine.branch)
+        mark = await compute_open_sim_mark_value_sum_cents(engine, open_rows)
+        mtm_cents = ps + settled_pnl - open_committed + mark
+        out_metrics["current_mtm_dollars"] = round(mtm_cents / 100.0, 4)
+        if ps > 0:
+            out_metrics["return_mtm_vs_start_pct"] = round(((mtm_cents - ps) / ps) * 100.0, 4)
+    except Exception:
+        return
 
 
 def _enrich_strategy_metrics(
@@ -659,6 +681,27 @@ async def dashboard() -> dict[str, Any]:
     _inject_last_snap_mtm_minus_equity(metrics_live, snaps_live)
     _inject_last_snap_mtm_minus_equity(metrics_lab_a, snaps_lab_a)
     _inject_last_snap_mtm_minus_equity(metrics_lab_b, snaps_lab_b)
+
+    # Paper MTM on tiles + chart tail: refresh from Kalshi order books every dashboard poll (between snapshot ticks).
+    if simulate_live:
+        await _refresh_paper_mtm_from_marks(
+            engine_live,
+            paper_start_cents=int(cfg.get("paper_balance_cents") or 0),
+            roll=roll_live,
+            out_metrics=metrics_live,
+        )
+    await _refresh_paper_mtm_from_marks(
+        engine_lab_a,
+        paper_start_cents=lab_paper_basis_a,
+        roll=roll_lab_a,
+        out_metrics=metrics_lab_a,
+    )
+    await _refresh_paper_mtm_from_marks(
+        engine_lab_b,
+        paper_start_cents=lab_paper_basis_b,
+        roll=roll_lab_b,
+        out_metrics=metrics_lab_b,
+    )
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
