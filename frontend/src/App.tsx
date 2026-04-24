@@ -678,9 +678,20 @@ function _fmtPositionQty(qty: number): string {
 function summarizePositionRows(rows: unknown): { text: string; title: string } {
   const arr = Array.isArray(rows) ? (rows as AnyObj[]) : [];
   if (!arr.length) return { text: "—", title: "" };
-  const rawTitle = summarizePositionRowsRaw(rows);
-  const byTicker = new Map<string, { qty: number; n: number }>();
+  const seenIds = new Set<string>();
+  const deduped: AnyObj[] = [];
   for (const r of arr) {
+    const idRaw = r.id;
+    if (idRaw != null && String(idRaw).trim() !== "") {
+      const idk = String(idRaw);
+      if (seenIds.has(idk)) continue;
+      seenIds.add(idk);
+    }
+    deduped.push(r);
+  }
+  const rawTitle = summarizePositionRowsRaw(deduped);
+  const byTicker = new Map<string, { qty: number; n: number }>();
+  for (const r of deduped) {
     const t = String(r.ticker || "").trim();
     if (!t) continue;
     const q = _parsePositionQty(r);
@@ -720,7 +731,6 @@ function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c"): 
     push(o.bot_sim_open_live, "Sim · Live");
   } else if (tab === "a") {
     push(o.bot_sim_open_lab_a, "Sim · Lab A");
-    push(o.bot_sim_open_lab, "Sim · Lab A");
   } else if (tab === "b") {
     push(o.bot_sim_open_lab_b, "Sim · Lab B");
   } else {
@@ -1340,13 +1350,27 @@ export default function App() {
    * (avoids stale ``setDash`` overwriting optimistic engine toggles). A monotonic epoch lets superseded or
    * unmount-aborted fetches skip ``setDash``/``setErr`` so React Strict Mode and rapid Refresh clicks cannot strand
    * the UI with no data and no error.
+   *
+   * **Overlapping polls:** the 8s interval used to call ``refresh()`` while the prior fetch was still running;
+   * each call aborted the previous request. Aborted handlers return without setting ``err``, so if every poll
+   * arrived before the prior response (slow Kalshi + MTM), ``dash`` never loaded — endless "Loading dashboard…".
+   * Scheduled polls therefore skip when a flight is already active; use ``refresh({ force: true })`` from the
+   * Refresh button or after mutations to abort and supersede.
    */
   const dashboardAbortRef = useRef<AbortController | null>(null);
   const dashboardFetchEpoch = useRef(0);
+  const dashboardFlightSerialRef = useRef(0);
+  const dashboardActiveFlightRef = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { force?: boolean }) => {
+    const force = Boolean(opts?.force);
+    if (dashboardActiveFlightRef.current !== 0 && !force) {
+      return;
+    }
     dashboardAbortRef.current?.abort();
     const myEpoch = ++dashboardFetchEpoch.current;
+    const myFlight = ++dashboardFlightSerialRef.current;
+    dashboardActiveFlightRef.current = myFlight;
     const ac = new AbortController();
     dashboardAbortRef.current = ac;
     const maxMs = 90_000;
@@ -1380,6 +1404,9 @@ export default function App() {
       }
     } finally {
       window.clearTimeout(tid);
+      if (dashboardActiveFlightRef.current === myFlight) {
+        dashboardActiveFlightRef.current = 0;
+      }
       if (dashboardAbortRef.current === ac) {
         dashboardAbortRef.current = null;
       }
@@ -1630,7 +1657,7 @@ export default function App() {
         confirm: true,
         ack_live: ack,
       });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1725,7 +1752,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { rules });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1737,7 +1764,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { no_bet_when_yes_below_pct: pct });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1757,7 +1784,7 @@ export default function App() {
       const out = (await apiPost(`/api/engine/toggle?simulate=${simulate ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh();
+      void refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1771,7 +1798,7 @@ export default function App() {
       const out = (await apiPost(`/api/engine/toggle?running=${running ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh();
+      void refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1786,7 +1813,7 @@ export default function App() {
       const out = (await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh();
+      void refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1828,7 +1855,7 @@ export default function App() {
         reset_data: "none",
         ...(lab === "a" ? { lab_a: patch } : lab === "b" ? { lab_b: patch } : { lab_c: patch }),
       });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1847,7 +1874,7 @@ export default function App() {
         reset_data: "none",
         ...(lab === "a" ? { lab_a: { rules } } : lab === "b" ? { lab_b: { rules } } : { lab_c: { rules } }),
       });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1887,7 +1914,7 @@ export default function App() {
         poll_seconds: poll,
         paper_balance_cents: paper,
       });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1900,7 +1927,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { only_yes_subtitle_contains: raw });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1913,7 +1940,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { exclude_yes_subtitle_contains: raw });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1925,7 +1952,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { dev_sim_yes_implied_ge_pct: pct });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1937,7 +1964,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { swing_exit_implied_drop_pct: pct });
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1949,7 +1976,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", patch);
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1963,7 +1990,7 @@ export default function App() {
     try {
       await apiPut("/api/optimizer/config", patch as AnyObj);
       await loadOptimizer();
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1975,7 +2002,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPutLabBranches(body);
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -1983,8 +2010,12 @@ export default function App() {
     }
   };
 
-  const resetTradingData = async (branch: "all" | "live" | "lab_a" | "lab_b" | "lab_c", backup: boolean) => {
+  const resetTradingData = async (
+    branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c",
+    backup: boolean,
+  ) => {
     setBusy(true);
+    setErr(null);
     try {
       const q = new URLSearchParams({
         confirm: "yes",
@@ -1999,12 +2030,13 @@ export default function App() {
       }
       const r = await fetch(`/api/data/reset?${q.toString()}`, { method: "POST", headers });
       if (!r.ok) throw new Error((await r.text()) || `reset ${r.status}`);
-      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
       setBusy(false);
     }
+    // Run after clearing busy so a slow /api/dashboard poll does not freeze the whole toolbar for tens of seconds.
+    void refresh({ force: true });
   };
 
   const addAllLabsPaperBankroll = async () => {
@@ -2017,7 +2049,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPostJson("/api/config/labs/add-paper-bankroll", {});
-      await refresh();
+      await refresh({ force: true });
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2124,7 +2156,7 @@ export default function App() {
                   className="primary"
                   disabled={busy}
                   title="Fetch /api/dashboard now (auto every ~8s). A new refresh aborts an older in-flight poll so the latest snapshot always wins."
-                  onClick={() => refresh()}
+                  onClick={() => void refresh({ force: true })}
                 >
                   Refresh
                 </button>

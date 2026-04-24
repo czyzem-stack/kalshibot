@@ -16,7 +16,7 @@ from .engine import (
     exclude_subtitle_parts_from_cfg,
     implied_yes_probability,
     minutes_left,
-    rule_matches,
+    pick_trade_rule,
     rule_trade_side,
     spent_in_window,
     utc_now,
@@ -152,15 +152,15 @@ async def fetch_market_pulse(
                 )
                 continue
 
-            matched: list[str] = []
-            for r in rules:
-                if not isinstance(r, dict) or not rule_matches(prob, mins, r):
-                    continue
-                if rule_trade_side(r) == "no" and not has_no_book:
-                    continue
-                if rule_trade_side(r) != "no" and not has_yes_rules:
-                    continue
-                matched.append(str(r.get("name") or "rule"))
+            picked = pick_trade_rule(
+                prob,
+                mins,
+                rules,
+                has_yes_rules=has_yes_rules,
+                has_no_book=has_no_book,
+                cfg=eff,
+            )
+            matched: list[str] = [str(picked.get("name") or "rule")] if picked else []
             if (
                 not matched
                 and dev_yes_floor is not None
@@ -171,17 +171,13 @@ async def fetch_market_pulse(
             ):
                 matched.append(f"DEV ≥{dev_yes_floor * 100:.0f}% implied YES (sim only)")
 
-            per_candidates: list[int] = []
-            for r in rules:
-                if not isinstance(r, dict) or not rule_matches(prob, mins, r):
-                    continue
-                if rule_trade_side(r) == "no":
-                    if has_no_book and na is not None:
-                        per_candidates.append(int(math.ceil(na * 100.0)))
+            if picked is not None:
+                if rule_trade_side(picked) == "no" and has_no_book and na is not None:
+                    per_c = int(math.ceil(na * 100.0))
                 elif has_yes_rules and ya is not None:
-                    per_candidates.append(int(math.ceil(ya * 100.0)))
-            if per_candidates:
-                per_c = min(per_candidates)
+                    per_c = int(math.ceil(ya * 100.0))
+                else:
+                    per_c = int(math.ceil(na * 100.0)) if na is not None else 0
             elif has_yes_rules and ya is not None:
                 per_c = int(math.ceil(ya * 100.0))
             else:

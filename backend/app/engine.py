@@ -280,6 +280,25 @@ def _dev_sim_high_yes_rule(floor: float) -> dict[str, Any]:
     }
 
 
+def no_bet_yes_implied_cutoff(cfg: dict[str, Any]) -> float | None:
+    """
+    When ``no_bet_when_yes_below_pct`` is set (1–95), implied YES **strictly below** this probability
+    (e.g. 0.32 for 32%) means only NO-side rules are eligible — YES bands are ignored so settings-driven
+    NO / auto-NO logic can run.
+    """
+    raw = cfg.get("no_bet_when_yes_below_pct")
+    if raw is None or raw is False:
+        return None
+    try:
+        pct = float(raw)
+    except (TypeError, ValueError):
+        return None
+    thr = pct / 100.0
+    if not (0 < thr <= 0.95):
+        return None
+    return thr
+
+
 def build_effective_rules(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Config rules plus optional synthetic NO rule when implied YES is below a threshold (buys NO; evaluated last).
@@ -359,12 +378,56 @@ def rule_matches(
     return True
 
 
-def rule_match_miss_hint(prob_yes: float, mins: float, rules: list[Any]) -> str:
+def pick_trade_rule(
+    prob_yes: float,
+    mins: float,
+    rules: list[dict[str, Any]],
+    *,
+    has_yes_rules: bool,
+    has_no_book: bool,
+    cfg: dict[str, Any],
+) -> dict[str, Any] | None:
+    """
+    Choose one rule to execute: when implied YES is below ``no_bet_when_yes_below_pct``, only NO-side rules
+    are considered; otherwise YES rules are tried first, then NO rules (binary YES-then-NO vs list order).
+    """
+    cutoff = no_bet_yes_implied_cutoff(cfg)
+    yes_rules = [r for r in rules if isinstance(r, dict) and rule_trade_side(r) != "no"]
+    no_rules = [r for r in rules if isinstance(r, dict) and rule_trade_side(r) == "no"]
+
+    def scan(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for r in candidates:
+            if not rule_matches(prob_yes, mins, r):
+                continue
+            if rule_trade_side(r) == "no" and not has_no_book:
+                continue
+            if rule_trade_side(r) != "no" and not has_yes_rules:
+                continue
+            return r
+        return None
+
+    if cutoff is not None and prob_yes < cutoff:
+        return scan(no_rules)
+    hit = scan(yes_rules)
+    if hit is not None:
+        return hit
+    return scan(no_rules)
+
+
+def rule_match_miss_hint(prob_yes: float, mins: float, rules: list[Any], *, cfg: dict[str, Any] | None = None) -> str:
     """
     Human hint when the headline row has a book but ``rules_matched`` is empty — same prob/time geometry as
     ``rule_matches`` (order-book side checks are applied separately when actually trading).
     """
     usable = [r for r in rules if isinstance(r, dict)]
+    cutoff = no_bet_yes_implied_cutoff(cfg) if cfg else None
+    if cutoff is not None and prob_yes < cutoff:
+        usable = [r for r in usable if rule_trade_side(r) == "no"]
+        if not usable:
+            return (
+                f"Implied YES ≈{prob_yes:.2f} is below your auto-NO threshold ({cutoff * 100:.0f}% on the YES scale) — "
+                "only NO-side rules apply here, but none are configured. Add a NO rule or raise the threshold."
+            )
     if not usable:
         return "No rules in config — add at least one rule band under Settings."
     for r in usable:
@@ -513,6 +576,7 @@ async def tick_once(engine: TradingEngine) -> None:
             now,
             dev_sim_yes_floor=dev_floor,
             simulate_orders=sim_orders,
+            rule_pick_cfg=cfg,
         )
         await maybe_backfill_headline_orderbook(
             engine.client,
@@ -552,6 +616,7 @@ async def tick_once(engine: TradingEngine) -> None:
             now,
             dev_sim_yes_floor=dev_floor,
             simulate_orders=sim_orders,
+            rule_pick_cfg=cfg,
         )
 
     engine.state.markets_scanned = scanned
@@ -705,6 +770,7 @@ def pick_asset_snapshot(
     *,
     dev_sim_yes_floor: float | None = None,
     simulate_orders: bool = False,
+    rule_pick_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Pick one market to show odds. Same filters as trading first; if nothing survives (common when every row is
@@ -742,14 +808,26 @@ def pick_asset_snapshot(
                 continue
             matched_names: list[str] = []
             if prob is not None:
-                for r in rules:
-                    if not isinstance(r, dict) or not rule_matches(prob, mins, r):
-                        continue
-                    if rule_trade_side(r) == "no" and not has_no_book:
-                        continue
-                    if rule_trade_side(r) != "no" and not has_yes_rules:
-                        continue
-                    matched_names.append(str(r.get("name") or "rule"))
+                if rule_pick_cfg is not None:
+                    picked = pick_trade_rule(
+                        prob,
+                        mins,
+                        rules,
+                        has_yes_rules=has_yes_rules,
+                        has_no_book=has_no_book,
+                        cfg=rule_pick_cfg,
+                    )
+                    if picked is not None:
+                        matched_names.append(str(picked.get("name") or "rule"))
+                else:
+                    for r in rules:
+                        if not isinstance(r, dict) or not rule_matches(prob, mins, r):
+                            continue
+                        if rule_trade_side(r) == "no" and not has_no_book:
+                            continue
+                        if rule_trade_side(r) != "no" and not has_yes_rules:
+                            continue
+                        matched_names.append(str(r.get("name") or "rule"))
                 if (
                     not matched_names
                     and dev_sim_yes_floor is not None
@@ -780,7 +858,7 @@ def pick_asset_snapshot(
                 "has_orderbook": has_priced_book,
                 "rules_matched": matched_names,
                 "rule_match_hint": (
-                    rule_match_miss_hint(prob, mins, rules)
+                    rule_match_miss_hint(prob, mins, rules, cfg=rule_pick_cfg)
                     if (not matched_names and prob is not None and has_priced_book)
                     else None
                 ),
@@ -920,16 +998,14 @@ async def handle_market(
     if prob is None or (not has_yes_rules and not has_no_book):
         return None
 
-    matched_rule = None
-    for r in rules:
-        if not isinstance(r, dict) or not rule_matches(prob, mins, r):
-            continue
-        if rule_trade_side(r) == "no" and not has_no_book:
-            continue
-        if rule_trade_side(r) != "no" and not has_yes_rules:
-            continue
-        matched_rule = r
-        break
+    matched_rule = pick_trade_rule(
+        prob,
+        mins,
+        rules,
+        has_yes_rules=has_yes_rules,
+        has_no_book=has_no_book,
+        cfg=cfg,
+    )
     if not matched_rule:
         dev_floor = dev_sim_yes_bypass_threshold(cfg)
         if dev_floor is not None and bool(cfg.get("_simulate_orders")):
@@ -1114,6 +1190,71 @@ async def handle_market(
             fee_bps = paper_fee_bps_from_cfg(cfg)
             entry_fee_cents = fee_cents_for_notional(amount_cents, fee_bps)
             gross_amount_cents = int(amount_cents + entry_fee_cents)
+        trade_row: dict[str, Any] = {
+            "created_at": iso(now),
+            "mode": trade_mode,
+            "ticker": ticker,
+            "side": trade_side,
+            "contracts_fp": contracts_fp,
+            "limit_yes_dollars": f"{limit_px:.4f}",
+            "amount_cents": gross_amount_cents,
+            "simulated": True,
+            "order_id": None,
+            "client_order_id": str(uuid.uuid4()),
+            "status": "open",
+            "result": None,
+            "pnl_cents": None,
+            "settled_at": None,
+            "extra_json": json.dumps(
+                {
+                    "yes_ask": ya,
+                    "no_ask": na,
+                    "rule": matched_rule.get("name"),
+                    "limit_side": trade_side,
+                    "entry_implied_yes": prob,
+                    "entry_premium_cents": amount_cents,
+                    "entry_fee_cents": entry_fee_cents,
+                    "paper_fee_bps": fee_bps,
+                    "paper_fee_model": fee_model,
+                    "kalshi_fee_multiplier": fee_mult,
+                }
+            ),
+            "branch": branch,
+        }
+        if series_ticker.strip():
+            tid = await engine.store.insert_sim_trade_single_open_per_series(
+                trade_row,
+                branch=branch,
+                trade_mode=trade_mode,
+                series_prefix=series_ticker,
+            )
+        else:
+            tid = await engine.store.insert_trade(trade_row)
+        if tid is None:
+            await log_signal(
+                engine,
+                window_id=window_id,
+                asset_id=asset_id,
+                ticker=ticker,
+                side=trade_side,
+                implied_prob=prob,
+                minutes_left=mins,
+                rule_name=str(matched_rule.get("name") or ""),
+                executed=False,
+                skip_reason="series_has_open_sim",
+                mode=trade_mode,
+                branch=branch,
+                extra={
+                    "series_ticker": series_ticker,
+                    "note": "Another open sim for this series was committed under the same write lock (TOCTOU guard).",
+                },
+            )
+            engine._seen_keys.add(dedupe_key)
+            _trace_append(
+                trace,
+                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for series {series_ticker} ({branch}, atomic)",
+            )
+            return None
         await log_signal(
             engine,
             window_id=window_id,
@@ -1139,39 +1280,6 @@ async def handle_market(
                 "yes_ask": ya,
                 "no_ask": na,
             },
-        )
-        await engine.store.insert_trade(
-            {
-                "created_at": iso(now),
-                "mode": trade_mode,
-                "ticker": ticker,
-                "side": trade_side,
-                "contracts_fp": contracts_fp,
-                "limit_yes_dollars": f"{limit_px:.4f}",
-                "amount_cents": gross_amount_cents,
-                "simulated": True,
-                "order_id": None,
-                "client_order_id": str(uuid.uuid4()),
-                "status": "open",
-                "result": None,
-                "pnl_cents": None,
-                "settled_at": None,
-                "extra_json": json.dumps(
-                    {
-                        "yes_ask": ya,
-                        "no_ask": na,
-                        "rule": matched_rule.get("name"),
-                        "limit_side": trade_side,
-                        "entry_implied_yes": prob,
-                        "entry_premium_cents": amount_cents,
-                        "entry_fee_cents": entry_fee_cents,
-                        "paper_fee_bps": fee_bps,
-                        "paper_fee_model": fee_model,
-                        "kalshi_fee_multiplier": fee_mult,
-                    }
-                ),
-                "branch": branch,
-            }
         )
         if cap_key:
             engine._study_asset_fired.add(cap_key)

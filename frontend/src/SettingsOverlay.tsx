@@ -191,7 +191,10 @@ export type SettingsOverlayProps = {
   optimizerCfg: AnyObj;
   onSaveOptimizerConfig: (patch: AnyObj) => void | Promise<void>;
   optimizerSaving?: boolean;
-  onResetTradingData: (branch: "all" | "live" | "lab_a" | "lab_b" | "lab_c", backup: boolean) => void | Promise<void>;
+  onResetTradingData: (
+    branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c",
+    backup: boolean,
+  ) => void | Promise<void>;
   /** Direct ``PUT /api/config/lab-branches`` (merge + optional branch data reset); independent of optimizer. */
   onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
   /** Paper lab engine toggles + shared bankroll bump (same actions as the former hero rail). */
@@ -451,12 +454,25 @@ export default function SettingsOverlay({
             onClick={() => {
               const el = document.getElementById("reset_backup_live") as HTMLInputElement | null;
               const backup = el ? el.checked : true;
+              const sim = Boolean(cfg.simulate);
               if (
                 !window.confirm(
-                  "Reset Live branch data only? This removes SQLite signals, trades, and equity snapshots for branch=live. Lab A/B/C rows are kept.",
+                  sim
+                    ? "Reset Live branch data only? This removes SQLite signals, trades, and equity snapshots for branch=live. Lab A/B/C rows are kept."
+                    : "WARNING — Live is in Real $ mode.\n\nReset Live branch SQLite data only (signals, trades, equity snapshots where branch=live)? This does not cancel resting Kalshi orders by itself. Lab A/B/C rows are kept.\n\nIf you continue, you will be asked to type RESET_LIVE.",
                 )
               ) {
                 return;
+              }
+              if (!sim) {
+                const ack = String(
+                  window.prompt('Type RESET_LIVE exactly to confirm clearing Live SQLite history while in "Real $" mode.', "") ||
+                    "",
+                ).trim();
+                if (ack !== "RESET_LIVE") {
+                  window.alert("Live reset cancelled.");
+                  return;
+                }
               }
               void onResetTradingData("live", backup);
             }}
@@ -534,6 +550,40 @@ export default function SettingsOverlay({
                   All +$100
                 </button>
               </div>
+            </div>
+            <div className="panel settings-nested-panel" style={{ marginTop: 12, padding: "10px 12px" }}>
+              <h3 className="section-tip" style={{ margin: 0, fontSize: 13 }} title="POST /api/data/reset?branch=all_labs — one wipe for all paper labs.">
+                Quick reset: all labs (A+B+C)
+              </h3>
+              <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
+                Deletes SQLite signals, trades, and equity snapshots for <strong>lab_a</strong>, <strong>lab_b</strong>, and <strong>lab_c</strong> only.{" "}
+                <strong>Live</strong> rows are not removed. Same as Data → reset with scope all_labs.
+              </p>
+              <label className="checkbox section-tip" style={{ border: "none", marginTop: 6 }}>
+                <input id="reset_all_labs_backup" type="checkbox" defaultChecked disabled={busy} />
+                <span>SQLite + JSONL backup on first branch wipe</span>
+              </label>
+              <button
+                type="button"
+                className="primary"
+                style={{ marginTop: 8, borderColor: "#4a3a6b" }}
+                disabled={busy}
+                title="Clears paper history for Labs A, B, and C in one POST; server clears engine RAM dedupe for each lab."
+                onClick={() => {
+                  const el = document.getElementById("reset_all_labs_backup") as HTMLInputElement | null;
+                  const backup = el ? el.checked : true;
+                  if (
+                    !window.confirm(
+                      "Reset ALL lab paper data (Lab A + B + C)?\n\nThis deletes SQLite signals, trades, and equity snapshots for lab_a, lab_b, and lab_c only. Live branch rows are NOT removed. Bot config is kept.",
+                    )
+                  ) {
+                    return;
+                  }
+                  void onResetTradingData("all_labs", backup);
+                }}
+              >
+                Reset labs A+B+C (SQLite)
+              </button>
             </div>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               <strong>Lab A</strong> = staging (scheduled optimizer persists adaptive tuning here). <strong>Lab B</strong> = conservative and{" "}

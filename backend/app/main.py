@@ -615,7 +615,7 @@ async def data_reset(
     backup: bool = Query(True, description="Copy sqlite + JSONL table dumps before delete"),
     branch: str = Query(
         "all",
-        description="all | live | lab_a | lab_b | lab_c — scope of DELETE on signals/trades/equity_snapshots",
+        description="all | all_labs | live | lab_a | lab_b | lab_c — scope of DELETE on signals/trades/equity_snapshots",
     ),
 ) -> dict[str, Any]:
     """
@@ -631,9 +631,21 @@ async def data_reset(
     if tok and request.headers.get("x-reset-token") != tok:
         raise HTTPException(status_code=403, detail="Set header X-Reset-Token to match DATA_RESET_TOKEN in .env.")
     br = str(branch or "all").strip().lower()
-    if br not in ("all", "live", "lab_a", "lab_b", "lab_c"):
-        raise HTTPException(status_code=400, detail="branch must be all, live, lab_a, lab_b, or lab_c")
+    if br not in ("all", "live", "lab_a", "lab_b", "lab_c", "all_labs"):
+        raise HTTPException(
+            status_code=400,
+            detail="branch must be all, all_labs, live, lab_a, lab_b, or lab_c",
+        )
     try:
+        if br == "all_labs":
+            out = await store.reset_trading_data(backup=backup, branch="lab_a")
+            await store.reset_trading_data(backup=False, branch="lab_b")
+            await store.reset_trading_data(backup=False, branch="lab_c")
+            for br2 in ("lab_a", "lab_b", "lab_c"):
+                _clear_engine_mem_after_reset(br2)
+            out = dict(out)
+            out["branch"] = "all_labs"
+            return out
         out = await store.reset_trading_data(backup=backup, branch=None if br == "all" else br)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -947,12 +959,24 @@ def _open_sim_rows_for_series(
     series_upper: str, trades: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
     for t in trades:
+        tid = t.get("id")
+        if tid is not None:
+            try:
+                ii = int(tid)
+            except (TypeError, ValueError):
+                ii = None
+            if ii is not None:
+                if ii in seen_ids:
+                    continue
+                seen_ids.add(ii)
         tick = str(t.get("ticker") or "").upper()
         if series_upper and tick.startswith(series_upper):
             entry = _entry_yes_from_open_sim_trade(t)
             rows.append(
                 {
+                    "id": t.get("id"),
                     "ticker": t.get("ticker"),
                     "contracts_fp": t.get("contracts_fp"),
                     "status": t.get("status"),

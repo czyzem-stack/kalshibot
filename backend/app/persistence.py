@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -65,6 +66,18 @@ def _sql_branch_predicate(branch: str) -> str:
     if b == "live":
         return "COALESCE(branch,'live') = 'live'"
     raise ValueError(f"unsupported branch for SQL filter: {branch!r}")
+
+
+def _sql_sim_open_book_predicate(branch: str) -> str:
+    """
+    Simulated rows that count as an open book position for a branch (holdings table, duplicate-trade guard).
+
+    Uses the same shape as the dashboard ``open_sim_trades_for_branch`` query: **no** ``mode`` filter so legacy
+    rows (empty or odd ``mode``) still block stacking another open on the same series prefix — otherwise the
+    atomic insert could miss them while the UI still showed two tickets.
+    """
+    br = _sql_branch_predicate(branch)
+    return f"simulated = 1 AND LOWER(COALESCE(status, '')) IN ('open', 'resting') AND ({br})"
 
 
 SCHEMA = """
@@ -279,6 +292,63 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _migrate_trades_open_sim_unique(db: aiosqlite.Connection) -> None:
+    """
+    At most one open/resting simulated row per (branch, ticker): dedupe legacy duplicates, then enforce with a
+    partial UNIQUE index so races cannot stack two tickets on the same contract (e.g. Lab C “2 open tickets”).
+    """
+    cur = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ux_trades_open_sim_branch_ticker' LIMIT 1"
+    )
+    if await cur.fetchone():
+        return
+
+    cur2 = await db.execute(
+        """
+        SELECT id, COALESCE(branch, 'live') AS br, UPPER(TRIM(COALESCE(ticker, ''))) AS ut
+        FROM trades
+        WHERE simulated = 1 AND LOWER(COALESCE(status, '')) IN ('open', 'resting')
+        ORDER BY id ASC
+        """
+    )
+    rows = await cur2.fetchall()
+    keeper: dict[tuple[str, str], int] = {}
+    del_ids: list[int] = []
+    for r in rows:
+        d = dict(r)
+        ut = str(d.get("ut") or "").strip()
+        if not ut:
+            continue
+        key = (str(d.get("br") or "live"), ut)
+        rid = int(d["id"])
+        prev = keeper.get(key)
+        if prev is None:
+            keeper[key] = rid
+        elif rid > prev:
+            del_ids.append(prev)
+            keeper[key] = rid
+        else:
+            del_ids.append(rid)
+
+    if del_ids:
+        chunk = 400
+        for i in range(0, len(del_ids), chunk):
+            part = del_ids[i : i + chunk]
+            qmarks = ",".join("?" * len(part))
+            await db.execute(f"DELETE FROM trades WHERE id IN ({qmarks})", part)
+
+    await db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_trades_open_sim_branch_ticker
+        ON trades (COALESCE(branch, 'live'), UPPER(TRIM(ticker)))
+        WHERE simulated = 1
+          AND LOWER(COALESCE(status, '')) IN ('open', 'resting')
+          AND TRIM(COALESCE(ticker, '')) != ''
+        """
+    )
+    await db.commit()
+
+
 def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Legacy default skipped every Kalshi demo row ("Target price: TBD") for *trading* while the
     # dashboard could still show prices — sim never fired. Clear exact lone "tbd"; use ",tbd" if you need it back.
@@ -395,6 +465,7 @@ class Store:
             await db.execute("PRAGMA busy_timeout=10000")
             await db.executescript(SCHEMA)
             await _migrate_columns(db)
+            await _migrate_trades_open_sim_unique(db)
             cur = await db.execute("SELECT COUNT(*) c FROM bot_config WHERE id=1")
             row = await cur.fetchone()
             if row is None or int(row["c"]) == 0:
@@ -530,6 +601,85 @@ class Store:
             await db.commit()
             lr = cur.lastrowid
             rid = int(lr) if lr is not None else 0
+        _data_log("trades", {"action": "insert", "id": rid, **row})
+        return rid
+
+    async def insert_sim_trade_single_open_per_series(
+        self,
+        row: dict[str, Any],
+        *,
+        branch: str,
+        trade_mode: str,
+        series_prefix: str,
+    ) -> int | None:
+        """
+        Insert a simulated open trade only if no other open/resting sim row exists for the same
+        branch and ticker series prefix (same rows the holdings table lists — **not** filtered by ``mode``).
+        Uses BEGIN IMMEDIATE so the re-check and INSERT share one write lock.
+        """
+        sp = (series_prefix or "").strip().upper()
+        if not sp:
+            return await self.insert_trade(row)
+        _ = trade_mode
+        open_book = _sql_sim_open_book_predicate(branch)
+        async with self._open_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await db.execute(
+                    f"""
+                    SELECT COUNT(*) AS c FROM trades
+                    WHERE {open_book}
+                      AND UPPER(ticker) LIKE ?
+                    """,
+                    (f"{sp}%",),
+                )
+                r = await cur.fetchone()
+                cnt = int(dict(r or {}).get("c") or 0) if r else 0
+                if cnt >= 1:
+                    await db.execute("ROLLBACK")
+                    return None
+                try:
+                    cur = await db.execute(
+                        """
+                        INSERT INTO trades (
+                          created_at, mode, ticker, side, contracts_fp, limit_yes_dollars,
+                          amount_cents, simulated, order_id, client_order_id, status, result, pnl_cents, settled_at, extra_json, branch
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            row["created_at"],
+                            row["mode"],
+                            row["ticker"],
+                            row["side"],
+                            row["contracts_fp"],
+                            row.get("limit_yes_dollars"),
+                            row["amount_cents"],
+                            1 if row["simulated"] else 0,
+                            row.get("order_id"),
+                            row.get("client_order_id"),
+                            row["status"],
+                            row.get("result"),
+                            row.get("pnl_cents"),
+                            row.get("settled_at"),
+                            row.get("extra_json"),
+                            row.get("branch") or "live",
+                        ),
+                    )
+                    await db.commit()
+                except sqlite3.IntegrityError:
+                    try:
+                        await db.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    return None
+                lr = cur.lastrowid
+                rid = int(lr) if lr is not None else 0
+            except Exception:
+                try:
+                    await db.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
         _data_log("trades", {"action": "insert", "id": rid, **row})
         return rid
 
@@ -732,13 +882,27 @@ class Store:
             cur = await db.execute(
                 f"""
                 SELECT * FROM trades
-                WHERE simulated=1 AND status IN ('open','resting')
-                  AND {_sql_branch_predicate(branch)}
+                WHERE {_sql_sim_open_book_predicate(branch)}
                 ORDER BY id DESC
                 """
             )
             rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            out: list[dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for r in rows:
+                d = dict(r)
+                rid = d.get("id")
+                if rid is not None:
+                    try:
+                        ii = int(rid)
+                    except (TypeError, ValueError):
+                        ii = None
+                    if ii is not None:
+                        if ii in seen_ids:
+                            continue
+                        seen_ids.add(ii)
+                out.append(d)
+            return out
 
     async def has_open_sim_for_series_prefix(
         self, branch: str, trade_mode: str, series_prefix: str
@@ -747,7 +911,12 @@ class Store:
         True if this branch already has any simulated open/resting row whose ``ticker`` starts with the asset’s
         ``series_ticker`` (same series prefix as the dashboard). Prevents stacking multiple paper opens on one series
         while a prior sim ticket is still open.
+
+        ``trade_mode`` is kept for call-site compatibility; the predicate matches **all** simulated open rows for
+        the branch (same as ``open_sim_trades_for_branch`` / holdings) so a legacy ``mode`` value cannot hide a row
+        from this check while it still appears in the UI.
         """
+        _ = trade_mode
         sp = (series_prefix or "").strip().upper()
         if not sp:
             return False
@@ -755,17 +924,11 @@ class Store:
             cur = await db.execute(
                 f"""
                 SELECT 1 FROM trades
-                WHERE simulated = 1
-                  AND LOWER(COALESCE(status, '')) IN ('open', 'resting')
-                  AND {_sql_branch_predicate(branch)}
-                  AND (
-                    mode = ?
-                    OR (? = 'simulate' AND COALESCE(mode, '') = '')
-                  )
+                WHERE {_sql_sim_open_book_predicate(branch)}
                   AND UPPER(ticker) LIKE ?
                 LIMIT 1
                 """,
-                (trade_mode, trade_mode, f"{sp}%"),
+                (f"{sp}%",),
             )
             row = await cur.fetchone()
         return row is not None
