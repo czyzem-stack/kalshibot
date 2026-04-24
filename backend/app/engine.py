@@ -353,13 +353,27 @@ def implied_no_probability(yes_bid: float | None, yes_ask: float | None) -> floa
     return max(0.0, min(1.0, 1.0 - py))
 
 
-def effective_no_ask(market: dict[str, Any], yes_bid: float | None) -> float | None:
-    """Best NO ask in dollars: API field, else reciprocal of YES bid (Kalshi binary symmetry)."""
+def effective_no_ask(
+    market: dict[str, Any],
+    yes_bid: float | None,
+    yes_ask: float | None = None,
+) -> float | None:
+    """
+    Best NO ask in dollars for rule checks and NO limit price.
+
+    Order: explicit ``no_ask_dollars`` from the market row, else ``1 − yes_bid`` (standard binary mirror),
+    else ``1 − yes_ask`` when the list row has **ask-only** YES (common on Kalshi series feeds). Without this
+    last fallback ``has_no_book`` stays false and **no NO-side trades** fire even when NO sliders match.
+    """
     na = dollars_to_float(market.get("no_ask_dollars"))
     if na is not None and 0 < na < 1:
         return na
     if yes_bid is not None and 0 < yes_bid < 1:
         return 1.0 - yes_bid
+    if yes_ask is not None and 0 < yes_ask < 1:
+        comp = 1.0 - float(yes_ask)
+        if 0 < comp < 1:
+            return comp
     return None
 
 
@@ -425,6 +439,80 @@ def pick_trade_rule(
     if hit is not None:
         return hit
     return scan(no_rules)
+
+
+def _market_sim_trade_rank(
+    market: dict[str, Any],
+    *,
+    rules: list[dict[str, Any]],
+    cfg: dict[str, Any],
+    subtitle_filter: str,
+    exclude_substrings: list[str],
+    now: dt.datetime,
+    dev_floor: float | None,
+    simulate_orders: bool,
+) -> tuple[int, float, float]:
+    """
+    Sort key for ``reverse=True`` (best first): among markets with a matched rule and tradable book,
+    prefer higher *edge* = implied mid minus the limit price (YES ask or NO ask). Then prefer more
+    minutes to close. Rows with no opportunity sort last so API list order no longer wins by default.
+    """
+    if not isinstance(market, dict):
+        return (0, -1e18, 0.0)
+    ticker = str(market.get("ticker") or "")
+    if not ticker:
+        return (0, -1e18, 0.0)
+    mstatus = str(market.get("status") or "").lower()
+    if mstatus and mstatus not in ("active", "open"):
+        return (0, -1e18, 0.0)
+    yes_sub = str(market.get("yes_sub_title") or market.get("subtitle") or "").lower()
+    if subtitle_filter and subtitle_filter not in yes_sub:
+        return (0, -1e18, 0.0)
+    for ex in exclude_substrings:
+        if ex and ex in yes_sub:
+            return (0, -1e18, 0.0)
+    close_time = str(market.get("close_time") or "")
+    mins = minutes_left(close_time, now)
+    if mins is None or mins <= 0:
+        return (0, -1e18, 0.0)
+    yb = dollars_to_float(market.get("yes_bid_dollars"))
+    ya = dollars_to_float(market.get("yes_ask_dollars"))
+    prob = implied_yes_probability(yb, ya)
+    na = effective_no_ask(market, yb, ya)
+    has_yes_rules = has_yes_book_for_rules(yb, ya, prob)
+    has_no_book = na is not None and 0 < na < 1
+    if prob is None or (not has_yes_rules and not has_no_book):
+        return (0, -1e18, float(mins))
+    matched_rule = pick_trade_rule(
+        prob,
+        mins,
+        rules,
+        has_yes_rules=has_yes_rules,
+        has_no_book=has_no_book,
+        cfg=cfg,
+    )
+    if not matched_rule:
+        if dev_floor is not None and simulate_orders and has_yes_rules and prob is not None:
+            dev_rule = _dev_sim_high_yes_rule(dev_floor)
+            if rule_matches(prob, mins, dev_rule):
+                matched_rule = dict(dev_rule)
+    if not matched_rule:
+        return (0, -1e18, float(mins))
+    trade_side = rule_trade_side(matched_rule)
+    if trade_side == "yes":
+        if not has_tradable_yes_ask(ya) and not simulate_orders:
+            return (0, -1e18, float(mins))
+        if ya is None:
+            return (1, -1e18, float(mins))
+        edge = float(prob) - float(ya)
+    else:
+        if na is None or not (0 < na < 1):
+            return (0, -1e18, float(mins))
+        p_no = implied_no_probability(yb, ya)
+        if p_no is None:
+            return (1, -1e18, float(mins))
+        edge = float(p_no) - float(na)
+    return (1, edge, float(mins))
 
 
 def rule_match_miss_hint(prob_yes: float, mins: float, rules: list[Any], *, cfg: dict[str, Any] | None = None) -> str:
@@ -604,7 +692,21 @@ async def tick_once(engine: TradingEngine) -> None:
             series=series,
         )
         no_rule = 0
-        for m in markets:
+        ranked_markets = sorted(
+            [m for m in markets if isinstance(m, dict)],
+            key=lambda mm: _market_sim_trade_rank(
+                mm,
+                rules=rules,
+                cfg=cfg,
+                subtitle_filter=subtitle_filter,
+                exclude_substrings=exclude_substrings,
+                now=now,
+                dev_floor=dev_floor,
+                simulate_orders=sim_orders,
+            ),
+            reverse=True,
+        )
+        for m in ranked_markets:
             kind = await handle_market(
                 engine,
                 cfg=cfg,
@@ -818,7 +920,7 @@ def pick_asset_snapshot(
             yb = dollars_to_float(m.get("yes_bid_dollars"))
             ya = dollars_to_float(m.get("yes_ask_dollars"))
             prob = implied_yes_probability(yb, ya)
-            na = effective_no_ask(m, yb)
+            na = effective_no_ask(m, yb, ya)
             has_yes_rules = has_yes_book_for_rules(yb, ya, prob)
             has_no_book = na is not None and 0 < na < 1
             has_priced_book = has_yes_rules or has_no_book
@@ -1010,7 +1112,7 @@ async def handle_market(
     yb = dollars_to_float(market.get("yes_bid_dollars"))
     ya = dollars_to_float(market.get("yes_ask_dollars"))
     prob = implied_yes_probability(yb, ya)
-    na = effective_no_ask(market, yb)
+    na = effective_no_ask(market, yb, ya)
     has_yes_rules = has_yes_book_for_rules(yb, ya, prob)
     has_no_book = na is not None and 0 < na < 1
     if prob is None or (not has_yes_rules and not has_no_book):

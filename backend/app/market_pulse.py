@@ -126,7 +126,7 @@ async def fetch_market_pulse(
             yb = dollars_to_float(m.get("yes_bid_dollars"))
             ya = dollars_to_float(m.get("yes_ask_dollars"))
             prob = implied_yes_probability(yb, ya)
-            na = effective_no_ask(m, yb)
+            na = effective_no_ask(m, yb, ya)
             has_yes_rules = has_yes_book_for_rules(yb, ya, prob)
             has_no_book = na is not None and 0 < na < 1
             last_px = m.get("last_price_dollars")
