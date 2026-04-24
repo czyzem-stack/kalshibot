@@ -846,8 +846,9 @@ class Store:
     async def dashboard_branch_trade_rollups(self, branch: str, trade_mode: str) -> dict[str, Any]:
         """
         Full-table aggregates for one branch + trade mode (not capped at recent N rows).
-        Matches dashboard paper semantics: for ``trade_mode == 'simulate'``, rows with empty
-        ``mode`` and ``simulated=1`` count as paper (legacy inserts).
+        Settled / fee slices still use ``trade_mode`` (paper vs live). Open sim **premium** uses
+        ``_sql_sim_open_book_predicate`` (same rows as ``open_sim_trades_for_branch``). The dashboard
+        may replace ``open_sim_trades`` with a Holdings-visible **asset-row** count (configured series only).
         """
         async with self._open_db() as db:
             bp = _sql_branch_predicate(branch)
@@ -873,19 +874,14 @@ class Store:
                 (trade_mode, trade_mode),
             )
             settled_row = await cur.fetchone()
+            # Open sim book: same predicate as ``open_sim_trades_for_branch`` (no ``mode`` filter) so
+            # committed premium and MTM use the same open rows as the store list; Holdings line count may differ.
             cur2 = await db.execute(
                 f"""
                 SELECT COUNT(*) AS open_n, COALESCE(SUM(amount_cents), 0) AS open_cents
                 FROM trades
-                WHERE {bp}
-                  AND simulated = 1
-                  AND LOWER(COALESCE(status, '')) IN ('open', 'resting')
-                  AND (
-                    mode = ?
-                    OR (? = 'simulate' AND COALESCE(mode, '') = '')
-                  )
-                """,
-                (trade_mode, trade_mode),
+                WHERE {_sql_sim_open_book_predicate(branch)}
+                """
             )
             open_row = await cur2.fetchone()
             cur3 = await db.execute(

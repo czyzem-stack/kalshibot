@@ -1101,6 +1101,40 @@ def _position_by_asset(
     return out
 
 
+def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: str) -> int:
+    """
+    Number of **Holdings asset rows** with any open sim for this branch (one count per configured asset).
+
+    Matches the Sim open column in the table: BTC is 1 row even when the cell lists two market tickers.
+    Excludes assets whose sim cell is empty; excludes orphan DB rows outside every ``series_ticker``.
+    """
+    b = str(branch or "").strip().lower()
+    if b in ("", "none"):
+        b = BRANCH_LIVE
+    if b == "sim_lab":
+        b = BRANCH_LAB_A
+    n = 0
+    for row in position_by_asset.values():
+        if not isinstance(row, dict):
+            continue
+        arr: Any = None
+        if b == BRANCH_LIVE:
+            arr = row.get("bot_sim_open_live")
+        elif b == BRANCH_LAB_A:
+            arr = row.get("bot_sim_open_lab_a")
+            if (not isinstance(arr, list)) or len(arr) == 0:
+                arr = row.get("bot_sim_open_lab")
+        elif b == BRANCH_LAB_B:
+            arr = row.get("bot_sim_open_lab_b")
+        elif b == BRANCH_LAB_C:
+            arr = row.get("bot_sim_open_lab_c")
+        else:
+            continue
+        if isinstance(arr, list) and len(arr) > 0:
+            n += 1
+    return n
+
+
 @app.get("/api/dashboard")
 async def dashboard() -> dict[str, Any]:
     cfg = await store.load_config()
@@ -1259,6 +1293,13 @@ async def dashboard() -> dict[str, Any]:
     position_by_asset = _position_by_asset(
         assets_cfg, kalshi_pos_list, sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c
     )
+
+    # Rollups count every SQLite open sim on the branch. Override so ``open_sim_trades`` matches the Holdings
+    # table: **one per configured asset row** that has any sim open (not sum of tickers inside a cell).
+    metrics_live["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LIVE)
+    metrics_lab_a["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LAB_A)
+    metrics_lab_b["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LAB_B)
+    metrics_lab_c["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LAB_C)
 
     opt_blk = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     ch_raw = opt_blk.get("change_history")

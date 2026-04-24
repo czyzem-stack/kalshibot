@@ -320,7 +320,7 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
       seg(" · ", "muted"),
       seg(`settled ${metrics.settled_trades ?? 0}`, "muted"),
       seg(" · ", "muted"),
-      seg(`open ${metrics.open_sim_trades ?? 0}`, "muted"),
+      seg(`sim assets ${metrics.open_sim_trades ?? 0}`, "muted"),
     );
     return out;
   }
@@ -339,7 +339,7 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
     seg(fmt$(pnl), pnl > 0 ? "pos" : pnl < 0 ? "neg" : "muted"),
     seg(" · ", "muted"),
     seg(!Number.isFinite(retN) ? "—" : `${retN >= 0 ? "+" : ""}${retN.toFixed(1)}%`, rt),
-    seg(" · open ", "muted"),
+    seg(" · sim assets ", "muted"),
     seg(String(metrics.open_sim_trades ?? 0), "muted"),
   ];
 }

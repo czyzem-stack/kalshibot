@@ -230,7 +230,7 @@ RADAR_AXIS_DEF: list[dict[str, Any]] = [
     {"key": "poll_sec", "label": "Poll (s)", "lo": 3.0, "hi": 120.0},
     {"key": "yes_floor", "label": "YES floor (rules)", "lo": 35.0, "hi": 95.0},
     {"key": "rule_min_m", "label": "Rule min min left", "lo": 0.0, "hi": 30.0},
-    {"key": "min_contracts", "label": "Min contracts", "lo": 1.0, "hi": 100.0},
+    {"key": "min_contracts", "label": "Min position size (contracts)", "lo": 1.0, "hi": 100.0},
     {"key": "no_bet_cut", "label": "NO-bet below %", "lo": 0.0, "hi": 80.0},
     {"key": "dev_yes_pct", "label": "Dev sim YES %", "lo": 0.0, "hi": 95.0},
     {"key": "swing_drop", "label": "Swing exit %", "lo": 0.0, "hi": 60.0},

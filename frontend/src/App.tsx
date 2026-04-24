@@ -741,6 +741,24 @@ function fmtIsoLocal(iso: string | undefined | null, withSeconds = true) {
   });
 }
 
+/**
+ * Milliseconds until the next local wall time on a 15-minute grid (:00, :15, :30, :45).
+ * If ``graceIntoQuarterMs`` is positive and we are within that many ms after such a boundary, returns 0 (fire now).
+ */
+function msUntilNextLocalQuarterHour(now: Date, graceIntoQuarterMs = 0): number {
+  const start = new Date(now);
+  start.setMilliseconds(0);
+  start.setSeconds(0, 0);
+  start.setMinutes(Math.floor(start.getMinutes() / 15) * 15, 0, 0);
+  if (graceIntoQuarterMs > 0) {
+    const elapsed = now.getTime() - start.getTime();
+    if (elapsed >= 0 && elapsed < graceIntoQuarterMs) return 0;
+  }
+  const next = new Date(start);
+  next.setMinutes(start.getMinutes() + 15, 0, 0);
+  return Math.max(0, next.getTime() - now.getTime());
+}
+
 type OptimizerToastTier = "green" | "yellow" | "red" | "neutral";
 
 function inferOptimizerRunTier(lastStatus: string, lastError: string): Exclude<OptimizerToastTier, "neutral"> {
@@ -900,7 +918,7 @@ function summarizePositionRowsRaw(rows: unknown): string {
     .map((r) => {
       const t = String(r.ticker || "").trim();
       const q = r.position != null ? String(r.position) : String(r.contracts_fp ?? "");
-      return `${t} (${q})`;
+      return `${t} (${q} contracts)`;
     })
     .join("\n");
 }
@@ -920,9 +938,9 @@ function _fmtPositionQty(qty: number): string {
 }
 
 /**
- * Holdings cell: merge multiple SQLite open rows on the **same** ticker into one size (sum of contracts)
- * plus “N tickets” when N&gt;1. Raw rows remain in the API — the bot can legitimately hold several open
- * tickets per contract (e.g. different budget windows / rules before caps).
+ * Holdings cell: merge multiple SQLite open rows on the **same** ticker into one **position size** (sum of
+ * Kalshi **contracts**, i.e. YES/NO units), plus “N tickets” when N&gt;1. **Market lines** = distinct tickers
+ * after merge (how many markets have exposure), not the same as total contracts.
  */
 function summarizePositionRows(rows: unknown): { text: string; title: string } {
   const arr = Array.isArray(rows) ? (rows as AnyObj[]) : [];
@@ -955,42 +973,18 @@ function summarizePositionRows(rows: unknown): { text: string; title: string } {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([tKey, { qty, n }]) => {
       const short = tKey.length > 40 ? `${tKey.slice(0, 37)}…` : tKey;
-      const ticketNote = n > 1 ? ` · ${n} open tickets` : "";
-      return `${short} (${_fmtPositionQty(qty)}${ticketNote})`;
+      const ticketNote = n > 1 ? ` · ${n} tickets` : "";
+      return `${short} · ${_fmtPositionQty(qty)} contracts${ticketNote}`;
     });
   const detailJoined = parts.join("; ");
   const nMkts = byTicker.size;
   if (nMkts > 1) {
     const totalQty = [...byTicker.values()].reduce((acc, v) => acc + v.qty, 0);
-    const summary = `${nMkts} markets · ${_fmtPositionQty(totalQty)} contracts (hover for each ticker)`;
+    const summary = `${nMkts} market lines · ${_fmtPositionQty(totalQty)} contracts total (size)`;
     const titleBody = [rawTitle, detailJoined].filter(Boolean).join("\n\n");
     return { text: summary, title: titleBody || detailJoined };
   }
   return { text: detailJoined, title: rawTitle };
-}
-
-/**
- * Holdings snapshot: merged market lines per configured asset (same arrays the table renders).
- * ``tickers`` should match ``metrics.*.open_sim_trades`` when every open sim sits under a configured series.
- */
-function holdingsSimSlotCounts(
-  positionByAsset: AnyObj,
-  which: "live" | "lab_a" | "lab_b" | "lab_c",
-): { tickers: number; assetsWith: number } {
-  let tickers = 0;
-  let assetsWith = 0;
-  for (const [, row] of orderedAssetEntries(positionByAsset)) {
-    const ob = row as AnyObj;
-    let arr: unknown;
-    if (which === "live") arr = ob.bot_sim_open_live;
-    else if (which === "lab_a") arr = ob.bot_sim_open_lab_a ?? ob.bot_sim_open_lab;
-    else if (which === "lab_b") arr = ob.bot_sim_open_lab_b;
-    else arr = ob.bot_sim_open_lab_c;
-    if (!Array.isArray(arr) || arr.length === 0) continue;
-    assetsWith += 1;
-    tickers += arr.length;
-  }
-  return { tickers, assetsWith };
 }
 
 /** Open rows for the Assets-to-watch branch tab only (avoids Lab exposure highlighting on Live tab, etc.). */
@@ -1871,15 +1865,14 @@ export default function App() {
   }, [optimizerChangeHistoryMerged]);
 
   /**
-   * Optimizer heartbeat toast: first run ~45s after load, then every 15m. Uses chained timeouts (not setInterval)
-   * so the first fire is not delayed a full 15 minutes. If ``refresh`` returns null (race / abort), falls back to
-   * ``dashSnapshotRef`` so a toast still appears when we already have dashboard data.
+   * Optimizer heartbeat toast: aligned to local wall quarter hours (:00, :15, :30, :45), four per hour.
+   * First schedule uses a short grace so loading within a few seconds of a boundary still fires once immediately.
+   * After each run, recomputes delay from ``Date.now()`` so slow ``refresh`` does not drift the cadence.
+   * If ``refresh`` returns null (race / abort), falls back to ``dashSnapshotRef``.
    */
   useEffect(() => {
     let cancelled = false;
     let timeoutId = 0;
-    const FIRST_MS = 45_000;
-    const PERIOD_MS = 15 * 60 * 1000;
 
     const tick = async () => {
       if (cancelled) return;
@@ -1924,17 +1917,18 @@ export default function App() {
       }
     };
 
-    const arm = (delay: number) => {
+    const scheduleNext = (useGrace: boolean) => {
+      const delay = msUntilNextLocalQuarterHour(new Date(), useGrace ? 2800 : 0);
       timeoutId = window.setTimeout(() => {
         void (async () => {
           if (cancelled) return;
           await tick();
-          if (!cancelled) arm(PERIOD_MS);
+          if (!cancelled) scheduleNext(false);
         })();
       }, delay);
     };
 
-    arm(FIRST_MS);
+    scheduleNext(true);
     return () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
@@ -1945,17 +1939,6 @@ export default function App() {
   const metricsLabA = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
-
-  const holdingsSimOpenRollup = useMemo(() => {
-    const pba = (dash?.account_snapshot as AnyObj | undefined)?.position_by_asset as AnyObj | undefined;
-    if (!pba || typeof pba !== "object") return null;
-    return {
-      live: holdingsSimSlotCounts(pba, "live"),
-      lab_a: holdingsSimSlotCounts(pba, "lab_a"),
-      lab_b: holdingsSimSlotCounts(pba, "lab_b"),
-      lab_c: holdingsSimSlotCounts(pba, "lab_c"),
-    };
-  }, [dash?.account_snapshot]);
 
   const promoteLabAToLive = async () => {
     const pnlA = Number(metricsLabA.total_pnl_dollars ?? 0);
@@ -2028,25 +2011,6 @@ export default function App() {
     };
     return map[perfBranch];
   }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC]);
-
-  const perfBranchHeldSlots = useMemo(() => {
-    if (!holdingsSimOpenRollup) return null;
-    if (perfBranch === "live") return holdingsSimOpenRollup.live;
-    if (perfBranch === "lab_a") return holdingsSimOpenRollup.lab_a;
-    if (perfBranch === "lab_b") return holdingsSimOpenRollup.lab_b;
-    return holdingsSimOpenRollup.lab_c;
-  }, [holdingsSimOpenRollup, perfBranch]);
-
-  const openSimRowsMetricSub = useMemo(() => {
-    const n = Number(perfBranchMeta.metrics.open_sim_trades ?? 0);
-    const h = perfBranchHeldSlots;
-    if (!h) return n > 0 ? `${n} SQLite row(s)` : undefined;
-    if (n <= 0 && h.tickers <= 0) return undefined;
-    if (h.tickers === n) {
-      return `${h.tickers} market line(s) in table · ${h.assetsWith} asset row(s) with text`;
-    }
-    return `⚠ ${h.tickers} table line(s) vs ${n} SQLite row(s) — some opens may use a series not in Assets`;
-  }, [perfBranchMeta.metrics.open_sim_trades, perfBranchHeldSlots]);
 
   const chartData = useMemo(
     () => equitySeriesWithLiveTail(snaps, equityGranularity, metrics, fmtIsoLocal),
@@ -2834,14 +2798,9 @@ export default function App() {
             valueTone={metricSignedTone(perfBranchMeta.metrics.avg_realized_per_settled_dollars)}
           />
           <MetricTile
-            label={`${perfBranchMeta.label} · open rows`}
+            label={`${perfBranchMeta.label} · sim assets`}
             value={String(perfBranchMeta.metrics.open_sim_trades ?? 0)}
-            sub={openSimRowsMetricSub}
-            title={
-              "SQLite COUNT of open simulated trades for this branch (one DB row = one ticket). " +
-              "Account → Holdings has one table row per configured asset; one asset row can list several market tickers, " +
-              "so three rows in the DB can appear as two non-empty asset rows (e.g. two BTC markets + one ETH)."
-            }
+            title="Holdings: configured assets with any open sim in this branch (one per asset row; a cell can list several market tickers)."
           />
           <MetricTile
             label={`${perfBranchMeta.label} committed`}
@@ -3236,45 +3195,23 @@ export default function App() {
                 className="sub section-tip"
                 style={{ fontSize: 14, color: "var(--text)", marginBottom: 6 }}
                 title={
-                  accountLinked
-                    ? "Rows match Kalshi portfolio positions and local open simulated trades whose tickers start with each asset’s series_ticker (e.g. KXDOGE15M)."
-                    : "Sim columns only — Kalshi exchange positions need a linked account."
+                  (accountLinked
+                    ? "Rows match Kalshi portfolio positions and local open simulated trades whose tickers start with each asset’s series_ticker (e.g. KXDOGE15M). "
+                    : "Sim columns only — Kalshi exchange positions need a linked account. ") +
+                  "Glossary: “market lines” (inside a cell) = distinct tickers with exposure after merge; " +
+                  "“contracts” = Kalshi position size (YES/NO units), summed when several rows share one ticker. " +
+                  "Branch performance “sim assets” = count of asset rows with a non-empty sim cell (not the intra-cell market-line count)."
                 }
               >
                 Holdings by asset (series prefix)
               </h3>
-              {holdingsSimOpenRollup ? (
-                <div
-                  className="sub"
-                  style={{
-                    marginBottom: 10,
-                    padding: "8px 10px",
-                    borderRadius: 8,
-                    border: "1px solid var(--border, #355091)",
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                  }}
-                  title="Branch performance tiles use the same open_sim_trades numbers from the API rollups."
-                >
-                  <strong>Open sim (SQLite rows)</strong> — same as Branch performance: Live{" "}
-                  <code>{String(metrics.open_sim_trades ?? 0)}</code>, Lab A{" "}
-                  <code>{String(metricsLabA.open_sim_trades ?? 0)}</code>, Lab B{" "}
-                  <code>{String(metricsLabB.open_sim_trades ?? 0)}</code>, Lab C{" "}
-                  <code>{String(metricsLabC.open_sim_trades ?? 0)}</code>. The table below is one row per{" "}
-                  <em>configured asset</em>; for Live, <code>{holdingsSimOpenRollup.live.tickers}</code> market line(s)
-                  appear in <code>{holdingsSimOpenRollup.live.assetsWith}</code> asset row(s) — e.g.{" "}
-                  <code>{String(metrics.open_sim_trades ?? 0)}</code> SQLite rows vs{" "}
-                  <code>{holdingsSimOpenRollup.live.assetsWith}</code> non-empty asset rows when one asset bundles
-                  several contracts.
-                </div>
-              ) : null}
               {accountLinked ? (
                 <p className="sub" style={{ marginBottom: 8 }} title="Why some assets have data and others show dashes.">
                   <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
                   identifier starts with that asset&apos;s <code>series_ticker</code>.{" "}
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for that series per branch.{" "}
-                  Sim cells merge the same market ticker (case-insensitive); multiple different contracts in the series
-                  show one summary line with combined size — hover for per-ticker detail. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
+                  Sim cells merge the same market ticker (case-insensitive); several tickets on one ticker show one line
+                  with <strong>contracts</strong> (position size) summed — hover for each ticker. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
                   positions and/or the bot has open sim trades for that asset&apos;s <code>series_ticker</code> prefix.
                   Symbols with tighter books tend to fill first; others stay &quot;—&quot; until the same is true, or
                   appear under <strong>Recent trades</strong> after sim fills.
@@ -3282,9 +3219,8 @@ export default function App() {
               ) : (
                 <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
-                  <code>series_ticker</code>. The Kalshi column is omitted when the account is not linked. The box above
-                  ties Branch performance counts to this table; cells merge duplicate tickers and sum contracts — hover
-                  for raw rows.
+                  <code>series_ticker</code>. The Kalshi column is omitted when the account is not linked. Cells merge
+                  duplicate tickers and sum <strong>contracts</strong> (Kalshi size, not “how many markets”) — hover for raw rows.
                 </p>
               )}
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
@@ -3296,10 +3232,18 @@ export default function App() {
                       {accountLinked ? (
                         <th title="Open positions returned by GET /portfolio/positions for this series.">Kalshi open</th>
                       ) : null}
-                      <th title="Open simulated trades (branch live) in SQLite.">Sim open (Live)</th>
-                      <th title="Open simulated trades (branch lab_a / sim_lab) in SQLite.">Sim open (Lab A)</th>
-                      <th title="Open simulated trades (branch lab_b) in SQLite.">Sim open (Lab B)</th>
-                      <th title="Open simulated trades (branch lab_c) in SQLite.">Sim open (Lab C)</th>
+                      <th title="Live-branch open sim rows in SQLite. Cell text: “market lines” = distinct tickers with exposure; “contracts” = Kalshi YES/NO size (summed when merged).">
+                        Sim open (Live)
+                      </th>
+                      <th title="Lab A open sim rows. “Market lines” = distinct tickers; “contracts” = position size (Kalshi units), not how many markets.">
+                        Sim open (Lab A)
+                      </th>
+                      <th title="Lab B open sim rows. “Market lines” = distinct tickers; “contracts” = position size (Kalshi units), not how many markets.">
+                        Sim open (Lab B)
+                      </th>
+                      <th title="Lab C open sim rows. “Market lines” = distinct tickers; “contracts” = position size (Kalshi units), not how many markets.">
+                        Sim open (Lab C)
+                      </th>
                     </tr>
                   </thead>
                   <tbody>

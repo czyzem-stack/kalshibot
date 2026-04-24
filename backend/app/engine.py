@@ -8,6 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from dateutil import parser as dateparser
 
@@ -1459,6 +1460,57 @@ def market_dict_from_public_response(data: Any) -> dict[str, Any]:
     return {}
 
 
+def _parse_contracts_fp(raw: Any) -> float:
+    """Position size from ``contracts_fp`` (or legacy numeric); 0 if missing/invalid so settlement/MTM never throws."""
+    if raw is None or raw == "":
+        return 0.0
+    if isinstance(raw, bool):
+        return 0.0
+    if isinstance(raw, (int, float)):
+        f = float(raw)
+        return f if math.isfinite(f) and f > 0 else 0.0
+    s = str(raw).strip().replace(",", "")
+    if not s:
+        return 0.0
+    try:
+        f = float(s)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(f) or f <= 0:
+        return 0.0
+    return f
+
+
+def _public_market_path(ticker: str) -> str:
+    """Path for GET /markets/{ticker} with an encoded ticker segment."""
+    tk = str(ticker or "").strip()
+    return f"/markets/{quote(tk, safe='')}"
+
+
+def _normalize_settled_outcome_yes_no(m: dict[str, Any]) -> str | None:
+    """Winning side ``yes`` / ``no`` once Kalshi marks the contract resolved (field names vary by API version)."""
+    for key in ("result", "market_result", "outcome", "winner"):
+        raw = m.get(key)
+        if raw is None or raw == "":
+            continue
+        s = str(raw).strip().lower()
+        if s in ("yes", "no"):
+            return s
+    yw = m.get("yes_won")
+    if isinstance(yw, bool):
+        return "yes" if yw else "no"
+    if isinstance(yw, (int, float)):
+        try:
+            vi = int(yw)
+        except (TypeError, ValueError):
+            vi = None
+        if vi == 1:
+            return "yes"
+        if vi == 0:
+            return "no"
+    return None
+
+
 def _fair_value_open_sim_position_cents(m: dict[str, Any], *, side: str, contracts: float) -> int:
     """Expected settlement value in cents at implied mid (contracts × $1 × risk-neutral prob)."""
     if contracts <= 0 or not math.isfinite(contracts):
@@ -1494,7 +1546,7 @@ async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows
             sub = 0
             try:
                 data = await asyncio.wait_for(
-                    engine.client.get_public(f"/markets/{ticker}"),
+                    engine.client.get_public(_public_market_path(ticker)),
                     timeout=6.0,
                 )
             except Exception:
@@ -1504,10 +1556,7 @@ async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows
                 return 0
             for t in rows:
                 side = str(t.get("side") or "yes")
-                try:
-                    contracts = float(str(t.get("contracts_fp") or "0"))
-                except (TypeError, ValueError):
-                    contracts = 0.0
+                contracts = _parse_contracts_fp(t.get("contracts_fp"))
                 sub += _fair_value_open_sim_position_cents(m, side=side, contracts=contracts)
             return sub
 
@@ -1595,7 +1644,7 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
             continue
 
         try:
-            data = await engine.client.get_public(f"/markets/{ticker}")
+            data = await engine.client.get_public(_public_market_path(ticker))
         except Exception as e:
             _engine_trace_note(engine, f"swing {branch}: {ticker[:28]}… fetch err {str(e)[:80]}")
             continue
@@ -1622,11 +1671,9 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
             _engine_trace_note(engine, f"swing {branch}: {ticker[:28]}… skip exit (no bid)")
             continue
 
-        try:
-            contracts = float(str(t.get("contracts_fp") or "0"))
-        except (TypeError, ValueError):
-            contracts = 0.0
+        contracts = _parse_contracts_fp(t.get("contracts_fp"))
         if contracts <= 0:
+            _engine_trace_note(engine, f"swing {branch}: {ticker[:28]}… skip (contracts_fp unresolved)")
             continue
         cost = int(t.get("amount_cents") or 0)
         proceeds_cents = int(round(contracts * exit_px * 100.0))
@@ -1694,69 +1741,96 @@ async def settle_simulated_trades(engine: TradingEngine) -> int:
     full_cfg = await engine.store.load_config()
     fee_bps_now = effective_paper_fee_bps(full_cfg, engine.branch)
     for t in open_trades:
-        ticker = str(t.get("ticker") or "")
-        if not ticker:
-            continue
         try:
-            data = await engine.client.get_public(f"/markets/{ticker}")
-        except Exception:
-            continue
-        m = market_dict_from_public_response(data)
-        status = str(m.get("status") or "").strip().lower()
-        if status not in (
-            "finalized",
-            "closed",
-            "determined",
-            "settled",
-            "settlement",
-            "complete",
-            "inactive",
-        ):
-            continue
-        result = str(m.get("result") or "").strip().lower()
-        if result not in ("yes", "no"):
-            continue
-        side = str(t.get("side") or "yes")
-        contracts = float(str(t.get("contracts_fp") or "0"))
-        amount = int(t.get("amount_cents") or 0)
-        payout_per = 1.0 if (side == "yes" and result == "yes") or (side == "no" and result == "no") else 0.0
-        try:
-            raw_ex = json.loads(str(t.get("extra_json") or "{}"))
-            ex = dict(raw_ex) if isinstance(raw_ex, dict) else {}
-        except json.JSONDecodeError:
-            ex = {}
-        fee_model = resolve_paper_fee_model(ex, full_cfg, engine.branch)
-        if fee_model in ("kalshi_taker", "kalshi_maker"):
-            if payout_per <= 0:
-                net_payout_cents = 0
-                exit_fee_cents = 0
-            else:
-                net_payout_cents, sd = kalshi_settlement_credit_cents(contracts, payout_per)
-                ex["kalshi_settlement"] = sd
-                exit_fee_cents = max(0, int(round(contracts * payout_per * 100.0)) - net_payout_cents)
-            fee_bps_used = float(ex.get("paper_fee_bps", 0.0))
-            pnl = net_payout_cents - amount
-        elif fee_model == "none":
-            payout_cents = int(round(contracts * payout_per * 100.0))
-            net_payout_cents = payout_cents
-            exit_fee_cents = 0
-            fee_bps_used = 0.0
-            pnl = net_payout_cents - amount
-        else:
-            payout_cents = int(round(contracts * payout_per * 100.0))
-            fee_bps_used = fee_bps_now
+            ticker = str(t.get("ticker") or "").strip()
+            if not ticker:
+                continue
+            tid_raw = t.get("id")
+            if tid_raw is None:
+                continue
+            tid = int(tid_raw)
             try:
-                fee_bps_used = float(ex.get("paper_fee_bps", fee_bps_now))
+                data = await engine.client.get_public(_public_market_path(ticker))
+            except Exception as e:
+                _engine_trace_note(
+                    engine,
+                    f"settle {engine.branch}: {ticker[:32]}… market fetch err {str(e)[:80]}",
+                )
+                continue
+            m = market_dict_from_public_response(data)
+            status = str(m.get("status") or "").strip().lower()
+            if status not in (
+                "finalized",
+                "closed",
+                "determined",
+                "settled",
+                "settlement",
+                "complete",
+                "inactive",
+            ):
+                continue
+            result = _normalize_settled_outcome_yes_no(m)
+            if result not in ("yes", "no"):
+                _engine_trace_note(
+                    engine,
+                    f"settle {engine.branch}: {ticker[:32]}… status={status!r} but outcome not yes/no (keys "
+                    f"result={m.get('result')!r} yes_won={m.get('yes_won')!r})",
+                )
+                continue
+            side = str(t.get("side") or "yes").strip().lower()
+            if side not in ("yes", "no"):
+                _engine_trace_note(engine, f"settle {engine.branch}: id={tid} skip (side={side!r})")
+                continue
+            contracts = _parse_contracts_fp(t.get("contracts_fp"))
+            if contracts <= 0:
+                _engine_trace_note(engine, f"settle {engine.branch}: {ticker[:32]}… id={tid} skip (contracts_fp)")
+                continue
+            try:
+                amount = int(t.get("amount_cents") or 0)
             except (TypeError, ValueError):
+                amount = 0
+            payout_per = 1.0 if (side == "yes" and result == "yes") or (side == "no" and result == "no") else 0.0
+            try:
+                raw_ex = json.loads(str(t.get("extra_json") or "{}"))
+                ex = dict(raw_ex) if isinstance(raw_ex, dict) else {}
+            except json.JSONDecodeError:
+                ex = {}
+            fee_model = resolve_paper_fee_model(ex, full_cfg, engine.branch)
+            if fee_model in ("kalshi_taker", "kalshi_maker"):
+                if payout_per <= 0:
+                    net_payout_cents = 0
+                    exit_fee_cents = 0
+                else:
+                    net_payout_cents, sd = kalshi_settlement_credit_cents(contracts, payout_per)
+                    ex["kalshi_settlement"] = sd
+                    exit_fee_cents = max(0, int(round(contracts * payout_per * 100.0)) - net_payout_cents)
+                fee_bps_used = float(ex.get("paper_fee_bps", 0.0))
+                pnl = net_payout_cents - amount
+            elif fee_model == "none":
+                payout_cents = int(round(contracts * payout_per * 100.0))
+                net_payout_cents = payout_cents
+                exit_fee_cents = 0
+                fee_bps_used = 0.0
+                pnl = net_payout_cents - amount
+            else:
+                payout_cents = int(round(contracts * payout_per * 100.0))
                 fee_bps_used = fee_bps_now
-            exit_fee_cents = fee_cents_for_notional(payout_cents, fee_bps_used)
-            net_payout_cents = max(0, payout_cents - exit_fee_cents)
-            pnl = net_payout_cents - amount
-        ex["settlement_exit_fee_cents"] = exit_fee_cents
-        ex["settlement_net_payout_cents"] = net_payout_cents
-        ex["paper_fee_model"] = fee_model
-        await engine.store.update_trade_settlement(int(t["id"]), result, int(pnl), iso(now), extra_json=json.dumps(ex))
-        settled_n += 1
+                try:
+                    fee_bps_used = float(ex.get("paper_fee_bps", fee_bps_now))
+                except (TypeError, ValueError):
+                    fee_bps_used = fee_bps_now
+                exit_fee_cents = fee_cents_for_notional(payout_cents, fee_bps_used)
+                net_payout_cents = max(0, payout_cents - exit_fee_cents)
+                pnl = net_payout_cents - amount
+            ex["settlement_exit_fee_cents"] = exit_fee_cents
+            ex["settlement_net_payout_cents"] = net_payout_cents
+            ex["paper_fee_model"] = fee_model
+            await engine.store.update_trade_settlement(tid, result, int(pnl), iso(now), extra_json=json.dumps(ex))
+            settled_n += 1
+        except Exception as e:
+            tk = str(t.get("ticker") or "")[:32]
+            _engine_trace_note(engine, f"settle {engine.branch}: {tk}… row err {str(e)[:120]}")
+            continue
     return settled_n
 
 
