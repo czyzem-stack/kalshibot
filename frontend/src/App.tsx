@@ -15,6 +15,11 @@ import {
   Legend,
   Line,
   LineChart,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar,
+  RadarChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -186,10 +191,11 @@ function LabThoughtsStrip({ thoughts }: { thoughts: AnyObj | undefined }) {
 function formatOptimizerNotifBody(h: AnyObj): string {
   const parts: string[] = [];
   if (h?.summary) parts.push(String(h.summary));
+  if (h?.tick_hint) parts.push(`Next tick: ${String(h.tick_hint)}`);
   if (h?.reason) parts.push(`Reason: ${String(h.reason)}`);
   const before = h?.before;
   const after = h?.after;
-  if (before && after && typeof before === "object" && typeof after === "object") {
+  if (before != null && after != null && typeof before === "object" && typeof after === "object") {
     const keys = new Set([...Object.keys(before as AnyObj), ...Object.keys(after as AnyObj)]);
     for (const k of keys) {
       const vb = (before as AnyObj)[k];
@@ -202,98 +208,193 @@ function formatOptimizerNotifBody(h: AnyObj): string {
   return parts.join("\n").slice(0, 1400);
 }
 
-function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }) {
-  const floorSeries = useMemo(() => {
-    const ch = Array.isArray(activity?.change_history) ? (activity!.change_history as AnyObj[]) : [];
-    const asc = [...ch].reverse();
-    const pts: { t: string; floor: number }[] = [];
-    for (const h of asc) {
-      const after = h?.after;
-      if (!after || typeof after !== "object") continue;
-      const fl = Number((after as AnyObj).yes_floor_pct);
-      if (!Number.isFinite(fl)) continue;
-      pts.push({
-        t: fmtIsoLocal(String(h.created_at || ""), false),
-        floor: fl,
-      });
+/** Backend ``optimizer_activity.radar`` → Recharts rows (one row per axis, all branches). */
+/** Draw order: back → front so Lab A sits on top. */
+const BRANCH_RADAR_LAYERS: { dataKey: string; label: string; stroke: string; fill: string; fillOpacity: number; strokeWidth: number }[] = [
+  { dataKey: "live", label: "Live", stroke: "#3b82f6", fill: "#3b82f6", fillOpacity: 0.06, strokeWidth: 1 },
+  { dataKey: "lab_b", label: "Lab B", stroke: "#f97316", fill: "#f97316", fillOpacity: 0.07, strokeWidth: 1.05 },
+  { dataKey: "lab_c", label: "Lab C", stroke: "#ec4899", fill: "#ec4899", fillOpacity: 0.078, strokeWidth: 1.1 },
+  { dataKey: "lab_a", label: "Lab A", stroke: "#a855f7", fill: "#a855f7", fillOpacity: 0.1, strokeWidth: 1.35 },
+];
+
+const BRANCH_RADAR_LEGEND = [BRANCH_RADAR_LAYERS[0], BRANCH_RADAR_LAYERS[3], BRANCH_RADAR_LAYERS[1], BRANCH_RADAR_LAYERS[2]];
+
+function buildBranchRadarRows(radar: AnyObj | null | undefined): AnyObj[] {
+  if (!radar || typeof radar !== "object") return [];
+  const axes = Array.isArray(radar.axes) ? (radar.axes as AnyObj[]) : [];
+  const norm = (radar.profiles_norm || {}) as AnyObj;
+  const raw = (radar.profiles_raw || {}) as AnyObj;
+  const focus = (radar.axis_focus || {}) as AnyObj;
+  return axes.map((ax) => {
+    const k = String(ax.key);
+    const row: AnyObj = {
+      subject: String(ax.label),
+      axisKey: k,
+      focus: Number(focus[k]) || 0,
+    };
+    for (const br of ["live", "lab_a", "lab_b", "lab_c"]) {
+      row[br] = Number((norm[br] as AnyObj)?.[k]) || 0;
+      row[`${br}_raw`] = (raw[br] as AnyObj)?.[k];
     }
-    return pts;
-  }, [activity]);
+    return row;
+  });
+}
 
-  const runSeries = useMemo(() => {
-    const runs = Array.isArray(activity?.runs) ? (activity!.runs as AnyObj[]) : [];
-    const asc = [...runs].reverse();
-    return asc.map((r) => ({
-      t: fmtIsoLocal(String(r.created_at || ""), false),
-      n: Number(r.n_recommendations) || 0,
-      summary: String(r.summary || "").slice(0, 120),
-    }));
-  }, [activity]);
+function fmtRadarAxisRaw(axisKey: string, value: unknown): string {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  if (axisKey === "bet_frac") return `${(n * 100).toFixed(2)}%`;
+  if (axisKey === "bank_log") return `${n.toFixed(2)} (log10 cents)`;
+  if (axisKey === "fee_mult") return `${n.toFixed(2)}×`;
+  if (axisKey.startsWith("opt_")) return String(Math.round(n));
+  if (axisKey === "window_min" || axisKey === "poll_sec" || axisKey === "min_contracts" || axisKey === "fee_bps") return String(Math.round(n));
+  if (axisKey === "rule_min_m") return `${n.toFixed(1)} min`;
+  if (axisKey === "yes_floor" || axisKey === "no_bet_cut" || axisKey === "dev_yes_pct" || axisKey === "swing_drop") {
+    const r = Math.round(n);
+    return axisKey === "dev_yes_pct" && r === 0 ? "off" : `${r}%`;
+  }
+  const r = Math.round(n * 10) / 10;
+  return Number.isInteger(r) ? String(r) : String(r);
+}
 
-  if (!floorSeries.length && !runSeries.length) {
+function OptimizerBranchRadarTooltip(props: AnyObj) {
+  const { active, payload } = props;
+  if (!active || !payload?.length) return null;
+  const p = payload[0]?.payload as AnyObj | undefined;
+  if (!p) return null;
+  const ak = String(p.axisKey || "");
+  const f = Number(p.focus) || 0;
+  return (
+    <div
+      style={{
+        background: "#0b1228",
+        border: "1px solid #243055",
+        borderRadius: 8,
+        padding: "8px 10px",
+        fontSize: 11,
+        maxWidth: 300,
+        color: "#e2e8f0",
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>{String(p.subject)}</div>
+      {f > 0.08 ? (
+        <div style={{ fontSize: 10, color: "#fde047", marginBottom: 6 }} title="Recent optimizer / pulse activity weighted this spoke">
+          Pulse focus: {(f * 100).toFixed(0)}%
+        </div>
+      ) : null}
+      {BRANCH_RADAR_LAYERS.map(({ dataKey, label, stroke }) => (
+        <div key={dataKey} style={{ marginTop: 2 }}>
+          <span style={{ color: stroke, fontWeight: 600 }}>{label}:</span> {fmtRadarAxisRaw(ak, p[`${dataKey}_raw`])}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OptimizerRadarAngleTick(rows: AnyObj[]) {
+  return (tickProps: AnyObj) => {
+    const { x, y, payload, textAnchor, index } = tickProps;
+    const row = rows[index] as AnyObj | undefined;
+    const f = row ? Number(row.focus) || 0 : 0;
+    const fill = f > 0.55 ? "#fef08a" : f > 0.28 ? "#cbd5f5" : "#7c86b8";
+    const fontWeight = f > 0.45 ? 700 : f > 0.18 ? 600 : 400;
+    const fs = f > 0.35 ? 9 : 8;
     return (
-      <section className="dash-section optimizer-activity" aria-labelledby="dash-heading-opt-act">
+      <text x={x} y={y} textAnchor={textAnchor} fill={fill} fontSize={fs} fontWeight={fontWeight} dominantBaseline="central">
+        {String(payload?.value ?? "")}
+      </text>
+    );
+  };
+}
+
+function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }) {
+  const ch = Array.isArray(activity?.change_history) ? (activity!.change_history as AnyObj[]) : [];
+  const preview = String(activity?.next_tick_preview || "").trim();
+  const pulseTrace = Array.isArray(activity?.pulse_trace) ? (activity!.pulse_trace as AnyObj[]) : [];
+  const radarPayload = activity?.radar && typeof activity.radar === "object" ? (activity.radar as AnyObj) : null;
+  const rows = useMemo(() => buildBranchRadarRows(radarPayload), [radarPayload]);
+  const angleTick = useMemo(() => OptimizerRadarAngleTick(rows), [rows]);
+
+  const hasPulseContent = Boolean(rows.length || preview || pulseTrace.length || ch.length);
+
+  if (!hasPulseContent) {
+    return (
+      <section className="dash-section optimizer-activity optimizer-pulse-wrap" aria-labelledby="dash-heading-opt-act">
         <h2 id="dash-heading-opt-act" className="dash-section__title">
-          Optimizer activity
+          Optimizer radar
         </h2>
         <div className="dash-section__legend">
-          <p>No optimizer runs or threshold changes recorded yet. Enable the scheduler and wait for a cycle, or press Run once in the Optimizer panel.</p>
+          <p>
+            No optimizer snapshot yet. Turn on <strong>Adaptive</strong> in optimizer settings (Claude scheduler optional), run
+            Lab A paper trades, then wait for the interval or use <strong>Run once</strong>.
+          </p>
         </div>
       </section>
     );
   }
 
   return (
-    <section className="dash-section optimizer-activity" aria-labelledby="dash-heading-opt-act">
+    <section className="dash-section optimizer-activity optimizer-pulse-wrap" aria-labelledby="dash-heading-opt-act">
       <h2 id="dash-heading-opt-act" className="dash-section__title">
-        Optimizer activity
+        Optimizer radar
       </h2>
-      <div className="dash-section__legend">
-        <p>
-          <strong>Line</strong>: Lab A YES floor % after each adaptive / persisted threshold change (from change
-          history).
-        </p>
-        <p style={{ marginTop: 8 }}>
-          <strong>Bars</strong>: each Claude run — height = count of structured recommendations in that run (not all
-          become bet-size edits).
-        </p>
+      {preview ? (
+        <div className="optimizer-pulse-preview" title="What the internal engine will evaluate on the next scheduled tick">
+          <strong>Next tick:</strong> {preview}
+        </div>
+      ) : null}
+      {pulseTrace.length ? (
+        <div className="optimizer-pulse-trace" aria-label="Recent pulse events">
+          {pulseTrace.slice(0, 4).map((p, idx) => (
+            <span key={String(p.change_id || p.at || idx)} className="optimizer-pulse-trace__chip" title={String(p.message || "")}>
+              {String(p.kind || "pulse")}: {String(p.message || "").slice(0, 72)}
+              {String(p.message || "").length > 72 ? "…" : ""}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div
+        className="dash-section__legend optimizer-pulse-legend optimizer-pulse-legend--branches"
+        title="Four overlays: effective trading config per branch (live base vs lab overlays). Brighter spoke labels = recent optimizer / pulse attention on that dimension."
+      >
+        {BRANCH_RADAR_LEGEND.map(({ dataKey, label, stroke }) => (
+          <span key={dataKey} className="optimizer-pulse-legend__item">
+            <span className="optimizer-pulse-legend__swatch" style={{ background: stroke }} /> {label}
+          </span>
+        ))}
       </div>
-      <div className="optimizer-activity-charts">
-        {floorSeries.length ? (
-          <div className="optimizer-activity-chart" title="Lab A YES floor over time">
-            <div className="optimizer-activity-chart__label">Lab A YES floor (%)</div>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={floorSeries} margin={{ left: 6, right: 10, top: 8, bottom: 28 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                <YAxis stroke="#7f8ab5" tick={{ fontSize: 10 }} domain={["auto", "auto"]} />
-                <Tooltip
-                  contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
-                  formatter={(v: number) => [`${v}%`, "Floor"]}
+      {rows.length ? (
+        <div
+          className="optimizer-activity-chart optimizer-pulse-radar optimizer-pulse-radar--multi"
+          title="Each branch is its own color. Optimizer + pulse history brighten the spokes the system is currently leaning on."
+        >
+          <ResponsiveContainer width="100%" height={268}>
+            <RadarChart cx="50%" cy="51%" outerRadius="74%" data={rows} margin={{ top: 8, right: 20, bottom: 10, left: 20 }}>
+              <PolarGrid stroke="#223056" radialLines strokeOpacity={0.88} />
+              <PolarAngleAxis dataKey="subject" tick={angleTick} tickLine={false} />
+              <PolarRadiusAxis angle={90} domain={[0, 100]} tick={false} axisLine={false} />
+              <Tooltip content={(tp: AnyObj) => <OptimizerBranchRadarTooltip {...tp} />} />
+              {BRANCH_RADAR_LAYERS.map(({ dataKey, stroke, fill, fillOpacity, strokeWidth }) => (
+                <Radar
+                  key={dataKey}
+                  name={dataKey}
+                  dataKey={dataKey}
+                  stroke={stroke}
+                  strokeWidth={strokeWidth}
+                  fill={fill}
+                  fillOpacity={fillOpacity}
+                  isAnimationActive={false}
                 />
-                <Line type="stepAfter" dataKey="floor" name="YES floor %" stroke="#a78bfa" strokeWidth={2} dot />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        ) : null}
-        {runSeries.length ? (
-          <div className="optimizer-activity-chart" title="Claude optimizer runs">
-            <div className="optimizer-activity-chart__label">Claude runs (recommendation count)</div>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={runSeries} margin={{ left: 6, right: 10, top: 8, bottom: 28 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                <YAxis stroke="#7f8ab5" tick={{ fontSize: 10 }} allowDecimals={false} />
-                <Tooltip
-                  contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
-                  formatter={(v: number) => [String(v), "Recommendations"]}
-                />
-                <Bar dataKey="n" name="Count" fill="#38bdf8" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        ) : null}
-      </div>
+              ))}
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <p className="sub" style={{ marginLeft: 4, fontSize: 12 }}>
+          Radar payload missing — update the backend and refresh the dashboard.
+        </p>
+      )}
     </section>
   );
 }
@@ -692,20 +793,32 @@ function summarizePositionRows(rows: unknown): { text: string; title: string } {
   const rawTitle = summarizePositionRowsRaw(deduped);
   const byTicker = new Map<string, { qty: number; n: number }>();
   for (const r of deduped) {
-    const t = String(r.ticker || "").trim();
-    if (!t) continue;
+    const tKey = String(r.ticker || "").trim().toUpperCase();
+    if (!tKey) continue;
     const q = _parsePositionQty(r);
-    const cur = byTicker.get(t) || { qty: 0, n: 0 };
+    const merged = Number((r as AnyObj).ticket_count);
+    const nInc = Number.isFinite(merged) && merged >= 1 ? merged : 1;
+    const cur = byTicker.get(tKey) || { qty: 0, n: 0 };
     cur.qty += q;
-    cur.n += 1;
-    byTicker.set(t, cur);
+    cur.n += nInc;
+    byTicker.set(tKey, cur);
   }
-  const parts = [...byTicker.entries()].map(([t, { qty, n }]) => {
-    const short = t.length > 40 ? `${t.slice(0, 37)}…` : t;
-    const ticketNote = n > 1 ? ` · ${n} open tickets` : "";
-    return `${short} (${_fmtPositionQty(qty)}${ticketNote})`;
-  });
-  return { text: parts.join("; "), title: rawTitle };
+  const parts = [...byTicker.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([tKey, { qty, n }]) => {
+      const short = tKey.length > 40 ? `${tKey.slice(0, 37)}…` : tKey;
+      const ticketNote = n > 1 ? ` · ${n} open tickets` : "";
+      return `${short} (${_fmtPositionQty(qty)}${ticketNote})`;
+    });
+  const detailJoined = parts.join("; ");
+  const nMkts = byTicker.size;
+  if (nMkts > 1) {
+    const totalQty = [...byTicker.values()].reduce((acc, v) => acc + v.qty, 0);
+    const summary = `${nMkts} markets · ${_fmtPositionQty(totalQty)} contracts (hover for each ticker)`;
+    const titleBody = [rawTitle, detailJoined].filter(Boolean).join("\n\n");
+    return { text: summary, title: titleBody || detailJoined };
+  }
+  return { text: detailJoined, title: rawTitle };
 }
 
 /** Open rows for the Assets-to-watch branch tab only (avoids Lab exposure highlighting on Live tab, etc.). */
@@ -1495,8 +1608,10 @@ export default function App() {
     const byId = new Map<string, AnyObj>();
     for (const row of [...fromPanel, ...fromActivity, ...fromDash]) {
       if (!row || typeof row !== "object") continue;
-      const id = String((row as AnyObj).id || "").trim();
-      if (!id) continue;
+      let id = String((row as AnyObj).id || "").trim();
+      if (!id) {
+        id = `legacy-${String((row as AnyObj).created_at || "").slice(0, 24)}-${byId.size}`;
+      }
       if (!byId.has(id)) byId.set(id, row as AnyObj);
     }
     const merged = Array.from(byId.values());
@@ -2867,8 +2982,8 @@ export default function App() {
                   <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
                   identifier starts with that asset&apos;s <code>series_ticker</code>.{" "}
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for that series per branch.{" "}
-                  Sim cells merge the same ticker into one line (total contracts + ticket count); hover for each open
-                  row. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
+                  Sim cells merge the same market ticker (case-insensitive); multiple different contracts in the series
+                  show one summary line with combined size — hover for per-ticker detail. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
                   positions and/or the bot has open sim trades for that asset&apos;s <code>series_ticker</code> prefix.
                   Symbols with tighter books tend to fill first; others stay &quot;—&quot; until the same is true, or
                   appear under <strong>Recent trades</strong> after sim fills.
@@ -2877,9 +2992,9 @@ export default function App() {
                 <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
                   <code>series_ticker</code>. The Kalshi column is omitted because the account is not linked; empty cells
-                  here are not evidence that you have no positions on the exchange. Each DB row is one open ticket — the
-                  table <strong>merges the same ticker</strong> into one total size and shows{" "}
-                  <strong>open tickets</strong> when there are multiple; hover a cell for the raw list.
+                  here are not evidence that you have no positions on the exchange.                   Duplicate open rows for the <strong>same</strong> market ticker (any casing) are merged into one total
+                  size. Several <strong>different</strong> contracts in the same series show as one summary line; hover
+                  for each ticker and raw DB rows.
                 </p>
               )}
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">

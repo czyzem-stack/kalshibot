@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 BRANCH_LIVE = "live"
@@ -219,3 +220,223 @@ def resolve_kalshi_fee_multiplier(extra: dict[str, Any], full_cfg: dict[str, Any
         except (TypeError, ValueError):
             pass
     return kalshi_fee_multiplier_from_cfg(effective_trading_cfg_for_fees(full_cfg, branch))
+
+
+# --- Dashboard optimizer radar (per-branch overlays + focus spokes) ---
+
+RADAR_AXIS_DEF: list[dict[str, Any]] = [
+    {"key": "bet_frac", "label": "Bet / window", "lo": 0.0, "hi": 0.22},
+    {"key": "window_min", "label": "Window (min)", "lo": 5.0, "hi": 120.0},
+    {"key": "poll_sec", "label": "Poll (s)", "lo": 3.0, "hi": 120.0},
+    {"key": "yes_floor", "label": "YES floor (rules)", "lo": 35.0, "hi": 95.0},
+    {"key": "rule_min_m", "label": "Rule min min left", "lo": 0.0, "hi": 30.0},
+    {"key": "min_contracts", "label": "Min contracts", "lo": 1.0, "hi": 100.0},
+    {"key": "no_bet_cut", "label": "NO-bet below %", "lo": 0.0, "hi": 80.0},
+    {"key": "dev_yes_pct", "label": "Dev sim YES %", "lo": 0.0, "hi": 95.0},
+    {"key": "swing_drop", "label": "Swing exit %", "lo": 0.0, "hi": 60.0},
+    {"key": "fee_bps", "label": "Paper fee bps", "lo": 0.0, "hi": 100.0},
+    {"key": "fee_mult", "label": "Fee multiplier", "lo": 0.5, "hi": 2.5},
+    {"key": "bank_log", "label": "Bankroll (log10 ¢)", "lo": 4.0, "hi": 7.2},
+    {"key": "opt_loss", "label": "Loss streak #", "lo": 1.0, "hi": 12.0},
+    {"key": "opt_thresh", "label": "Threshold step %", "lo": 1.0, "hi": 5.0},
+    {"key": "opt_minute_step", "label": "Minute step", "lo": 1.0, "hi": 5.0},
+    {"key": "opt_min_tr", "label": "Min trades to tune", "lo": 2.0, "hi": 80.0},
+    {"key": "opt_regime_h", "label": "Regime lookback h", "lo": 1.0, "hi": 72.0},
+]
+
+RADAR_AXIS_KEYS: tuple[str, ...] = tuple(str(d["key"]) for d in RADAR_AXIS_DEF)
+
+
+def _safe_float_radar(raw: Any, default: float) -> float:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return v
+
+
+def _safe_int_radar(raw: Any, default: int) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _trading_radar_raw_from_merged(m: dict[str, Any]) -> dict[str, float]:
+    rules = m.get("rules") if isinstance(m.get("rules"), list) else []
+    yes_hi = 0.0
+    tight_min_m = 99.0
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("side") or "").lower() == "no":
+            continue
+        mp = _safe_float_radar(r.get("min_prob"), 0.0)
+        if mp <= 0:
+            continue
+        yes_hi = max(yes_hi, mp * 100.0)
+        mm = _safe_float_radar(r.get("min_minutes_left"), 0.0)
+        tight_min_m = min(tight_min_m, mm)
+    if tight_min_m >= 98.0:
+        tight_min_m = 0.0
+    bf = _safe_float_radar(m.get("balance_fraction_per_window"), 0.03)
+    wm = _safe_float_radar(m.get("window_minutes"), 12.0)
+    poll = _safe_float_radar(m.get("poll_seconds"), 8.0)
+    mc = _safe_float_radar(m.get("min_contracts"), 1.0)
+    raw_nb = m.get("no_bet_when_yes_below_pct")
+    nb = _safe_float_radar(raw_nb, 0.0) if raw_nb not in (None, "", False) else 0.0
+    raw_dev = m.get("dev_sim_yes_implied_ge_pct")
+    dev = _safe_float_radar(raw_dev, 0.0) if raw_dev not in (None, "", False) else 0.0
+    sw = _safe_float_radar(m.get("swing_exit_implied_drop_pct"), 0.0)
+    bps = _safe_float_radar(m.get("paper_fee_bps"), 0.0)
+    km = _safe_float_radar(m.get("kalshi_fee_multiplier"), 1.0)
+    try:
+        pbc = int(m.get("paper_balance_cents") or 0)
+    except (TypeError, ValueError):
+        pbc = 0
+
+    bank_log = math.log10(max(1, pbc))
+    return {
+        "bet_frac": bf,
+        "window_min": wm,
+        "poll_sec": poll,
+        "yes_floor": yes_hi,
+        "rule_min_m": tight_min_m,
+        "min_contracts": mc,
+        "no_bet_cut": nb,
+        "dev_yes_pct": dev,
+        "swing_drop": sw,
+        "fee_bps": bps,
+        "fee_mult": km,
+        "bank_log": bank_log,
+    }
+
+
+def _optimizer_radar_scalars(opt: dict[str, Any]) -> dict[str, float]:
+    return {
+        "opt_loss": float(max(1, min(12, _safe_int_radar(opt.get("loss_streak_trigger"), 3)))),
+        "opt_thresh": float(max(1, min(5, _safe_int_radar(opt.get("threshold_step_pct"), 2)))),
+        "opt_minute_step": float(max(1, min(5, _safe_int_radar(opt.get("minute_step"), 2)))),
+        "opt_min_tr": float(max(2, min(80, _safe_int_radar(opt.get("min_trades_for_optimize"), 8)))),
+        "opt_regime_h": float(max(1, min(72, _safe_int_radar(opt.get("regime_lookback_hours"), 4)))),
+    }
+
+
+def branch_radar_profile(full_cfg: dict[str, Any], branch: str, opt: dict[str, Any] | None) -> dict[str, float]:
+    """Numeric snapshot for one branch + shared optimizer slider scalars (same on every branch)."""
+    oc = opt if isinstance(opt, dict) else {}
+    if branch == BRANCH_LIVE:
+        merged = dict(full_cfg)
+    else:
+        merged = pulse_effective_config(full_cfg, branch)
+    tr = _trading_radar_raw_from_merged(merged)
+    tr.update(_optimizer_radar_scalars(oc))
+    return tr
+
+
+def _norm_axis(lo: float, hi: float, v: float) -> float:
+    if hi <= lo:
+        return 0.0
+    return max(0.0, min(100.0, (float(v) - lo) / (hi - lo) * 100.0))
+
+
+def radar_norm_profile(raw: dict[str, float]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for ax in RADAR_AXIS_DEF:
+        k = str(ax["key"])
+        lo = float(ax["lo"])
+        hi = float(ax["hi"])
+        out[k] = _norm_axis(lo, hi, float(raw.get(k) or 0.0))
+    return out
+
+
+def radar_focus_from_history(
+    change_history: list[Any],
+    *,
+    pulse_trace: list[Any] | None = None,
+    n_recent: int = 20,
+) -> dict[str, float]:
+    """0–1 weights per axis: recent optimizer / pulse edits bias which spoke the UI highlights."""
+    from collections import defaultdict
+
+    scores: dict[str, float] = defaultdict(float)
+    slice_h = change_history[-n_recent:] if len(change_history) > n_recent else list(change_history)
+    w = 1.0
+    for h in reversed(slice_h):
+        if not isinstance(h, dict):
+            continue
+        bef = h.get("before") if isinstance(h.get("before"), dict) else {}
+        aft = h.get("after") if isinstance(h.get("after"), dict) else {}
+
+        def changed(kb: str) -> bool:
+            return bef.get(kb) != aft.get(kb) and (aft.get(kb) is not None or bef.get(kb) is not None)
+
+        if changed("yes_floor_pct"):
+            scores["yes_floor"] += w
+        if changed("min_minutes_left"):
+            scores["rule_min_m"] += w
+        if changed("balance_fraction_per_window"):
+            scores["bet_frac"] += w
+        if changed("lab_b_yes_floor_pct") or changed("lab_c_yes_floor_pct"):
+            scores["yes_floor"] += w * 0.55
+        if changed("lab_b_balance_fraction") or changed("lab_c_balance_fraction"):
+            scores["bet_frac"] += w * 0.55
+        if changed("threshold_step_pct"):
+            scores["opt_thresh"] += w * 1.1
+        if changed("minute_step"):
+            scores["opt_minute_step"] += w * 1.1
+        if changed("loss_streak_trigger"):
+            scores["opt_loss"] += w * 1.1
+        if changed("min_trades_for_optimize"):
+            scores["opt_min_tr"] += w * 0.9
+        if changed("regime_lookback_hours"):
+            scores["opt_regime_h"] += w * 0.9
+        w *= 0.88
+
+    blob = ""
+    if isinstance(pulse_trace, list):
+        for p in pulse_trace[:8]:
+            if isinstance(p, dict):
+                blob += " " + str(p.get("message") or "").lower()
+    if "floor" in blob or "threshold" in blob or "yes" in blob:
+        scores["yes_floor"] += 0.4
+    if "fraction" in blob or "bet" in blob or "balance" in blob:
+        scores["bet_frac"] += 0.4
+    if "minute" in blob or "min " in blob:
+        scores["rule_min_m"] += 0.35
+    if "loss" in blob or "streak" in blob:
+        scores["opt_loss"] += 0.45
+    if "regime" in blob:
+        scores["opt_regime_h"] += 0.35
+
+    mx = max(scores.values()) if scores else 0.0
+    if mx <= 0:
+        return {k: 0.0 for k in RADAR_AXIS_KEYS}
+    return {k: min(1.0, float(scores.get(k, 0.0)) / mx) for k in RADAR_AXIS_KEYS}
+
+
+def build_optimizer_radar_payload(full_cfg: dict[str, Any], opt_blk: dict[str, Any]) -> dict[str, Any]:
+    """Dashboard ``optimizer_activity.radar``: per-branch normalized polygons + raw + focus."""
+    opt = opt_blk if isinstance(opt_blk, dict) else {}
+    ch = opt.get("change_history") if isinstance(opt.get("change_history"), list) else []
+    pt = opt.get("pulse_trace") if isinstance(opt.get("pulse_trace"), list) else []
+    profiles_raw: dict[str, dict[str, float]] = {}
+    profiles_norm: dict[str, dict[str, float]] = {}
+    for slug, br in (
+        ("live", BRANCH_LIVE),
+        ("lab_a", BRANCH_LAB_A),
+        ("lab_b", BRANCH_LAB_B),
+        ("lab_c", BRANCH_LAB_C),
+    ):
+        raw = branch_radar_profile(full_cfg, br, opt)
+        profiles_raw[slug] = raw
+        profiles_norm[slug] = radar_norm_profile(raw)
+    focus = radar_focus_from_history(ch, pulse_trace=pt)
+    return {
+        "axes": [{"key": d["key"], "label": d["label"], "lo": d["lo"], "hi": d["hi"]} for d in RADAR_AXIS_DEF],
+        "profiles_raw": profiles_raw,
+        "profiles_norm": profiles_norm,
+        "axis_focus": focus,
+    }

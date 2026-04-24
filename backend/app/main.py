@@ -17,14 +17,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .api_models import BotConfigPayload, merge_lab_branch_patch
-from .branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LIVE, merge_branch_config
+from .branch_config import (
+    BRANCH_LAB_A,
+    BRANCH_LAB_B,
+    BRANCH_LAB_C,
+    BRANCH_LIVE,
+    build_optimizer_radar_payload,
+    merge_branch_config,
+)
 from .engine import TradingEngine, compute_open_sim_mark_value_sum_cents, dual_engine_loop, exclude_subtitle_parts_from_cfg
 from .kalshi_client import KalshiClient
 from .kalshi_portfolio import fetch_portfolio_snapshot
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import Store, expand_partial_lab_branch
-from .optimizer_claude import run_optimizer_once
+from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
 from .settings_env import env, kalshi_credentials_report
 
 
@@ -82,8 +89,9 @@ async def _optimizer_loop(stop: asyncio.Event) -> None:
             cfg = await store.load_config()
             oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
             enabled = bool(oc.get("enabled"))
+            adaptive_on = bool(oc.get("adaptive_enabled", True))
             interval_m = max(5, min(24 * 60, int(oc.get("interval_minutes") or 20)))
-            if enabled:
+            if enabled or adaptive_on:
                 try:
                     await run_optimizer_once(store, force=False)
                 except Exception as e:
@@ -920,14 +928,19 @@ async def trades(limit: int = 200) -> list[dict[str, Any]]:
 
 
 def _position_rows_for_series(series_upper: str, kalshi_positions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    """Merge Kalshi portfolio rows that share the same normalized ticker under this series prefix."""
+    by_tick: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
     for p in kalshi_positions:
-        tick = str(p.get("ticker") or p.get("market_ticker") or "").upper()
-        if series_upper and tick.startswith(series_upper):
-            qty = p.get("position_fp")
-            if qty is None:
-                qty = p.get("position")
-            row: dict[str, Any] = {"ticker": p.get("ticker") or p.get("market_ticker"), "position": qty}
+        tick_raw = str(p.get("ticker") or p.get("market_ticker") or "").strip()
+        tick = tick_raw.upper()
+        if not (series_upper and tick.startswith(series_upper)):
+            continue
+        qty = p.get("position_fp")
+        if qty is None:
+            qty = p.get("position")
+        if tick not in by_tick:
+            row: dict[str, Any] = {"ticker": p.get("ticker") or p.get("market_ticker") or tick_raw, "position": qty}
             for k in (
                 "average_price_dollars",
                 "average_yes_price_dollars",
@@ -938,8 +951,18 @@ def _position_rows_for_series(series_upper: str, kalshi_positions: list[dict[str
             ):
                 if p.get(k) is not None and p.get(k) != "":
                     row[k] = p.get(k)
-            rows.append(row)
-    return rows[:16]
+            by_tick[tick] = row
+            order.append(tick)
+            continue
+        agg = by_tick[tick]
+        try:
+            q0 = float(str(agg.get("position") or "0").replace(",", ""))
+            q1 = float(str(qty or "0").replace(",", ""))
+            agg["position"] = q0 + q1
+        except (TypeError, ValueError):
+            agg["position"] = qty
+        agg["ticket_count"] = int(agg.get("ticket_count") or 1) + 1
+    return [by_tick[k] for k in order[:16]]
 
 
 def _entry_yes_from_open_sim_trade(t: dict[str, Any]) -> float | None:
@@ -958,8 +981,25 @@ def _entry_yes_from_open_sim_trade(t: dict[str, Any]) -> float | None:
 def _open_sim_rows_for_series(
     series_upper: str, trades: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    """
+    One row per **normalized** market ticker under this series prefix: duplicate SQLite open rows for the same
+    contract are merged (sum ``contracts_fp``, ``ticket_count`` for the holdings tooltip).
+    """
     seen_ids: set[int] = set()
+    by_tick: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    def _fp_sum(a: Any, b: Any) -> str:
+        try:
+            x = float(str(a or "0").replace(",", ""))
+            y = float(str(b or "0").replace(",", ""))
+            s = x + y
+            if abs(s - round(s)) < 1e-6:
+                return str(int(round(s)))
+            return f"{s:.2f}"
+        except (TypeError, ValueError):
+            return str(a or b or "0")
+
     for t in trades:
         tid = t.get("id")
         if tid is not None:
@@ -971,20 +1011,27 @@ def _open_sim_rows_for_series(
                 if ii in seen_ids:
                     continue
                 seen_ids.add(ii)
-        tick = str(t.get("ticker") or "").upper()
-        if series_upper and tick.startswith(series_upper):
-            entry = _entry_yes_from_open_sim_trade(t)
-            rows.append(
-                {
-                    "id": t.get("id"),
-                    "ticker": t.get("ticker"),
-                    "contracts_fp": t.get("contracts_fp"),
-                    "status": t.get("status"),
-                    "side": str(t.get("side") or "yes").strip().lower(),
-                    "entry_yes_dollars": entry,
-                }
-            )
-    return rows[:16]
+        tick_raw = str(t.get("ticker") or "").strip()
+        tick_up = tick_raw.upper()
+        if not (series_upper and tick_up.startswith(series_upper)):
+            continue
+        entry = _entry_yes_from_open_sim_trade(t)
+        if tick_up not in by_tick:
+            by_tick[tick_up] = {
+                "id": t.get("id"),
+                "ticker": tick_raw or tick_up,
+                "contracts_fp": str(t.get("contracts_fp") or "0"),
+                "status": t.get("status"),
+                "side": str(t.get("side") or "yes").strip().lower(),
+                "entry_yes_dollars": entry,
+                "ticket_count": 1,
+            }
+            order.append(tick_up)
+            continue
+        agg = by_tick[tick_up]
+        agg["contracts_fp"] = _fp_sum(agg.get("contracts_fp"), t.get("contracts_fp"))
+        agg["ticket_count"] = int(agg.get("ticket_count") or 1) + 1
+    return [by_tick[k] for k in order[:16]]
 
 
 def _position_by_asset(
@@ -1186,9 +1233,12 @@ async def dashboard() -> dict[str, Any]:
         for x in ch_raw[:50]:
             if not isinstance(x, dict):
                 continue
+            rid = x.get("id")
+            if not rid:
+                rid = f"legacy-{str(x.get('created_at') or '')[:24]}-{len(ch_slim)}"
             ch_slim.append(
                 {
-                    "id": x.get("id"),
+                    "id": rid,
                     "created_at": x.get("created_at"),
                     "lab_label": x.get("lab_label"),
                     "style": x.get("style"),
@@ -1196,6 +1246,7 @@ async def dashboard() -> dict[str, Any]:
                     "summary": x.get("summary"),
                     "before": x.get("before"),
                     "after": x.get("after"),
+                    "tick_hint": x.get("tick_hint"),
                 }
             )
     runs_raw = await store.recent_optimizer_recommendations(limit=40)
@@ -1321,7 +1372,18 @@ async def dashboard() -> dict[str, Any]:
             lab_b_engine_on=lab_b_engine_on,
             lab_c_engine_on=lab_c_engine_on,
         ),
-        "optimizer_activity": {"change_history": ch_slim, "runs": runs_slim},
+        "optimizer_activity": {
+            "change_history": ch_slim,
+            "runs": runs_slim,
+            "pulse_chart_seed": pulse_chart_baseline(cfg, opt_blk),
+            "radar": build_optimizer_radar_payload(cfg, opt_blk),
+            "next_tick_preview": str(opt_blk.get("next_tick_preview") or "")[:900],
+            "pulse_trace": [
+                {k: p.get(k) for k in ("at", "kind", "message", "change_id")}
+                for p in (opt_blk.get("pulse_trace") or [])
+                if isinstance(p, dict)
+            ][:14],
+        },
     }
 
 

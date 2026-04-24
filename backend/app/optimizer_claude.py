@@ -9,6 +9,8 @@ from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
+    MAX_BALANCE_FRACTION_PER_WINDOW,
+    MIN_BALANCE_FRACTION_PER_WINDOW,
     _lab_key_for_branch,
     clamp_balance_fraction_per_window,
 )
@@ -63,6 +65,8 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("regime_lookback_hours", 4)
     out.setdefault("backtest_proposals", True)
     out.setdefault("change_history", [])
+    out.setdefault("pulse_trace", [])
+    out.setdefault("next_tick_preview", "")
     return out
 
 
@@ -417,9 +421,28 @@ def _apply_rule_thresholds(rules: list[dict[str, Any]], *, yes_floor_pct: int, m
     return out
 
 
-def _history_item(*, at_iso: str, branch: str, style: str, reason: str, before_floor: int, after_floor: int, before_minm: int, after_minm: int) -> dict[str, Any]:
+def _history_item(
+    *,
+    at_iso: str,
+    branch: str,
+    style: str,
+    reason: str,
+    before_floor: int,
+    after_floor: int,
+    before_minm: int,
+    after_minm: int,
+    before_extra: dict[str, Any] | None = None,
+    after_extra: dict[str, Any] | None = None,
+    tick_hint: str | None = None,
+) -> dict[str, Any]:
     lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B" if branch == BRANCH_LAB_B else "Lab C"
-    return {
+    before: dict[str, Any] = {"yes_floor_pct": before_floor, "min_minutes_left": before_minm}
+    after: dict[str, Any] = {"yes_floor_pct": after_floor, "min_minutes_left": after_minm}
+    if before_extra:
+        before.update(before_extra)
+    if after_extra:
+        after.update(after_extra)
+    out: dict[str, Any] = {
         "id": uuid4().hex,
         "created_at": at_iso,
         "branch": branch,
@@ -427,9 +450,109 @@ def _history_item(*, at_iso: str, branch: str, style: str, reason: str, before_f
         "style": style,
         "reason": reason,
         "summary": f"{lab} {style}: YES floor {before_floor}% -> {after_floor}%, min minutes {before_minm} -> {after_minm}",
-        "before": {"yes_floor_pct": before_floor, "min_minutes_left": before_minm},
-        "after": {"yes_floor_pct": after_floor, "min_minutes_left": after_minm},
+        "before": before,
+        "after": after,
     }
+    if tick_hint:
+        out["tick_hint"] = tick_hint
+    return out
+
+
+def _count_losses_at_or_above_yes_floor(
+    settled: list[dict[str, Any]],
+    sig_idx: dict[str, dict[str, Any]],
+    *,
+    yes_floor_pct: int,
+    max_rows: int = 80,
+) -> int:
+    """Count recent losing settled trades whose entry implied YES was at/above the configured floor (0–100)."""
+    thr = max(1, min(99, int(yes_floor_pct))) / 100.0
+    losses_at_threshold = 0
+    for t in settled[:max_rows]:
+        pnl = _safe_int(t.get("pnl_cents"), 0)
+        if pnl >= 0:
+            continue
+        ex: dict[str, Any]
+        try:
+            ex = json.loads(str(t.get("extra_json") or "{}"))
+        except Exception:
+            ex = {}
+        p = _safe_float(ex.get("entry_implied_yes"), -1.0)
+        if p < 0:
+            s = sig_idx.get(str(t.get("ticker") or ""))
+            p = _safe_float((s or {}).get("implied_prob"), -1.0)
+        if p >= thr:
+            losses_at_threshold += 1
+    return losses_at_threshold
+
+
+def _merge_pulse_trace(oc: dict[str, Any], changes: list[dict[str, Any]]) -> None:
+    pt = oc.get("pulse_trace")
+    old_pt = pt if isinstance(pt, list) else []
+    new_rows: list[dict[str, Any]] = []
+    for ch in changes:
+        new_rows.append(
+            {
+                "at": ch.get("created_at"),
+                "kind": str(ch.get("style") or "change"),
+                "message": str(ch.get("summary") or ch.get("reason") or "")[:400],
+                "change_id": ch.get("id"),
+            }
+        )
+    oc["pulse_trace"] = [*new_rows, *old_pt][:40]
+
+
+def _optimizer_pulse_bc_enrichment(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
+    """Extra ``after`` keys so the dashboard pulse chart can plot Lab B/C reference floors and bet fractions."""
+    def gfrac(lk: str) -> float:
+        lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
+        try:
+            return float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        except (TypeError, ValueError):
+            return 0.03
+
+    return {
+        "lab_b_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_b_yes_floor_pct"), 55))),
+        "lab_c_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_c_yes_floor_pct"), 52))),
+        "lab_b_balance_fraction": round(gfrac("lab_b"), 4),
+        "lab_c_balance_fraction": round(gfrac("lab_c"), 4),
+    }
+
+
+def pulse_chart_baseline(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
+    """Current Lab A YES floor + bet fraction and Lab B/C reference values (same keys as pulse change_history ``after``)."""
+    lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
+    try:
+        bf_a = float(lab_a.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        bf_a = 0.03
+    bc = _optimizer_pulse_bc_enrichment(cfg, oc)
+    return {
+        "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
+        "balance_fraction_per_window": round(bf_a, 4),
+        **bc,
+        "loss_streak_trigger": max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 3))),
+        "threshold_step_pct": max(1, min(5, _safe_int(oc.get("threshold_step_pct"), 2))),
+        "minute_step": max(1, min(5, _safe_int(oc.get("minute_step"), 2))),
+        "lab_a_min_minutes_left": max(0, min(30, _safe_int(oc.get("lab_a_min_minutes_left"), 5))),
+    }
+
+
+def _set_next_tick_preview(oc: dict[str, Any], cfg: dict[str, Any], *, lab_settled_n: int, profitable_n: int) -> None:
+    lab = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
+    floor = max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57)))
+    trig = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 3)))
+    try:
+        frac = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        frac = 0.03
+    sched = bool(oc.get("enabled"))
+    adapt = bool(oc.get("adaptive_enabled", True))
+    oc["next_tick_preview"] = (
+        f"Next tick: Lab A has {lab_settled_n} settled (≥{profitable_n} wins in guard window). "
+        f"Internal pulse watches up to {trig} losses entered near ≥{floor}% implied YES—tighten rules when replay-PnL improves. "
+        f"Bet fraction is ~{frac:.2%}/window. Adaptive={'on' if adapt else 'off'}, Claude scheduler={'on' if sched else 'off'}."
+    )[:900]
 
 
 def _apply_adaptive_lab_tuning(
@@ -465,28 +588,18 @@ def _apply_adaptive_lab_tuning(
     loss_trigger = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 1)))
     style = _branch_style(oc, branch)
 
-    losses_at_threshold = 0
-    for t in settled[:80]:
-        pnl = _safe_int(t.get("pnl_cents"), 0)
-        if pnl >= 0:
-            continue
-        ex: dict[str, Any]
-        try:
-            ex = json.loads(str(t.get("extra_json") or "{}"))
-        except Exception:
-            ex = {}
-        p = _safe_float(ex.get("entry_implied_yes"), -1.0)
-        if p < 0:
-            s = sig_idx.get(str(t.get("ticker") or ""))
-            p = _safe_float((s or {}).get("implied_prob"), -1.0)
-        if p >= (cur_floor / 100.0):
-            losses_at_threshold += 1
+    losses_at_threshold = _count_losses_at_or_above_yes_floor(settled, sig_idx, yes_floor_pct=cur_floor)
 
     if losses_at_threshold < loss_trigger:
         return None
 
     before_floor = cur_floor
     before_mins = cur_mins
+    lab_base0, _rules0 = _ensure_lab_rules(cfg, branch)
+    try:
+        bf0 = float(lab_base0.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        bf0 = 0.03
     if style == "conservative":
         cur_floor = min(95, cur_floor + step_pct)
         cur_mins = min(30, cur_mins + step_m)
@@ -525,6 +638,15 @@ def _apply_adaptive_lab_tuning(
     oc[floor_key] = cur_floor
     oc[mins_key] = cur_mins
     reason = f"{losses_at_threshold} losing settled trades at/above {before_floor}% YES threshold"
+    try:
+        bf1 = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        bf1 = bf0
+    hint = (
+        f"Loss streak vs {before_floor}% floor: rules tighten to YES floor {cur_floor}% and ≥{cur_mins}m left "
+        f"(backtest gate passed). Bet fraction unchanged at ~{bf1:.2%} unless a separate pulse moves it."
+    )
+    bc = _optimizer_pulse_bc_enrichment(cfg, oc)
     return _history_item(
         at_iso=at_iso,
         branch=branch,
@@ -534,7 +656,195 @@ def _apply_adaptive_lab_tuning(
         after_floor=cur_floor,
         before_minm=before_mins,
         after_minm=cur_mins,
+        before_extra={"balance_fraction_per_window": round(bf0, 4)},
+        after_extra={**bc, "balance_fraction_per_window": round(bf1, 4)},
+        tick_hint=hint[:500],
     )
+
+
+def _apply_adaptive_win_relax_lab_a(
+    *,
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    trades: list[dict[str, Any]],
+    signals: list[dict[str, Any]],
+    at_iso: str,
+) -> dict[str, Any] | None:
+    """When there are no threshold-tagged losses but short-run Lab A PnL is positive, ease YES floor if replay improves."""
+    if not bool(oc.get("adaptive_enabled", True)):
+        return None
+    if not bool(oc.get("lab_a_enabled", True)):
+        return None
+    settled = [t for t in trades if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
+    min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
+    if len(settled) < min_tr:
+        return None
+    profitable_n = sum(1 for t in settled if int(t.get("pnl_cents") or 0) > 0)
+    if profitable_n < min_prof:
+        return None
+
+    sig_idx = _index_signals_by_ticker(signals)
+    floor_key = "lab_a_yes_floor_pct"
+    mins_key = "lab_a_min_minutes_left"
+    cur_floor = max(1, min(99, _safe_int(oc.get(floor_key), 57)))
+    cur_mins = max(0, _safe_int(oc.get(mins_key), 5))
+    step_pct = max(1, min(5, _safe_int(oc.get("threshold_step_pct"), 1)))
+    step_m = max(1, min(5, _safe_int(oc.get("minute_step"), 1)))
+    loss_trigger = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 1)))
+    style = _branch_style(oc, BRANCH_LAB_A)
+
+    losses_at_threshold = _count_losses_at_or_above_yes_floor(settled, sig_idx, yes_floor_pct=cur_floor)
+    if losses_at_threshold > 0:
+        return None
+
+    tail = settled[:18]
+    if len(tail) < 8:
+        return None
+    mean_pnl = sum(int(t.get("pnl_cents") or 0) for t in tail) / max(1, len(tail))
+    if mean_pnl <= 0:
+        return None
+
+    before_floor = cur_floor
+    before_mins = cur_mins
+    lab_base, rules_base = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    try:
+        bf0 = float(lab_base.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        bf0 = 0.03
+
+    if style == "conservative":
+        return None
+    if style == "aggressive":
+        cur_floor = max(45, cur_floor - step_pct)
+        cur_mins = max(0, cur_mins - step_m)
+    else:
+        half_p = max(1, int(round(step_pct / 2)))
+        half_m = max(1, int(round(step_m / 2)))
+        cur_floor = max(45, cur_floor - half_p)
+        cur_mins = max(0, cur_mins - half_m)
+
+    if cur_floor == before_floor and cur_mins == before_mins:
+        return None
+
+    proposed_rules = _apply_rule_thresholds(
+        rules_base, yes_floor_pct=cur_floor, min_minutes_left=cur_mins, style=style
+    )
+    if bool(oc.get("backtest_proposals", True)):
+        sig_desc = _signals_sorted_desc(signals)
+        fee_flag = bool(oc.get("include_fees_in_score", True))
+        base_pnl, _, _ = _replay_pnl_under_rules(
+            settled, rules_base, sig_desc, include_fees_in_score=fee_flag
+        )
+        new_pnl, _, _ = _replay_pnl_under_rules(
+            settled, proposed_rules, sig_desc, include_fees_in_score=fee_flag
+        )
+        if new_pnl <= base_pnl and not bool(oc.get("adaptive_skip_backtest_gate", False)):
+            return None
+
+    lab = dict(lab_base)
+    lab["rules"] = proposed_rules
+    cfg["lab_a"] = lab
+    oc[floor_key] = cur_floor
+    oc[mins_key] = cur_mins
+    try:
+        bf1 = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        bf1 = bf0
+    reason = (
+        f"Win momentum (mean {mean_pnl:.0f}¢/trade over last {len(tail)}); no ≥{loss_trigger} losses at {before_floor}% floor"
+    )
+    hint = (
+        f"Regime shift (win path): eased YES floor {before_floor}%→{cur_floor}% after positive short-run PnL; "
+        f"next tick still watches for {loss_trigger} losses at the new floor before tightening again."
+    )
+    bc = _optimizer_pulse_bc_enrichment(cfg, oc)
+    return _history_item(
+        at_iso=at_iso,
+        branch=BRANCH_LAB_A,
+        style="win_relax",
+        reason=reason,
+        before_floor=before_floor,
+        after_floor=cur_floor,
+        before_minm=before_mins,
+        after_minm=cur_mins,
+        before_extra={"balance_fraction_per_window": round(bf0, 4)},
+        after_extra={**bc, "balance_fraction_per_window": round(bf1, 4)},
+        tick_hint=hint[:500],
+    )
+
+
+def _internal_lab_a_bet_pulse(
+    *,
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    tr_a: list[dict[str, Any]],
+    tr_b: list[dict[str, Any]],
+    tr_c: list[dict[str, Any]],
+    at_iso: str,
+) -> dict[str, Any] | None:
+    """Rule-based Lab A bet fraction nudge from settled sim PnL (no Claude; does not require lab.auto_optimize)."""
+    if not bool(oc.get("optimize_bet_size", True)):
+        return None
+    min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
+    min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
+    st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    if len(st_a) + len(st_b) + len(st_c) < min_tr:
+        return None
+    prof = (
+        sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_b if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0)
+    )
+    if prof < min_prof:
+        return None
+
+    lab_base, _rules = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    try:
+        old_f = float(lab_base.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        old_f = 0.03
+
+    window = st_a[:40]
+    if len(window) < 4:
+        return None
+    pnl = sum(int(t.get("pnl_cents") or 0) for t in window) / max(1, len(window))
+    step = 0.003
+    if pnl > 0:
+        new_f = min(MAX_BALANCE_FRACTION_PER_WINDOW, old_f + step)
+    elif pnl < 0:
+        new_f = max(MIN_BALANCE_FRACTION_PER_WINDOW, old_f - step)
+    else:
+        return None
+    new_f = round(float(new_f), 4)
+    if abs(new_f - old_f) < 0.0004:
+        return None
+
+    lab = dict(lab_base)
+    lab["balance_fraction_per_window"] = new_f
+    lab["optimizer_note"] = f"internal_pulse mean_pnl_cents={pnl:.1f} -> fraction={new_f}"
+    cfg["lab_a"] = lab
+    reason = f"internal pulse: Lab A last-{len(window)} settled mean {pnl:.0f}¢/trade"
+    hint = (
+        f"Next tick uses bet fraction ~{new_f:.2%} of Lab A paper per window (was ~{old_f:.2%}). "
+        f"Threshold rules unchanged unless the loss-streak adaptive fires."
+    )
+    bc = _optimizer_pulse_bc_enrichment(cfg, oc)
+    item = _history_bet_item(
+        at_iso=at_iso,
+        branch=BRANCH_LAB_A,
+        reason=reason,
+        before_f=old_f,
+        after_f=new_f,
+        after_extra={
+            **bc,
+            "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
+        },
+    )
+    item["tick_hint"] = hint[:500]
+    return item
 
 
 def _history_bet_item(
@@ -544,8 +854,12 @@ def _history_bet_item(
     reason: str,
     before_f: float,
     after_f: float,
+    after_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B" if branch == BRANCH_LAB_B else "Lab C"
+    after: dict[str, Any] = {"balance_fraction_per_window": after_f}
+    if after_extra:
+        after.update(after_extra)
     return {
         "id": uuid4().hex,
         "created_at": at_iso,
@@ -555,7 +869,7 @@ def _history_bet_item(
         "reason": reason,
         "summary": f"{lab}: balance_fraction_per_window {before_f:.4f} -> {after_f:.4f}",
         "before": {"balance_fraction_per_window": before_f},
-        "after": {"balance_fraction_per_window": after_f},
+        "after": after,
     }
 
 
@@ -612,6 +926,7 @@ def _apply_claude_bet_recommendations(
         lab["balance_fraction_per_window"] = round(new_f, 4)
         cfg["lab_a"] = lab
         br = BRANCH_LAB_A
+        bc = _optimizer_pulse_bc_enrichment(cfg, oc)
         out_hist.append(
             _history_bet_item(
                 at_iso=at_iso,
@@ -619,6 +934,10 @@ def _apply_claude_bet_recommendations(
                 reason=str(item.get("reason") or "claude_recommendation")[:500],
                 before_f=old_f,
                 after_f=new_f,
+                after_extra={
+                    **bc,
+                    "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
+                },
             )
         )
     return out_hist
@@ -682,7 +1001,9 @@ def _build_payload(
 async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, Any]:
     cfg = await store.load_config()
     oc = _norm_opt_cfg(_opt_cfg(cfg))
-    if not force and not bool(oc.get("enabled")):
+    sched = bool(oc.get("enabled"))
+    adaptive_on = bool(oc.get("adaptive_enabled", True))
+    if not force and not sched and not adaptive_on:
         return {"ok": False, "skipped": True, "reason": "optimizer_disabled"}
     lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
     max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
@@ -699,37 +1020,56 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
-    # Adaptive auto-correct: Lab A staging only (B/C stay fixed reference arms).
+    st_a_prev = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    prof_n = sum(1 for t in st_a_prev if int(t.get("pnl_cents") or 0) > 0)
+
+    # Internal pulse (no Claude): loss-streak threshold tuning, optional win-path easing, Lab A bet fraction nudge.
     changes: list[dict[str, Any]] = []
-    ca = _apply_adaptive_lab_tuning(
-        cfg=cfg, oc=oc, branch=BRANCH_LAB_A, trades=tr_a, signals=sg_a, at_iso=end_iso
-    )
-    if ca:
-        changes.append(ca)
+    if adaptive_on:
+        ca = _apply_adaptive_lab_tuning(
+            cfg=cfg, oc=oc, branch=BRANCH_LAB_A, trades=tr_a, signals=sg_a, at_iso=end_iso
+        )
+        if ca:
+            changes.append(ca)
+    if adaptive_on and not changes:
+        cw = _apply_adaptive_win_relax_lab_a(cfg=cfg, oc=oc, trades=tr_a, signals=sg_a, at_iso=end_iso)
+        if cw:
+            changes.append(cw)
+    bi = _internal_lab_a_bet_pulse(cfg=cfg, oc=oc, tr_a=tr_a, tr_b=tr_b, tr_c=tr_c, at_iso=end_iso)
+    if bi:
+        changes.append(bi)
+
+    _set_next_tick_preview(oc, cfg, lab_settled_n=len(st_a_prev), profitable_n=prof_n)
     if changes:
         hist = oc.get("change_history")
         old_hist = hist if isinstance(hist, list) else []
         lim = max(20, min(500, _safe_int(oc.get("max_history"), 120)))
         oc["change_history"] = [*changes, *old_hist][:lim]
         oc["last_change_at"] = end_iso
-        cfg["optimizer"] = oc
-        await store.save_config(cfg)
+        _merge_pulse_trace(oc, changes)
+    bet_frac_n = sum(1 for c in changes if str(c.get("style") or "") == "bet_size")
 
     key = env.anthropic_api_key.strip()
-    if not key:
+    if not sched or not key:
         oc["last_run_at"] = end_iso
-        oc["last_status"] = "ok_adaptive_only"
+        oc["last_status"] = "ok_internal_pulse" if changes else "ok_noop"
         oc["last_error"] = ""
         cfg["optimizer"] = oc
         await store.save_config(cfg)
         return {
             "ok": True,
             "adaptive_only": True,
+            "internal_only": True,
             "changes_applied": len(changes),
-            "bet_fraction_changes": 0,
+            "bet_fraction_changes": bet_frac_n,
             "window_start": start_iso,
             "window_end": end_iso,
         }
+
+    cfg["optimizer"] = oc
+    await store.save_config(cfg)
+    cfg = await store.load_config()
+    oc = _norm_opt_cfg(_opt_cfg(cfg))
 
     eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
     eq_b = await store.equity_series(limit=500, branch=BRANCH_LAB_B)
@@ -822,6 +1162,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         lim2 = max(20, min(500, _safe_int(oc.get("max_history"), 120)))
         oc["change_history"] = [*bet_hist, *old2][:lim2]
         oc["last_change_at"] = _iso(end)
+        _merge_pulse_trace(oc, bet_hist)
 
     oc["last_run_at"] = _iso(end)
     oc["last_status"] = "ok"
@@ -833,7 +1174,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "id": rid,
         "window_start": start_iso,
         "window_end": end_iso,
-        "changes_applied": len(changes),
+        "changes_applied": len(changes) + len(bet_hist),
         "bet_fraction_changes": len(bet_hist),
     }
 

@@ -822,6 +822,9 @@ export default function SettingsOverlay({
               <input id="opt_adaptive_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.adaptive_enabled ?? true)} disabled={busy} />
               <span>Enable adaptive threshold/time auto-correction</span>
             </label>
+            <div className="sub" style={{ margin: "-4px 0 8px 26px", fontSize: 11, lineHeight: 1.45, color: "var(--muted)" }}>
+              Internal pulse (loss-streak tighten, optional win-path ease, Lab A bet fraction) runs on the optimizer interval even when the Claude scheduler is off.
+            </div>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_lab_a_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.lab_a_enabled ?? true)} disabled={busy} />
               <span>Lab A staging (adaptive + bet applies here)</span>

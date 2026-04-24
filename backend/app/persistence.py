@@ -285,6 +285,8 @@ def default_bot_config() -> dict[str, Any]:
             "backtest_proposals": True,
             "adaptive_skip_backtest_gate": False,
             "change_history": [],
+            "pulse_trace": [],
+            "next_tick_preview": "",
             "last_run_at": None,
             "last_status": "",
             "last_error": "",
@@ -1040,8 +1042,14 @@ class Store:
                 raise ValueError(f"branch filter must be live, lab_a, lab_b, lab_c, or sim_lab (legacy) (got {branch!r})")
             where.append(_sql_branch_predicate(bn))
         if mode and table in {"signals", "trades", "equity_snapshots"}:
-            where.append("mode = ?")
-            params.append(mode)
+            m = str(mode).strip()
+            # Simulated rows historically used empty ``mode``; match engine rollups when filtering simulate.
+            if m == "simulate" and table in ("signals", "trades"):
+                where.append("(mode = ? OR COALESCE(mode, '') = '')")
+                params.append(m)
+            else:
+                where.append("mode = ?")
+                params.append(m)
         if ticker and table in {"signals", "trades"}:
             where.append("ticker LIKE ?")
             params.append(f"%{ticker}%")

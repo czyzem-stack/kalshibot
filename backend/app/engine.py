@@ -115,16 +115,28 @@ def has_tradable_yes_ask(ya: float | None) -> bool:
 
 def has_yes_book_for_rules(yb: float | None, ya: float | None, prob: float | None) -> bool:
     """
-    Enough YES bid/ask to evaluate YES-side rules and implied mid.
-    Listings often show yes_ask_dollars == 1.0 at the ceiling; implied mid from bid+ask is still meaningful.
+    Enough YES-side pricing to evaluate YES rules.
+
+    Kalshi **series list** rows often omit ``yes_bid_dollars`` while ``yes_ask_dollars`` is present; ``implied_yes_probability``
+    still returns a clamped ask in that case. Requiring both sides used to drop every such row before ``pick_trade_rule``,
+    so sim/live never fired despite a usable ask.
     """
-    if prob is None or yb is None or ya is None:
+    if prob is None or ya is None:
         return False
     try:
-        fb, fa = float(yb), float(ya)
+        fa = float(ya)
     except (TypeError, ValueError):
         return False
-    if not (0 < fb < 1) or not (0 < fa <= 1.0):
+    if not (0 < fa <= 1.0):
+        return False
+    # Ask-only book: good enough for rule geometry and simulated YES buys at the ask.
+    if yb is None:
+        return True
+    try:
+        fb = float(yb)
+    except (TypeError, ValueError):
+        return True
+    if not (0 < fb < 1):
         return False
     return fb <= fa + 1e-9
 
