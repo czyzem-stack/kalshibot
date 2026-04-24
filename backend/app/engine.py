@@ -478,10 +478,13 @@ class TradingEngine:
         self._tick_count: int = 0
         # One automatic branch wipe per error streak when lab auto-reset is enabled.
         self._paper_auto_reset_streak_handled: bool = False
-        # Legacy RAM cap (per contract close bucket); simulated orders also use SQLite ``has_open_sim_for_series_prefix``.
+        # Legacy RAM cap (per contract close bucket); sim also uses SQLite per-ticker open guard + budget-window cap.
         self._study_quarter_wid: str | None = None
         self._study_asset_fired: set[str] = set()
         self._study_cap_logged: set[str] = set()
+        # At most one new simulated entry per configured asset per balance ``window_id`` (stops many contracts
+        # in the same 15m series from each firing once in the same budget window).
+        self._sim_asset_budget_fired: set[str] = set()
 
 
 def _is_lab_branch(branch: str) -> bool:
@@ -502,6 +505,7 @@ async def tick_once(engine: TradingEngine) -> None:
     wid = window_id_for(now, window_minutes)
     if engine._last_window_id != wid:
         engine._seen_keys.clear()
+        engine._sim_asset_budget_fired.clear()
         engine._last_window_id = wid
 
     study_wid = window_id_for(now, STUDY_TRADE_WINDOW_MINUTES)
@@ -683,6 +687,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         engine._study_quarter_wid = None
         engine._study_asset_fired.clear()
         engine._study_cap_logged.clear()
+        engine._sim_asset_budget_fired.clear()
     elif not err and not bust:
         engine._paper_auto_reset_streak_handled = False
 
@@ -1065,8 +1070,9 @@ async def handle_market(
         return None
 
     simulate = bool(cfg.get("_simulate_orders"))
-    if simulate and series_ticker.strip():
-        if await engine.store.has_open_sim_for_series_prefix(branch, trade_mode, series_ticker):
+    if simulate:
+        aid = str(asset_id).strip()
+        if aid and aid in engine._sim_asset_budget_fired:
             await log_signal(
                 engine,
                 window_id=window_id,
@@ -1077,18 +1083,43 @@ async def handle_market(
                 minutes_left=mins,
                 rule_name=str(matched_rule.get("name") or ""),
                 executed=False,
-                skip_reason="series_has_open_sim",
+                skip_reason="asset_budget_one_sim_per_window",
                 mode=trade_mode,
                 branch=branch,
                 extra={
-                    "series_ticker": series_ticker,
-                    "note": "At most one open simulated ticket per asset series per branch until it settles or is closed early.",
+                    "window_id": window_id,
+                    "note": "At most one new simulated entry per configured asset per balance window; try again next window or use another asset.",
                 },
             )
             engine._seen_keys.add(dedupe_key)
             _trace_append(
                 trace,
-                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for series {series_ticker} ({branch})",
+                f"  {asset_id} {ticker[:40]}… skip: this asset already took a sim slot this budget window ({branch})",
+            )
+            return None
+        if ticker.strip() and await engine.store.has_open_sim_for_ticker(branch, trade_mode, ticker):
+            await log_signal(
+                engine,
+                window_id=window_id,
+                asset_id=asset_id,
+                ticker=ticker,
+                side=trade_side,
+                implied_prob=prob,
+                minutes_left=mins,
+                rule_name=str(matched_rule.get("name") or ""),
+                executed=False,
+                skip_reason="ticker_has_open_sim",
+                mode=trade_mode,
+                branch=branch,
+                extra={
+                    "ticker": ticker,
+                    "note": "At most one open simulated ticket per market (exact ticker) per branch until it settles or is closed early.",
+                },
+            )
+            engine._seen_keys.add(dedupe_key)
+            _trace_append(
+                trace,
+                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for this market ({branch})",
             )
             return None
 
@@ -1221,12 +1252,12 @@ async def handle_market(
             ),
             "branch": branch,
         }
-        if series_ticker.strip():
-            tid = await engine.store.insert_sim_trade_single_open_per_series(
+        if ticker.strip():
+            tid = await engine.store.insert_sim_trade_single_open_per_ticker(
                 trade_row,
                 branch=branch,
                 trade_mode=trade_mode,
-                series_prefix=series_ticker,
+                market_ticker=ticker,
             )
         else:
             tid = await engine.store.insert_trade(trade_row)
@@ -1241,18 +1272,18 @@ async def handle_market(
                 minutes_left=mins,
                 rule_name=str(matched_rule.get("name") or ""),
                 executed=False,
-                skip_reason="series_has_open_sim",
+                skip_reason="ticker_has_open_sim",
                 mode=trade_mode,
                 branch=branch,
                 extra={
-                    "series_ticker": series_ticker,
-                    "note": "Another open sim for this series was committed under the same write lock (TOCTOU guard).",
+                    "ticker": ticker,
+                    "note": "Another open sim for this market was committed under the same write lock (TOCTOU guard).",
                 },
             )
             engine._seen_keys.add(dedupe_key)
             _trace_append(
                 trace,
-                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for series {series_ticker} ({branch}, atomic)",
+                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for this market ({branch}, atomic)",
             )
             return None
         await log_signal(
@@ -1284,6 +1315,9 @@ async def handle_market(
         if cap_key:
             engine._study_asset_fired.add(cap_key)
         engine._seen_keys.add(dedupe_key)
+        aid_ok = str(asset_id).strip()
+        if aid_ok:
+            engine._sim_asset_budget_fired.add(aid_ok)
         _trace_append(
             trace,
             f"  SIM {branch} {asset_id} {ticker[:36]}… BUY {contracts_fp} {trade_side.upper()} @≈{limit_px:.3f} "
@@ -1788,21 +1822,68 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                 eng = engines.get(br)
                 if not eng:
                     continue
-                n_settled[br] = await settle_simulated_trades(eng)
-                n_swing[br] = await maybe_swing_exit_open_sim_trades(eng, cfg)
+                try:
+                    n_settled[br] = await settle_simulated_trades(eng)
+                    n_swing[br] = await maybe_swing_exit_open_sim_trades(eng, cfg)
+                except Exception as e:
+                    err = str(e)
+                    _data_log(
+                        "system",
+                        {"event": "dual_engine_settle_swing_error", "branch": br, "error": err[:800], "at": iso(utc_now())},
+                    )
+                    eng.state.last_error = err[:500]
 
             if cfg.get("engine_running"):
-                await tick_once(engines[BRANCH_LIVE])
+                el = engines[BRANCH_LIVE]
+                try:
+                    await tick_once(el)
+                except Exception as e:
+                    err = str(e)
+                    _data_log(
+                        "system",
+                        {"event": "dual_engine_tick_error", "branch": BRANCH_LIVE, "error": err[:800], "at": iso(utc_now())},
+                    )
+                    el.state.last_error = err[:500]
             for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
                     # Per-lab fraction nudger when auto_optimize is on — disabled while scheduled optimizer runs.
                     oc0 = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
                     if tick % 25 == 0 and bool(lc.get("auto_optimize")) and not bool(oc0.get("enabled")):
-                        await maybe_auto_optimize(eng_live.store, br)
+                        try:
+                            await maybe_auto_optimize(eng_live.store, br)
+                        except Exception as e:
+                            err = str(e)
+                            _data_log(
+                                "system",
+                                {
+                                    "event": "dual_engine_auto_optimize_error",
+                                    "branch": br,
+                                    "error": err[:800],
+                                    "at": iso(utc_now()),
+                                },
+                            )
+                            eng_lab = engines.get(br)
+                            if eng_lab:
+                                eng_lab.state.last_error = err[:500]
                     if cfg.get("engine_running"):
                         await asyncio.sleep(0.4)
-                    await tick_once(engines[br])
+                    eng_tick = engines.get(br)
+                    if eng_tick:
+                        try:
+                            await tick_once(eng_tick)
+                        except Exception as e:
+                            err = str(e)
+                            _data_log(
+                                "system",
+                                {
+                                    "event": "dual_engine_tick_error",
+                                    "branch": br,
+                                    "error": err[:800],
+                                    "at": iso(utc_now()),
+                                },
+                            )
+                            eng_tick.state.last_error = err[:500]
 
             tick += 1
             snap_period = tick % 5 == 0
@@ -1811,30 +1892,72 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             # Live real mode still snapshots only every 5 ticks while the engine runs (balance API).
             if simulate_live:
                 if snap_period or n_settled.get(BRANCH_LIVE, 0) > 0 or n_swing.get(BRANCH_LIVE, 0) > 0:
-                    await snapshot_equity(eng_live)
+                    try:
+                        await snapshot_equity(eng_live)
+                    except Exception as e:
+                        err = str(e)
+                        _data_log(
+                            "system",
+                            {
+                                "event": "dual_engine_snapshot_error",
+                                "branch": BRANCH_LIVE,
+                                "error": err[:800],
+                                "at": iso(utc_now()),
+                            },
+                        )
+                        eng_live.state.last_error = err[:500]
             elif snap_period and cfg.get("engine_running"):
-                await snapshot_equity(eng_live)
+                try:
+                    await snapshot_equity(eng_live)
+                except Exception as e:
+                    err = str(e)
+                    _data_log(
+                        "system",
+                        {
+                            "event": "dual_engine_snapshot_error",
+                            "branch": BRANCH_LIVE,
+                            "error": err[:800],
+                            "at": iso(utc_now()),
+                        },
+                    )
+                    eng_live.state.last_error = err[:500]
 
             # Paper lab charts: write one equity row per engine loop while the lab is on (same cadence for A/B/C).
             # Previously gated on ``tick % 5`` + settle/swing, so quiet labs (e.g. fewer settlements) updated charts
             # ~5× slower than busy labs despite identical poll rates.
-            lab_snap_tasks: list[Any] = []
+            lab_snap_items: list[tuple[str, Any]] = []
             for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
                     eng = engines.get(br)
                     if eng:
-                        lab_snap_tasks.append(snapshot_equity(eng))
-            if lab_snap_tasks:
-                await asyncio.gather(*lab_snap_tasks)
+                        lab_snap_items.append((br, snapshot_equity(eng)))
+            if lab_snap_items:
+                results = await asyncio.gather(*[t for _, t in lab_snap_items], return_exceptions=True)
+                for (br, _), res in zip(lab_snap_items, results):
+                    if isinstance(res, BaseException):
+                        err = str(res)
+                        _data_log(
+                            "system",
+                            {
+                                "event": "dual_engine_snapshot_error",
+                                "branch": br,
+                                "error": err[:800],
+                                "at": iso(utc_now()),
+                            },
+                        )
+                        eng_snap = engines.get(br)
+                        if eng_snap:
+                            eng_snap.state.last_error = err[:500]
         except Exception as e:
             err = str(e)
             _data_log(
                 "system",
                 {"event": "dual_engine_loop_error", "error": err[:800], "at": iso(utc_now())},
             )
-            for eng in engines.values():
-                eng.state.last_error = err
+            el = engines.get(BRANCH_LIVE)
+            if el:
+                el.state.last_error = err[:500]
 
         cfg = await engines[BRANCH_LIVE].store.load_config()
         poll_live = float(cfg.get("poll_seconds") or 8)
