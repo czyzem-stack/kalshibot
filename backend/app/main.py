@@ -4,6 +4,7 @@ import asyncio
 import copy
 import csv
 import datetime as dt
+import hashlib
 import io
 import json
 import logging
@@ -36,6 +37,27 @@ from .settings_env import env, kalshi_credentials_report
 
 
 logger = logging.getLogger("kalshibot.api")
+
+
+def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
+    """Stable id for slimmed change_history rows so clients do not regenerate different legacy-* ids per poll."""
+    rid = x.get("id")
+    if rid:
+        s = str(rid).strip()
+        if s and not s.startswith("legacy-"):
+            return s
+    parts = "|".join(
+        [
+            str(x.get("created_at") or ""),
+            str(x.get("branch") or x.get("lab_label") or ""),
+            str(x.get("style") or ""),
+            str(x.get("summary") or "")[:160],
+            str(x.get("reason") or "")[:160],
+        ]
+    )
+    h = hashlib.sha256(parts.encode("utf-8", errors="replace")).hexdigest()[:20]
+    return f"ch-{h}"
+
 
 store = Store()
 engine_live = TradingEngine(store, BRANCH_LIVE)
@@ -614,6 +636,7 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
         eng._study_quarter_wid = None
         eng._study_asset_fired.clear()
         eng._study_cap_logged.clear()
+        eng._sim_asset_budget_fired.clear()
 
 
 @app.post("/api/data/reset")
@@ -646,6 +669,8 @@ async def data_reset(
         )
     try:
         if br == "all_labs":
+            for br2 in ("lab_a", "lab_b", "lab_c"):
+                _clear_engine_mem_after_reset(br2)
             out = await store.reset_trading_data(backup=backup, branch="lab_a")
             await store.reset_trading_data(backup=False, branch="lab_b")
             await store.reset_trading_data(backup=False, branch="lab_c")
@@ -654,6 +679,8 @@ async def data_reset(
             out = dict(out)
             out["branch"] = "all_labs"
             return out
+        pre_scope = "all" if br == "all" else br
+        _clear_engine_mem_after_reset(pre_scope)
         out = await store.reset_trading_data(backup=backup, branch=None if br == "all" else br)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -685,23 +712,30 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     reset = str(body.get("reset_data") or "none").strip().lower()
     backup = bool(body.get("backup", True))
     if reset == "all_labs":
+        for br in ("lab_a", "lab_b", "lab_c"):
+            _clear_engine_mem_after_reset(br)
         await store.reset_trading_data(backup=backup, branch="lab_a")
         await store.reset_trading_data(backup=False, branch="lab_b")
         await store.reset_trading_data(backup=False, branch="lab_c")
         for br in ("lab_a", "lab_b", "lab_c"):
             _clear_engine_mem_after_reset(br)
     elif reset == "both":
+        _clear_engine_mem_after_reset("lab_a")
+        _clear_engine_mem_after_reset("lab_b")
         await store.reset_trading_data(backup=backup, branch="lab_a")
         await store.reset_trading_data(backup=False, branch="lab_b")
         _clear_engine_mem_after_reset("lab_a")
         _clear_engine_mem_after_reset("lab_b")
     elif reset == "lab_a":
+        _clear_engine_mem_after_reset("lab_a")
         await store.reset_trading_data(backup=backup, branch="lab_a")
         _clear_engine_mem_after_reset("lab_a")
     elif reset == "lab_b":
+        _clear_engine_mem_after_reset("lab_b")
         await store.reset_trading_data(backup=backup, branch="lab_b")
         _clear_engine_mem_after_reset("lab_b")
     elif reset == "lab_c":
+        _clear_engine_mem_after_reset("lab_c")
         await store.reset_trading_data(backup=backup, branch="lab_c")
         _clear_engine_mem_after_reset("lab_c")
     elif reset not in ("none", ""):
@@ -1233,9 +1267,7 @@ async def dashboard() -> dict[str, Any]:
         for x in ch_raw[:50]:
             if not isinstance(x, dict):
                 continue
-            rid = x.get("id")
-            if not rid:
-                rid = f"legacy-{str(x.get('created_at') or '')[:24]}-{len(ch_slim)}"
+            rid = _optimizer_change_stable_id(x)
             ch_slim.append(
                 {
                     "id": rid,
@@ -1377,6 +1409,8 @@ async def dashboard() -> dict[str, Any]:
             "runs": runs_slim,
             "pulse_chart_seed": pulse_chart_baseline(cfg, opt_blk),
             "radar": build_optimizer_radar_payload(cfg, opt_blk),
+            "pulse_eval_count": int(opt_blk.get("pulse_eval_count") or 0),
+            "last_pulse_eval_at": str(opt_blk.get("last_pulse_eval_at") or ""),
             "next_tick_preview": str(opt_blk.get("next_tick_preview") or "")[:900],
             "pulse_trace": [
                 {k: p.get(k) for k in ("at", "kind", "message", "change_id")}

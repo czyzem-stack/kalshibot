@@ -287,6 +287,8 @@ def default_bot_config() -> dict[str, Any]:
             "change_history": [],
             "pulse_trace": [],
             "next_tick_preview": "",
+            "pulse_eval_count": 0,
+            "last_pulse_eval_at": "",
             "last_run_at": None,
             "last_status": "",
             "last_error": "",

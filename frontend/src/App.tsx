@@ -188,24 +188,26 @@ function LabThoughtsStrip({ thoughts }: { thoughts: AnyObj | undefined }) {
   );
 }
 
-function formatOptimizerNotifBody(h: AnyObj): string {
-  const parts: string[] = [];
-  if (h?.summary) parts.push(String(h.summary));
-  if (h?.tick_hint) parts.push(`Next tick: ${String(h.tick_hint)}`);
-  if (h?.reason) parts.push(`Reason: ${String(h.reason)}`);
-  const before = h?.before;
-  const after = h?.after;
-  if (before != null && after != null && typeof before === "object" && typeof after === "object") {
-    const keys = new Set([...Object.keys(before as AnyObj), ...Object.keys(after as AnyObj)]);
-    for (const k of keys) {
-      const vb = (before as AnyObj)[k];
-      const va = (after as AnyObj)[k];
-      if (JSON.stringify(vb) !== JSON.stringify(va)) {
-        parts.push(`${k}: ${JSON.stringify(vb)} → ${JSON.stringify(va)}`);
-      }
-    }
+/** Aligns with backend ``_optimizer_change_stable_id`` intent: same row must keep one id across polls (no legacy-* index drift). */
+function stableOptimizerChangeId(h: AnyObj): string {
+  const raw = String(h?.id || "").trim();
+  if (raw && !raw.startsWith("legacy-")) return raw;
+  const parts = [
+    String(h?.created_at || ""),
+    String(h?.branch || h?.lab_label || ""),
+    String(h?.style || ""),
+    String(h?.summary || "").slice(0, 160),
+    String(h?.reason || "").slice(0, 160),
+  ].join("|");
+  let a = 5381;
+  for (let i = 0; i < parts.length; i++) a = (Math.imul(a, 33) + parts.charCodeAt(i)) | 0;
+  let b = 2166136261;
+  for (let i = 0; i < parts.length; i++) {
+    b ^= parts.charCodeAt(i);
+    b = Math.imul(b, 16777619) | 0;
   }
-  return parts.join("\n").slice(0, 1400);
+  const tag = `${(a >>> 0).toString(16).padStart(8, "0")}${(b >>> 0).toString(16).padStart(8, "0")}`.slice(0, 20);
+  return `ch-${tag}`;
 }
 
 /** Backend ``optimizer_activity.radar`` → Recharts rows (one row per axis, all branches). */
@@ -292,6 +294,25 @@ function OptimizerBranchRadarTooltip(props: AnyObj) {
   );
 }
 
+/** Watch-style second hand: advances on each persisted ``run_optimizer_once`` (internal pulse / Claude). */
+function OptimizerRadarWatchHand({ evalCount, lastEvalAt }: { evalCount: number; lastEvalAt: string }) {
+  const n = Math.floor(Number(evalCount) || 0);
+  const sec = ((n % 60) + 60) % 60;
+  const deg = -90 + sec * 6;
+  const tip =
+    lastEvalAt.trim() !== ""
+      ? `Last optimizer evaluation: ${lastEvalAt} · ${n} total (hand = ${sec}/60 per revolution)`
+      : `${n} optimizer evaluations (hand = ${sec}/60 per revolution)`;
+  return (
+    <div className="optimizer-radar-watch-hand" title={tip} aria-hidden>
+      <div className="optimizer-radar-watch-hand__pivot">
+        <div className="optimizer-radar-watch-hand__arm" style={{ transform: `rotate(${deg}deg)` }} />
+        <div className="optimizer-radar-watch-hand__cap" />
+      </div>
+    </div>
+  );
+}
+
 function OptimizerRadarAngleTick(rows: AnyObj[]) {
   return (tickProps: AnyObj) => {
     const { x, y, payload, textAnchor, index } = tickProps;
@@ -315,6 +336,8 @@ function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }
   const radarPayload = activity?.radar && typeof activity.radar === "object" ? (activity.radar as AnyObj) : null;
   const rows = useMemo(() => buildBranchRadarRows(radarPayload), [radarPayload]);
   const angleTick = useMemo(() => OptimizerRadarAngleTick(rows), [rows]);
+  const pulseEvalCount = Number(activity?.pulse_eval_count) || 0;
+  const lastPulseEvalAt = String(activity?.last_pulse_eval_at || "");
 
   const hasPulseContent = Boolean(rows.length || preview || pulseTrace.length || ch.length);
 
@@ -366,8 +389,8 @@ function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }
       </div>
       {rows.length ? (
         <div
-          className="optimizer-activity-chart optimizer-pulse-radar optimizer-pulse-radar--multi"
-          title="Each branch is its own color. Optimizer + pulse history brighten the spokes the system is currently leaning on."
+          className="optimizer-activity-chart optimizer-pulse-radar optimizer-pulse-radar--multi optimizer-radar-watch"
+          title="Each branch is its own color. Yellow hand advances once per optimizer engine evaluation (internal pulse or scheduled run)."
         >
           <ResponsiveContainer width="100%" height={268}>
             <RadarChart cx="50%" cy="51%" outerRadius="74%" data={rows} margin={{ top: 8, right: 20, bottom: 10, left: 20 }}>
@@ -389,6 +412,7 @@ function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }
               ))}
             </RadarChart>
           </ResponsiveContainer>
+          <OptimizerRadarWatchHand evalCount={pulseEvalCount} lastEvalAt={lastPulseEvalAt} />
         </div>
       ) : (
         <p className="sub" style={{ marginLeft: 4, fontSize: 12 }}>
@@ -717,6 +741,130 @@ function fmtIsoLocal(iso: string | undefined | null, withSeconds = true) {
   });
 }
 
+type OptimizerToastTier = "green" | "yellow" | "red" | "neutral";
+
+function inferOptimizerRunTier(lastStatus: string, lastError: string): Exclude<OptimizerToastTier, "neutral"> {
+  const err = (lastError || "").trim();
+  if (err) return "red";
+  const s = (lastStatus || "").toLowerCase();
+  if (s.includes("error") || s.includes("fail")) return "red";
+  if (s.includes("noop") || s.includes("skip") || s.includes("disabled") || !s) return "yellow";
+  return "green";
+}
+
+function inferHistoryTier(style: string, summary: string, reason: string): Exclude<OptimizerToastTier, "neutral"> {
+  const blob = `${style} ${summary} ${reason}`.toLowerCase();
+  if (blob.includes("error") || blob.includes("fail")) return "red";
+  if (blob.includes("conservative") || blob.includes("tighten") || blob.includes("loss")) return "yellow";
+  if (blob.includes("aggressive") || blob.includes("relax") || blob.includes("ease") || blob.includes("win")) return "green";
+  return "yellow";
+}
+
+function topRadarFocusSummary(radar: AnyObj | null | undefined, max = 5): string {
+  if (!radar || typeof radar !== "object") return "—";
+  const focus = (radar.axis_focus || {}) as AnyObj;
+  const axes = Array.isArray(radar.axes) ? (radar.axes as AnyObj[]) : [];
+  const labelByKey = new Map<string, string>();
+  for (const ax of axes) {
+    if (ax && typeof ax === "object") labelByKey.set(String((ax as AnyObj).key), String((ax as AnyObj).label || (ax as AnyObj).key));
+  }
+  const entries = Object.entries(focus)
+    .map(([k, v]) => ({ k, w: Number(v) || 0 }))
+    .filter((e) => e.w > 0.04)
+    .sort((a, b) => b.w - a.w);
+  if (!entries.length) return "even (no recent axis bias)";
+  return entries
+    .slice(0, max)
+    .map((e) => labelByKey.get(e.k) || e.k)
+    .join(" · ");
+}
+
+function latestMergedOptimizerChange(dash: AnyObj, cfg: AnyObj): AnyObj | null {
+  const oa = (dash?.optimizer_activity || {}) as AnyObj;
+  const oc = (cfg?.optimizer || {}) as AnyObj;
+  const a = Array.isArray(oa.change_history) ? (oa.change_history as AnyObj[]) : [];
+  const b = Array.isArray(oc.change_history) ? (oc.change_history as AnyObj[]) : [];
+  const merged = [...a, ...b];
+  merged.sort((x, y) => String(y.created_at || "").localeCompare(String(x.created_at || "")));
+  const top = merged[0];
+  return top && typeof top === "object" ? top : null;
+}
+
+function mergeToastTiers(
+  a: Exclude<OptimizerToastTier, "neutral">,
+  b: Exclude<OptimizerToastTier, "neutral">,
+): Exclude<OptimizerToastTier, "neutral"> {
+  const rank = { red: 3, yellow: 2, green: 1 } as const;
+  return rank[b] > rank[a] ? b : a;
+}
+
+/** Single 15m toast payload: colored lines + plain ``body`` for fallbacks. */
+function buildOptimizerHeartbeatToast(dash: AnyObj, cfg: AnyObj): {
+  title: string;
+  tone: Exclude<OptimizerToastTier, "neutral">;
+  segments: { tier: OptimizerToastTier; text: string }[];
+  body: string;
+} {
+  const oa = (dash?.optimizer_activity || {}) as AnyObj;
+  const oc = (cfg?.optimizer || {}) as AnyObj;
+  const radar = oa.radar && typeof oa.radar === "object" ? (oa.radar as AnyObj) : null;
+  const st = String(oc?.last_status || "").trim();
+  const err = String(oc?.last_error || "").trim();
+  const runTier = inferOptimizerRunTier(st, err);
+  const head = latestMergedOptimizerChange(dash, cfg);
+  const histTier = head
+    ? inferHistoryTier(String(head.style || ""), String(head.summary || ""), String(head.reason || ""))
+    : runTier;
+  const tone = head ? mergeToastTiers(runTier, histTier) : runTier;
+
+  const segments: { tier: OptimizerToastTier; text: string }[] = [];
+  segments.push({
+    tier: "neutral",
+    text: `15-minute snapshot · ${fmtIsoLocal(new Date().toISOString(), true)}`,
+  });
+  segments.push({
+    tier: "neutral",
+    text: `Radar focus (updated with this fetch): ${topRadarFocusSummary(radar)}`,
+  });
+  segments.push({
+    tier: runTier,
+    text: `Last engine: ${oc.last_run_at ? fmtIsoLocal(String(oc.last_run_at)) : "—"} · status ${st || "—"}${err ? ` · ${err.slice(0, 200)}` : ""}`,
+  });
+  const ev = Number(oa.pulse_eval_count) || 0;
+  segments.push({
+    tier: "neutral",
+    text: `Pulse eval #${ev} · last eval ${oa.last_pulse_eval_at ? fmtIsoLocal(String(oa.last_pulse_eval_at)) : "—"}`,
+  });
+  segments.push({
+    tier: "neutral",
+    text: `Scheduler ${oc.enabled ? "on" : "off"} · Adaptive ${oc.adaptive_enabled !== false ? "on" : "off"}`,
+  });
+  const hint = String(oa.next_tick_preview || "").trim();
+  if (hint) {
+    segments.push({ tier: "yellow", text: `Next / rollback context: ${hint.slice(0, 360)}${hint.length > 360 ? "…" : ""}` });
+  }
+  if (head) {
+    const th = String(head.tick_hint || "").trim();
+    const lab = String(head.lab_label || head.branch || "Lab");
+    segments.push({
+      tier: histTier,
+      text: `Latest change (${lab} · ${String(head.style || "—")}): ${String(head.summary || "").slice(0, 280)}${th ? `\nWatch next: ${th.slice(0, 200)}` : ""}`,
+    });
+  } else {
+    segments.push({ tier: "neutral", text: "No change_history head yet — radar still reflects current config." });
+  }
+  const pt = Array.isArray(oa.pulse_trace) ? (oa.pulse_trace as AnyObj[]) : [];
+  if (pt.length && pt[0] && typeof pt[0] === "object") {
+    const p0 = pt[0] as AnyObj;
+    segments.push({
+      tier: "neutral",
+      text: `Latest pulse trace: ${String(p0.kind || "—")}: ${String(p0.message || "").slice(0, 200)}`,
+    });
+  }
+  const body = segments.map((s) => s.text).join("\n\n");
+  return { title: "Optimizer · 15 min", tone, segments, body };
+}
+
 /** Same instant as 24h UTC clock (for a second line or tooltip). */
 function fmtIsoUtcTime(iso: string | undefined | null) {
   if (!iso) return "";
@@ -819,6 +967,30 @@ function summarizePositionRows(rows: unknown): { text: string; title: string } {
     return { text: summary, title: titleBody || detailJoined };
   }
   return { text: detailJoined, title: rawTitle };
+}
+
+/**
+ * Holdings snapshot: merged market lines per configured asset (same arrays the table renders).
+ * ``tickers`` should match ``metrics.*.open_sim_trades`` when every open sim sits under a configured series.
+ */
+function holdingsSimSlotCounts(
+  positionByAsset: AnyObj,
+  which: "live" | "lab_a" | "lab_b" | "lab_c",
+): { tickers: number; assetsWith: number } {
+  let tickers = 0;
+  let assetsWith = 0;
+  for (const [, row] of orderedAssetEntries(positionByAsset)) {
+    const ob = row as AnyObj;
+    let arr: unknown;
+    if (which === "live") arr = ob.bot_sim_open_live;
+    else if (which === "lab_a") arr = ob.bot_sim_open_lab_a ?? ob.bot_sim_open_lab;
+    else if (which === "lab_b") arr = ob.bot_sim_open_lab_b;
+    else arr = ob.bot_sim_open_lab_c;
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    assetsWith += 1;
+    tickers += arr.length;
+  }
+  return { tickers, assetsWith };
 }
 
 /** Open rows for the Assets-to-watch branch tab only (avoids Lab exposure highlighting on Live tab, etc.). */
@@ -1434,6 +1606,7 @@ function EngineAssetSnapBlock({
 export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
+  const OPTIMIZER_HEARTBEAT_TOAST_ID = "opt-cycle-heartbeat";
   const [dash, setDash] = useState<AnyObj | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1447,8 +1620,6 @@ export default function App() {
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
   const optimizerHistoryBootstrapped = useRef(false);
-  /** Last ``optimizer.last_run_at`` ISO we have already notified for (avoids duplicate toasts on dashboard re-poll). */
-  const optimizerLastRunNotifiedAt = useRef<string>("");
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c">("live");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
@@ -1457,6 +1628,8 @@ export default function App() {
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
   /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
   const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b" | "lab_c">("live");
+  /** Last loaded dashboard JSON — used when a forced refresh returns null so the 15m toast still appears. */
+  const dashSnapshotRef = useRef<AnyObj | null>(null);
 
   /**
    * Latest dashboard fetch only: aborts the previous request so a slow poll cannot finish after a newer one
@@ -1475,10 +1648,10 @@ export default function App() {
   const dashboardFlightSerialRef = useRef(0);
   const dashboardActiveFlightRef = useRef(0);
 
-  const refresh = useCallback(async (opts?: { force?: boolean }) => {
+  const refresh = useCallback(async (opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
     if (dashboardActiveFlightRef.current !== 0 && !force) {
-      return;
+      return null;
     }
     dashboardAbortRef.current?.abort();
     const myEpoch = ++dashboardFetchEpoch.current;
@@ -1488,19 +1661,25 @@ export default function App() {
     dashboardAbortRef.current = ac;
     const maxMs = 90_000;
     const tid = window.setTimeout(() => ac.abort(), maxMs);
+    let payload: AnyObj | null = null;
     try {
       setErr(null);
       const r = await fetch("/api/dashboard", { signal: ac.signal });
       if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
       const d = (await r.json()) as AnyObj;
-      if (myEpoch !== dashboardFetchEpoch.current) return;
+      if (myEpoch !== dashboardFetchEpoch.current) return null;
       setDash(d);
+      payload = d;
     } catch (e: any) {
-      if (myEpoch !== dashboardFetchEpoch.current) return;
+      if (myEpoch !== dashboardFetchEpoch.current) return null;
       const msg = String(e?.message || e);
       const aborted =
         String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
       if (aborted) {
+        // Superseded fetch (force refresh / new poll) also aborts — do not show the slow-dashboard error for that.
+        if (dashboardActiveFlightRef.current !== myFlight) {
+          return null;
+        }
         setErr(
           `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
         );
@@ -1524,6 +1703,7 @@ export default function App() {
         dashboardAbortRef.current = null;
       }
     }
+    return payload;
   }, []);
 
   /** Merge saved bot config into dashboard state without waiting on slow ``/api/dashboard`` (MTM, order books). */
@@ -1598,6 +1778,10 @@ export default function App() {
 
   const cfg = dash?.config || {};
 
+  useEffect(() => {
+    if (dash) dashSnapshotRef.current = dash as AnyObj;
+  }, [dash]);
+
   const optimizerChangeHistoryMerged = useMemo(() => {
     const oc = (cfg as AnyObj)?.optimizer;
     const fromDash = Array.isArray(oc?.change_history) ? (oc.change_history as AnyObj[]) : [];
@@ -1606,13 +1790,12 @@ export default function App() {
       : [];
     const fromPanel = Array.isArray(optimizerCfg?.change_history) ? (optimizerCfg.change_history as AnyObj[]) : [];
     const byId = new Map<string, AnyObj>();
-    for (const row of [...fromPanel, ...fromActivity, ...fromDash]) {
+    // Prefer dashboard activity rows first so stable ``ch-*`` ids from the API win over panel-only copies.
+    for (const row of [...fromActivity, ...fromDash, ...fromPanel]) {
       if (!row || typeof row !== "object") continue;
-      let id = String((row as AnyObj).id || "").trim();
-      if (!id) {
-        id = `legacy-${String((row as AnyObj).created_at || "").slice(0, 24)}-${byId.size}`;
-      }
-      if (!byId.has(id)) byId.set(id, row as AnyObj);
+      const id = stableOptimizerChangeId(row as AnyObj);
+      const normalized = { ...(row as AnyObj), id };
+      if (!byId.has(id)) byId.set(id, normalized);
     }
     const merged = Array.from(byId.values());
     merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
@@ -1648,12 +1831,12 @@ export default function App() {
 
   useEffect(() => {
     const history = optimizerChangeHistoryMerged;
-    // First dashboard snapshot: mark whatever history exists now as seen (possibly empty), so the next
-    // new row after hours of silence still toasts — older logic returned early on [] and never bootstrapped.
+    // Bootstrap: mark existing history as seen so the Optimizer panel stays the place for a full audit trail;
+    // in-app toasts are **only** the 15m heartbeat (avoids a toast on every dashboard poll / new history row).
     if (!optimizerHistoryBootstrapped.current) {
       optimizerHistoryBootstrapped.current = true;
       for (const h of history) {
-        const id = String(h?.id || "");
+        const id = stableOptimizerChangeId(h);
         if (id) seenOptimizerEventIds.current.add(id);
       }
       try {
@@ -1668,26 +1851,14 @@ export default function App() {
     }
     if (!history.length) return;
     const fresh = history.filter((h) => {
-      const id = String(h?.id || "");
+      const id = stableOptimizerChangeId(h);
       return id && !seenOptimizerEventIds.current.has(id) && !dismissedOptimizerEventIds.current.has(id);
     });
     if (!fresh.length) return;
     for (const h of fresh) {
-      const id = String(h?.id || "");
+      const id = stableOptimizerChangeId(h);
       if (!id) continue;
       seenOptimizerEventIds.current.add(id);
-      const title = String(h?.lab_label || h?.branch || "Lab optimizer");
-      const body = formatOptimizerNotifBody(h);
-      setOptimizerNotifs((prev) => [{ id, title, body, created_at: h?.created_at }, ...prev].slice(0, 10));
-      if ("Notification" in window) {
-        if (Notification.permission === "granted") {
-          void new Notification(`${title} optimizer update`, { body });
-        } else if (Notification.permission === "default") {
-          void Notification.requestPermission().then((p) => {
-            if (p === "granted") void new Notification(`${title} optimizer update`, { body });
-          });
-        }
-      }
     }
     try {
       window.sessionStorage.setItem(
@@ -1699,50 +1870,92 @@ export default function App() {
     }
   }, [optimizerChangeHistoryMerged]);
 
+  /**
+   * Optimizer heartbeat toast: first run ~45s after load, then every 15m. Uses chained timeouts (not setInterval)
+   * so the first fire is not delayed a full 15 minutes. If ``refresh`` returns null (race / abort), falls back to
+   * ``dashSnapshotRef`` so a toast still appears when we already have dashboard data.
+   */
   useEffect(() => {
-    const oc = (cfg as AnyObj)?.optimizer as AnyObj | undefined;
-    const lr = String(oc?.last_run_at || "").trim();
-    if (!lr) return;
-    if (optimizerLastRunNotifiedAt.current === "") {
-      optimizerLastRunNotifiedAt.current = lr;
-      return;
-    }
-    if (optimizerLastRunNotifiedAt.current === lr) return;
-    optimizerLastRunNotifiedAt.current = lr;
-    const id = `opt-run-${lr}`;
-    if (seenOptimizerEventIds.current.has(id)) return;
-    seenOptimizerEventIds.current.add(id);
-    const st = String(oc?.last_status || "unknown");
-    const err = String(oc?.last_error || "").trim();
-    const lc = String(oc?.last_change_at || "").trim();
-    const parts = [`Status: ${st}`];
-    if (lc) parts.push(`last config change ${fmtIsoLocal(lc)}`);
-    if (err) parts.push(err.slice(0, 240));
-    const body = parts.join(" · ");
-    setOptimizerNotifs((prev) => [{ id, title: "Optimizer run finished", body, created_at: lr }, ...prev].slice(0, 10));
-    if ("Notification" in window) {
-      if (Notification.permission === "granted") {
-        void new Notification("Optimizer run finished", { body });
-      } else if (Notification.permission === "default") {
-        void Notification.requestPermission().then((p) => {
-          if (p === "granted") void new Notification("Optimizer run finished", { body });
-        });
+    let cancelled = false;
+    let timeoutId = 0;
+    const FIRST_MS = 45_000;
+    const PERIOD_MS = 15 * 60 * 1000;
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const d = await refresh({ force: true });
+        const source = (d || dashSnapshotRef.current) as AnyObj | null;
+        if (cancelled || !source) return;
+        const cfgNow = (source.config || {}) as AnyObj;
+        const toast = buildOptimizerHeartbeatToast(source, cfgNow);
+        const stalePrefix = !d
+          ? [{ tier: "yellow" as const, text: "Latest /api/dashboard did not return JSON (aborted or superseded) — showing cached snapshot." }]
+          : [];
+        const segments = stalePrefix.length ? [...stalePrefix, ...toast.segments] : toast.segments;
+        const body = stalePrefix.length ? `${String(stalePrefix[0].text)}\n\n${toast.body}` : toast.body;
+        const created = new Date().toISOString();
+        setOptimizerNotifs(() => [
+          {
+            id: OPTIMIZER_HEARTBEAT_TOAST_ID,
+            title: toast.title,
+            body,
+            tone: toast.tone,
+            segments,
+            created_at: created,
+          },
+        ]);
+      } catch {
+        const source = dashSnapshotRef.current;
+        if (cancelled || !source) return;
+        const cfgNow = (source.config || {}) as AnyObj;
+        const toast = buildOptimizerHeartbeatToast(source, cfgNow);
+        const created = new Date().toISOString();
+        setOptimizerNotifs(() => [
+          {
+            id: OPTIMIZER_HEARTBEAT_TOAST_ID,
+            title: toast.title,
+            body: `Heartbeat refresh threw — cached snapshot.\n\n${toast.body}`,
+            tone: toast.tone,
+            segments: [{ tier: "yellow", text: "Heartbeat refresh threw — cached snapshot." }, ...toast.segments],
+            created_at: created,
+          },
+        ]);
       }
-    }
-    try {
-      window.sessionStorage.setItem(
-        OPTIMIZER_SEEN_IDS_KEY,
-        JSON.stringify(Array.from(seenOptimizerEventIds.current).slice(-600)),
-      );
-    } catch {
-      // Ignore storage errors.
-    }
-  }, [cfg]);
+    };
+
+    const arm = (delay: number) => {
+      timeoutId = window.setTimeout(() => {
+        void (async () => {
+          if (cancelled) return;
+          await tick();
+          if (!cancelled) arm(PERIOD_MS);
+        })();
+      }, delay);
+    };
+
+    arm(FIRST_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [refresh]);
 
   const metrics = dash?.metrics || {};
   const metricsLabA = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
+
+  const holdingsSimOpenRollup = useMemo(() => {
+    const pba = (dash?.account_snapshot as AnyObj | undefined)?.position_by_asset as AnyObj | undefined;
+    if (!pba || typeof pba !== "object") return null;
+    return {
+      live: holdingsSimSlotCounts(pba, "live"),
+      lab_a: holdingsSimSlotCounts(pba, "lab_a"),
+      lab_b: holdingsSimSlotCounts(pba, "lab_b"),
+      lab_c: holdingsSimSlotCounts(pba, "lab_c"),
+    };
+  }, [dash?.account_snapshot]);
 
   const promoteLabAToLive = async () => {
     const pnlA = Number(metricsLabA.total_pnl_dollars ?? 0);
@@ -1815,6 +2028,25 @@ export default function App() {
     };
     return map[perfBranch];
   }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC]);
+
+  const perfBranchHeldSlots = useMemo(() => {
+    if (!holdingsSimOpenRollup) return null;
+    if (perfBranch === "live") return holdingsSimOpenRollup.live;
+    if (perfBranch === "lab_a") return holdingsSimOpenRollup.lab_a;
+    if (perfBranch === "lab_b") return holdingsSimOpenRollup.lab_b;
+    return holdingsSimOpenRollup.lab_c;
+  }, [holdingsSimOpenRollup, perfBranch]);
+
+  const openSimRowsMetricSub = useMemo(() => {
+    const n = Number(perfBranchMeta.metrics.open_sim_trades ?? 0);
+    const h = perfBranchHeldSlots;
+    if (!h) return n > 0 ? `${n} SQLite row(s)` : undefined;
+    if (n <= 0 && h.tickers <= 0) return undefined;
+    if (h.tickers === n) {
+      return `${h.tickers} market line(s) in table · ${h.assetsWith} asset row(s) with text`;
+    }
+    return `⚠ ${h.tickers} table line(s) vs ${n} SQLite row(s) — some opens may use a series not in Assets`;
+  }, [perfBranchMeta.metrics.open_sim_trades, perfBranchHeldSlots]);
 
   const chartData = useMemo(
     () => equitySeriesWithLiveTail(snaps, equityGranularity, metrics, fmtIsoLocal),
@@ -2195,10 +2427,21 @@ export default function App() {
             gap: 8,
           }}
         >
-          {optimizerNotifs.map((n) => (
-            <div key={String(n.id)} className="panel" style={{ padding: "10px 12px", borderColor: "#355091" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                <strong style={{ fontSize: 12 }}>{String(n.title)}</strong>
+          {optimizerNotifs.map((n) => {
+            const tier = String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
+            const cardTone = tier ? ` optimizer-toast--${tier}` : "";
+            const segs = Array.isArray(n.segments) ? (n.segments as { tier?: string; text?: string }[]) : null;
+            return (
+            <div key={String(n.id)} className={`panel optimizer-toast${cardTone}`} style={{ padding: "10px 12px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ minWidth: 0 }}>
+                  <strong style={{ fontSize: 12 }}>{String(n.title)}</strong>
+                  {n.created_at ? (
+                    <div className="sub" style={{ fontSize: 10, opacity: 0.88, marginTop: 3 }} title="Event or toast time (local)">
+                      {fmtIsoLocal(String(n.created_at))}
+                    </div>
+                  ) : null}
+                </div>
                 <button
                   type="button"
                   style={{ padding: "2px 8px", fontSize: 11 }}
@@ -2221,11 +2464,29 @@ export default function App() {
                   x
                 </button>
               </div>
-              <div className="sub" style={{ marginTop: 4, fontSize: 12, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>
-                {String(n.body)}
-              </div>
+              {segs && segs.length ? (
+                <div style={{ marginTop: 6 }}>
+                  {segs.map((s, i) => {
+                    const lt = String(s.tier || "neutral");
+                    const lineClass =
+                      lt === "green" || lt === "yellow" || lt === "red" || lt === "neutral"
+                        ? `optimizer-toast__line optimizer-toast__line--${lt}`
+                        : "optimizer-toast__line optimizer-toast__line--neutral";
+                    return (
+                      <div key={i} className={lineClass}>
+                        {String(s.text || "")}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="sub optimizer-toast__line optimizer-toast__line--neutral" style={{ marginTop: 4 }}>
+                  {String(n.body)}
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
       <div className="top">
@@ -2573,9 +2834,14 @@ export default function App() {
             valueTone={metricSignedTone(perfBranchMeta.metrics.avg_realized_per_settled_dollars)}
           />
           <MetricTile
-            label={`${perfBranchMeta.label} open`}
+            label={`${perfBranchMeta.label} · open rows`}
             value={String(perfBranchMeta.metrics.open_sim_trades ?? 0)}
-            title="Open simulated rows awaiting settlement."
+            sub={openSimRowsMetricSub}
+            title={
+              "SQLite COUNT of open simulated trades for this branch (one DB row = one ticket). " +
+              "Account → Holdings has one table row per configured asset; one asset row can list several market tickers, " +
+              "so three rows in the DB can appear as two non-empty asset rows (e.g. two BTC markets + one ETH)."
+            }
           />
           <MetricTile
             label={`${perfBranchMeta.label} committed`}
@@ -2977,6 +3243,31 @@ export default function App() {
               >
                 Holdings by asset (series prefix)
               </h3>
+              {holdingsSimOpenRollup ? (
+                <div
+                  className="sub"
+                  style={{
+                    marginBottom: 10,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px solid var(--border, #355091)",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                  title="Branch performance tiles use the same open_sim_trades numbers from the API rollups."
+                >
+                  <strong>Open sim (SQLite rows)</strong> — same as Branch performance: Live{" "}
+                  <code>{String(metrics.open_sim_trades ?? 0)}</code>, Lab A{" "}
+                  <code>{String(metricsLabA.open_sim_trades ?? 0)}</code>, Lab B{" "}
+                  <code>{String(metricsLabB.open_sim_trades ?? 0)}</code>, Lab C{" "}
+                  <code>{String(metricsLabC.open_sim_trades ?? 0)}</code>. The table below is one row per{" "}
+                  <em>configured asset</em>; for Live, <code>{holdingsSimOpenRollup.live.tickers}</code> market line(s)
+                  appear in <code>{holdingsSimOpenRollup.live.assetsWith}</code> asset row(s) — e.g.{" "}
+                  <code>{String(metrics.open_sim_trades ?? 0)}</code> SQLite rows vs{" "}
+                  <code>{holdingsSimOpenRollup.live.assetsWith}</code> non-empty asset rows when one asset bundles
+                  several contracts.
+                </div>
+              ) : null}
               {accountLinked ? (
                 <p className="sub" style={{ marginBottom: 8 }} title="Why some assets have data and others show dashes.">
                   <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
@@ -2991,10 +3282,9 @@ export default function App() {
               ) : (
                 <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
                   <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
-                  <code>series_ticker</code>. The Kalshi column is omitted because the account is not linked; empty cells
-                  here are not evidence that you have no positions on the exchange.                   Duplicate open rows for the <strong>same</strong> market ticker (any casing) are merged into one total
-                  size. Several <strong>different</strong> contracts in the same series show as one summary line; hover
-                  for each ticker and raw DB rows.
+                  <code>series_ticker</code>. The Kalshi column is omitted when the account is not linked. The box above
+                  ties Branch performance counts to this table; cells merge duplicate tickers and sum contracts — hover
+                  for raw rows.
                 </p>
               )}
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">

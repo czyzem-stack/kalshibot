@@ -1856,6 +1856,9 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                         {"event": "dual_engine_tick_error", "branch": BRANCH_LIVE, "error": err[:800], "at": iso(utc_now())},
                     )
                     el.state.last_error = err[:500]
+            # When Live is off, labs used to tick with zero spacing → three parallel-ish series scans + order books
+            # in one loop turn, which spikes Kalshi public limits (HTTP 429) and looks like “labs never trade”.
+            lab_stagger_armed = False
             for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
@@ -1878,8 +1881,8 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                             eng_lab = engines.get(br)
                             if eng_lab:
                                 eng_lab.state.last_error = err[:500]
-                    if cfg.get("engine_running"):
-                        await asyncio.sleep(0.4)
+                    if lab_stagger_armed:
+                        await asyncio.sleep(0.45)
                     eng_tick = engines.get(br)
                     if eng_tick:
                         try:
@@ -1896,6 +1899,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                                 },
                             )
                             eng_tick.state.last_error = err[:500]
+                    lab_stagger_armed = True
 
             tick += 1
             snap_period = tick % 5 == 0

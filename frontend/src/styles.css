@@ -820,6 +820,103 @@ input[type="number"] {
   max-height: 288px;
 }
 
+.optimizer-radar-watch {
+  position: relative;
+}
+
+.optimizer-radar-watch-hand {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.optimizer-radar-watch-hand__pivot {
+  position: absolute;
+  left: 50%;
+  top: 51%;
+  width: 0;
+  height: 0;
+  transform: translate(-50%, -50%);
+}
+
+.optimizer-radar-watch-hand__arm {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 3px;
+  height: 86px;
+  margin-left: -1.5px;
+  transform-origin: 50% 100%;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #fef9c3 0%, #facc15 50%, #a16207 100%);
+  box-shadow: 0 0 12px rgba(250, 204, 21, 0.45);
+  transition: transform 0.34s cubic-bezier(0.33, 1.5, 0.52, 1);
+}
+
+.optimizer-radar-watch-hand__cap {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  margin-bottom: -4.5px;
+  border-radius: 50%;
+  background: #0b1228;
+  border: 2px solid #facc15;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.35);
+}
+
+/* 15m optimizer heartbeat: card border + per-line RYG semantics */
+.optimizer-toast {
+  border-width: 2px;
+  border-style: solid;
+  border-color: var(--border);
+  background: var(--panel);
+}
+
+.optimizer-toast--green {
+  border-color: #15803d;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.22);
+}
+
+.optimizer-toast--yellow {
+  border-color: #ca8a04;
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.18);
+}
+
+.optimizer-toast--red {
+  border-color: #b91c1c;
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.22);
+}
+
+.optimizer-toast__line {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.optimizer-toast__line--neutral {
+  color: var(--muted);
+}
+
+.optimizer-toast__line--green {
+  color: #86efac;
+}
+
+.optimizer-toast__line--yellow {
+  color: #fde047;
+}
+
+.optimizer-toast__line--red {
+  color: #fecaca;
+}
+
 .optimizer-pulse-legend--branches {
   gap: 10px 14px;
 }

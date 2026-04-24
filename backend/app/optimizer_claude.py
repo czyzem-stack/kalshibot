@@ -67,6 +67,8 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("change_history", [])
     out.setdefault("pulse_trace", [])
     out.setdefault("next_tick_preview", "")
+    out.setdefault("pulse_eval_count", 0)
+    out.setdefault("last_pulse_eval_at", "")
     return out
 
 
@@ -1011,6 +1013,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     start = end - dt.timedelta(hours=lookback_h)
     start_iso = _iso(start)
     end_iso = _iso(end)
+    # Monotonic tick for dashboard "second hand" (each optimizer evaluation, including no-op pulses).
+    try:
+        oc["pulse_eval_count"] = int(oc.get("pulse_eval_count") or 0) + 1
+    except (TypeError, ValueError):
+        oc["pulse_eval_count"] = 1
+    oc["last_pulse_eval_at"] = end_iso
 
     # Paper labs only (no live rows).
     tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
