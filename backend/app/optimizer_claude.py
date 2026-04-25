@@ -579,7 +579,26 @@ def pulse_chart_baseline(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, A
     }
 
 
-def _set_next_tick_preview(oc: dict[str, Any], cfg: dict[str, Any], *, lab_settled_n: int, profitable_n: int) -> None:
+def _settled_lab_n(trades: list[dict[str, Any]]) -> int:
+    return len(
+        [
+            t
+            for t in trades
+            if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
+        ]
+    )
+
+
+def _set_next_tick_preview(
+    oc: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    lab_settled_n: int,
+    profitable_n: int,
+    tr_b: list[dict[str, Any]],
+    tr_c: list[dict[str, Any]],
+    tr_d: list[dict[str, Any]],
+) -> None:
     lab = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     floor = max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57)))
     trig = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 3)))
@@ -589,11 +608,24 @@ def _set_next_tick_preview(oc: dict[str, Any], cfg: dict[str, Any], *, lab_settl
         frac = 0.03
     sched = bool(oc.get("enabled"))
     adapt = bool(oc.get("adaptive_enabled", True))
-    oc["next_tick_preview"] = (
+    nb = _settled_lab_n(tr_b)
+    nc = _settled_lab_n(tr_c)
+    nd = _settled_lab_n(tr_d)
+    b_on = bool(oc.get("lab_b_enabled", True))
+    c_on = bool(oc.get("lab_c_enabled", True))
+    d_on = bool(oc.get("lab_d_enabled", True))
+    b_style = str(oc.get("lab_b_style") or "conservative").strip()
+    c_style = str(oc.get("lab_c_style") or "aggressive").strip()
+    d_style = str(oc.get("lab_d_style") or "wild").strip()
+    base = (
         f"Next tick: Lab A has {lab_settled_n} settled (≥{profitable_n} wins in guard window). "
         f"Internal pulse watches up to {trig} losses entered near ≥{floor}% implied YES—tighten rules when replay-PnL improves. "
-        f"Bet fraction is ~{frac:.2%}/window. Adaptive={'on' if adapt else 'off'}, Claude scheduler={'on' if sched else 'off'}."
-    )[:900]
+        f"Bet fraction is ~{frac:.2%}/window. Adaptive={'on' if adapt else 'off'}, Claude scheduler={'on' if sched else 'off'}. "
+        f"B/C/D same lookback (reference arms; pulse does not persist their rules/bets): "
+        f"B {'on' if b_on else 'off'} ({b_style}, {nb} settled), C {'on' if c_on else 'off'} ({c_style}, {nc} settled), "
+        f"D {'on' if d_on else 'off'} ({d_style}, {nd} settled). Claude sees all four labs; adaptive writes Lab A only."
+    )
+    oc["next_tick_preview"] = base[:900]
 
 
 def _apply_adaptive_lab_tuning(
@@ -1108,7 +1140,15 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     if bi:
         changes.append(bi)
 
-    _set_next_tick_preview(oc, cfg, lab_settled_n=len(st_a_prev), profitable_n=prof_n)
+    _set_next_tick_preview(
+        oc,
+        cfg,
+        lab_settled_n=len(st_a_prev),
+        profitable_n=prof_n,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        tr_d=tr_d,
+    )
     if changes:
         hist = oc.get("change_history")
         old_hist = hist if isinstance(hist, list) else []

@@ -258,6 +258,7 @@ export default function SettingsOverlay({
   onAddAllLabsPaper,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
+  const [labSizingTab, setLabSizingTab] = useState<LabBranchKey>("a");
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -267,8 +268,17 @@ export default function SettingsOverlay({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
   useEffect(() => {
-    if (open) setSettingsTab("all");
+    if (open) {
+      setSettingsTab("all");
+      setLabSizingTab("a");
+    }
   }, [open]);
+  useEffect(() => {
+    if (settingsTab === "lab_a") setLabSizingTab("a");
+    else if (settingsTab === "lab_b") setLabSizingTab("b");
+    else if (settingsTab === "lab_c") setLabSizingTab("c");
+    else if (settingsTab === "lab_d") setLabSizingTab("d");
+  }, [settingsTab]);
 
   const showLive = settingsTab === "live" || settingsTab === "all";
   const showLabA = settingsTab === "lab_a" || settingsTab === "all";
@@ -288,9 +298,14 @@ export default function SettingsOverlay({
     settingsTab === "lab_b" ||
     settingsTab === "lab_c" ||
     settingsTab === "lab_d";
-  const nLabSizingCols = [showLabAColumn, showLabBColumn, showLabCColumn, showLabDColumn].filter(Boolean).length;
-  const labSizingGridTemplate =
-    nLabSizingCols <= 1 ? "1fr" : nLabSizingCols === 2 ? "1fr 1fr" : nLabSizingCols === 3 ? "repeat(3, minmax(0, 1fr))" : "repeat(4, minmax(0, 1fr))";
+  const sizingTabs: Array<{ id: LabBranchKey; label: string; visible: boolean }> = [
+    { id: "a", label: "Lab A", visible: showLabAColumn },
+    { id: "b", label: "Lab B", visible: showLabBColumn },
+    { id: "c", label: "Lab C", visible: showLabCColumn },
+    { id: "d", label: "Lab D", visible: showLabDColumn },
+  ];
+  const visibleSizingTabs = sizingTabs.filter((t) => t.visible);
+  const activeLabSizingTab = visibleSizingTabs.some((t) => t.id === labSizingTab) ? labSizingTab : (visibleSizingTabs[0]?.id ?? "a");
   // Optimizer controls + save button: dedicated tab, All, or any lab tab.
   const showOpt =
     settingsTab === "lab_ab_optimizer" ||
@@ -621,19 +636,25 @@ export default function SettingsOverlay({
               row values are used by per-lab <strong>Save … options</strong> and <code>PUT /api/config/lab-branches</code>. Per-lab YES/NO bands override Live until cleared in JSON;
               sliders fall back to the Live rule list when a lab has no saved <code>rules</code>.
             </p>
-            <div
-              className="row"
-              style={{
-                display: "grid",
-                gridTemplateColumns: labSizingGridTemplate,
-                gap: 12,
-                marginTop: 12,
-              }}
-            >
-              {showLabAColumn ? <LabSizingInputs which="a" lab={labA} cfg={cfg} busy={busy} /> : null}
-              {showLabBColumn ? <LabSizingInputs which="b" lab={labB} cfg={cfg} busy={busy} /> : null}
-              {showLabCColumn ? <LabSizingInputs which="c" lab={labC} cfg={cfg} busy={busy} /> : null}
-              {showLabDColumn ? <LabSizingInputs which="d" lab={labD} cfg={cfg} busy={busy} /> : null}
+            <div className="chart-tabs" role="tablist" aria-label="Lab sizing branch tabs" style={{ marginTop: 12 }}>
+              {visibleSizingTabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeLabSizingTab === t.id}
+                  className={`chart-tab ${activeLabSizingTab === t.id ? "chart-tab--active" : ""}`}
+                  onClick={() => setLabSizingTab(t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <div className="row" style={{ marginTop: 12 }}>
+              {activeLabSizingTab === "a" ? <LabSizingInputs which="a" lab={labA} cfg={cfg} busy={busy} /> : null}
+              {activeLabSizingTab === "b" ? <LabSizingInputs which="b" lab={labB} cfg={cfg} busy={busy} /> : null}
+              {activeLabSizingTab === "c" ? <LabSizingInputs which="c" lab={labC} cfg={cfg} busy={busy} /> : null}
+              {activeLabSizingTab === "d" ? <LabSizingInputs which="d" lab={labD} cfg={cfg} busy={busy} /> : null}
             </div>
             {showCombinedLabReset ? (
               <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
@@ -667,10 +688,20 @@ export default function SettingsOverlay({
                   disabled={busy || optimizerSaving}
                   title="PUT /api/config/lab-branches — applies bankroll/sizing (and lab toggles) from this row without wiping data."
                   onClick={() => {
-                    const parseC = (id: string) =>
-                      Math.round(Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim()));
-                    const parseF = (id: string) =>
-                      Number(String((document.getElementById(id) as HTMLInputElement | null)?.value ?? "").replace(/,/g, "").trim());
+                    const parseC = (id: string, fallback: number) => {
+                      const el = document.getElementById(id) as HTMLInputElement | null;
+                      if (!el) return fallback;
+                      const raw = String(el.value ?? "").replace(/,/g, "").trim();
+                      if (!raw) return fallback;
+                      return Math.round(Number(raw));
+                    };
+                    const parseF = (id: string, fallback: number) => {
+                      const el = document.getElementById(id) as HTMLInputElement | null;
+                      if (!el) return fallback;
+                      const raw = String(el.value ?? "").replace(/,/g, "").trim();
+                      if (!raw) return fallback;
+                      return Number(raw);
+                    };
                     const readBool = (id: string, fallback: boolean) => {
                       const el = document.getElementById(id) as HTMLInputElement | null;
                       return el ? Boolean(el.checked) : fallback;
@@ -678,18 +709,18 @@ export default function SettingsOverlay({
                     const resetVal = String((document.getElementById("bulk_lab_reset") as HTMLSelectElement | null)?.value || "none");
                     const backupEl = document.getElementById("bulk_lab_backup") as HTMLInputElement | null;
                     const backup = backupEl ? backupEl.checked : true;
-                    const laPaper = parseC("lab_a_paper");
-                    const laFrac = parseF("lab_a_frac");
-                    const laWin = parseC("lab_a_win");
-                    const lbPaper = parseC("lab_b_paper");
-                    const lbFrac = parseF("lab_b_frac");
-                    const lbWin = parseC("lab_b_win");
-                    const lcPaper = parseC("lab_c_paper");
-                    const lcFrac = parseF("lab_c_frac");
-                    const lcWin = parseC("lab_c_win");
-                    const ldPaper = parseC("lab_d_paper");
-                    const ldFrac = parseF("lab_d_frac");
-                    const ldWin = parseC("lab_d_win");
+                    const laPaper = parseC("lab_a_paper", Number(labA?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500000));
+                    const laFrac = parseF("lab_a_frac", Number(labA?.balance_fraction_per_window ?? 0.055));
+                    const laWin = parseC("lab_a_win", Number(labA?.window_minutes ?? 15));
+                    const lbPaper = parseC("lab_b_paper", Number(labB?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500000));
+                    const lbFrac = parseF("lab_b_frac", Number(labB?.balance_fraction_per_window ?? 0.06));
+                    const lbWin = parseC("lab_b_win", Number(labB?.window_minutes ?? 12));
+                    const lcPaper = parseC("lab_c_paper", Number(labC?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500000));
+                    const lcFrac = parseF("lab_c_frac", Number(labC?.balance_fraction_per_window ?? 0.1));
+                    const lcWin = parseC("lab_c_win", Number(labC?.window_minutes ?? 10));
+                    const ldPaper = parseC("lab_d_paper", Number(labD?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500000));
+                    const ldFrac = parseF("lab_d_frac", Number(labD?.balance_fraction_per_window ?? 0.13));
+                    const ldWin = parseC("lab_d_win", Number(labD?.window_minutes ?? 10));
                     // If a checkbox isn't rendered in this tab, keep current backend value instead of forcing false.
                     const laAutoReset = readBool("lab_a_auto_reset_failure", Boolean(labA?.auto_reset_paper_on_tick_failure));
                     const lbAutoReset = readBool("lab_b_auto_reset_failure", Boolean(labB?.auto_reset_paper_on_tick_failure));

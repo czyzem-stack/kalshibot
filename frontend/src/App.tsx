@@ -220,6 +220,30 @@ function stableOptimizerChangeId(h: AnyObj): string {
   return `ch-${tag}`;
 }
 
+/** Seen change_history stable ids for the “Toast: trades by lab” unread blip (separate from optimizer panel seen ids). */
+const TRADE_LAB_SNAPSHOT_SEEN_CH_KEY = "trade_lab_snapshot_seen_ch_v1";
+const TRADE_LAB_SNAPSHOT_BOOT_KEY = "trade_lab_snapshot_boot_v1";
+
+function readTradeLabSnapshotSeenChSet(): Set<string> {
+  try {
+    const raw = window.sessionStorage.getItem(TRADE_LAB_SNAPSHOT_SEEN_CH_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.map((x) => String(x)).filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistTradeLabSnapshotSeenChSet(ids: Set<string>) {
+  try {
+    window.sessionStorage.setItem(TRADE_LAB_SNAPSHOT_SEEN_CH_KEY, JSON.stringify([...ids].slice(-500)));
+  } catch {
+    // ignore
+  }
+}
+
 /** Backend ``optimizer_activity.radar`` → Recharts rows (one row per axis, all branches). */
 /** Draw order: back → front so Lab A sits on top. */
 const BRANCH_RADAR_LAYERS: { dataKey: string; label: string; stroke: string; fill: string; fillOpacity: number; strokeWidth: number }[] = [
@@ -340,7 +364,18 @@ function OptimizerRadarAngleTick(rows: AnyObj[]) {
   };
 }
 
-function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }) {
+function OptimizerActivitySection({
+  activity,
+  onTradeLabSnapshot,
+  tradeSnapshotDisabled,
+  snapshotUnseenChangeCount = 0,
+}: {
+  activity: AnyObj | undefined;
+  onTradeLabSnapshot?: () => void;
+  tradeSnapshotDisabled?: boolean;
+  /** Optimizer change_history rows not yet acknowledged via the trades-by-lab toast. */
+  snapshotUnseenChangeCount?: number;
+}) {
   const ch = Array.isArray(activity?.change_history) ? (activity!.change_history as AnyObj[]) : [];
   const preview = String(activity?.next_tick_preview || "").trim();
   const pulseTrace = Array.isArray(activity?.pulse_trace) ? (activity!.pulse_trace as AnyObj[]) : [];
@@ -352,12 +387,65 @@ function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }
 
   const hasPulseContent = Boolean(rows.length || preview || pulseTrace.length || ch.length);
 
+  const snapshotBtn =
+    onTradeLabSnapshot != null ? (
+      <span style={{ position: "relative", display: "inline-block" }}>
+        <button
+          type="button"
+          className="secondary"
+          style={{ fontSize: 11, padding: "4px 10px", whiteSpace: "nowrap" }}
+          disabled={Boolean(tradeSnapshotDisabled)}
+          title={
+            snapshotUnseenChangeCount > 0
+              ? `${snapshotUnseenChangeCount} new optimizer change(s) since you last opened this snapshot. Click to view and clear the badge.`
+              : "Open a toast with Live + Lab A–D rollups, optimizer context, and the newest settled rows from the dashboard feed."
+          }
+          aria-label={
+            snapshotUnseenChangeCount > 0
+              ? `Trades by lab snapshot, ${snapshotUnseenChangeCount} unread optimizer changes`
+              : "Trades by lab snapshot toast"
+          }
+          onClick={() => onTradeLabSnapshot()}
+        >
+          Toast: trades by lab
+        </button>
+        {snapshotUnseenChangeCount > 0 ? (
+          <span
+            className="trade-lab-snapshot-badge"
+            style={{
+              position: "absolute",
+              top: -5,
+              right: -6,
+              minWidth: 17,
+              height: 17,
+              padding: "0 4px",
+              borderRadius: 999,
+              background: "#dc2626",
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 700,
+              lineHeight: "17px",
+              textAlign: "center",
+              boxShadow: "0 0 0 2px var(--panel-bg, #0f172a)",
+              pointerEvents: "none",
+            }}
+            aria-hidden
+          >
+            {snapshotUnseenChangeCount > 99 ? "99+" : String(snapshotUnseenChangeCount)}
+          </span>
+        ) : null}
+      </span>
+    ) : null;
+
   if (!hasPulseContent) {
     return (
       <section className="dash-section optimizer-activity optimizer-pulse-wrap" aria-labelledby="dash-heading-opt-act">
-        <h2 id="dash-heading-opt-act" className="dash-section__title">
-          Optimizer radar
-        </h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <h2 id="dash-heading-opt-act" className="dash-section__title" style={{ marginBottom: 0 }}>
+            Optimizer radar
+          </h2>
+          {snapshotBtn}
+        </div>
         <div className="dash-section__legend">
           <p>
             No optimizer snapshot yet. Turn on <strong>Adaptive</strong> in optimizer settings (Claude scheduler optional), run
@@ -370,9 +458,12 @@ function OptimizerActivitySection({ activity }: { activity: AnyObj | undefined }
 
   return (
     <section className="dash-section optimizer-activity optimizer-pulse-wrap" aria-labelledby="dash-heading-opt-act">
-      <h2 id="dash-heading-opt-act" className="dash-section__title">
-        Optimizer radar
-      </h2>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <h2 id="dash-heading-opt-act" className="dash-section__title" style={{ marginBottom: 0 }}>
+          Optimizer radar
+        </h2>
+        {snapshotBtn}
+      </div>
       {preview ? (
         <div className="optimizer-pulse-preview" title="What the internal engine will evaluate on the next scheduled tick">
           <strong>Next tick:</strong> {preview}
@@ -767,146 +858,176 @@ function fmtIsoLocal(iso: string | undefined | null, withSeconds = true) {
   });
 }
 
-/**
- * Milliseconds until the next local wall time on a 15-minute grid (:00, :15, :30, :45).
- * If ``graceIntoQuarterMs`` is positive and we are within that many ms after such a boundary, returns 0 (fire now).
- */
-function msUntilNextLocalQuarterHour(now: Date, graceIntoQuarterMs = 0): number {
-  const start = new Date(now);
-  start.setMilliseconds(0);
-  start.setSeconds(0, 0);
-  start.setMinutes(Math.floor(start.getMinutes() / 15) * 15, 0, 0);
-  if (graceIntoQuarterMs > 0) {
-    const elapsed = now.getTime() - start.getTime();
-    if (elapsed >= 0 && elapsed < graceIntoQuarterMs) return 0;
+function formatBranchRollupLine(label: string, m: AnyObj): string {
+  const settled = Number(m.settled_trades ?? 0) || 0;
+  const w = Number(m.wins ?? 0) || 0;
+  const l = Number(m.losses ?? 0) || 0;
+  const sc = Number(m.scratch_trades ?? 0) || 0;
+  const open = Number(m.open_sim_trades ?? 0) || 0;
+  const pnl = Number(m.total_pnl_dollars ?? 0);
+  const wls = `${w}W/${l}L${sc ? `/${sc} flat` : ""}`;
+  const pnlPart = settled ? ` · Σ ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}` : "";
+  const openPart = open ? ` · ${open} open` : "";
+  return `${label}: ${settled} settled (${wls})${pnlPart}${openPart}`;
+}
+
+/** Short note: how this branch’s fills relate to the internal pulse / Claude optimizer (paper lab lookback). */
+function tradeBranchOptimizerLens(branchRaw: unknown): string {
+  const s = String(branchRaw || "live").trim().toLowerCase();
+  if (s === "lab_a" || s === "sim_lab") {
+    return "  ↳ Lab A settled row: feeds adaptive YES-floor / min-left (loss streak at floor + replay gate), optional win-relax, and bet pulse (last ~40 settled mean).";
   }
-  const next = new Date(start);
-  next.setMinutes(start.getMinutes() + 15, 0, 0);
-  return Math.max(0, next.getTime() - now.getTime());
-}
-
-type OptimizerToastTier = "green" | "yellow" | "red" | "neutral";
-
-function inferOptimizerRunTier(lastStatus: string, lastError: string): Exclude<OptimizerToastTier, "neutral"> {
-  const err = (lastError || "").trim();
-  if (err) return "red";
-  const s = (lastStatus || "").toLowerCase();
-  if (s.includes("error") || s.includes("fail")) return "red";
-  if (s.includes("noop") || s.includes("skip") || s.includes("disabled") || !s) return "yellow";
-  return "green";
-}
-
-function inferHistoryTier(style: string, summary: string, reason: string): Exclude<OptimizerToastTier, "neutral"> {
-  const blob = `${style} ${summary} ${reason}`.toLowerCase();
-  if (blob.includes("error") || blob.includes("fail")) return "red";
-  if (blob.includes("conservative") || blob.includes("tighten") || blob.includes("loss")) return "yellow";
-  if (blob.includes("aggressive") || blob.includes("relax") || blob.includes("ease") || blob.includes("win")) return "green";
-  return "yellow";
-}
-
-function topRadarFocusSummary(radar: AnyObj | null | undefined, max = 5): string {
-  if (!radar || typeof radar !== "object") return "—";
-  const focus = (radar.axis_focus || {}) as AnyObj;
-  const axes = Array.isArray(radar.axes) ? (radar.axes as AnyObj[]) : [];
-  const labelByKey = new Map<string, string>();
-  for (const ax of axes) {
-    if (ax && typeof ax === "object") labelByKey.set(String((ax as AnyObj).key), String((ax as AnyObj).label || (ax as AnyObj).key));
+  if (s === "lab_b") {
+    return "  ↳ Lab B: reference arm — counts toward min settled / wins gates and bet-pulse context; thresholds are not auto-written here.";
   }
-  const entries = Object.entries(focus)
-    .map(([k, v]) => ({ k, w: Number(v) || 0 }))
-    .filter((e) => e.w > 0.04)
-    .sort((a, b) => b.w - a.w);
-  if (!entries.length) return "even (no recent axis bias)";
-  return entries
-    .slice(0, max)
-    .map((e) => labelByKey.get(e.k) || e.k)
-    .join(" · ");
+  if (s === "lab_c") {
+    return "  ↳ Lab C: same as B (aggressive reference).";
+  }
+  if (s === "lab_d") {
+    return "  ↳ Lab D: reference + “wild” can widen/narrow bet pulse step from B/C short-run momentum.";
+  }
+  return "  ↳ Live: shown for your book; optimizer pulses use paper lab trades in their lookback, not Live branch rows.";
 }
 
-function latestMergedOptimizerChange(dash: AnyObj, cfg: AnyObj): AnyObj | null {
-  const oa = (dash?.optimizer_activity || {}) as AnyObj;
+function recentSettledResolutionLinesWithLens(rows: AnyObj[], max = 10): string {
+  const settled = rows.filter((t) => String(t.status || "").toLowerCase() === "settled");
+  settled.sort((a, b) => Number(b.id) - Number(a.id));
+  const slice = settled.slice(0, max);
+  if (!slice.length) return "";
+  return slice
+    .map((t) => {
+      const br = branchLabelForTradeToast(t.branch);
+      const tick = String(t.ticker || "").slice(0, 40);
+      const side = String(t.side || "").toUpperCase() || "—";
+      const rawP = t.pnl_cents;
+      let pnlPart = "";
+      if (rawP != null && rawP !== "") {
+        const n = Number(rawP);
+        if (Number.isFinite(n)) {
+          const d = n / 100;
+          pnlPart = ` · ${d >= 0 ? "+" : ""}$${d.toFixed(2)}`;
+        }
+      }
+      const res = t.result ? ` · ${String(t.result)}` : "";
+      const head = `${br} · ${tick} ${side}${pnlPart}${res}`;
+      return `${head}\n${tradeBranchOptimizerLens(t.branch)}`;
+    })
+    .join("\n\n");
+}
+
+function optimizerTradesContextExplainer(dash: AnyObj): string {
+  const cfg = (dash?.config || {}) as AnyObj;
   const oc = (cfg?.optimizer || {}) as AnyObj;
-  const a = Array.isArray(oa.change_history) ? (oa.change_history as AnyObj[]) : [];
-  const b = Array.isArray(oc.change_history) ? (oc.change_history as AnyObj[]) : [];
-  const merged = [...a, ...b];
-  merged.sort((x, y) => String(y.created_at || "").localeCompare(String(x.created_at || "")));
-  const top = merged[0];
-  return top && typeof top === "object" ? top : null;
+  const minTr = Number(oc.min_trades_for_optimize ?? 8) || 8;
+  const minProf = Number(oc.min_profitable_trades ?? 2) || 2;
+  const trig = Number(oc.loss_streak_trigger ?? 3) || 3;
+  const floor = Number(oc.lab_a_yes_floor_pct ?? 57) || 57;
+  const adapt = oc.adaptive_enabled !== false;
+  const sched = Boolean(oc.enabled);
+  const betOpt = oc.optimize_bet_size !== false;
+  return [
+    "What the optimizer does with trades (paper labs in its lookback):",
+    `• Gates: needs enough settled paper trades (≥${minTr} total with PnL, ≥${minProf} winners across the check) before nudging Lab A.`,
+    `• Adaptive (Lab A): stacks losing settles whose entry matched the YES implied floor (~${floor}%). At ${trig} such losses it may tighten YES floor / min minutes left if a rule replay shows better PnL; can ease after a clean win path.`,
+    `• Bet pulse (Lab A): last ~40 Lab A settled mean PnL moves balance_fraction_per_window; B/C/D help pass the same gates; Lab D “wild” can change step size from B/C tails.`,
+    `• Claude scheduler ${sched ? "on" : "off"} · adaptive ${adapt ? "on" : "off"} · optimize bet ${betOpt ? "on" : "off"} — model sees all labs; persisted auto-tuning targets Lab A only.`,
+  ].join("\n");
 }
 
-function mergeToastTiers(
-  a: Exclude<OptimizerToastTier, "neutral">,
-  b: Exclude<OptimizerToastTier, "neutral">,
-): Exclude<OptimizerToastTier, "neutral"> {
-  const rank = { red: 3, yellow: 2, green: 1 } as const;
-  return rank[b] > rank[a] ? b : a;
+function recentOptimizerActionsText(dash: AnyObj, maxItems = 3): string {
+  const oa = (dash?.optimizer_activity || {}) as AnyObj;
+  const cfg = (dash?.config || {}) as AnyObj;
+  const oc = (cfg?.optimizer || {}) as AnyObj;
+  const lists = [
+    ...(Array.isArray(oa.change_history) ? (oa.change_history as AnyObj[]) : []),
+    ...(Array.isArray(oc.change_history) ? (oc.change_history as AnyObj[]) : []),
+  ];
+  lists.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  const seen = new Set<string>();
+  const items: AnyObj[] = [];
+  for (const h of lists) {
+    if (!h || typeof h !== "object") continue;
+    const id = stableOptimizerChangeId(h as AnyObj);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    items.push(h as AnyObj);
+    if (items.length >= maxItems) break;
+  }
+  if (!items.length) {
+    return "Recent persisted changes: none in change_history yet (scheduler/adaptive may still be evaluating).";
+  }
+  return (
+    "Recent persisted changes:\n" +
+    items
+      .map((h, i) => {
+        const lab = String(h.lab_label || h.branch || "lab");
+        const style = String(h.style || "—");
+        const sum = String(h.summary || "").slice(0, 200);
+        const hint = String(h.tick_hint || "").trim().slice(0, 140);
+        const at = h.created_at ? fmtIsoLocal(String(h.created_at)) : "—";
+        return `${i + 1}. ${at} · ${lab} · ${style}\n   ${sum}${hint ? `\n   Watch: ${hint}${hint.length >= 140 ? "…" : ""}` : ""}`;
+      })
+      .join("\n\n")
+  );
 }
 
-/** Single 15m toast payload: colored lines + plain ``body`` for fallbacks. */
-function buildOptimizerHeartbeatToast(dash: AnyObj, cfg: AnyObj): {
+function pulseTraceLines(dash: AnyObj): string {
+  const oa = (dash?.optimizer_activity || {}) as AnyObj;
+  const pt = Array.isArray(oa.pulse_trace) ? (oa.pulse_trace as AnyObj[]) : [];
+  if (!pt.length) return "Pulse trace: (empty — no internal pulse messages stored yet.)";
+  return (
+    "Pulse trace (newest first in payload):\n" +
+    pt
+      .slice(0, 4)
+      .map((p) => `• ${String(p.kind || "pulse")}: ${String(p.message || "").slice(0, 130)}${String(p.message || "").length > 130 ? "…" : ""}`)
+      .join("\n")
+  );
+}
+
+/** Manual toast from Optimizer radar: rollups, optimizer lens on trades, activity + previews. */
+function buildTradesByLabSnapshotToast(dash: AnyObj): {
   title: string;
-  tone: Exclude<OptimizerToastTier, "neutral">;
-  segments: { tier: OptimizerToastTier; text: string }[];
+  tone: "green" | "yellow" | "red";
+  segments: { tier: "green" | "yellow" | "red" | "neutral"; text: string }[];
   body: string;
 } {
+  const metricsLive = (dash?.metrics || {}) as AnyObj;
+  const ma = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
+  const mb = (dash?.metrics_lab_b || {}) as AnyObj;
+  const mc = (dash?.metrics_lab_c || {}) as AnyObj;
+  const md = (dash?.metrics_lab_d || {}) as AnyObj;
+  const roll = [
+    formatBranchRollupLine("Live", metricsLive),
+    formatBranchRollupLine("Lab A", ma),
+    formatBranchRollupLine("Lab B", mb),
+    formatBranchRollupLine("Lab C", mc),
+    formatBranchRollupLine("Lab D", md),
+  ].join("\n");
+  const recent = (dash?.recent_trades || []) as AnyObj[];
+  const settledBlock = recentSettledResolutionLinesWithLens(recent, 10);
   const oa = (dash?.optimizer_activity || {}) as AnyObj;
-  const oc = (cfg?.optimizer || {}) as AnyObj;
-  const radar = oa.radar && typeof oa.radar === "object" ? (oa.radar as AnyObj) : null;
-  const st = String(oc?.last_status || "").trim();
-  const err = String(oc?.last_error || "").trim();
-  const runTier = inferOptimizerRunTier(st, err);
-  const head = latestMergedOptimizerChange(dash, cfg);
-  const histTier = head
-    ? inferHistoryTier(String(head.style || ""), String(head.summary || ""), String(head.reason || ""))
-    : runTier;
-  const tone = head ? mergeToastTiers(runTier, histTier) : runTier;
+  const preview = String(oa.next_tick_preview || "").trim();
+  const previewSeg =
+    preview.length > 0
+      ? ({ tier: "yellow" as const, text: `Next tick preview:\n${preview.slice(0, 520)}${preview.length > 520 ? "…" : ""}` })
+      : ({ tier: "neutral" as const, text: "Next tick preview: (not set yet — run the optimizer / adaptive pulse once.)" });
 
-  const segments: { tier: OptimizerToastTier; text: string }[] = [];
-  segments.push({
-    tier: "neutral",
-    text: `15-minute snapshot · ${fmtIsoLocal(new Date().toISOString(), true)}`,
-  });
-  segments.push({
-    tier: "neutral",
-    text: `Radar focus (updated with this fetch): ${topRadarFocusSummary(radar)}`,
-  });
-  segments.push({
-    tier: runTier,
-    text: `Last engine: ${oc.last_run_at ? fmtIsoLocal(String(oc.last_run_at)) : "—"} · status ${st || "—"}${err ? ` · ${err.slice(0, 200)}` : ""}`,
-  });
-  const ev = Number(oa.pulse_eval_count) || 0;
-  segments.push({
-    tier: "neutral",
-    text: `Pulse eval #${ev} · last eval ${oa.last_pulse_eval_at ? fmtIsoLocal(String(oa.last_pulse_eval_at)) : "—"}`,
-  });
-  segments.push({
-    tier: "neutral",
-    text: `Scheduler ${oc.enabled ? "on" : "off"} · Adaptive ${oc.adaptive_enabled !== false ? "on" : "off"}`,
-  });
-  const hint = String(oa.next_tick_preview || "").trim();
-  if (hint) {
-    segments.push({ tier: "yellow", text: `Next / rollback context: ${hint.slice(0, 360)}${hint.length > 360 ? "…" : ""}` });
-  }
-  if (head) {
-    const th = String(head.tick_hint || "").trim();
-    const lab = String(head.lab_label || head.branch || "Lab");
-    segments.push({
-      tier: histTier,
-      text: `Latest change (${lab} · ${String(head.style || "—")}): ${String(head.summary || "").slice(0, 280)}${th ? `\nWatch next: ${th.slice(0, 200)}` : ""}`,
-    });
-  } else {
-    segments.push({ tier: "neutral", text: "No change_history head yet — radar still reflects current config." });
-  }
-  const pt = Array.isArray(oa.pulse_trace) ? (oa.pulse_trace as AnyObj[]) : [];
-  if (pt.length && pt[0] && typeof pt[0] === "object") {
-    const p0 = pt[0] as AnyObj;
-    segments.push({
+  const segments: { tier: "green" | "yellow" | "red" | "neutral"; text: string }[] = [
+    { tier: "neutral", text: `Trades / labs · ${fmtIsoLocal(new Date().toISOString(), true)}` },
+    { tier: "neutral", text: roll },
+    { tier: "neutral", text: optimizerTradesContextExplainer(dash) },
+    previewSeg,
+    { tier: "neutral", text: recentOptimizerActionsText(dash, 3) },
+    { tier: "neutral", text: pulseTraceLines(dash) },
+    {
       tier: "neutral",
-      text: `Latest pulse trace: ${String(p0.kind || "—")}: ${String(p0.message || "").slice(0, 200)}`,
-    });
-  }
+      text: settledBlock
+        ? `Recent settlements (with per-row optimizer meaning, up to 10):\n\n${settledBlock}`
+        : "Recent settlements: none in the current recent_trades feed.",
+    },
+  ];
   const body = segments.map((s) => s.text).join("\n\n");
-  return { title: "Optimizer · 15 min", tone, segments, body };
+  return { title: "Trades by lab", tone: "yellow", segments, body };
 }
 
 /** Same instant as 24h UTC clock (for a second line or tooltip). */
@@ -1375,6 +1496,15 @@ function equitySeriesWithLiveTail(
   if (mtm == null) mtm = equity;
 
   const tailT = fmtIsoLocalFn(new Date().toISOString(), true);
+  if (base.length === 0) {
+    // New labs can start with no snapshot history; add an anchor point so a 2-point flat line is visible.
+    const anchorIso = new Date(Date.now() - 60_000).toISOString();
+    const anchorT = fmtIsoLocalFn(anchorIso, true);
+    return [
+      { t: anchorT, equity, mtm, synthetic: true },
+      { t: tailT, equity, mtm, synthetic: true },
+    ];
+  }
   return [...base, { t: tailT, equity, mtm, synthetic: true }];
 }
 
@@ -1681,7 +1811,7 @@ function EngineAssetSnapBlock({
 export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
-  const OPTIMIZER_HEARTBEAT_TOAST_ID = "opt-cycle-heartbeat";
+  const TRADE_LAB_SNAPSHOT_TOAST_ID = "manual-trade-lab-snapshot";
   const tradeToastsBootstrappedRef = useRef(false);
   const seenTradeInitRef = useRef<Set<string>>(new Set());
   const seenTradeSettleRef = useRef<Set<string>>(new Set());
@@ -1699,6 +1829,7 @@ export default function App() {
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
   const optimizerHistoryBootstrapped = useRef(false);
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c" | "d">("live");
+  const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d">("live");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
   /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
@@ -1706,8 +1837,12 @@ export default function App() {
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
   /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
   const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b" | "lab_c" | "lab_d">("live");
-  /** Last loaded dashboard JSON — used when a forced refresh returns null so the 15m toast still appears. */
+  /** Last loaded dashboard JSON — used for manual trade snapshot toast if current ``dash`` is briefly null. */
   const dashSnapshotRef = useRef<AnyObj | null>(null);
+  /** Stable ids of optimizer changes the user acknowledged by opening the trades-by-lab toast (sessionStorage-backed). */
+  const tradeLabSnapshotSeenChRef = useRef<Set<string>>(readTradeLabSnapshotSeenChSet());
+  const [tradeLabSnapshotBadgeEpoch, setTradeLabSnapshotBadgeEpoch] = useState(0);
+  const optimizerChangeHistoryMergedRef = useRef<AnyObj[]>([]);
 
   /**
    * Latest dashboard fetch only: aborts the previous request so a slow poll cannot finish after a newer one
@@ -1792,10 +1927,12 @@ export default function App() {
       const la = (nextConfig.lab_a || {}) as AnyObj;
       const lb = (nextConfig.lab_b || {}) as AnyObj;
       const lc = (nextConfig.lab_c || {}) as AnyObj;
+      const ld = (nextConfig.lab_d || {}) as AnyObj;
       const liveOn = Boolean(nextConfig.engine_running);
       const labAOn = Boolean(la.engine_running);
       const labBOn = Boolean(lb.engine_running);
       const labCOn = Boolean(lc.engine_running);
+      const labDOn = Boolean(ld.engine_running);
 
       const engine = { ...((prev.engine || {}) as AnyObj) };
       const live = { ...((engine.live || {}) as AnyObj) };
@@ -1811,6 +1948,7 @@ export default function App() {
       patchBranch("lab_a", labAOn);
       patchBranch("lab_b", labBOn);
       patchBranch("lab_c", labCOn);
+      patchBranch("lab_d", labDOn);
       if (engine.sim_lab && typeof engine.sim_lab === "object") {
         engine.sim_lab = { ...engine.sim_lab, engine_running: labAOn, simulate_orders: true };
       }
@@ -1949,15 +2087,12 @@ export default function App() {
     }
     if (!toAdd.length) return;
     setOptimizerNotifs((prev) => {
-      const hb = prev.find((p) => String(p.id) === OPTIMIZER_HEARTBEAT_TOAST_ID);
-      const rest = prev.filter((p) => String(p.id) !== OPTIMIZER_HEARTBEAT_TOAST_ID);
       const byId = new Map<string, AnyObj>();
-      for (const n of rest) byId.set(String(n.id), n);
+      for (const n of prev) byId.set(String(n.id), n);
       for (const n of toAdd) byId.set(String(n.id), n);
       const merged = Array.from(byId.values());
       merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-      const cap = merged.slice(0, 20);
-      return hb ? [hb, ...cap] : cap;
+      return merged.slice(0, 20);
     });
   }, [dash]);
 
@@ -1980,6 +2115,35 @@ export default function App() {
     merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
     return merged;
   }, [cfg, dash, optimizerCfg?.change_history]);
+
+  optimizerChangeHistoryMergedRef.current = optimizerChangeHistoryMerged;
+
+  const tradeLabSnapshotUnseenCount = useMemo(() => {
+    let n = 0;
+    for (const h of optimizerChangeHistoryMerged) {
+      const id = stableOptimizerChangeId(h);
+      if (id && !tradeLabSnapshotSeenChRef.current.has(id)) n += 1;
+    }
+    return n;
+  }, [optimizerChangeHistoryMerged, tradeLabSnapshotBadgeEpoch]);
+
+  /** First session with real history: treat existing rows as already “read” so the blip only tracks new pulses. */
+  useEffect(() => {
+    const history = optimizerChangeHistoryMerged;
+    try {
+      if (window.sessionStorage.getItem(TRADE_LAB_SNAPSHOT_BOOT_KEY) !== "1" && history.length > 0) {
+        for (const h of history) {
+          const id = stableOptimizerChangeId(h);
+          if (id) tradeLabSnapshotSeenChRef.current.add(id);
+        }
+        persistTradeLabSnapshotSeenChSet(tradeLabSnapshotSeenChRef.current);
+        window.sessionStorage.setItem(TRADE_LAB_SNAPSHOT_BOOT_KEY, "1");
+        setTradeLabSnapshotBadgeEpoch((e) => e + 1);
+      }
+    } catch {
+      // ignore
+    }
+  }, [optimizerChangeHistoryMerged]);
 
   useEffect(() => {
     try {
@@ -2049,80 +2213,31 @@ export default function App() {
     }
   }, [optimizerChangeHistoryMerged]);
 
-  /**
-   * Optimizer heartbeat toast: aligned to local wall quarter hours (:00, :15, :30, :45), four per hour.
-   * First schedule uses a short grace so loading within a few seconds of a boundary still fires once immediately.
-   * After each run, recomputes delay from ``Date.now()`` so slow ``refresh`` does not drift the cadence.
-   * If ``refresh`` returns null (race / abort), falls back to ``dashSnapshotRef``.
-   */
-  useEffect(() => {
-    let cancelled = false;
-    let timeoutId = 0;
+  const pushTradeLabSnapshotToast = useCallback(() => {
+    for (const h of optimizerChangeHistoryMergedRef.current) {
+      const id = stableOptimizerChangeId(h);
+      if (id) tradeLabSnapshotSeenChRef.current.add(id);
+    }
+    persistTradeLabSnapshotSeenChSet(tradeLabSnapshotSeenChRef.current);
+    setTradeLabSnapshotBadgeEpoch((e) => e + 1);
 
-    const tick = async () => {
-      if (cancelled) return;
-      try {
-        const d = await refresh({ force: true });
-        const source = (d || dashSnapshotRef.current) as AnyObj | null;
-        if (cancelled || !source) return;
-        const cfgNow = (source.config || {}) as AnyObj;
-        const toast = buildOptimizerHeartbeatToast(source, cfgNow);
-        const stalePrefix = !d
-          ? [{ tier: "yellow" as const, text: "Latest /api/dashboard did not return JSON (aborted or superseded) — showing cached snapshot." }]
-          : [];
-        const segments = stalePrefix.length ? [...stalePrefix, ...toast.segments] : toast.segments;
-        const body = stalePrefix.length ? `${String(stalePrefix[0].text)}\n\n${toast.body}` : toast.body;
-        const created = new Date().toISOString();
-        setOptimizerNotifs((prev) => {
-          const hb = {
-            id: OPTIMIZER_HEARTBEAT_TOAST_ID,
-            title: toast.title,
-            body,
-            tone: toast.tone,
-            segments,
-            created_at: created,
-          };
-          const rest = prev.filter((p) => String(p.id) !== OPTIMIZER_HEARTBEAT_TOAST_ID);
-          return [hb, ...rest].slice(0, 25);
-        });
-      } catch {
-        const source = dashSnapshotRef.current;
-        if (cancelled || !source) return;
-        const cfgNow = (source.config || {}) as AnyObj;
-        const toast = buildOptimizerHeartbeatToast(source, cfgNow);
-        const created = new Date().toISOString();
-        setOptimizerNotifs((prev) => {
-          const hb = {
-            id: OPTIMIZER_HEARTBEAT_TOAST_ID,
-            title: toast.title,
-            body: `Heartbeat refresh threw — cached snapshot.\n\n${toast.body}`,
-            tone: toast.tone,
-            segments: [{ tier: "yellow" as const, text: "Heartbeat refresh threw — cached snapshot." }, ...toast.segments],
-            created_at: created,
-          };
-          const rest = prev.filter((p) => String(p.id) !== OPTIMIZER_HEARTBEAT_TOAST_ID);
-          return [hb, ...rest].slice(0, 25);
-        });
-      }
-    };
-
-    const scheduleNext = (useGrace: boolean) => {
-      const delay = msUntilNextLocalQuarterHour(new Date(), useGrace ? 2800 : 0);
-      timeoutId = window.setTimeout(() => {
-        void (async () => {
-          if (cancelled) return;
-          await tick();
-          if (!cancelled) scheduleNext(false);
-        })();
-      }, delay);
-    };
-
-    scheduleNext(true);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [refresh]);
+    const source = (dash || dashSnapshotRef.current) as AnyObj | null;
+    if (!source) return;
+    const toast = buildTradesByLabSnapshotToast(source);
+    const created = new Date().toISOString();
+    setOptimizerNotifs((prev) => {
+      const snap = {
+        id: TRADE_LAB_SNAPSHOT_TOAST_ID,
+        title: toast.title,
+        body: toast.body,
+        tone: toast.tone,
+        segments: toast.segments,
+        created_at: created,
+      };
+      const rest = prev.filter((p) => String(p.id) !== TRADE_LAB_SNAPSHOT_TOAST_ID);
+      return [snap, ...rest].slice(0, 25);
+    });
+  }, [dash]);
 
   const metrics = dash?.metrics || {};
   const metricsLabA = (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj;
@@ -2752,6 +2867,23 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <div className="toolbar-block" title="Toggle paper lab engines. Wild (Lab D) must be on to place Lab D simulated trades.">
+              <div className="toolbar-label">Labs</div>
+              <div className="toolbar-group">
+                <button className="primary" disabled={busy} onClick={() => void setLabRunning("a", !labABranchEngineOn)}>
+                  A {labABranchEngineOn ? "on" : "off"}
+                </button>
+                <button className="primary" disabled={busy} onClick={() => void setLabRunning("b", !labBBranchEngineOn)}>
+                  B {labBBranchEngineOn ? "on" : "off"}
+                </button>
+                <button className="primary" disabled={busy} onClick={() => void setLabRunning("c", !labCBranchEngineOn)}>
+                  C {labCBranchEngineOn ? "on" : "off"}
+                </button>
+                <button className="primary" disabled={busy} onClick={() => void setLabRunning("d", !labDBranchEngineOn)}>
+                  D {labDBranchEngineOn ? "on" : "off"}
+                </button>
+              </div>
+            </div>
           </div>
           <div className="toolbar-optimizer-foot" title="Anthropic-backed analysis on A/B/C paper data; auto-applied tuning targets Lab A only.">
             <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
@@ -3041,7 +3173,12 @@ export default function App() {
         </div>
       </section>
 
-      <OptimizerActivitySection activity={dash.optimizer_activity as AnyObj | undefined} />
+      <OptimizerActivitySection
+        activity={dash.optimizer_activity as AnyObj | undefined}
+        onTradeLabSnapshot={pushTradeLabSnapshotToast}
+        tradeSnapshotDisabled={!dash}
+        snapshotUnseenChangeCount={tradeLabSnapshotUnseenCount}
+      />
         </div>
 
         <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
@@ -3223,6 +3360,16 @@ export default function App() {
               >
                 Lab C
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "d"}
+                className={`chart-tab ${assetWatchLab === "d" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab D (wild reference)."
+                onClick={() => setAssetWatchLab("d")}
+              >
+                Lab D
+              </button>
             </div>
           </div>
           {kalshiIsNonProd(kalshi?.env) ? (
@@ -3255,14 +3402,16 @@ export default function App() {
                     ? (engineSnapsLabA[id] as AnyObj | undefined)
                     : assetWatchLab === "b"
                       ? (engineSnapsLabB[id] as AnyObj | undefined)
-                      : (engineSnapsLabC[id] as AnyObj | undefined);
+                      : assetWatchLab === "c"
+                        ? (engineSnapsLabC[id] as AnyObj | undefined)
+                        : (engineSnapsLabD[id] as AnyObj | undefined);
               return (
               <div
                 key={id}
                 className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
                 title={
                   hasExposureTab
-                    ? `Open exposure for the “${assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : "Lab C"}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
+                    ? `Open exposure for the “${assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
                     : `Asset ${id}: series ${String(a.series_ticker || "")}.`
                 }
               >
@@ -3288,7 +3437,7 @@ export default function App() {
                       className="asset-watch-exposure-badge"
                       title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
                     >
-                      Open ({assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : "Lab C"}):{" "}
+                      Open ({assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}):{" "}
                       {exposureLabelsTab.join(" · ")}
                     </span>
                   ) : null}
@@ -3346,6 +3495,19 @@ export default function App() {
                     ) : (
                       <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
                         <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
+                      </div>
+                    )
+                  ) : assetWatchLab === "d" ? (
+                    labDBranchEngineOn ? (
+                      <EngineAssetSnapBlock
+                        label="Sim · Lab D"
+                        snap={engineSnapsLabD[id]}
+                        lastTick={engineLabD?.last_tick_at}
+                        engineOn={labDBranchEngineOn}
+                      />
+                    ) : (
+                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab D on in the toolbar to populate lab snapshots.">
+                        <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
                       </div>
                     )
                   ) : null}
@@ -3463,7 +3625,7 @@ export default function App() {
                 <p className="sub" style={{ marginBottom: 8 }} title="Why some assets have data and others show dashes.">
                   <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
                   identifier starts with that asset&apos;s <code>series_ticker</code>.{" "}
-                  <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for that series per branch.{" "}
+                  <strong>Sim (Live / Lab A / B / C / D)</strong> = open simulated trades in SQLite for that series per branch.{" "}
                   Sim cells merge the same market ticker (case-insensitive); several tickets on one ticker show one line
                   with <strong>contracts</strong> (position size) summed — hover for each ticker. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
                   positions and/or the bot has open sim trades for that asset&apos;s <code>series_ticker</code> prefix.
@@ -3472,12 +3634,32 @@ export default function App() {
                 </p>
               ) : (
                 <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
-                  <strong>Sim (Live / Lab A / B / C)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
+                  <strong>Sim (Live / Lab A / B / C / D)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
                   <code>series_ticker</code>. The Kalshi column is omitted when the account is not linked. Cells merge
                   duplicate tickers and sum <strong>contracts</strong> (Kalshi size, not “how many markets”) — hover for raw rows.
                 </p>
               )}
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
+                <div className="chart-tabs" role="tablist" aria-label="Holdings branch tabs" style={{ marginBottom: 8 }}>
+                  {[
+                    { id: "live", label: "Live" },
+                    { id: "a", label: "Lab A" },
+                    { id: "b", label: "Lab B" },
+                    { id: "c", label: "Lab C" },
+                    { id: "d", label: "Lab D" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={holdingsBranchTab === t.id}
+                      className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
+                      onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d")}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
                 <table className="table">
                   <thead>
                     <tr>
@@ -3486,29 +3668,40 @@ export default function App() {
                       {accountLinked ? (
                         <th title="Open positions returned by GET /portfolio/positions for this series.">Kalshi open</th>
                       ) : null}
-                      <th title="Live-branch open sim rows in SQLite. Cell text: “market lines” = distinct tickers with exposure; “contracts” = Kalshi YES/NO size (summed when merged).">
-                        Sim open (Live)
-                      </th>
-                      <th title="Lab A open sim rows. “Market lines” = distinct tickers; “contracts” = position size (Kalshi units), not how many markets.">
-                        Sim open (Lab A)
-                      </th>
-                      <th title="Lab B open sim rows. “Market lines” = distinct tickers; “contracts” = position size (Kalshi units), not how many markets.">
-                        Sim open (Lab B)
-                      </th>
-                      <th title="Lab C open sim rows. “Market lines” = distinct tickers; “contracts” = position size (Kalshi units), not how many markets.">
-                        Sim open (Lab C)
+                      <th
+                        title={
+                          holdingsBranchTab === "live"
+                            ? "Live-branch open sim rows in SQLite. Cell text: market lines = distinct tickers with exposure; contracts = Kalshi YES/NO size (summed when merged)."
+                            : `Lab ${holdingsBranchTab.toUpperCase()} open sim rows. Market lines = distinct tickers; contracts = position size (Kalshi units), not how many markets.`
+                        }
+                      >
+                        {holdingsBranchTab === "live"
+                          ? "Live"
+                          : holdingsBranchTab === "a"
+                            ? "Lab A"
+                            : holdingsBranchTab === "b"
+                              ? "Lab B"
+                              : holdingsBranchTab === "c"
+                                ? "Lab C"
+                                : "Lab D"}
                       </th>
                     </tr>
                   </thead>
                   <tbody>
                     {orderedAssetEntries(acctSnap.position_by_asset as AnyObj).map(([aid, row]: [string, AnyObj]) => {
                       const kal = summarizePositionRows(row.kalshi_open);
-                      const simLive = summarizePositionRows(row.bot_sim_open_live);
-                      const labA = summarizePositionRows(
-                        Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
-                      );
-                      const labB = summarizePositionRows(row.bot_sim_open_lab_b);
-                      const labC = summarizePositionRows(row.bot_sim_open_lab_c);
+                      const simByTab =
+                        holdingsBranchTab === "live"
+                          ? summarizePositionRows(row.bot_sim_open_live)
+                          : holdingsBranchTab === "a"
+                            ? summarizePositionRows(
+                                Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
+                              )
+                            : holdingsBranchTab === "b"
+                              ? summarizePositionRows(row.bot_sim_open_lab_b)
+                              : holdingsBranchTab === "c"
+                                ? summarizePositionRows(row.bot_sim_open_lab_c)
+                                : summarizePositionRows(row.bot_sim_open_lab_d);
                       return (
                       <tr key={aid} title={`Configured asset ${aid}`}>
                         <td title="Label from config.">{String(row.label || aid)}</td>
@@ -3527,30 +3720,9 @@ export default function App() {
                         <td
                           className="sub"
                           style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={simLive.title || simLive.text}
+                          title={simByTab.title || simByTab.text}
                         >
-                          {simLive.text}
-                        </td>
-                        <td
-                          className="sub"
-                          style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={labA.title || labA.text}
-                        >
-                          {labA.text}
-                        </td>
-                        <td
-                          className="sub"
-                          style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={labB.title || labB.text}
-                        >
-                          {labB.text}
-                        </td>
-                        <td
-                          className="sub"
-                          style={{ fontSize: 12, maxWidth: 280, wordBreak: "break-word" }}
-                          title={labC.title || labC.text}
-                        >
-                          {labC.text}
+                          {simByTab.text}
                         </td>
                       </tr>
                     );
@@ -3570,7 +3742,7 @@ export default function App() {
             title="dual_engine_loop runs tick_once per branch when that branch’s engine toggle is on. Each tick loads Kalshi for the same configured assets, then applies branch-specific rules, bankroll, dedupe keys, and SQLite writes."
           >
             <strong>Same market data</strong> for every branch (one Kalshi catalog per asset list).{" "}
-            <strong>Separate runs</strong> for Live vs Lab A vs Lab B: different rules, sizing, bankroll, dedupe windows, and trade rows — so scan counts often match even when behavior diverges.
+            <strong>Separate runs</strong> for Live vs Lab A/B/C/D: different rules, sizing, bankroll, dedupe windows, and trade rows — so scan counts often match even when behavior diverges.
           </p>
           <div className="sub" title="Engine polling status from /api/dashboard.">
             <div title="Live branch: engine on/off, paper vs real orders, last tick time, markets scanned this tick.">
