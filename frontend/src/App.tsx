@@ -2620,7 +2620,7 @@ export default function App() {
       </div>
 
       {!dash && err ? <ApiOfflineCallout message={err} /> : null}
-      {!dash && !err ? <ApiLoadingCallout /> : null}
+      {!dash && !err ? <DashboardLoadingScreen /> : null}
       {dash && err ? (
         <div className="error" title="Last API or validation error from this browser session.">
           {err}
@@ -3978,18 +3978,73 @@ function ApiOfflineCallout({ message }: { message: string }) {
   );
 }
 
-function ApiLoadingCallout() {
+/** Full-screen first paint while waiting for the initial `/api/dashboard` response. */
+function DashboardLoadingScreen() {
+  const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState<"connect" | "fetch" | "wait">("connect");
+  const startedAt = useRef<number>(Date.now());
+
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    startedAt.current = Date.now();
+    const tick = () => {
+      const elapsed = Date.now() - startedAt.current;
+      if (elapsed < 900) setPhase("connect");
+      else if (elapsed < 12_000) setPhase("fetch");
+      else setPhase("wait");
+      setProgress((p) => {
+        if (p >= 88) return p;
+        const bump = Math.max(0.35, (90 - p) * 0.028);
+        return Math.min(88, p + bump);
+      });
+    };
+    tick();
+    const id = window.setInterval(tick, 140);
+    return () => {
+      window.clearInterval(id);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, []);
+
+  const status =
+    phase === "connect"
+      ? "Connecting to local API…"
+      : phase === "fetch"
+        ? "Loading dashboard — GET /api/dashboard (config, engines, metrics, Kalshi state)…"
+        : "Still working — MTM and open paper positions can make this take a while…";
+
+  const pct = Math.round(progress);
+
   return (
-    <div className="callout callout-loading" title="Waiting for first successful /api/dashboard response.">
-      <h2 className="callout-title" title="Initial load in progress.">
-        Loading dashboard…
-      </h2>
-      <p className="callout-body" title="If this never clears, start the Python API and use the Vite dev URL (proxied /api).">
-        Contacting the local API at /api/dashboard. The first response can take a long time when Kalshi portfolio / MTM
-        work is heavy — wait up to about 90s before assuming the backend is down. If it never clears, start the Python
-        API and open this app at <code>http://localhost:5173</code> (not the API port alone) so <code>/api</code> is
-        proxied.
-      </p>
+    <div
+      className="app-loading-screen"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label="Loading dashboard"
+    >
+      <div className="app-loading-screen__panel">
+        <div className="app-loading-screen__spinner" aria-hidden />
+        <h1 className="app-loading-screen__title">Chomp's Diner</h1>
+        <p className="app-loading-screen__status" title="This screen clears when the first dashboard JSON arrives.">
+          {status}
+        </p>
+        <div
+          className="app-loading-screen__bar-track"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct}
+          aria-valuetext={`${pct}% (estimated while waiting)`}
+        >
+          <div className="app-loading-screen__bar-fill" style={{ width: `${pct}%` }} />
+        </div>
+        <p className="app-loading-screen__hint">
+          Use <code className="app-loading-screen__code">http://localhost:5173</code> so <code className="app-loading-screen__code">/api</code> proxies to
+          Python. First load may take up to ~90s.
+        </p>
+      </div>
     </div>
   );
 }

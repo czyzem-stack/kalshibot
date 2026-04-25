@@ -1617,6 +1617,99 @@ input[type="number"] {
   border-color: #2b4c86;
 }
 
+/* First dashboard fetch — full viewport, spinner + phased copy + asymptotic progress */
+.app-loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px;
+  padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  background: radial-gradient(ellipse 140% 90% at 50% -10%, #1a2a5a 0%, #0b1020 45%, #060a14 100%);
+  box-sizing: border-box;
+}
+
+.app-loading-screen__panel {
+  width: min(440px, 100%);
+  text-align: center;
+}
+
+.app-loading-screen__spinner {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 22px;
+  border-radius: 50%;
+  border: 3px solid rgba(110, 231, 255, 0.18);
+  border-top-color: var(--accent);
+  animation: app-loading-spin 0.78s linear infinite;
+}
+
+@keyframes app-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.app-loading-screen__title {
+  margin: 0 0 14px;
+  font-size: clamp(1.35rem, 4vw, 1.65rem);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--text);
+}
+
+.app-loading-screen__status {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--muted);
+  min-height: 4.5em;
+}
+
+.app-loading-screen__bar-track {
+  margin-top: 22px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  border: 1px solid rgba(36, 48, 85, 0.9);
+}
+
+.app-loading-screen__bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4fd1c5, var(--accent));
+  box-shadow: 0 0 14px rgba(110, 231, 255, 0.35);
+  transition: width 0.18s ease-out;
+}
+
+.app-loading-screen__hint {
+  margin: 18px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(139, 147, 176, 0.95);
+}
+
+.app-loading-screen__code {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(15, 23, 48, 0.85);
+  border: 1px solid rgba(43, 76, 134, 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-loading-screen__spinner {
+    animation-duration: 1.6s;
+  }
+
+  .app-loading-screen__bar-fill {
+    transition: none;
+  }
+}
+
 /* Assets to watch: highlight any series with Kalshi and/or sim open exposure */
 .asset-watch-row {
   margin-bottom: 14px;
