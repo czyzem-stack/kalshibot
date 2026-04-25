@@ -369,12 +369,14 @@ function OptimizerActivitySection({
   onTradeLabSnapshot,
   tradeSnapshotDisabled,
   snapshotUnseenChangeCount = 0,
+  onOpenInfo,
 }: {
   activity: AnyObj | undefined;
   onTradeLabSnapshot?: () => void;
   tradeSnapshotDisabled?: boolean;
   /** Optimizer change_history rows not yet acknowledged via the trades-by-lab toast. */
   snapshotUnseenChangeCount?: number;
+  onOpenInfo?: (title: string, body: ReactNode) => void;
 }) {
   const ch = Array.isArray(activity?.change_history) ? (activity!.change_history as AnyObj[]) : [];
   const preview = String(activity?.next_tick_preview || "").trim();
@@ -436,6 +438,35 @@ function OptimizerActivitySection({
         ) : null}
       </span>
     ) : null;
+  const infoBtn = onOpenInfo ? (
+    <button
+      type="button"
+      className="chart-tab"
+      style={{ padding: "4px 10px" }}
+      title="How to read optimizer radar and pulse."
+      onClick={() =>
+        onOpenInfo(
+          "Optimizer radar",
+          <>
+            <p>
+              Radar overlays show effective branch posture across key dimensions (risk, sizing, thresholds, cadence). The
+              watch hand advances with each optimizer evaluation.
+            </p>
+            <p>
+              Pulse chips and next-tick text summarize what the optimizer is currently watching. Adaptive writes target Lab A
+              only; Labs B/C/D remain context/reference arms.
+            </p>
+            <p>
+              If no snapshot exists yet: enable Adaptive, run paper trades, then wait for scheduled cadence or run optimizer
+              once.
+            </p>
+          </>,
+        )
+      }
+    >
+      Info
+    </button>
+  ) : null;
 
   if (!hasPulseContent) {
     return (
@@ -444,14 +475,14 @@ function OptimizerActivitySection({
           <h2 id="dash-heading-opt-act" className="dash-section__title" style={{ marginBottom: 0 }}>
             Optimizer radar
           </h2>
-          {snapshotBtn}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+            {snapshotBtn}
+            {infoBtn}
+          </div>
         </div>
-        <div className="dash-section__legend">
-          <p>
-            No optimizer snapshot yet. Turn on <strong>Adaptive</strong> in optimizer settings (Claude scheduler optional), run
-            Lab A paper trades, then wait for the interval or use <strong>Run once</strong>.
-          </p>
-        </div>
+        <p className="sub" style={{ marginLeft: 2 }}>
+          No optimizer snapshot yet.
+        </p>
       </section>
     );
   }
@@ -462,7 +493,10 @@ function OptimizerActivitySection({
         <h2 id="dash-heading-opt-act" className="dash-section__title" style={{ marginBottom: 0 }}>
           Optimizer radar
         </h2>
-        {snapshotBtn}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          {snapshotBtn}
+          {infoBtn}
+        </div>
       </div>
       {preview ? (
         <div className="optimizer-pulse-preview" title="What the internal engine will evaluate on the next scheduled tick">
@@ -1835,6 +1869,7 @@ export default function App() {
   /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
   const [notTradedBranch, setNotTradedBranch] = useState<ActivityBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
+  const [infoPopup, setInfoPopup] = useState<{ title: string; body: ReactNode } | null>(null);
   /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
   const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b" | "lab_c" | "lab_d">("live");
   /** Last loaded dashboard JSON — used for manual trade snapshot toast if current ``dash`` is briefly null. */
@@ -2975,9 +3010,65 @@ export default function App() {
       <div className="dash-main-4grid">
         <div className="dash-split-row__col dash-split-row__col--metrics dash-split-card">
       <section className="dash-section dash-section--split-card" aria-labelledby="dash-heading-branch-performance">
-        <h2 id="dash-heading-branch-performance" className="dash-section__title">
-          Branch performance
-        </h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <h2 id="dash-heading-branch-performance" className="dash-section__title" style={{ margin: 0 }}>
+            Branch performance
+          </h2>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+            <button
+              type="button"
+              className="primary"
+              disabled={
+                busy ||
+                !(
+                  Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabB.total_pnl_dollars ?? 0) &&
+                  Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabC.total_pnl_dollars ?? 0) &&
+                  Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabD.total_pnl_dollars ?? 0)
+                )
+              }
+              title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds both B and C. Extra confirmation when Live is in Real $ mode."
+              onClick={() => void promoteLabAToLive()}
+            >
+              Apply Lab A to Live
+            </button>
+            <button
+              type="button"
+              className="chart-tab"
+              style={{ padding: "4px 10px" }}
+              title="How to read branch tiles and settled vs unrealized PnL."
+              onClick={() =>
+                setInfoPopup({
+                  title: "Branch performance",
+                  body: (
+                    <div className="dash-section__legend">
+                      <p>
+                        Tiles follow the branch tab - each of Live / Lab A / B / C / D is a separate SQLite rollup.{" "}
+                        <strong>Settled PnL</strong> is <em>only</em> from finalized/closed sim rows; it stays $0 until a
+                        contract settles, even when MTM is up or down on open sims. Use <strong>open / mark P&amp;L</strong>{" "}
+                        for the unrealized piece (MTM - start - settled).
+                      </p>
+                      <p>
+                        Settled = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim). Open
+                        (paper) = premium held in open sim rows (subtracted from estimated equity).
+                      </p>
+                      {!cfg.simulate && perfBranchMeta.isLive ? (
+                        <p>Cash / portfolio = Kalshi signed portfolio reads when API keys are configured.</p>
+                      ) : null}
+                      {cfg.simulate || !perfBranchMeta.isLive ? (
+                        <p>
+                          Reconcile {perfBranchMeta.reconcileLabel}: MTM (est.) below = last snapshot mark-to-market total.
+                          Equity (cost basis) = bankroll + realized PnL - committed premium.
+                        </p>
+                      ) : null}
+                    </div>
+                  ),
+                })
+              }
+            >
+              Info
+            </button>
+          </div>
+        </div>
         <div
           className="sub"
           style={{
@@ -2994,22 +3085,6 @@ export default function App() {
             {fmtMoney(Number(metricsLabB.total_pnl_dollars ?? 0))} · <strong>C</strong>{" "}
             {fmtMoney(Number(metricsLabC.total_pnl_dollars ?? 0))} · <strong>D</strong> {fmtMoney(Number(metricsLabD.total_pnl_dollars ?? 0))}
           </span>
-          <button
-            type="button"
-            className="primary"
-            disabled={
-              busy ||
-              !(
-                Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabB.total_pnl_dollars ?? 0) &&
-                Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabC.total_pnl_dollars ?? 0) &&
-                Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabD.total_pnl_dollars ?? 0)
-              )
-            }
-            title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds both B and C. Extra confirmation when Live is in Real $ mode."
-            onClick={() => void promoteLabAToLive()}
-          >
-            Apply Lab A to Live
-          </button>
         </div>
         <div className="chart-tabs dash-split-panel__tabs" role="tablist" aria-label="Performance branch tabs">
           {[
@@ -3030,27 +3105,6 @@ export default function App() {
               {t.label}
             </button>
           ))}
-        </div>
-        <div className="dash-section__legend">
-          <p>
-            Tiles follow the branch tab — each of Live / Lab A / B / C is a separate SQLite rollup.{" "}
-            <strong>Settled PnL</strong> is <em>only</em> from finalized/closed sim rows; it stays $0 until a contract
-            settles, even when MTM is up or down on open sims. Use <strong>open / mark P&amp;L</strong> for the unrealized
-            piece (MTM − start − settled).
-          </p>
-          <p>
-            Settled = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim). Open (paper) =
-            premium held in open sim rows (subtracted from estimated equity).
-          </p>
-          {!cfg.simulate && perfBranchMeta.isLive ? (
-            <p>Cash / portfolio = Kalshi signed portfolio reads when API keys are configured.</p>
-          ) : null}
-          {cfg.simulate || !perfBranchMeta.isLive ? (
-            <p>
-              Reconcile {perfBranchMeta.reconcileLabel}: MTM (est.) below = last snapshot mark-to-market total. Equity
-              (cost basis) = bankroll + realized PnL − committed premium.
-            </p>
-          ) : null}
         </div>
         <div className="metrics metrics--in-split-card" style={{ marginBottom: 14 }}>
           {(!cfg.simulate && perfBranchMeta.isLive) ? (
@@ -3162,17 +3216,47 @@ export default function App() {
         onTradeLabSnapshot={pushTradeLabSnapshotToast}
         tradeSnapshotDisabled={!dash}
         snapshotUnseenChangeCount={tradeLabSnapshotUnseenCount}
+        onOpenInfo={(title, body) => setInfoPopup({ title, body })}
       />
         </div>
 
         <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
-          <h2
-            id="dash-heading-equity-curves"
-            className="dash-section__title dash-equity-panel__title"
-            title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
-          >
-            Equity curves
-          </h2>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <h2
+              id="dash-heading-equity-curves"
+              className="dash-section__title dash-equity-panel__title"
+              style={{ margin: 0 }}
+              title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
+            >
+              Equity curves
+            </h2>
+            <button
+              type="button"
+              className="chart-tab"
+              style={{ padding: "4px 10px" }}
+              title="How to read book vs MTM equity lines."
+              onClick={() =>
+                setInfoPopup({
+                  title: "Equity curves",
+                  body: (
+                    <div className="dash-section__legend dash-equity-panel__legend">
+                      <p>
+                        All four use the time-scale tabs. <strong>Book (solid)</strong> = cash-ledger: start + realized PnL,
+                        minus premium still tied up in open sims (it <em>steps</em> on fill, exit, or settlement).{" "}
+                        <strong>MTM (dashed)</strong> = that cash-ledger <em>plus</em> the current fair value of those open
+                        sims. On a <strong>new open</strong>, book usually <em>drops</em> by what you paid, while total MTM
+                        can <em>stay near</em> the line you had before if the position is marked close to cost - the two
+                        series are from the same sim state but are <strong>not</strong> the same number. Dashed then wiggles
+                        with every poll; solid stays flat until the next ledger event. That split is expected, not a bug.
+                      </p>
+                    </div>
+                  ),
+                })
+              }
+            >
+              Info
+            </button>
+          </div>
           <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
             {(
               [
@@ -3195,17 +3279,6 @@ export default function App() {
                 {label}
               </button>
             ))}
-          </div>
-          <div className="dash-section__legend dash-equity-panel__legend">
-            <p>
-              All four use the time-scale tabs. <strong>Book (solid)</strong> = cash-ledger: start + realized PnL, minus
-              premium still tied up in open sims (it <em>steps</em> on fill, exit, or settlement). <strong>MTM (dashed)</strong>{" "}
-              = that cash-ledger <em>plus</em> the current fair value of those open sims. On a <strong>new open</strong>, book
-              usually <em>drops</em> by what you paid, while total MTM can <em>stay near</em> the line you had before if the
-              position is marked close to cost — the two series are from the same sim state but are <strong>not</strong> the
-              same number. Dashed then wiggles with every poll; solid stays flat until the next ledger event. That split is
-              expected, not a bug.
-            </p>
           </div>
           <div className="dash-equity-charts">
             <div className="dash-equity-chart-block">
@@ -3296,14 +3369,52 @@ export default function App() {
 
         <div className="panel dashboard-grid-panel">
           <div className="dashboard-grid-panel__head">
-            <h2
-              id="dash-heading-assets"
-              className="dash-section__title dashboard-grid-panel__title"
-              title="Snapshots per series (BTC first, ETH second, then A–Z). Which series the engine scans is controlled by each asset’s enabled flag in bot config (PUT /api/config); dashboard toggles were removed to avoid glitchy reloads. NONE = no rule band matched this tick."
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%" }}>
+              <h2
+                id="dash-heading-assets"
+                className="dash-section__title dashboard-grid-panel__title"
+                title="Snapshots per series (BTC first, ETH second, then A-Z). Which series the engine scans is controlled by each asset's enabled flag in bot config."
+              >
+                Assets to watch
+              </h2>
+              <button
+                type="button"
+                className="chart-tab"
+                style={{ padding: "4px 10px" }}
+                title="How to read asset watch snapshots."
+                onClick={() =>
+                  setInfoPopup({
+                    title: "Assets to watch",
+                    body: (
+                      <div className="dash-section__legend">
+                        <p>
+                          Snapshots are per-asset/per-branch engine reads. The branch tabs switch which branch snapshot is
+                          shown; they do not change your underlying config.
+                        </p>
+                        <p>
+                          Asset scanning is controlled by each asset&apos;s <code>enabled</code> flag in config. "No snapshot"
+                          usually means the branch engine is off, Kalshi has not published quotes yet, or the branch has not
+                          ticked since startup.
+                        </p>
+                        <p>
+                          On non-production Kalshi hosts, many 15m rows can show delayed/missing books (for example 0.00
+                          bid/ask or "Target price: TBD"). That indicates unavailable quotes on that environment, not an app
+                          filter issue.
+                        </p>
+                      </div>
+                    ),
+                  })
+                }
+              >
+                Info
+              </button>
+            </div>
+            <div
+              className="chart-tabs dashboard-grid-panel__tabs"
+              role="tablist"
+              aria-label="Asset snapshot branch"
+              style={{ width: "100%" }}
             >
-              Assets to watch
-            </h2>
-            <div className="chart-tabs dashboard-grid-panel__tabs" role="tablist" aria-label="Asset snapshot branch">
               <button
                 type="button"
                 role="tab"
@@ -3357,17 +3468,9 @@ export default function App() {
             </div>
           </div>
           {kalshiIsNonProd(kalshi?.env) ? (
-            <p
-              className="sub"
-              style={{ marginBottom: 12, lineHeight: 1.5, fontSize: 12 }}
-              title="Kalshi demo/stage feeds often omit YES bid/ask on smaller 15m series even when the contract exists."
-            >
-              You are on a <strong>non-production</strong> Kalshi host (<code>{String(kalshi?.env || "—")}</code>). Demo
-              feeds often omit or delay YES bid/ask on many 15m crypto rows, so you may see <code>0.00</code> bid/ask with
-              &quot;Target price: TBD&quot; — <strong>no book</strong> means Kalshi has not published quotes for that
-              contract on this environment yet, not that this app ignores that asset. Production (with matching keys)
-              usually shows books across all configured series where Kalshi lists them.
-            </p>
+            <div className="sub" style={{ marginBottom: 8, fontSize: 12 }} title="Non-production feed detected. Use Info for full notes.">
+              Non-production host detected: <code>{String(kalshi?.env || "—")}</code>.
+            </div>
           ) : null}
           {Object.keys(assets).length === 0 ? (
             <div className="sub" title="Add assets under Settings → JSON or defaults in backend config.">
@@ -3516,18 +3619,52 @@ export default function App() {
               title={
                 accountLinked
                   ? "Balance/positions from signed Kalshi portfolio reads. Writes: Live branch POSTs orders only in Real $ mode when a rule fires."
-                  : "No signed portfolio access — markets and engine use public Kalshi data; sim trades stay in local SQLite."
+                  : "No signed portfolio access - markets and engine use public Kalshi data; sim trades stay in local SQLite."
               }
             >
               Account
             </h2>
-            <div className="dashboard-grid-panel__meta" aria-label="Kalshi link status">
+            <div className="dashboard-grid-panel__meta" aria-label="Kalshi link status" style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
               <span
                 className={`dashboard-grid-panel__badge${accountLinked ? " dashboard-grid-panel__badge--ok" : ""}`}
                 title={accountLinked ? "Signed portfolio reads enabled for this backend." : "No exchange credentials on this backend; public market data only."}
               >
                 {accountLinked ? "Kalshi linked" : "Public data only"}
               </span>
+              <button
+                type="button"
+                className="chart-tab"
+                style={{ padding: "4px 10px" }}
+                title="How account and holdings data are sourced."
+                onClick={() =>
+                  setInfoPopup({
+                    title: "Account and holdings",
+                    body: (
+                      <div className="dash-section__legend">
+                        <p>
+                          When Kalshi credentials are linked, this section shows signed portfolio balance/positions from
+                          exchange APIs. Without credentials, the dashboard still uses public market data but omits exchange
+                          account details.
+                        </p>
+                        <p>
+                          Sim columns are local SQLite paper rows by branch (Live/Lab A/B/C/D). Kalshi columns are exchange
+                          positions; the two can differ during paper testing.
+                        </p>
+                        <p>
+                          If account data is missing, set <code>KALSHI_API_KEY_ID</code> and your RSA private key in{" "}
+                          <code>.env</code>, restart the backend, then reload.
+                        </p>
+                        <p>
+                          Holdings table glossary: "market lines" = distinct exposed tickers in a cell; "contracts" = summed
+                          YES/NO position size on those lines.
+                        </p>
+                      </div>
+                    ),
+                  })
+                }
+              >
+                Info
+              </button>
             </div>
           </div>
           {!remoteBal ? (
@@ -3535,30 +3672,10 @@ export default function App() {
               className="sub"
               title="Configure KALSHI_API_KEY_ID and private key in repo .env, restart API, reload dashboard."
             >
-              {kalshi?.public_ok ? (
-                <>
-                  No Kalshi account is linked on this backend. The dashboard still uses <strong>public</strong> market
-                  data (quotes, series, engine ticks). Balance and exchange-held positions are unavailable until you add
-                  credentials. Simulated fills remain in the local database.
-                </>
-              ) : (
-                <>
-                  Balance unavailable (and public API may be down). Add{" "}
-                  <code title="Env var: API key id.">KALSHI_API_KEY_ID</code> and a private key to{" "}
-                  <code title="Environment file in repo root.">.env</code> (see{" "}
-                  <code title="Example env file.">.env.example</code>
-                  ), then restart the backend.
-                </>
-              )}
+              {kalshi?.public_ok ? "No linked Kalshi account on this backend." : "Balance unavailable right now."}
               {kalshi?.private_error ? (
                 <div className="sub" style={{ marginTop: 10, fontSize: 12, opacity: 0.9 }} title="Last private API error from the backend.">
                   Detail: {String(kalshi.private_error)}
-                </div>
-              ) : null}
-              {kalshi?.public_ok ? (
-                <div style={{ marginTop: 10 }} title="Optional: link Kalshi for portfolio reads and real order posting.">
-                  To link: set <code>KALSHI_API_KEY_ID</code> and your RSA private key in <code>.env</code>, restart the
-                  API, reload.
                 </div>
               ) : null}
             </div>
@@ -3605,24 +3722,6 @@ export default function App() {
               >
                 Holdings by asset (series prefix)
               </h3>
-              {accountLinked ? (
-                <p className="sub" style={{ marginBottom: 8 }} title="Why some assets have data and others show dashes.">
-                  <strong>Kalshi</strong> = rows from <code>/portfolio/positions</code> (market + event tickers) whose
-                  identifier starts with that asset&apos;s <code>series_ticker</code>.{" "}
-                  <strong>Sim (Live / Lab A / B / C / D)</strong> = open simulated trades in SQLite for that series per branch.{" "}
-                  Sim cells merge the same market ticker (case-insensitive); several tickets on one ticker show one line
-                  with <strong>contracts</strong> (position size) summed — hover for each ticker. <strong>No asset is special-cased in code</strong> — a row shows data when Kalshi returns matching
-                  positions and/or the bot has open sim trades for that asset&apos;s <code>series_ticker</code> prefix.
-                  Symbols with tighter books tend to fill first; others stay &quot;—&quot; until the same is true, or
-                  appear under <strong>Recent trades</strong> after sim fills.
-                </p>
-              ) : (
-                <p className="sub" style={{ marginBottom: 8 }} title="Public-only mode: no signed portfolio reads.">
-                  <strong>Sim (Live / Lab A / B / C / D)</strong> = open simulated trades in SQLite for each asset&apos;s{" "}
-                  <code>series_ticker</code>. The Kalshi column is omitted when the account is not linked. Cells merge
-                  duplicate tickers and sum <strong>contracts</strong> (Kalshi size, not “how many markets”) — hover for raw rows.
-                </p>
-              )}
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
                 <div className="chart-tabs" role="tablist" aria-label="Holdings branch tabs" style={{ marginBottom: 8 }}>
                   {[
@@ -3717,17 +3816,37 @@ export default function App() {
             </div>
           ) : null}
 
-          <h2 className="section-tip" style={{ marginTop: 16 }} title="Polling engines: market scan, rules, logging. Tick traces show the last engine loop output.">
-            Engines
-          </h2>
-          <p
-            className="sub section-tip"
-            style={{ fontSize: 11, lineHeight: 1.45, margin: "4px 0 10px 0" }}
-            title="dual_engine_loop runs tick_once per branch when that branch’s engine toggle is on. Each tick loads Kalshi for the same configured assets, then applies branch-specific rules, bankroll, dedupe keys, and SQLite writes."
-          >
-            <strong>Same market data</strong> for every branch (one Kalshi catalog per asset list).{" "}
-            <strong>Separate runs</strong> for Live vs Lab A/B/C/D: different rules, sizing, bankroll, dedupe windows, and trade rows — so scan counts often match even when behavior diverges.
-          </p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 16 }}>
+            <h2 className="section-tip" style={{ margin: 0 }} title="Polling engines: market scan, rules, logging. Tick traces show the last engine loop output.">
+              Engines
+            </h2>
+            <button
+              type="button"
+              className="chart-tab"
+              style={{ padding: "4px 10px" }}
+              title="How branch engine logs and scan counts work."
+              onClick={() =>
+                setInfoPopup({
+                  title: "Engines",
+                  body: (
+                    <div className="dash-section__legend">
+                      <p>
+                        <strong>Same market data</strong> is fetched for each branch from the configured asset list.
+                        <strong> Separate runs</strong> then apply branch-specific rules, sizing, bankroll, dedupe windows,
+                        and SQLite writes.
+                      </p>
+                      <p>
+                        Because branches scan the same catalog, scan counts can be similar while behavior diverges due to
+                        branch config differences.
+                      </p>
+                    </div>
+                  ),
+                })
+              }
+            >
+              Info
+            </button>
+          </div>
           <div className="sub" title="Engine polling status from /api/dashboard.">
             <div title="Live branch: engine on/off, paper vs real orders, last tick time, markets scanned this tick.">
               <strong title="Main trading branch tied to Live mode.">Live</strong> engine {dash?.engine?.live?.engine_running ? "on" : "off"} ·
@@ -3867,18 +3986,36 @@ export default function App() {
       </div>
 
       <section className="dash-section" style={{ marginTop: 14 }} aria-labelledby="dash-heading-activity">
-        <h2 id="dash-heading-activity" className="dash-section__title">
-          Activity log
-        </h2>
-        <div className="dash-section__legend">
-          <p>
-            The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose branch
-            matches (legacy sim_lab counts as Lab A). Use branch tabs for `lab_b`, `lab_c`, and `lab_d` rows.
-          </p>
-          <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
-            Recent signals and trades use one branch filter; <strong>Bets not traded</strong> sits below with its own
-            branch tabs.
-          </p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <h2 id="dash-heading-activity" className="dash-section__title" style={{ margin: 0 }}>
+            Activity log
+          </h2>
+          <button
+            type="button"
+            className="chart-tab"
+            style={{ padding: "4px 10px" }}
+            title="How branch filters apply in activity tables."
+            onClick={() =>
+              setInfoPopup({
+                title: "Activity log",
+                body: (
+                  <div className="dash-section__legend">
+                    <p>
+                      The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose
+                      branch matches (legacy sim_lab counts as Lab A). Use branch tabs for <code>lab_b</code>,{" "}
+                      <code>lab_c</code>, and <code>lab_d</code> rows.
+                    </p>
+                    <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
+                      Recent signals/trades use one branch filter; <strong>Bets not traded</strong> uses its own independent
+                      branch tabs below.
+                    </p>
+                  </div>
+                ),
+              })
+            }
+          >
+            Info
+          </button>
         </div>
 
         <div className="grid" style={{ marginTop: 0 }}>
@@ -4027,6 +4164,38 @@ export default function App() {
         onAddAllLabsPaper={() => void addAllLabsPaperBankroll()}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
+      {infoPopup ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${infoPopup.title} information`}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            background: "rgba(3, 8, 24, 0.72)",
+          }}
+          onClick={() => setInfoPopup(null)}
+        >
+          <div
+            className="panel"
+            style={{ width: "min(760px, 96vw)", maxHeight: "min(78vh, 760px)", overflow: "auto", padding: "14px 16px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+              <h3 style={{ margin: 0 }}>{infoPopup.title}</h3>
+              <button type="button" className="chart-tab" style={{ padding: "4px 10px" }} onClick={() => setInfoPopup(null)}>
+                Close
+              </button>
+            </div>
+            {infoPopup.body}
+          </div>
+        </div>
+      ) : null}
         </>
       ) : null}
     </div>
