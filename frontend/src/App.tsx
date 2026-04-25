@@ -1355,44 +1355,6 @@ function activityBranchTabLabel(b: ActivityBranchKey): string {
   return "Lab D";
 }
 
-const ACTIVITY_BRANCH_TAB_ORDER: ActivityBranchKey[] = ["live", "lab_a", "lab_b", "lab_c", "lab_d"];
-
-const ACTIVITY_BRANCH_TAB_TITLE: Record<ActivityBranchKey, string> = {
-  live: "Rows where branch is live (or unset legacy rows treated as Live).",
-  lab_a: "Rows where branch is lab_a or legacy sim_lab.",
-  lab_b: "Rows where branch is lab_b.",
-  lab_c: "Rows where branch is lab_c.",
-  lab_d: "Rows where branch is lab_d.",
-};
-
-function ActivityBranchTabs({
-  value,
-  onChange,
-  ariaLabel,
-}: {
-  value: ActivityBranchKey;
-  onChange: (b: ActivityBranchKey) => void;
-  ariaLabel: string;
-}) {
-  return (
-    <div className="chart-tabs" role="tablist" aria-label={ariaLabel} style={{ margin: 0 }}>
-      {ACTIVITY_BRANCH_TAB_ORDER.map((b) => (
-        <button
-          key={b}
-          type="button"
-          role="tab"
-          aria-selected={value === b}
-          className={`chart-tab ${value === b ? "chart-tab--active" : ""}`}
-          title={ACTIVITY_BRANCH_TAB_TITLE[b]}
-          onClick={() => onChange(b)}
-        >
-          {activityBranchTabLabel(b)}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /** BTC first, ETH second, then remaining asset ids A–Z. */
 function orderedAssetEntries(assetsObj: AnyObj | undefined): [string, AnyObj][] {
   const entries = Object.entries(assetsObj || {}) as [string, AnyObj][];
@@ -1864,14 +1826,10 @@ export default function App() {
   const optimizerHistoryBootstrapped = useRef(false);
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c" | "d">("live");
   const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d">("live");
+  const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
-  const [activityBranch, setActivityBranch] = useState<ActivityBranchKey>("live");
-  /** Branch filter for Bets not traded only (independent from signals/trades tabs). */
-  const [notTradedBranch, setNotTradedBranch] = useState<ActivityBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
   const [infoPopup, setInfoPopup] = useState<{ title: string; body: ReactNode } | null>(null);
-  /** Which branch’s last-tick log is shown (all branches still fetch the same catalog per tick). */
-  const [engineTraceBranch, setEngineTraceBranch] = useState<"live" | "lab_a" | "lab_b" | "lab_c" | "lab_d">("live");
   /** Last loaded dashboard JSON — used for manual trade snapshot toast if current ``dash`` is briefly null. */
   const dashSnapshotRef = useRef<AnyObj | null>(null);
   /** Stable ids of optimizer changes the user acknowledged by opening the trades-by-lab toast (sessionStorage-backed). */
@@ -2400,20 +2358,31 @@ export default function App() {
   const labCBranchEngineOn = Boolean(engineLabC?.engine_running ?? labC.engine_running);
   const labDBranchEngineOn = Boolean(engineLabD?.engine_running ?? labD.engine_running);
 
+  const accountActivityBranch: ActivityBranchKey =
+    holdingsBranchTab === "live"
+      ? "live"
+      : holdingsBranchTab === "a"
+        ? "lab_a"
+        : holdingsBranchTab === "b"
+          ? "lab_b"
+          : holdingsBranchTab === "c"
+            ? "lab_c"
+            : "lab_d";
+
   const recentSignalsFiltered = useMemo(() => {
     const rs = (dash?.recent_signals || []) as AnyObj[];
-    return rs.filter((r) => normalizeSignalTradeBranch(r.branch) === activityBranch);
-  }, [dash?.recent_signals, activityBranch]);
+    return rs.filter((r) => normalizeSignalTradeBranch(r.branch) === accountActivityBranch);
+  }, [dash?.recent_signals, accountActivityBranch]);
 
   const recentTradesFiltered = useMemo(() => {
     const rt = (dash?.recent_trades || []) as AnyObj[];
-    return rt.filter((r) => normalizeSignalTradeBranch(r.branch) === activityBranch);
-  }, [dash?.recent_trades, activityBranch]);
+    return rt.filter((r) => normalizeSignalTradeBranch(r.branch) === accountActivityBranch);
+  }, [dash?.recent_trades, accountActivityBranch]);
 
   const notTradedFiltered = useMemo(() => {
     const nt = (dash?.not_traded_signals || []) as AnyObj[];
-    return nt.filter((r) => normalizeSignalTradeBranch(r.branch) === notTradedBranch);
-  }, [dash?.not_traded_signals, notTradedBranch]);
+    return nt.filter((r) => normalizeSignalTradeBranch(r.branch) === accountActivityBranch);
+  }, [dash?.not_traded_signals, accountActivityBranch]);
 
   const saveRules = async (rules: AnyObj[]) => {
     setBusy(true);
@@ -3706,43 +3675,30 @@ export default function App() {
             </div>
           )}
 
-          {acctSnap?.position_by_asset && Object.keys(acctSnap.position_by_asset).length > 0 ? (
-            <div style={{ marginTop: 16 }}>
-              <h3
-                className="sub section-tip"
-                style={{ fontSize: 14, color: "var(--text)", marginBottom: 6 }}
-                title={
-                  (accountLinked
-                    ? "Rows match Kalshi portfolio positions and local open simulated trades whose tickers start with each asset’s series_ticker (e.g. KXDOGE15M). "
-                    : "Sim columns only — Kalshi exchange positions need a linked account. ") +
-                  "Glossary: “market lines” (inside a cell) = distinct tickers with exposure after merge; " +
-                  "“contracts” = Kalshi position size (YES/NO units), summed when several rows share one ticker. " +
-                  "Branch performance “sim assets” = count of asset rows with a non-empty sim cell (not the intra-cell market-line count)."
-                }
+          <div className="chart-tabs" role="tablist" aria-label="Account branch tabs" style={{ marginTop: 14, marginBottom: 8 }}>
+            {[
+              { id: "live", label: "Live" },
+              { id: "a", label: "Lab A" },
+              { id: "b", label: "Lab B" },
+              { id: "c", label: "Lab C" },
+              { id: "d", label: "Lab D" },
+            ].map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={holdingsBranchTab === t.id}
+                className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
+                onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d")}
               >
-                Holdings by asset (series prefix)
-              </h3>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            {acctSnap?.position_by_asset && Object.keys(acctSnap.position_by_asset).length > 0 ? (
               <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
-                <div className="chart-tabs" role="tablist" aria-label="Holdings branch tabs" style={{ marginBottom: 8 }}>
-                  {[
-                    { id: "live", label: "Live" },
-                    { id: "a", label: "Lab A" },
-                    { id: "b", label: "Lab B" },
-                    { id: "c", label: "Lab C" },
-                    { id: "d", label: "Lab D" },
-                  ].map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      role="tab"
-                      aria-selected={holdingsBranchTab === t.id}
-                      className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
-                      onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d")}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
                 <table className="table">
                   <thead>
                     <tr>
@@ -3813,312 +3769,240 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-            </div>
-          ) : null}
+            ) : (
+              <div className="sub" style={{ marginTop: 4 }}>No holdings rows for this account view yet.</div>
+            )}
+          </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 16 }}>
-            <h2 className="section-tip" style={{ margin: 0 }} title="Polling engines: market scan, rules, logging. Tick traces show the last engine loop output.">
-              Engines
-            </h2>
-            <button
-              type="button"
-              className="chart-tab"
-              style={{ padding: "4px 10px" }}
-              title="How branch engine logs and scan counts work."
-              onClick={() =>
-                setInfoPopup({
-                  title: "Engines",
-                  body: (
-                    <div className="dash-section__legend">
-                      <p>
-                        <strong>Same market data</strong> is fetched for each branch from the configured asset list.
-                        <strong> Separate runs</strong> then apply branch-specific rules, sizing, bankroll, dedupe windows,
-                        and SQLite writes.
-                      </p>
-                      <p>
-                        Because branches scan the same catalog, scan counts can be similar while behavior diverges due to
-                        branch config differences.
-                      </p>
-                    </div>
-                  ),
-                })
-              }
-            >
-              Info
-            </button>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 14 }}>
+            <h3 className="section-tip" style={{ margin: 0, fontSize: 14, color: "var(--muted)" }} title="Branch engine status for the selected account tab.">
+              Engine
+            </h3>
           </div>
           <div className="sub" title="Engine polling status from /api/dashboard.">
-            <div title="Live branch: engine on/off, paper vs real orders, last tick time, markets scanned this tick.">
-              <strong title="Main trading branch tied to Live mode.">Live</strong> engine {dash?.engine?.live?.engine_running ? "on" : "off"} ·
-              orders{" "}
-              {dash?.engine?.live?.simulate_orders ? "simulated (paper)" : "real limit posts"} · last tick:{" "}
-              {dash?.engine?.live?.last_tick_at
-                ? fmtIsoLocal(String(dash?.engine?.live?.last_tick_at))
-                : "—"}{" "}
-              · scanned{" "}
-              {String(dash?.engine?.live?.markets_scanned ?? "—")}
-            </div>
-            {dash?.engine?.live?.last_error ? (
-              <div className="error" style={{ marginTop: 6 }} title="Last Live engine error string.">
-                Live: {String(dash?.engine?.live?.last_error)}
-              </div>
-            ) : null}
-            <div style={{ marginTop: 10 }} title="Lab A (branch lab_a): always simulated; separate config and SQLite from Live.">
-              <strong title="Paper-only branch lab_a.">Lab A</strong> engine {labABranchEngineOn ? "on" : "off"} · always simulated · last
-              tick:{" "}
-              {engineLabA?.last_tick_at ? fmtIsoLocal(String(engineLabA.last_tick_at)) : "—"} · scanned{" "}
-              {String(engineLabA?.markets_scanned ?? "—")}
-            </div>
-            {engineLabA?.last_error ? (
-              <div className="error" style={{ marginTop: 6 }} title="Last Lab A engine error string.">
-                Lab A: {String(engineLabA.last_error)}
-              </div>
-            ) : null}
-            <div style={{ marginTop: 10 }} title="Lab B (branch lab_b): always simulated; conservative reference arm.">
-              <strong title="Paper-only branch lab_b.">Lab B</strong> engine {labBBranchEngineOn ? "on" : "off"} · always simulated · last
-              tick:{" "}
-              {engineLabB?.last_tick_at ? fmtIsoLocal(String(engineLabB.last_tick_at)) : "—"} · scanned{" "}
-              {String(engineLabB?.markets_scanned ?? "—")}
-            </div>
-            {engineLabB?.last_error ? (
-              <div className="error" style={{ marginTop: 6 }} title="Last Lab B engine error string.">
-                Lab B: {String(engineLabB.last_error)}
-              </div>
-            ) : null}
-            <div style={{ marginTop: 10 }} title="Lab C (branch lab_c): always simulated; aggressive reference arm.">
-              <strong title="Paper-only branch lab_c.">Lab C</strong> engine {labCBranchEngineOn ? "on" : "off"} · always simulated · last
-              tick:{" "}
-              {engineLabC?.last_tick_at ? fmtIsoLocal(String(engineLabC.last_tick_at)) : "—"} · scanned{" "}
-              {String(engineLabC?.markets_scanned ?? "—")}
-            </div>
-            {engineLabC?.last_error ? (
-              <div className="error" style={{ marginTop: 6 }} title="Last Lab C engine error string.">
-                Lab C: {String(engineLabC.last_error)}
-              </div>
-            ) : null}
-            <div style={{ marginTop: 10 }} title="Lab D (branch lab_d): always simulated; wild reference arm.">
-              <strong title="Paper-only branch lab_d.">Lab D</strong> engine {labDBranchEngineOn ? "on" : "off"} · always simulated · last
-              tick: {engineLabD?.last_tick_at ? fmtIsoLocal(String(engineLabD.last_tick_at)) : "—"} · scanned {String(engineLabD?.markets_scanned ?? "—")}
-            </div>
-            {engineLabD?.last_error ? (
-              <div className="error" style={{ marginTop: 6 }} title="Last Lab D engine error string.">
-                Lab D: {String(engineLabD.last_error)}
-              </div>
-            ) : null}
-            <div className="chart-tabs" role="tablist" aria-label="Last tick log branch" style={{ marginTop: 12 }}>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={engineTraceBranch === "live"}
-                className={`chart-tab ${engineTraceBranch === "live" ? "chart-tab--active" : ""}`}
-                title="Show the last tick trace for the Live engine."
-                onClick={() => setEngineTraceBranch("live")}
-              >
-                Live log
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={engineTraceBranch === "lab_a"}
-                className={`chart-tab ${engineTraceBranch === "lab_a" ? "chart-tab--active" : ""}`}
-                title="Show the last tick trace for Lab A (same engine as legacy sim_lab in the API)."
-                onClick={() => setEngineTraceBranch("lab_a")}
-              >
-                Lab A log
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={engineTraceBranch === "lab_b"}
-                className={`chart-tab ${engineTraceBranch === "lab_b" ? "chart-tab--active" : ""}`}
-                title="Show the last tick trace for Lab B."
-                onClick={() => setEngineTraceBranch("lab_b")}
-              >
-                Lab B log
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={engineTraceBranch === "lab_c"}
-                className={`chart-tab ${engineTraceBranch === "lab_c" ? "chart-tab--active" : ""}`}
-                title="Show the last tick trace for Lab C."
-                onClick={() => setEngineTraceBranch("lab_c")}
-              >
-                Lab C log
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={engineTraceBranch === "lab_d"}
-                className={`chart-tab ${engineTraceBranch === "lab_d" ? "chart-tab--active" : ""}`}
-                title="Show the last tick trace for Lab D."
-                onClick={() => setEngineTraceBranch("lab_d")}
-              >
-                Lab D log
-              </button>
-            </div>
+            {(() => {
+              const selectedIsLive = holdingsBranchTab === "live";
+              const label =
+                holdingsBranchTab === "live"
+                  ? "Live"
+                  : holdingsBranchTab === "a"
+                    ? "Lab A"
+                    : holdingsBranchTab === "b"
+                      ? "Lab B"
+                      : holdingsBranchTab === "c"
+                        ? "Lab C"
+                        : "Lab D";
+              const engineObj =
+                holdingsBranchTab === "live"
+                  ? (dash?.engine?.live as AnyObj | undefined)
+                  : holdingsBranchTab === "a"
+                    ? engineLabA
+                    : holdingsBranchTab === "b"
+                      ? engineLabB
+                      : holdingsBranchTab === "c"
+                        ? engineLabC
+                        : engineLabD;
+              const on =
+                holdingsBranchTab === "live"
+                  ? Boolean(dash?.engine?.live?.engine_running)
+                  : holdingsBranchTab === "a"
+                    ? labABranchEngineOn
+                    : holdingsBranchTab === "b"
+                      ? labBBranchEngineOn
+                      : holdingsBranchTab === "c"
+                        ? labCBranchEngineOn
+                        : labDBranchEngineOn;
+              const lastTick = engineObj?.last_tick_at;
+              const scanned = engineObj?.markets_scanned;
+              const errMsg = String(engineObj?.last_error || "");
+              return (
+                <>
+                  <div title={`${label} branch engine status from /api/dashboard.`}>
+                    <strong>{label}</strong> engine {on ? "on" : "off"} ·{" "}
+                    {selectedIsLive
+                      ? `orders ${dash?.engine?.live?.simulate_orders ? "simulated (paper)" : "real limit posts"}`
+                      : "always simulated"}{" "}
+                    · last tick: {lastTick ? fmtIsoLocal(String(lastTick)) : "—"} · scanned {String(scanned ?? "—")}
+                  </div>
+                  {errMsg ? (
+                    <div className="error" style={{ marginTop: 6 }} title={`Last ${label} engine error string.`}>
+                      {label}: {errMsg}
+                    </div>
+                  ) : null}
+                </>
+              );
+            })()}
             <EngineTickTrace
               title={
-                engineTraceBranch === "live"
+                holdingsBranchTab === "live"
                   ? "Live — last tick log"
-                  : engineTraceBranch === "lab_a"
+                  : holdingsBranchTab === "a"
                     ? "Lab A — last tick log"
-                    : engineTraceBranch === "lab_b"
+                    : holdingsBranchTab === "b"
                       ? "Lab B — last tick log"
-                      : engineTraceBranch === "lab_c"
+                      : holdingsBranchTab === "c"
                         ? "Lab C — last tick log"
                         : "Lab D — last tick log"
               }
               lines={
-                engineTraceBranch === "live"
+                holdingsBranchTab === "live"
                   ? dash?.engine?.live?.last_tick_trace
-                  : engineTraceBranch === "lab_a"
+                  : holdingsBranchTab === "a"
                     ? engineLabA?.last_tick_trace
-                    : engineTraceBranch === "lab_b"
+                    : holdingsBranchTab === "b"
                       ? engineLabB?.last_tick_trace
-                      : engineTraceBranch === "lab_c"
+                      : holdingsBranchTab === "c"
                         ? engineLabC?.last_tick_trace
                         : engineLabD?.last_tick_trace
               }
             />
           </div>
+
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <h3 className="section-tip" style={{ margin: 0, fontSize: 16 }} title="Recent signal/trade rows from SQLite logs.">
+                Activity log
+              </h3>
+              <button
+                type="button"
+                className="chart-tab"
+                style={{ padding: "4px 10px" }}
+                title="How branch filters apply in activity tables."
+                onClick={() =>
+                  setInfoPopup({
+                    title: "Activity log",
+                    body: (
+                      <div className="dash-section__legend">
+                        <p>
+                          The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose
+                          branch matches (legacy sim_lab counts as Lab A). Use branch tabs for <code>lab_b</code>,{" "}
+                          <code>lab_c</code>, and <code>lab_d</code> rows.
+                        </p>
+                        <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
+                          Recent signals/trades use one branch filter; <strong>Bets not traded</strong> uses its own independent
+                          branch tabs below.
+                        </p>
+                      </div>
+                    ),
+                  })
+                }
+              >
+                Info
+              </button>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <div className="chart-tabs" role="tablist" aria-label="Account activity view" style={{ marginBottom: 10 }}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={accountActivityView === "signals"}
+                  className={`chart-tab ${accountActivityView === "signals" ? "chart-tab--active" : ""}`}
+                  onClick={() => setAccountActivityView("signals")}
+                >
+                  Recent signals
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={accountActivityView === "trades"}
+                  className={`chart-tab ${accountActivityView === "trades" ? "chart-tab--active" : ""}`}
+                  onClick={() => setAccountActivityView("trades")}
+                >
+                  Recent trades
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={accountActivityView === "not_traded"}
+                  className={`chart-tab ${accountActivityView === "not_traded" ? "chart-tab--active" : ""}`}
+                  onClick={() => setAccountActivityView("not_traded")}
+                >
+                  Bets not traded
+                </button>
+              </div>
+              <p className="sub section-tip" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
+                Showing <strong>{activityBranchTabLabel(accountActivityBranch)}</strong> only (follows Account branch tabs).
+              </p>
+
+              {accountActivityView === "signals" ? (
+                <div className="panel">
+                  <h3
+                    className="section-tip"
+                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
+                    title="SQLite log when the engine evaluates a logged path (sizing, sim fill, live order attempt). Most silent skips are not rows here - use tick log and asset snapshots."
+                  >
+                    Recent signals — {activityBranchTabLabel(accountActivityBranch)}
+                  </h3>
+                  <SignalsTable
+                    rows={recentSignalsFiltered}
+                    emptyTitle={`No signals for ${activityBranchTabLabel(accountActivityBranch)} yet.`}
+                  />
+                  <ActivityHints
+                    kind="signals"
+                    dash={dash}
+                    cfg={cfg}
+                    simLab={simLab}
+                    activityBranch={accountActivityBranch}
+                    branchRowCount={recentSignalsFiltered.length}
+                    totalRowCount={(dash?.recent_signals || []).length}
+                  />
+                </div>
+              ) : null}
+
+              {accountActivityView === "trades" ? (
+                <div className="panel">
+                  <h3
+                    className="section-tip"
+                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
+                    title="Fills and simulated orders from the engine for the selected branch."
+                  >
+                    Recent trades — {activityBranchTabLabel(accountActivityBranch)}
+                  </h3>
+                  <TradesTable
+                    rows={recentTradesFiltered}
+                    emptyTitle={`No trades for ${activityBranchTabLabel(accountActivityBranch)} yet.`}
+                  />
+                  <ActivityHints
+                    kind="trades"
+                    dash={dash}
+                    cfg={cfg}
+                    simLab={simLab}
+                    activityBranch={accountActivityBranch}
+                    branchRowCount={recentTradesFiltered.length}
+                    totalRowCount={(dash?.recent_trades || []).length}
+                  />
+                </div>
+              ) : null}
+
+              {accountActivityView === "not_traded" ? (
+                <div className="panel">
+                  <h3
+                    className="section-tip"
+                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
+                    title="Subset of signals where a rule matched but execution did not run (for selected branch)."
+                  >
+                    Bets not traded — {activityBranchTabLabel(accountActivityBranch)}
+                  </h3>
+                  <SignalsTable
+                    rows={notTradedFiltered}
+                    emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(accountActivityBranch)} yet.`}
+                  />
+                  <ActivityHints
+                    kind="not_traded"
+                    dash={dash}
+                    cfg={cfg}
+                    simLab={simLab}
+                    activityBranch={accountActivityBranch}
+                    branchRowCount={notTradedFiltered.length}
+                    totalRowCount={(dash?.not_traded_signals || []).length}
+                    totalSignalsCount={(dash?.recent_signals || []).length}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
       </div>
-
-      <section className="dash-section" style={{ marginTop: 14 }} aria-labelledby="dash-heading-activity">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-          <h2 id="dash-heading-activity" className="dash-section__title" style={{ margin: 0 }}>
-            Activity log
-          </h2>
-          <button
-            type="button"
-            className="chart-tab"
-            style={{ padding: "4px 10px" }}
-            title="How branch filters apply in activity tables."
-            onClick={() =>
-              setInfoPopup({
-                title: "Activity log",
-                body: (
-                  <div className="dash-section__legend">
-                    <p>
-                      The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose
-                      branch matches (legacy sim_lab counts as Lab A). Use branch tabs for <code>lab_b</code>,{" "}
-                      <code>lab_c</code>, and <code>lab_d</code> rows.
-                    </p>
-                    <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
-                      Recent signals/trades use one branch filter; <strong>Bets not traded</strong> uses its own independent
-                      branch tabs below.
-                    </p>
-                  </div>
-                ),
-              })
-            }
-          >
-            Info
-          </button>
-        </div>
-
-        <div className="grid" style={{ marginTop: 0 }}>
-          <div
-            style={{
-              gridColumn: "1 / -1",
-              display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 10,
-              marginBottom: 4,
-            }}
-          >
-            <h3 className="section-tip" style={{ margin: 0, fontSize: 14 }} title="Filter recent signals and trades by SQLite branch.">
-              Recent signals and trades
-            </h3>
-            <ActivityBranchTabs value={activityBranch} onChange={setActivityBranch} ariaLabel="Signals and trades branch" />
-          </div>
-          <p className="sub section-tip" style={{ gridColumn: "1 / -1", margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
-            Showing <strong>{activityBranchTabLabel(activityBranch)}</strong> only.
-          </p>
-          <div className="panel">
-            <h3
-              className="section-tip"
-              style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
-              title="SQLite log when the engine evaluates a logged path (sizing, sim fill, live order attempt). Most silent skips are not rows here — use tick log and asset snapshots."
-            >
-              Recent signals — {activityBranchTabLabel(activityBranch)}
-            </h3>
-            <SignalsTable
-              rows={recentSignalsFiltered}
-              emptyTitle={`No signals for ${activityBranchTabLabel(activityBranch)} yet.`}
-            />
-            <ActivityHints
-              kind="signals"
-              dash={dash}
-              cfg={cfg}
-              simLab={simLab}
-              activityBranch={activityBranch}
-              branchRowCount={recentSignalsFiltered.length}
-              totalRowCount={(dash?.recent_signals || []).length}
-            />
-          </div>
-          <div className="panel">
-            <h3
-              className="section-tip"
-              style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
-              title="Fills and simulated orders from the engine for the selected branch."
-            >
-              Recent trades — {activityBranchTabLabel(activityBranch)}
-            </h3>
-            <TradesTable
-              rows={recentTradesFiltered}
-              emptyTitle={`No trades for ${activityBranchTabLabel(activityBranch)} yet.`}
-            />
-            <ActivityHints
-              kind="trades"
-              dash={dash}
-              cfg={cfg}
-              simLab={simLab}
-              activityBranch={activityBranch}
-              branchRowCount={recentTradesFiltered.length}
-              totalRowCount={(dash?.recent_trades || []).length}
-            />
-          </div>
-        </div>
-
-        <div className="panel" style={{ marginTop: 14 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <h2
-              className="section-tip"
-              style={{ margin: 0, fontSize: 16 }}
-              title="Subset of signals where a rule matched but execution did not run (e.g. over budget), for the branch selected in the tabs."
-            >
-              Bets not traded — {activityBranchTabLabel(notTradedBranch)}
-            </h2>
-            <ActivityBranchTabs
-              value={notTradedBranch}
-              onChange={setNotTradedBranch}
-              ariaLabel="Bets not traded branch"
-            />
-          </div>
-          <p className="sub section-tip" style={{ marginTop: 8, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-            Showing <strong>{activityBranchTabLabel(notTradedBranch)}</strong> only — tabs here do not change Recent
-            signals/trades.
-          </p>
-          <SignalsTable
-            rows={notTradedFiltered}
-            emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(notTradedBranch)} yet.`}
-          />
-          <ActivityHints
-            kind="not_traded"
-            dash={dash}
-            cfg={cfg}
-            simLab={simLab}
-            activityBranch={notTradedBranch}
-            branchRowCount={notTradedFiltered.length}
-            totalRowCount={(dash?.not_traded_signals || []).length}
-            totalSignalsCount={(dash?.recent_signals || []).length}
-          />
-        </div>
-      </section>
 
       <SettingsOverlay
         open={settingsOpen}
