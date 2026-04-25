@@ -2359,6 +2359,7 @@ export default function App() {
   const engineLabC = dash?.engine?.lab_c as AnyObj | undefined;
   const engineLabD = dash?.engine?.lab_d as AnyObj | undefined;
   /** Dashboard ``engine.*`` can lag; fall back to config (same idea as Lab A toolbar toggle). */
+  const liveBranchEngineOn = Boolean((dash?.engine?.live as AnyObj | undefined)?.engine_running ?? cfg.engine_running);
   const labABranchEngineOn = Boolean(engineLabA?.engine_running ?? simLab.engine_running);
   const labBBranchEngineOn = Boolean(engineLabB?.engine_running ?? labB.engine_running);
   const labCBranchEngineOn = Boolean(engineLabC?.engine_running ?? labC.engine_running);
@@ -2864,23 +2865,6 @@ export default function App() {
                   onClick={() => setRunning(!Boolean(cfg.engine_running))}
                 >
                   Engine {cfg.engine_running ? "on" : "off"}
-                </button>
-              </div>
-            </div>
-            <div className="toolbar-block" title="Toggle paper lab engines. Wild (Lab D) must be on to place Lab D simulated trades.">
-              <div className="toolbar-label">Labs</div>
-              <div className="toolbar-group">
-                <button className="primary" disabled={busy} onClick={() => void setLabRunning("a", !labABranchEngineOn)}>
-                  A {labABranchEngineOn ? "on" : "off"}
-                </button>
-                <button className="primary" disabled={busy} onClick={() => void setLabRunning("b", !labBBranchEngineOn)}>
-                  B {labBBranchEngineOn ? "on" : "off"}
-                </button>
-                <button className="primary" disabled={busy} onClick={() => void setLabRunning("c", !labCBranchEngineOn)}>
-                  C {labCBranchEngineOn ? "on" : "off"}
-                </button>
-                <button className="primary" disabled={busy} onClick={() => void setLabRunning("d", !labDBranchEngineOn)}>
-                  D {labDBranchEngineOn ? "on" : "off"}
                 </button>
               </div>
             </div>
@@ -4030,6 +4014,8 @@ export default function App() {
         optimizerSaving={optimizerSaving}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
+        liveEngineOn={liveBranchEngineOn}
+        onToggleLive={() => void setRunning(!liveBranchEngineOn)}
         labEngineAOn={labABranchEngineOn}
         labEngineBOn={labBBranchEngineOn}
         labEngineCOn={labCBranchEngineOn}

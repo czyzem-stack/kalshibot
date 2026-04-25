@@ -13,7 +13,7 @@ import {
 } from "./settingsRules";
 
 type AnyObj = Record<string, any>;
-type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_ab_optimizer" | "all";
+type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_ab_optimizer" | "all" | "help";
 type LabBranchKey = "a" | "b" | "c" | "d";
 
 function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: AnyObj; cfg: AnyObj; busy: boolean }) {
@@ -169,6 +169,530 @@ function LabBranchPanel({
   );
 }
 
+function SettingsMenuItemsList({
+  title,
+  items,
+}: {
+  title: string;
+  items: Array<{ name: string; what: string; impact?: string; range?: string; tip?: string }>;
+}) {
+  return (
+    <div className="panel settings-nested-panel" style={{ marginTop: 10, padding: "10px 12px" }}>
+      <h4 style={{ margin: "0 0 8px 0", fontSize: 13 }}>{title}</h4>
+      {items.map((it) => (
+        <div key={it.name} className="sub" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
+          <strong>{it.name}</strong> - {it.what}
+          {it.impact ? <div style={{ marginTop: 2 }}>What happens: {it.impact}</div> : null}
+          {it.range ? <div style={{ marginTop: 2 }}>Recommended range: {it.range}</div> : null}
+          {it.tip ? <div style={{ marginTop: 2 }}>Tip: {it.tip}</div> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HelpStepCard({
+  title,
+  summary,
+  actionLabel,
+  onAction,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  summary: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="panel settings-nested-panel" style={{ marginTop: 10, padding: "10px 12px" }} open={defaultOpen}>
+      <summary style={{ cursor: "pointer" }}>
+        <strong>{title}</strong>
+        <div className="sub" style={{ marginTop: 4, fontSize: 12, lineHeight: 1.4 }}>
+          {summary}
+        </div>
+      </summary>
+      <div style={{ marginTop: 10 }}>
+        {onAction && actionLabel ? (
+          <button type="button" className="primary" style={{ marginBottom: 10 }} onClick={onAction}>
+            {actionLabel}
+          </button>
+        ) : null}
+        {children}
+      </div>
+    </details>
+  );
+}
+
+function SettingsHelpSection({
+  onOpenTab,
+  onOpenLabSizingTab,
+}: {
+  onOpenTab: (tab: SettingsTab) => void;
+  onOpenLabSizingTab: (tab: LabBranchKey) => void;
+}) {
+  const checklistStorageKey = "kb_help_checklist_v2";
+  const defaultChecklist = {
+    step1WorkflowMap: false,
+    step2SafeStartup: false,
+    step3LabArchitecture: false,
+    step4PerLabRules: false,
+    step5OptimizerSetup: false,
+    step6PerformanceReview: false,
+    step7PromotionGate: false,
+  };
+  const [checklist, setChecklist] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(checklistStorageKey);
+      if (!raw) return defaultChecklist;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return {
+        ...defaultChecklist,
+        ...Object.fromEntries(Object.keys(defaultChecklist).map((k) => [k, Boolean(parsed[k])])),
+      };
+    } catch {
+      return defaultChecklist;
+    }
+  });
+  const completed = Object.values(checklist).filter(Boolean).length;
+  const total = Object.keys(checklist).length;
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(checklistStorageKey, JSON.stringify(checklist));
+    } catch {
+      // Ignore storage failures (private mode/quota).
+    }
+  }, [checklist]);
+
+  return (
+    <div className="panel settings-nested-panel" style={{ marginTop: 14, padding: "14px 16px" }}>
+      <h2 style={{ marginTop: 0, marginBottom: 8 }}>Interactive Help: Start to Profit Playbook</h2>
+      <p className="sub" style={{ fontSize: 12, lineHeight: 1.5 }}>
+        This tutorial is an end-to-end setup path: make the bot stable in paper mode first, tune quality next, and only
+        then graduate toward live execution with clear promotion gates.
+      </p>
+      <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.5 }}>
+        Checklist progress: <strong>{completed}</strong> / <strong>{total}</strong>. Mark each item after you confirm
+        behavior in activity and trade logs.
+      </p>
+
+      <div className="panel settings-nested-panel" style={{ marginTop: 10, padding: "10px 12px" }}>
+        <strong>Quick nav</strong>
+        <div className="row" style={{ marginTop: 8, gap: 8 }}>
+          <button type="button" className="primary" onClick={() => onOpenTab("live")}>
+            Open Live tab
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              onOpenTab("all");
+              onOpenLabSizingTab("a");
+            }}
+          >
+            Open Simulation labs
+          </button>
+          <button type="button" className="primary" onClick={() => onOpenTab("lab_a")}>
+            Open Lab A tab
+          </button>
+          <button type="button" className="primary" onClick={() => onOpenTab("lab_ab_optimizer")}>
+            Open Optimizer tab
+          </button>
+        </div>
+      </div>
+
+      <div className="panel settings-nested-panel" style={{ marginTop: 10, padding: "10px 12px" }}>
+        <strong>Tutorial checklist ({completed}/{total})</strong>
+        <label className="checkbox" style={{ border: "none", marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={checklist.step1WorkflowMap}
+            onChange={(e) => setChecklist((c) => ({ ...c, step1WorkflowMap: e.target.checked }))}
+          />
+          <span>Step 1: I understand the workflow map and tab roles</span>
+        </label>
+        <label className="checkbox" style={{ border: "none" }}>
+          <input
+            type="checkbox"
+            checked={checklist.step2SafeStartup}
+            onChange={(e) => setChecklist((c) => ({ ...c, step2SafeStartup: e.target.checked }))}
+          />
+          <span>Step 2: Lab sizing/architecture set (A staging, B/C reference, D stress)</span>
+        </label>
+        <label className="checkbox" style={{ border: "none" }}>
+          <input
+            type="checkbox"
+            checked={checklist.step3LabArchitecture}
+            onChange={(e) => setChecklist((c) => ({ ...c, step3LabArchitecture: e.target.checked }))}
+          />
+          <span>Step 3: Safe startup completed (paper mode + filters + baseline risk)</span>
+        </label>
+        <label className="checkbox" style={{ border: "none" }}>
+          <input
+            type="checkbox"
+            checked={checklist.step4PerLabRules}
+            onChange={(e) => setChecklist((c) => ({ ...c, step4PerLabRules: e.target.checked }))}
+          />
+          <span>Step 4: Per-lab rules tuned and saved branch-by-branch</span>
+        </label>
+        <label className="checkbox" style={{ border: "none" }}>
+          <input
+            type="checkbox"
+            checked={checklist.step5OptimizerSetup}
+            onChange={(e) => setChecklist((c) => ({ ...c, step5OptimizerSetup: e.target.checked }))}
+          />
+          <span>Step 5: Optimizer guardrails and cadence configured</span>
+        </label>
+        <label className="checkbox" style={{ border: "none" }}>
+          <input
+            type="checkbox"
+            checked={checklist.step6PerformanceReview}
+            onChange={(e) => setChecklist((c) => ({ ...c, step6PerformanceReview: e.target.checked }))}
+          />
+          <span>Step 6: Performance reviewed for repeatability and drawdown control</span>
+        </label>
+        <label className="checkbox" style={{ border: "none" }}>
+          <input
+            type="checkbox"
+            checked={checklist.step7PromotionGate}
+            onChange={(e) => setChecklist((c) => ({ ...c, step7PromotionGate: e.target.checked }))}
+          />
+          <span>Step 7: Promotion gate passed before increasing live exposure</span>
+        </label>
+      </div>
+
+      <HelpStepCard
+        title="1) Workflow map: settings as a runbook"
+        summary="Use tabs as a pipeline: safety -> sizing -> branch tuning -> optimizer -> review."
+        actionLabel="Go to All tab"
+        onAction={() => onOpenTab("all")}
+        defaultOpen
+      >
+        <ul className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          <li>
+            <strong>Live</strong>: market filters, global sizing, and default rules.
+          </li>
+          <li>
+            <strong>Lab A/B/C/D</strong>: per-lab overrides and branch-specific save.
+          </li>
+          <li>
+            <strong>Optimizer</strong>: scheduler, adaptive thresholds, style, guardrails.
+          </li>
+          <li>
+            <strong>All</strong>: combined view + all labs bulk apply tools.
+          </li>
+        </ul>
+        <SettingsMenuItemsList
+          title="Settings menu map"
+          items={[
+            {
+              name: "Live",
+              what: "Filters + baseline sizing + global rule controls.",
+              impact: "Changes affect default live behavior and fallbacks used when lab rules are absent.",
+            },
+            {
+              name: "Lab A / Lab B / Lab C / Lab D",
+              what: "Branch-specific controls (rule sliders and branch save).",
+              impact: "Only the selected lab branch is changed.",
+            },
+            {
+              name: "Optimizer",
+              what: "Scheduler, adaptive controls, lab include toggles, thresholds, replay/backtest gates.",
+              impact: "Affects optimization loop; persisted adaptive writes target Lab A.",
+            },
+            {
+              name: "All",
+              what: "Combined controls including the Simulation labs row and bulk apply actions.",
+              impact: "Lets you update multiple labs in one workflow.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+      <HelpStepCard
+        title="2) Simulation lab sizing and architecture"
+        summary="Configure lab bankroll/sizing and branch roles before comparing performance."
+        actionLabel="Open Simulation labs (Lab A)"
+        onAction={() => {
+          onOpenTab("all");
+          onOpenLabSizingTab("a");
+        }}
+      >
+        <ul className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          <li>
+            <strong>Paper balance (cents)</strong>: starting bankroll for that lab.
+          </li>
+          <li>
+            <strong>Balance fraction per window</strong>: percent of available paper bankroll used when the engine buys.
+          </li>
+          <li>
+            <strong>Window (minutes)</strong>: spend bucket for pacing and dedupe timing.
+          </li>
+        </ul>
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              onOpenTab("all");
+              onOpenLabSizingTab("a");
+            }}
+          >
+            Jump to Lab A sliders
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              onOpenTab("all");
+              onOpenLabSizingTab("b");
+            }}
+          >
+            Jump to Lab B sliders
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              onOpenTab("all");
+              onOpenLabSizingTab("c");
+            }}
+          >
+            Jump to Lab C sliders
+          </button>
+        </div>
+        <SettingsMenuItemsList
+          title="Exact slider items in Simulation labs"
+          items={[
+            {
+              name: "Paper balance (cents)",
+              what: "Seed bankroll for that lab.",
+              impact: "Changes available paper capital and affects return-vs-start metrics.",
+              range: "Start around 500000-2000000 cents ($5k-$20k paper) for stable testing.",
+            },
+            {
+              name: "Balance fraction per window",
+              what: "Fraction of available bankroll used for entries.",
+              impact: "Higher values increase trade size and drawdown speed.",
+              range: "Lab A 0.04-0.07, Lab B 0.03-0.06, Lab C 0.08-0.14.",
+              tip: "Move by small increments (~0.005 to 0.01) and observe at least one full market session.",
+            },
+            {
+              name: "Window (minutes)",
+              what: "Spend bucket / dedupe timing horizon.",
+              impact: "Shorter windows recycle spend sooner but can increase churn.",
+              range: "8-20 minutes for most paper setups.",
+            },
+            {
+              name: "Save all labs",
+              what: "Applies the sizing row values for A/B/C/D in one request.",
+              impact: "Writes multiple branch configs together.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+      <HelpStepCard
+        title="3) Safe startup before optimization"
+        summary="Verify feed health, keep paper mode, and narrow the market universe."
+        actionLabel="Open Live tab"
+        onAction={() => onOpenTab("live")}
+      >
+        <ul className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          <li>
+            <strong>Only if YES title contains</strong>: allow only rows whose YES subtitle contains text.
+          </li>
+          <li>
+            <strong>Skip if YES title contains</strong>: comma-separated deny list.
+          </li>
+          <li>
+            <strong>Balance fraction/window/poll/paper balance</strong>: defines baseline loop behavior.
+          </li>
+        </ul>
+        <SettingsMenuItemsList
+          title="Exact Live tab menu items"
+          items={[
+            {
+              name: "Only if YES title contains",
+              what: "Whitelist filter for YES subtitle text.",
+              impact: "Rows that do not match are skipped before rule evaluation.",
+            },
+            {
+              name: "Skip if YES title contains (comma-separated)",
+              what: "Blacklist filter for subtitle tokens.",
+              impact: "Matching rows are excluded from trading decisions.",
+              tip: "Keep conservative skip tokens in production; be looser on demo environments if subtitles are noisy.",
+            },
+            {
+              name: "Balance fraction per trade",
+              what: "Global default fraction for live baseline sizing.",
+              impact: "Controls default trade size when branch overrides are absent.",
+            },
+            {
+              name: "Window length (minutes) / Poll seconds / Paper balance (cents)",
+              what: "Loop cadence and spending context.",
+              impact: "Changes risk pacing, scan cycle rhythm, and fallback bankroll.",
+              range: "Poll often 5-12 seconds; window commonly 10-20 minutes.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+      <HelpStepCard
+        title="4) Per-lab rules and branch save flow"
+        summary="Tune one branch at a time and verify before additional edits."
+        actionLabel="Open Lab A tab"
+        onAction={() => onOpenTab("lab_a")}
+      >
+        <p className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          Each lab tab contains branch-level controls. Lab A is staging and receives adaptive persisted tuning. B/C/D act as reference arms.
+        </p>
+        <div className="row" style={{ gap: 8 }}>
+          <button type="button" className="primary" onClick={() => onOpenTab("lab_a")}>
+            Open Lab A tab
+          </button>
+          <button type="button" className="primary" onClick={() => onOpenTab("lab_b")}>
+            Open Lab B tab
+          </button>
+          <button type="button" className="primary" onClick={() => onOpenTab("lab_c")}>
+            Open Lab C tab
+          </button>
+          <button type="button" className="primary" onClick={() => onOpenTab("lab_d")}>
+            Open Lab D tab
+          </button>
+        </div>
+        <SettingsMenuItemsList
+          title="Exact per-lab menu items"
+          items={[
+            {
+              name: "Lab X controls panel",
+              what: "Per-lab safety and behavior controls plus branch-specific rules.",
+              impact: "Changes only the selected lab branch.",
+            },
+            {
+              name: "RulesBandsSliders / NoBandsSliders",
+              what: "Interactive branch rule threshold editors.",
+              impact: "Changes branch entry behavior for probability bands and side filters.",
+            },
+            {
+              name: "Save Lab X options",
+              what: "Commits current lab branch panel settings.",
+              impact: "Persists branch-specific rules and options for that lab key.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+      <HelpStepCard
+        title="5) Optimizer guardrails and cadence"
+        summary="Prioritize quality gates over speed to avoid overfitting."
+        actionLabel="Open Optimizer tab"
+        onAction={() => onOpenTab("lab_ab_optimizer")}
+      >
+        <p className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          Start conservative: keep backtest checks on, keep skip-backtest-gate off, and wait for enough settled paper data before increasing aggressiveness.
+        </p>
+        <SettingsMenuItemsList
+          title="Exact Optimizer tab menu items"
+          items={[
+            {
+              name: "Mode / Enable scheduled optimizer loop / Scheduled run interval / Optimizer data lookback",
+              what: "Core scheduling and context horizon controls.",
+              impact: "Changes how frequently optimizer evaluates and what history window it considers.",
+            },
+            {
+              name: "Enable adaptive threshold/time auto-correction",
+              what: "Turns on internal adaptive pulse behavior.",
+              impact: "Allows floor/minutes and bet-fraction adaptation based on trade outcomes and guards.",
+            },
+            {
+              name: "Lab include toggles + Lab style selectors",
+              what: "Decides which labs participate in optimizer context and their posture labels.",
+              impact: "Changes context interpretation; persisted adaptive writes still target Lab A.",
+            },
+            {
+              name: "Losses trigger / threshold step / minute step / YES floors / min-minutes-left",
+              what: "Adaptive sensitivity and guardrail knobs.",
+              impact: "Adjusts how quickly optimizer tightens or relaxes thresholds.",
+              tip: "Increase cautiously; tune one variable at a time after sufficient settled paper data.",
+            },
+            {
+              name: "Min trades / Min profitable / Regime lookback / Optimize bet size / Include fees / Backtest proposals / Skip gate",
+              what: "Quality gates and risk controls for proposal acceptance.",
+              impact: "Controls whether changes are allowed and how strict replay validation is.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+      <HelpStepCard
+        title="6) Review, compare, and validate edge"
+        summary="Confirm repeatability before any live-capital escalation."
+        actionLabel="Open All tab"
+        onAction={() => onOpenTab("all")}
+      >
+        <ul className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          <li>Compare branches over matching windows, not one-off spike periods.</li>
+          <li>Track drawdown depth and recovery speed alongside total PnL.</li>
+          <li>Use the trades-by-lab snapshot toast as a recent behavior journal.</li>
+        </ul>
+        <SettingsMenuItemsList
+          title="Signals of robust profitability"
+          items={[
+            {
+              name: "Settled sample size",
+              what: "Enough closed trades to trust directional performance.",
+              impact: "Small samples are noisy and often regress.",
+            },
+            {
+              name: "Consistency across sessions",
+              what: "Repeatable behavior under multiple market regimes.",
+              impact: "More valuable than one outsized gain day.",
+            },
+            {
+              name: "Controlled drawdowns",
+              what: "Losses remain inside your predefined risk budget.",
+              impact: "Determines survivability and confidence for promotion.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+      <HelpStepCard
+        title="7) Promotion gate for live capital"
+        summary="Treat live rollout as phased deployment, not a single switch."
+        actionLabel="Open Live tab"
+        onAction={() => onOpenTab("live")}
+      >
+        <SettingsMenuItemsList
+          title="Promotion gate checklist (recommended)"
+          items={[
+            {
+              name: "Gate 1 - data sufficiency",
+              what: "Sufficient settled history across multiple sessions.",
+              impact: "Reduces chance of promoting random luck.",
+            },
+            {
+              name: "Gate 2 - risk behavior",
+              what: "Drawdown and loss streaks stay inside acceptable limits.",
+              impact: "Prevents over-sizing unstable behavior.",
+            },
+            {
+              name: "Gate 3 - staged rollout",
+              what: "Increase live exposure in small steps only.",
+              impact: "Limits blast radius while validating real execution.",
+              tip: "Change one major variable at a time, then observe before the next change.",
+            },
+          ]}
+        />
+      </HelpStepCard>
+
+    </div>
+  );
+}
+
 export type SettingsOverlayProps = {
   open: boolean;
   onClose: () => void;
@@ -205,6 +729,8 @@ export type SettingsOverlayProps = {
   /** Direct ``PUT /api/config/lab-branches`` (merge + optional branch data reset); independent of optimizer. */
   onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
   /** Paper lab engine toggles + shared bankroll bump (same actions as the former hero rail). */
+  liveEngineOn: boolean;
+  onToggleLive: () => void | Promise<void>;
   labEngineAOn: boolean;
   labEngineBOn: boolean;
   labEngineCOn: boolean;
@@ -247,6 +773,8 @@ export default function SettingsOverlay({
   optimizerSaving = false,
   onResetTradingData,
   onApplyLabBranches,
+  liveEngineOn,
+  onToggleLive,
   labEngineAOn,
   labEngineBOn,
   labEngineCOn,
@@ -285,8 +813,8 @@ export default function SettingsOverlay({
   const showLabB = settingsTab === "lab_b" || settingsTab === "all";
   const showLabC = settingsTab === "lab_c" || settingsTab === "all";
   const showLabD = settingsTab === "lab_d" || settingsTab === "all";
-  /** Shared bankroll row: any tab except Live-only (includes optimizer tab). */
-  const showLabSizingGrid = settingsTab !== "live";
+  /** Shared bankroll row on non-Live/non-Help tabs (includes optimizer tab). */
+  const showLabSizingGrid = settingsTab !== "live" && settingsTab !== "help";
   const showLabAColumn = settingsTab === "all" || settingsTab === "lab_a" || settingsTab === "lab_ab_optimizer";
   const showLabBColumn = settingsTab === "all" || settingsTab === "lab_b" || settingsTab === "lab_ab_optimizer";
   const showLabCColumn = settingsTab === "all" || settingsTab === "lab_c" || settingsTab === "lab_ab_optimizer";
@@ -315,6 +843,7 @@ export default function SettingsOverlay({
     settingsTab === "lab_c" ||
     settingsTab === "lab_d";
   const showData = settingsTab === "all";
+  const showHelp = settingsTab === "help";
   const historyRows = useMemo(
     () => (Array.isArray(optimizerCfg?.change_history) ? (optimizerCfg.change_history as AnyObj[]) : []),
     [optimizerCfg?.change_history],
@@ -349,6 +878,7 @@ export default function SettingsOverlay({
               ["lab_d", "Lab D"],
               ["lab_ab_optimizer", "Optimizer"],
               ["all", "All"],
+              ["help", "Help"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -362,6 +892,62 @@ export default function SettingsOverlay({
               {label}
             </button>
           ))}
+        </div>
+        <div
+          className="section-tip settings-lab-engines-panel"
+          style={{ marginTop: 12 }}
+          title="Start/stop the Live and paper lab engine loops. Status reflects the last dashboard poll."
+        >
+          <div className="settings-lab-engines-panel__title-row">
+            <strong style={{ fontSize: 11, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--muted)" }}>
+              Engine controls
+            </strong>
+            <span className="sub" style={{ fontSize: 11 }}>
+              Persistent header across all settings tabs
+            </span>
+          </div>
+          <div className="settings-lab-engine-status" aria-label="Engine running state">
+            <span className={`pill ${liveEngineOn ? "pill--engine-on" : "pill--engine-off"}`}>
+              Live · <strong>{liveEngineOn ? "Active" : "Stopped"}</strong>
+            </span>
+            <span className={`pill ${labEngineAOn ? "pill--engine-on" : "pill--engine-off"}`}>
+              Lab A · <strong>{labEngineAOn ? "Active" : "Stopped"}</strong>
+            </span>
+            <span className={`pill ${labEngineBOn ? "pill--engine-on" : "pill--engine-off"}`}>
+              Lab B · <strong>{labEngineBOn ? "Active" : "Stopped"}</strong>
+            </span>
+            <span className={`pill ${labEngineCOn ? "pill--engine-on" : "pill--engine-off"}`}>
+              Lab C · <strong>{labEngineCOn ? "Active" : "Stopped"}</strong>
+            </span>
+            <span className={`pill ${labEngineDOn ? "pill--engine-on" : "pill--engine-off"}`}>
+              Lab D · <strong>{labEngineDOn ? "Active" : "Stopped"}</strong>
+            </span>
+          </div>
+          <div className="settings-lab-engine-actions">
+            <button type="button" className="primary" disabled={busy} title="Live engine loop." onClick={() => void onToggleLive()}>
+              Turn Live {liveEngineOn ? "off" : "on"}
+            </button>
+            <button type="button" className="primary" disabled={busy} title="Lab A - staging paper engine." onClick={() => void onToggleLabA()}>
+              Turn A {labEngineAOn ? "off" : "on"}
+            </button>
+            <button type="button" className="primary" disabled={busy} title="Lab B - conservative reference arm." onClick={() => void onToggleLabB()}>
+              Turn B {labEngineBOn ? "off" : "on"}
+            </button>
+            <button type="button" className="primary" disabled={busy} title="Lab C - aggressive reference arm." onClick={() => void onToggleLabC()}>
+              Turn C {labEngineCOn ? "off" : "on"}
+            </button>
+            <button type="button" className="primary" disabled={busy} title="Lab D - wild reference arm." onClick={() => void onToggleLabD()}>
+              Turn D {labEngineDOn ? "off" : "on"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              title="Add $100 to each lab's paper balance and lifetime basis (when set); trades and rules unchanged."
+              onClick={() => void onAddAllLabsPaper()}
+            >
+              All +$100
+            </button>
+          </div>
         </div>
         {showLive ? (
           <>
@@ -546,90 +1132,6 @@ export default function SettingsOverlay({
             <h2 className="section-tip" style={{ marginTop: 0 }} title="Parallel paper labs with separate sizing, rules, and bankroll.">
               Simulation labs
             </h2>
-            <div
-              className="section-tip settings-lab-engines-panel"
-              title="Starts or stops each lab’s paper engine loop and adds $100 to every lab’s paper bankroll (and lifetime basis when configured). Status reflects the last dashboard poll."
-            >
-              <div className="settings-lab-engines-panel__title-row">
-                <strong style={{ fontSize: 11, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--muted)" }}>
-                  Lab engines
-                </strong>
-                <span className="sub" style={{ fontSize: 11 }}>
-                  Paper A / B / C / D — state from dashboard
-                </span>
-              </div>
-              <div className="settings-lab-engine-status" aria-label="Lab engine running state">
-                <span className={`pill ${labEngineAOn ? "pill--engine-on" : "pill--engine-off"}`}>
-                  Lab A · <strong>{labEngineAOn ? "Active" : "Stopped"}</strong>
-                </span>
-                <span className={`pill ${labEngineBOn ? "pill--engine-on" : "pill--engine-off"}`}>
-                  Lab B · <strong>{labEngineBOn ? "Active" : "Stopped"}</strong>
-                </span>
-                <span className={`pill ${labEngineCOn ? "pill--engine-on" : "pill--engine-off"}`}>
-                  Lab C · <strong>{labEngineCOn ? "Active" : "Stopped"}</strong>
-                </span>
-                <span className={`pill ${labEngineDOn ? "pill--engine-on" : "pill--engine-off"}`}>
-                  Lab D · <strong>{labEngineDOn ? "Active" : "Stopped"}</strong>
-                </span>
-              </div>
-              <div className="settings-lab-engine-actions">
-                <button type="button" className="primary" disabled={busy} title="Lab A — staging paper engine." onClick={() => void onToggleLabA()}>
-                  Turn A {labEngineAOn ? "off" : "on"}
-                </button>
-                <button type="button" className="primary" disabled={busy} title="Lab B — conservative reference arm." onClick={() => void onToggleLabB()}>
-                  Turn B {labEngineBOn ? "off" : "on"}
-                </button>
-                <button type="button" className="primary" disabled={busy} title="Lab C — aggressive reference arm." onClick={() => void onToggleLabC()}>
-                  Turn C {labEngineCOn ? "off" : "on"}
-                </button>
-                <button type="button" className="primary" disabled={busy} title="Lab D — wild reference arm." onClick={() => void onToggleLabD()}>
-                  Turn D {labEngineDOn ? "off" : "on"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  title="Add $100 to each lab’s paper balance and lifetime basis (when set); trades and rules unchanged."
-                  onClick={() => void onAddAllLabsPaper()}
-                >
-                  All +$100
-                </button>
-              </div>
-            </div>
-            <div className="panel settings-nested-panel" style={{ marginTop: 12, padding: "10px 12px" }}>
-              <h3 className="section-tip" style={{ margin: 0, fontSize: 13 }} title="POST /api/data/reset?branch=all_labs — one wipe for all paper labs.">
-                Quick reset: all labs (A+B+C+D)
-              </h3>
-              <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-                Deletes SQLite signals, trades, and equity snapshots for <strong>lab_a</strong>, <strong>lab_b</strong>, <strong>lab_c</strong>, and{" "}
-                <strong>lab_d</strong> only.{" "}
-                <strong>Live</strong> rows are not removed. Same as Data → reset with scope all_labs.
-              </p>
-              <label className="checkbox section-tip" style={{ border: "none", marginTop: 6 }}>
-                <input id="reset_all_labs_backup" type="checkbox" defaultChecked disabled={busy} />
-                <span>SQLite + JSONL backup on first branch wipe</span>
-              </label>
-              <button
-                type="button"
-                className="primary"
-                style={{ marginTop: 8, borderColor: "#4a3a6b" }}
-                disabled={busy}
-                title="Clears paper history for Labs A, B, C, and D in one POST; server clears engine RAM dedupe for each lab."
-                onClick={() => {
-                  const el = document.getElementById("reset_all_labs_backup") as HTMLInputElement | null;
-                  const backup = el ? el.checked : true;
-                  if (
-                    !window.confirm(
-                      "Reset ALL lab paper data (Lab A + B + C + D)?\n\nThis deletes SQLite signals, trades, and equity snapshots for lab_a, lab_b, lab_c, and lab_d only. Live branch rows are NOT removed. Bot config is kept.",
-                    )
-                  ) {
-                    return;
-                  }
-                  void onResetTradingData("all_labs", backup);
-                }}
-              >
-                Reset labs A+B+C+D (SQLite)
-              </button>
-            </div>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               <strong>Lab A</strong> = staging (scheduled optimizer persists adaptive tuning here). <strong>Lab B</strong> = conservative and{" "}
               <strong>Lab C</strong> = aggressive and <strong>Lab D</strong> = wild reference arms (same data to Claude for context; no auto-applied rule changes on B/C/D). Bankroll
@@ -1170,6 +1672,15 @@ export default function SettingsOverlay({
           Reset all branches (SQLite)
         </button>
           </>
+        ) : null}
+        {showHelp ? (
+          <SettingsHelpSection
+            onOpenTab={(tab) => setSettingsTab(tab)}
+            onOpenLabSizingTab={(tab) => {
+              setSettingsTab("all");
+              setLabSizingTab(tab);
+            }}
+          />
         ) : null}
       </div>
     </div>
