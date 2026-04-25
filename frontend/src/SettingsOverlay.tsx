@@ -740,6 +740,9 @@ export type SettingsOverlayProps = {
   onRefresh: () => void | Promise<void>;
   onOpenHistory: () => void | Promise<void>;
   kalshi: AnyObj;
+  /** Browser-only: bottom-right cards for new trade opens and settlements. */
+  tradePopupToastsEnabled: boolean;
+  onTradePopupToastsEnabledChange: (enabled: boolean) => void;
 };
 
 export default function SettingsOverlay({
@@ -787,6 +790,8 @@ export default function SettingsOverlay({
   onRefresh,
   onOpenHistory,
   kalshi,
+  tradePopupToastsEnabled,
+  onTradePopupToastsEnabledChange,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   const [labSizingTab, setLabSizingTab] = useState<LabBranchKey>("a");
@@ -977,6 +982,20 @@ export default function SettingsOverlay({
             >
               Kalshi API keys (docs)
             </a>
+          </div>
+          <div
+            className="settings-dashboard-ui-row section-tip"
+            style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(36, 48, 86, 0.65)" }}
+            title="Stored in this browser only (localStorage). Does not affect the optimizer snapshot button."
+          >
+            <label className="settings-trade-toasts-label">
+              <input
+                type="checkbox"
+                checked={tradePopupToastsEnabled}
+                onChange={(e) => onTradePopupToastsEnabledChange(e.target.checked)}
+              />
+              <span>Trade pop-up toasts (opens &amp; settlements)</span>
+            </label>
           </div>
         </div>
         {showLive ? (

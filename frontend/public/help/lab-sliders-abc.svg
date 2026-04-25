@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <rect width="1400" height="780" fill="#0f1c33"/>
+  <rect x="70" y="70" width="1260" height="120" rx="12" fill="#163052" stroke="#3f6ca5"/>
+  <text x="100" y="122" fill="#d9ecff" font-size="34" font-family="Segoe UI, Arial">Lab A/B/C Slider Reference</text>
+  <text x="100" y="162" fill="#a6c4ea" font-size="22" font-family="Segoe UI, Arial">Paper balance, balance fraction, window minutes</text>
+  <rect x="70" y="230" width="390" height="470" rx="12" fill="#12213a" stroke="#35547f"/>
+  <rect x="505" y="230" width="390" height="470" rx="12" fill="#12213a" stroke="#35547f"/>
+  <rect x="940" y="230" width="390" height="470" rx="12" fill="#12213a" stroke="#35547f"/>
+  <text x="100" y="290" fill="#d0e4ff" font-size="28" font-family="Segoe UI, Arial">Lab A</text>
+  <text x="535" y="290" fill="#d0e4ff" font-size="28" font-family="Segoe UI, Arial">Lab B</text>
+  <text x="970" y="290" fill="#d0e4ff" font-size="28" font-family="Segoe UI, Arial">Lab C</text>
+  <text x="100" y="360" fill="#8fa8d2" font-size="20" font-family="Segoe UI, Arial">Screenshot placeholder</text>
+  <text x="535" y="360" fill="#8fa8d2" font-size="20" font-family="Segoe UI, Arial">Screenshot placeholder</text>
+  <text x="970" y="360" fill="#8fa8d2" font-size="20" font-family="Segoe UI, Arial">Screenshot placeholder</text>
+</svg>

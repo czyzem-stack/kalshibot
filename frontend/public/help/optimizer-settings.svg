@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <rect width="1400" height="780" fill="#0c1830"/>
+  <rect x="70" y="70" width="1260" height="120" rx="12" fill="#152f56" stroke="#406da8"/>
+  <text x="100" y="124" fill="#e0eeff" font-size="34" font-family="Segoe UI, Arial">Optimizer Settings Guide</text>
+  <text x="100" y="162" fill="#acc8ea" font-size="22" font-family="Segoe UI, Arial">Scheduler, adaptive, style, floor/minutes, and safety gates</text>
+  <rect x="70" y="230" width="1260" height="470" rx="12" fill="#10203b" stroke="#345a8a"/>
+  <text x="100" y="305" fill="#c7dcfb" font-size="30" font-family="Segoe UI, Arial">Screenshot placeholder</text>
+  <text x="100" y="352" fill="#91acd5" font-size="22" font-family="Segoe UI, Arial">Capture the Optimizer tab with key controls expanded.</text>
+</svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <rect width="1400" height="780" fill="#0c1a30"/>
+  <rect x="70" y="70" width="1260" height="120" rx="12" fill="#152a49" stroke="#3b6198"/>
+  <text x="100" y="124" fill="#e0eeff" font-size="34" font-family="Segoe UI, Arial">Live Filters + Global Sizing</text>
+  <text x="100" y="162" fill="#a9c3e6" font-size="22" font-family="Segoe UI, Arial">"Only if YES title contains", skip-list, fraction, window, poll, paper balance</text>
+  <rect x="70" y="230" width="1260" height="470" rx="12" fill="#11213a" stroke="#345078"/>
+  <text x="100" y="305" fill="#c6dcfb" font-size="30" font-family="Segoe UI, Arial">Screenshot placeholder</text>
+  <text x="100" y="352" fill="#8da7d3" font-size="22" font-family="Segoe UI, Arial">Capture the Live tab with filter + sizing controls visible.</text>
+</svg>

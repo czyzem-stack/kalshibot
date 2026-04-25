@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#0b1325"/>
+      <stop offset="1" stop-color="#0f1d36"/>
+    </linearGradient>
+  </defs>
+  <rect width="1400" height="780" fill="url(#bg)"/>
+  <rect x="70" y="70" width="1260" height="120" rx="12" fill="#132443" stroke="#3d5e92"/>
+  <text x="100" y="120" fill="#dbeafe" font-size="36" font-family="Segoe UI, Arial">Settings Tabs Overview</text>
+  <text x="100" y="160" fill="#9fb8df" font-size="24" font-family="Segoe UI, Arial">Live | Lab A | Lab B | Lab C | Lab D | Optimizer | All | Help</text>
+  <rect x="70" y="230" width="1260" height="470" rx="12" fill="#101c33" stroke="#2f4771"/>
+  <text x="100" y="300" fill="#c7d7f2" font-size="30" font-family="Segoe UI, Arial">Screenshot placeholder</text>
+  <text x="100" y="350" fill="#8fa8d2" font-size="22" font-family="Segoe UI, Arial">Replace with an actual Settings panel screenshot for onboarding docs.</text>
+</svg>
