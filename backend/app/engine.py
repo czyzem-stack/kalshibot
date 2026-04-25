@@ -16,8 +16,10 @@ from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
+    BRANCH_LAB_D,
     BRANCH_LIVE,
     _lab_key_for_branch,
+    lab_paper_equity_start_cents,
     effective_paper_fee_bps,
     effective_swing_exit_implied_drop_pct,
     kalshi_fee_multiplier_from_cfg,
@@ -97,6 +99,52 @@ def implied_yes_probability(yes_bid: float | None, yes_ask: float | None) -> flo
     if yes_bid is not None:
         return max(0.0, min(1.0, yes_bid))
     return None
+
+
+def implied_yes_for_open_sim_marks(m: dict[str, Any]) -> float | None:
+    """
+    Implied P(YES) for paper MTM from a public /markets (or /market) row.
+
+    List endpoints often have thin or one-sided YES quotes; this matches trading fallbacks
+    (NO book, mirror, last trade) so mark value does not spuriously read as $0 while a position
+    is open — the dashed curve shows potential recovery-to-$1 or slide toward a full loss of premium.
+    """
+    yb = dollars_to_float(m.get("yes_bid_dollars"))
+    ya = dollars_to_float(m.get("yes_ask_dollars"))
+    p = implied_yes_probability(yb, ya)
+    if p is not None and math.isfinite(p):
+        return max(0.0, min(1.0, float(p)))
+    na = dollars_to_float(m.get("no_ask_dollars"))
+    nb = dollars_to_float(m.get("no_bid_dollars"))
+    if na is not None and 0 < na < 1:
+        p_no = (na + nb) / 2.0 if (nb is not None and 0 < nb < 1) else na
+        return max(0.0, min(1.0, 1.0 - p_no))
+    e = effective_no_ask(m, yb, ya)
+    if e is not None and 0 < e < 1:
+        return max(0.0, min(1.0, 1.0 - float(e)))
+    lp = dollars_to_float(m.get("last_price_dollars"))
+    if lp is not None and 0 < lp < 1:
+        return max(0.0, min(1.0, float(lp)))
+    return None
+
+
+def _entry_implied_yes_from_trade(t: dict[str, Any]) -> float | None:
+    try:
+        raw_ex = json.loads(str(t.get("extra_json") or "{}"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw_ex, dict):
+        return None
+    v = raw_ex.get("entry_implied_yes")
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return max(0.0, min(1.0, f))
 
 
 def minutes_left(close_time_iso: str, now: dt.datetime) -> float | None:
@@ -583,13 +631,14 @@ class TradingEngine:
         self._study_quarter_wid: str | None = None
         self._study_asset_fired: set[str] = set()
         self._study_cap_logged: set[str] = set()
-        # At most one new simulated entry per configured asset per balance ``window_id`` (stops many contracts
-        # in the same 15m series from each firing once in the same budget window).
+        # At most one new simulated entry per configured asset per balance ``window_id`` (stops repeat fires
+        # in the same budget window). Series-wide cap is enforced in SQLite: one open sim per ``series_ticker``
+        # prefix per branch (see ``insert_sim_trade_single_open_per_ticker``).
         self._sim_asset_budget_fired: set[str] = set()
 
 
 def _is_lab_branch(branch: str) -> bool:
-    return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C)
+    return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
 
 
 async def tick_once(engine: TradingEngine) -> None:
@@ -782,6 +831,10 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         rb = br_engine
         await engine.store.reset_trading_data(backup=False, branch=rb)
         await engine.store.bump_lab_paper_lifetime_basis(rb)
+        try:
+            await snapshot_equity(engine)
+        except Exception:
+            pass
         engine._paper_auto_reset_streak_handled = True
         payload: dict[str, Any] = {
             "event": "auto_reset_lab_paper",
@@ -1184,8 +1237,35 @@ async def handle_market(
             )
         return None
 
+    series_up = str(series_ticker or "").strip().upper()
     simulate = bool(cfg.get("_simulate_orders"))
     if simulate:
+        if series_up and await engine.store.has_open_sim_for_series_prefix(branch, series_up):
+            await log_signal(
+                engine,
+                window_id=window_id,
+                asset_id=asset_id,
+                ticker=ticker,
+                side=trade_side,
+                implied_prob=prob,
+                minutes_left=mins,
+                rule_name=str(matched_rule.get("name") or ""),
+                executed=False,
+                skip_reason="series_has_open_sim",
+                mode=trade_mode,
+                branch=branch,
+                extra={
+                    "series_ticker": series_up,
+                    "ticker": ticker,
+                    "note": "At most one open simulated position per series per branch — settle or exit before opening another contract under this series prefix.",
+                },
+            )
+            engine._seen_keys.add(dedupe_key)
+            _trace_append(
+                trace,
+                f"  {asset_id} {ticker[:40]}… skip: series {series_up[:24]}… already has an open sim ({branch})",
+            )
+            return None
         aid = str(asset_id).strip()
         if aid and aid in engine._sim_asset_budget_fired:
             await log_signal(
@@ -1373,6 +1453,7 @@ async def handle_market(
                 branch=branch,
                 trade_mode=trade_mode,
                 market_ticker=ticker,
+                series_exclusive_prefix=series_up or None,
             )
         else:
             tid = await engine.store.insert_trade(trade_row)
@@ -1387,12 +1468,13 @@ async def handle_market(
                 minutes_left=mins,
                 rule_name=str(matched_rule.get("name") or ""),
                 executed=False,
-                skip_reason="ticker_has_open_sim",
+                skip_reason="sim_single_open_guard",
                 mode=trade_mode,
                 branch=branch,
                 extra={
                     "ticker": ticker,
-                    "note": "Another open sim for this market was committed under the same write lock (TOCTOU guard).",
+                    "series_ticker": series_up or None,
+                    "note": "Insert blocked: another open sim on this series or ticker won the write lock (one per series prefix per branch).",
                 },
             )
             engine._seen_keys.add(dedupe_key)
@@ -1613,13 +1695,20 @@ def _normalize_settled_outcome_yes_no(m: dict[str, Any]) -> str | None:
     return None
 
 
-def _fair_value_open_sim_position_cents(m: dict[str, Any], *, side: str, contracts: float) -> int:
-    """Expected settlement value in cents at implied mid (contracts × $1 × risk-neutral prob)."""
+def _fair_value_open_sim_position_cents(
+    m: dict[str, Any], *, side: str, contracts: float, entry_implied_yes: float | None = None
+) -> int:
+    """
+    Mark value in cents: position notional × P(your side wins) at current public quotes.
+    As quotes move against you, this trends toward 0 (full loss of premium at resolution);
+    in your favor, toward full payout. ``entry_implied_yes`` is a last-resort when the feed
+    is one-sided (same idea as the entry snapshot).
+    """
     if contracts <= 0 or not math.isfinite(contracts):
         return 0
-    yb = dollars_to_float(m.get("yes_bid_dollars"))
-    ya = dollars_to_float(m.get("yes_ask_dollars"))
-    py = implied_yes_probability(yb, ya)
+    py = implied_yes_for_open_sim_marks(m)
+    if py is None and entry_implied_yes is not None and math.isfinite(float(entry_implied_yes)):
+        py = max(0.0, min(1.0, float(entry_implied_yes)))
     if py is None or not math.isfinite(py):
         return 0
     py = max(0.0, min(1.0, float(py)))
@@ -1656,10 +1745,13 @@ async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows
             m = market_dict_from_public_response(data)
             if not m:
                 return 0
-            for t in rows:
-                side = str(t.get("side") or "yes")
-                contracts = _parse_contracts_fp(t.get("contracts_fp"))
-                sub += _fair_value_open_sim_position_cents(m, side=side, contracts=contracts)
+            for row in rows:
+                side = str(row.get("side") or "yes")
+                contracts = _parse_contracts_fp(row.get("contracts_fp"))
+                eiy = _entry_implied_yes_from_trade(row)
+                sub += _fair_value_open_sim_position_cents(
+                    m, side=side, contracts=contracts, entry_implied_yes=eiy
+                )
             return sub
 
     parts = await asyncio.gather(
@@ -1897,6 +1989,15 @@ async def settle_simulated_trades(engine: TradingEngine) -> int:
                 ex = dict(raw_ex) if isinstance(raw_ex, dict) else {}
             except json.JSONDecodeError:
                 ex = {}
+            if amount <= 0 and ex:
+                # Losing / winning PnL must be against full cash paid (gross), not 0 on legacy / bad rows.
+                try:
+                    ep = int(ex.get("entry_premium_cents") or 0)
+                    ef = int(ex.get("entry_fee_cents") or 0)
+                    if ep + ef > 0:
+                        amount = ep + ef
+                except (TypeError, ValueError):
+                    pass
             fee_model = resolve_paper_fee_model(ex, full_cfg, engine.branch)
             if fee_model in ("kalshi_taker", "kalshi_maker"):
                 if payout_per <= 0:
@@ -1952,9 +2053,7 @@ async def snapshot_equity(engine: TradingEngine) -> None:
     mtm_equity: int
     if _is_lab_branch(branch) or (branch == BRANCH_LIVE and full_cfg.get("simulate")):
         if _is_lab_branch(branch):
-            lab_key = _lab_key_for_branch(branch) or "lab_a"
-            lab = full_cfg.get(lab_key) or {}
-            paper = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
+            paper = lab_paper_equity_start_cents(full_cfg, branch)
         else:
             paper = int(full_cfg.get("paper_balance_cents") or 500_000)
         equity = paper + settled_pnl - open_committed
@@ -1993,11 +2092,12 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             eng_live = engines[BRANCH_LIVE]
             cfg = await eng_live.store.load_config()
             poll_candidates: list[float] = [float(cfg.get("poll_seconds") or 8)]
-            branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C]
+            branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D]
             lab_conf = {
                 BRANCH_LAB_A: cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {},
                 BRANCH_LAB_B: cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {},
                 BRANCH_LAB_C: cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {},
+                BRANCH_LAB_D: cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {},
             }
             for bk, bcfg in lab_conf.items():
                 if isinstance(bcfg, dict):
@@ -2035,7 +2135,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             # When Live is off, labs used to tick with zero spacing → three parallel-ish series scans + order books
             # in one loop turn, which spikes Kalshi public limits (HTTP 429) and looks like “labs never trade”.
             lab_stagger_armed = False
-            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
+            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
                     # Per-lab fraction nudger when auto_optimize is on — disabled while scheduled optimizer runs.
@@ -2114,11 +2214,11 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                     )
                     eng_live.state.last_error = err[:500]
 
-            # Paper lab charts: write one equity row per engine loop while the lab is on (same cadence for A/B/C).
+            # Paper lab charts: write one equity row per engine loop while the lab is on (same cadence for A/B/C/D).
             # Previously gated on ``tick % 5`` + settle/swing, so quiet labs (e.g. fewer settlements) updated charts
             # ~5× slower than busy labs despite identical poll rates.
             lab_snap_items: list[tuple[str, Any]] = []
-            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C):
+            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
                     eng = engines.get(br)
@@ -2156,7 +2256,8 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
         poll_lab_a = float(((cfg.get("lab_a") or {}) if isinstance(cfg.get("lab_a"), dict) else {}).get("poll_seconds") or poll_live)
         poll_lab_b = float(((cfg.get("lab_b") or {}) if isinstance(cfg.get("lab_b"), dict) else {}).get("poll_seconds") or poll_live)
         poll_lab_c = float(((cfg.get("lab_c") or {}) if isinstance(cfg.get("lab_c"), dict) else {}).get("poll_seconds") or poll_live)
-        poll = max(poll_live, poll_lab_a, poll_lab_b, poll_lab_c)
+        poll_lab_d = float(((cfg.get("lab_d") or {}) if isinstance(cfg.get("lab_d"), dict) else {}).get("poll_seconds") or poll_live)
+        poll = max(poll_live, poll_lab_a, poll_lab_b, poll_lab_c, poll_lab_d)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=poll)
         except TimeoutError:

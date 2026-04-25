@@ -9,6 +9,7 @@ from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
+    BRANCH_LAB_D,
     MAX_BALANCE_FRACTION_PER_WINDOW,
     MIN_BALANCE_FRACTION_PER_WINDOW,
     _lab_key_for_branch,
@@ -47,9 +48,11 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("lab_a_enabled", True)
     out.setdefault("lab_b_enabled", True)
     out.setdefault("lab_c_enabled", True)
+    out.setdefault("lab_d_enabled", True)
     out.setdefault("lab_a_style", "blend")
     out.setdefault("lab_b_style", "conservative")
     out.setdefault("lab_c_style", "aggressive")
+    out.setdefault("lab_d_style", "wild")
     out.setdefault("loss_streak_trigger", 1)
     out.setdefault("threshold_step_pct", 2)
     out.setdefault("minute_step", 2)
@@ -96,12 +99,16 @@ def _branch_style(oc: dict[str, Any], branch: str) -> str:
             return "conservative"
         if branch == BRANCH_LAB_C:
             return "aggressive"
+        if branch == BRANCH_LAB_D:
+            return "wild"
         return "blend"
     if branch == BRANCH_LAB_A:
         return str(oc.get("lab_a_style") or "blend").strip().lower()
     if branch == BRANCH_LAB_B:
         return str(oc.get("lab_b_style") or "conservative").strip().lower()
-    return str(oc.get("lab_c_style") or "aggressive").strip().lower()
+    if branch == BRANCH_LAB_C:
+        return str(oc.get("lab_c_style") or "aggressive").strip().lower()
+    return str(oc.get("lab_d_style") or "wild").strip().lower()
 
 
 def _index_signals_by_ticker(signals: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -281,12 +288,15 @@ def _build_metrics_context(
     tr_a: list[dict[str, Any]],
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
+    tr_d: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
     sg_b: list[dict[str, Any]],
     sg_c: list[dict[str, Any]],
+    sg_d: list[dict[str, Any]],
     eq_a: list[dict[str, Any]],
     eq_b: list[dict[str, Any]],
     eq_c: list[dict[str, Any]],
+    eq_d: list[dict[str, Any]],
     end: dt.datetime,
 ) -> dict[str, Any]:
     include_fees = bool(oc.get("include_fees_in_score", True))
@@ -294,18 +304,23 @@ def _build_metrics_context(
     sa = _signals_sorted_desc(sg_a)
     sb = _signals_sorted_desc(sg_b)
     sc = _signals_sorted_desc(sg_c)
+    sd = _signals_sorted_desc(sg_d)
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     _, rules_a = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     _, rules_b = _ensure_lab_rules(cfg, BRANCH_LAB_B)
     _, rules_c = _ensure_lab_rules(cfg, BRANCH_LAB_C)
+    _, rules_d = _ensure_lab_rules(cfg, BRANCH_LAB_D)
     rep_a = _replay_pnl_under_rules(st_a, rules_a, sa, include_fees_in_score=include_fees)
     rep_b = _replay_pnl_under_rules(st_b, rules_b, sb, include_fees_in_score=include_fees)
     rep_c = _replay_pnl_under_rules(st_c, rules_c, sc, include_fees_in_score=include_fees)
+    rep_d = _replay_pnl_under_rules(st_d, rules_d, sd, include_fees_in_score=include_fees)
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
+    lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     def _pf_var(rows: list[dict[str, Any]]) -> dict[str, Any]:
         gross_win = sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) > 0)
         gross_loss = abs(sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) < 0))
@@ -367,6 +382,21 @@ def _build_metrics_context(
             "regime": _regime_volatility(sg_c, hours=regime_h, end=end),
             "regime_last_4h": _regime_volatility(sg_c, hours=4.0, end=end),
             "regime_last_24h": _regime_volatility(sg_c, hours=24.0, end=end),
+        },
+        "lab_d": {
+            "settled_trades": len(st_d),
+            "profitable_trades": sum(1 for t in st_d if int(t.get("pnl_cents") or 0) > 0),
+            "balance_fraction_per_window": lab_d.get("balance_fraction_per_window"),
+            "window_minutes": lab_d.get("window_minutes"),
+            "replay_under_current_rules_pnl_cents": rep_d[0],
+            "replay_matched_trades": rep_d[1],
+            "per_rule_stats_48h": _per_rule_stats_48h(st_d, end=end),
+            "profit_factor_and_variance": _pf_var(st_d),
+            "equity_slope_dollars_per_hour": _equity_slope_dollars_per_hour(eq_d),
+            "regime_primary_hours": regime_h,
+            "regime": _regime_volatility(sg_d, hours=regime_h, end=end),
+            "regime_last_4h": _regime_volatility(sg_d, hours=4.0, end=end),
+            "regime_last_24h": _regime_volatility(sg_d, hours=24.0, end=end),
         },
         "optimizer_guards": {
             "min_trades_for_optimize": oc.get("min_trades_for_optimize"),
@@ -437,7 +467,14 @@ def _history_item(
     after_extra: dict[str, Any] | None = None,
     tick_hint: str | None = None,
 ) -> dict[str, Any]:
-    lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B" if branch == BRANCH_LAB_B else "Lab C"
+    if branch == BRANCH_LAB_A:
+        lab = "Lab A"
+    elif branch == BRANCH_LAB_B:
+        lab = "Lab B"
+    elif branch == BRANCH_LAB_C:
+        lab = "Lab C"
+    else:
+        lab = "Lab D"
     before: dict[str, Any] = {"yes_floor_pct": before_floor, "min_minutes_left": before_minm}
     after: dict[str, Any] = {"yes_floor_pct": after_floor, "min_minutes_left": after_minm}
     if before_extra:
@@ -505,7 +542,7 @@ def _merge_pulse_trace(oc: dict[str, Any], changes: list[dict[str, Any]]) -> Non
 
 
 def _optimizer_pulse_bc_enrichment(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
-    """Extra ``after`` keys so the dashboard pulse chart can plot Lab B/C reference floors and bet fractions."""
+    """Extra ``after`` keys so the dashboard pulse chart can plot Lab B/C/D reference floors and bet fractions."""
     def gfrac(lk: str) -> float:
         lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
         try:
@@ -516,13 +553,15 @@ def _optimizer_pulse_bc_enrichment(cfg: dict[str, Any], oc: dict[str, Any]) -> d
     return {
         "lab_b_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_b_yes_floor_pct"), 55))),
         "lab_c_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_c_yes_floor_pct"), 52))),
+        "lab_d_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_d_yes_floor_pct"), 50))),
         "lab_b_balance_fraction": round(gfrac("lab_b"), 4),
         "lab_c_balance_fraction": round(gfrac("lab_c"), 4),
+        "lab_d_balance_fraction": round(gfrac("lab_d"), 4),
     }
 
 
 def pulse_chart_baseline(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
-    """Current Lab A YES floor + bet fraction and Lab B/C reference values (same keys as pulse change_history ``after``)."""
+    """Current Lab A YES floor + bet fraction and Lab B/C/D reference values (same keys as pulse change_history ``after``)."""
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     try:
         bf_a = float(lab_a.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
@@ -783,6 +822,7 @@ def _internal_lab_a_bet_pulse(
     tr_a: list[dict[str, Any]],
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
+    tr_d: list[dict[str, Any]],
     at_iso: str,
 ) -> dict[str, Any] | None:
     """Rule-based Lab A bet fraction nudge from settled sim PnL (no Claude; does not require lab.auto_optimize)."""
@@ -793,12 +833,14 @@ def _internal_lab_a_bet_pulse(
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    if len(st_a) + len(st_b) + len(st_c) < min_tr:
+    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    if len(st_a) + len(st_b) + len(st_c) + len(st_d) < min_tr:
         return None
     prof = (
         sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_b if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_d if int(t.get("pnl_cents") or 0) > 0)
     )
     if prof < min_prof:
         return None
@@ -814,6 +856,17 @@ def _internal_lab_a_bet_pulse(
         return None
     pnl = sum(int(t.get("pnl_cents") or 0) for t in window) / max(1, len(window))
     step = 0.003
+    style_d = _branch_style(oc, BRANCH_LAB_D)
+    if style_d == "wild":
+        b_tail = st_b[:24]
+        c_tail = st_c[:24]
+        b_mean = (sum(int(t.get("pnl_cents") or 0) for t in b_tail) / len(b_tail)) if b_tail else 0.0
+        c_mean = (sum(int(t.get("pnl_cents") or 0) for t in c_tail) / len(c_tail)) if c_tail else 0.0
+        bc_boost = max(b_mean, c_mean)
+        if bc_boost >= 15:
+            step = 0.005
+        elif bc_boost <= -15:
+            step = 0.0045
     if pnl > 0:
         new_f = min(MAX_BALANCE_FRACTION_PER_WINDOW, old_f + step)
     elif pnl < 0:
@@ -829,6 +882,8 @@ def _internal_lab_a_bet_pulse(
     lab["optimizer_note"] = f"internal_pulse mean_pnl_cents={pnl:.1f} -> fraction={new_f}"
     cfg["lab_a"] = lab
     reason = f"internal pulse: Lab A last-{len(window)} settled mean {pnl:.0f}¢/trade"
+    if style_d == "wild":
+        reason += " (Lab D wild bias from B/C momentum)"
     hint = (
         f"Next tick uses bet fraction ~{new_f:.2%} of Lab A paper per window (was ~{old_f:.2%}). "
         f"Threshold rules unchanged unless the loss-streak adaptive fires."
@@ -883,9 +938,10 @@ def _apply_claude_bet_recommendations(
     tr_a: list[dict[str, Any]],
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
+    tr_d: list[dict[str, Any]],
     at_iso: str,
 ) -> list[dict[str, Any]]:
-    """Apply balance_fraction hints for Lab A staging only; B/C are read-only in the model output."""
+    """Apply balance_fraction hints for Lab A staging only; B/C/D are read-only in the model output."""
     if not bool(oc.get("optimize_bet_size", True)):
         return []
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
@@ -893,12 +949,14 @@ def _apply_claude_bet_recommendations(
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    if len(st_a) + len(st_b) + len(st_c) < min_tr:
+    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    if len(st_a) + len(st_b) + len(st_c) + len(st_d) < min_tr:
         return []
     prof = (
         sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_b if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_d if int(t.get("pnl_cents") or 0) > 0)
     )
     if prof < min_prof:
         return []
@@ -958,13 +1016,14 @@ def _build_payload(
             "Simulation-only quant: maximize risk-adjusted edge. Prefer higher profit factor × win rate with "
             "lower variance of per-trade outcomes; respect regime volatility and fee drag when include_fees_in_score is true."
         ),
-        "branches": [BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C],
+        "branches": [BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D],
         "live_branch_forbidden": True,
         "persisted_tuning_target": "lab_a_only",
         "current_config_excerpt": {
             "lab_a": cfg.get("lab_a") or {},
             "lab_b": cfg.get("lab_b") or {},
             "lab_c": cfg.get("lab_c") or {},
+            "lab_d": cfg.get("lab_d") or {},
             "shared": {
                 "rules": cfg.get("rules") or [],
                 "balance_fraction_per_window": cfg.get("balance_fraction_per_window"),
@@ -1024,9 +1083,11 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
     st_a_prev = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     prof_n = sum(1 for t in st_a_prev if int(t.get("pnl_cents") or 0) > 0)
@@ -1043,7 +1104,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         cw = _apply_adaptive_win_relax_lab_a(cfg=cfg, oc=oc, trades=tr_a, signals=sg_a, at_iso=end_iso)
         if cw:
             changes.append(cw)
-    bi = _internal_lab_a_bet_pulse(cfg=cfg, oc=oc, tr_a=tr_a, tr_b=tr_b, tr_c=tr_c, at_iso=end_iso)
+    bi = _internal_lab_a_bet_pulse(cfg=cfg, oc=oc, tr_a=tr_a, tr_b=tr_b, tr_c=tr_c, tr_d=tr_d, at_iso=end_iso)
     if bi:
         changes.append(bi)
 
@@ -1082,24 +1143,28 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
     eq_b = await store.equity_series(limit=500, branch=BRANCH_LAB_B)
     eq_c = await store.equity_series(limit=500, branch=BRANCH_LAB_C)
+    eq_d = await store.equity_series(limit=500, branch=BRANCH_LAB_D)
     metrics = _build_metrics_context(
         cfg=cfg,
         oc=oc,
         tr_a=tr_a,
         tr_b=tr_b,
         tr_c=tr_c,
+        tr_d=tr_d,
         sg_a=sg_a,
         sg_b=sg_b,
         sg_c=sg_c,
+        sg_d=sg_d,
         eq_a=eq_a,
         eq_b=eq_b,
         eq_c=eq_c,
+        eq_d=eq_d,
         end=end,
     )
     payload = _build_payload(
         cfg=cfg,
-        trades=[*tr_a, *tr_b, *tr_c],
-        signals=[*sg_a, *sg_b, *sg_c],
+        trades=[*tr_a, *tr_b, *tr_c, *tr_d],
+        signals=[*sg_a, *sg_b, *sg_c, *sg_d],
         metrics=metrics,
         oc=oc,
     )
@@ -1109,9 +1174,9 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "max_tokens": 3200,
         "temperature": 0.32,
         "system": (
-            "You are a quant assistant for paper labs lab_a (staging / blend), lab_b (conservative), lab_c (aggressive). "
-            "Never use live-branch data. Lab B and C are reference arms only: do not recommend persisted threshold/rule "
-            "or bet-size changes for them. Use performance_metrics across all three. When optimize_bet_size is true, "
+            "You are a quant assistant for paper labs lab_a (staging / blend), lab_b (conservative), lab_c (aggressive), lab_d (wild). "
+            "Never use live-branch data. Lab B/C/D are reference arms only: do not recommend persisted threshold/rule "
+            "or bet-size changes for them. Use performance_metrics across all four labs. When optimize_bet_size is true, "
             "you may emit recommendations with field=balance_fraction_per_window and target lab_a only; keep suggested "
             "values within 0.0001 and 1.0. Be decisive: when metrics clearly favor a sizing shift, emit a concrete "
             "suggestion with confidence medium or high rather than hedging. Return concise JSON only, following the "
@@ -1150,7 +1215,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         created_at=_iso(end),
         window_start=start_iso,
         window_end=end_iso,
-        source_branches=[BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C],
+        source_branches=[BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D],
         summary=str(rec.get("summary") or "")[:2000],
         recommendation_json=rec if isinstance(rec, dict) else {"raw": rec},
         raw_json=out if isinstance(out, dict) else None,
@@ -1162,6 +1227,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         tr_a=tr_a,
         tr_b=tr_b,
         tr_c=tr_c,
+        tr_d=tr_d,
         at_iso=_iso(end),
     )
     if bet_hist:

@@ -7,7 +7,8 @@ BRANCH_LIVE = "live"
 BRANCH_LAB_A = "lab_a"
 BRANCH_LAB_B = "lab_b"
 BRANCH_LAB_C = "lab_c"
-BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C)
+BRANCH_LAB_D = "lab_d"
+BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
 
 # Same bounds as ``BotConfigPayload.balance_fraction_per_window`` (API / dashboard).
 MIN_BALANCE_FRACTION_PER_WINDOW = 0.0001
@@ -50,7 +51,40 @@ def _lab_key_for_branch(branch: str) -> str | None:
         return "lab_b"
     if branch == BRANCH_LAB_C:
         return "lab_c"
+    if branch == BRANCH_LAB_D:
+        return "lab_d"
     return None
+
+
+def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
+    """
+    Paper **book / MTM** baseline for a branch — must match the dashboard rollups
+    (``_enrich_strategy_metrics`` / ``_refresh_paper_mtm_from_marks``).
+
+    When ``paper_lifetime_basis_cents`` is set on a lab (re-seeds / auto-reset), that cumulative
+    basis is used so chart snapshots and the intraday tail do not diverge from tiles.
+    Otherwise falls back to per-lab ``paper_balance_cents`` or the global default.
+    """
+    lab_key = _lab_key_for_branch(branch)
+    if lab_key is None:
+        try:
+            return max(0, int(full_cfg.get("paper_balance_cents") or 500_000))
+        except (TypeError, ValueError):
+            return 500_000
+    lab = full_cfg.get(lab_key) if isinstance(full_cfg.get(lab_key), dict) else {}
+    lt = lab.get("paper_lifetime_basis_cents")
+    if lt is not None:
+        try:
+            return max(0, int(lt))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return max(
+            0,
+            int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000),
+        )
+    except (TypeError, ValueError):
+        return 500_000
 
 
 def pulse_effective_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]:
@@ -429,6 +463,7 @@ def build_optimizer_radar_payload(full_cfg: dict[str, Any], opt_blk: dict[str, A
         ("lab_a", BRANCH_LAB_A),
         ("lab_b", BRANCH_LAB_B),
         ("lab_c", BRANCH_LAB_C),
+        ("lab_d", BRANCH_LAB_D),
     ):
         raw = branch_radar_profile(full_cfg, br, opt)
         profiles_raw[slug] = raw

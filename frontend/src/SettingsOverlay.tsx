@@ -13,14 +13,14 @@ import {
 } from "./settingsRules";
 
 type AnyObj = Record<string, any>;
-type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_ab_optimizer" | "all";
-type LabBranchKey = "a" | "b" | "c";
+type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_ab_optimizer" | "all";
+type LabBranchKey = "a" | "b" | "c" | "d";
 
 function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: AnyObj; cfg: AnyObj; busy: boolean }) {
   const p = `lab_${which}`;
-  const defFrac = which === "a" ? 0.055 : which === "b" ? 0.06 : 0.1;
-  const defWin = which === "a" ? 15 : which === "b" ? 12 : 10;
-  const labTitle = which === "a" ? "A (staging)" : which === "b" ? "B (conservative)" : "C (aggressive)";
+  const defFrac = which === "a" ? 0.055 : which === "b" ? 0.06 : which === "c" ? 0.1 : 0.13;
+  const defWin = which === "a" ? 15 : which === "b" ? 12 : which === "c" ? 10 : 10;
+  const labTitle = which === "a" ? "A (staging)" : which === "b" ? "B (conservative)" : which === "c" ? "C (aggressive)" : "D (wild)";
   return (
     <div>
       <strong style={{ fontSize: 12 }} title={`Branch lab_${which}`}>
@@ -67,14 +67,14 @@ function LabBranchPanel({
   lab: AnyObj;
   cfg: AnyObj;
   busy: boolean;
-  onResetTradingData: (branch: "lab_a" | "lab_b" | "lab_c", backup: boolean) => void;
+  onResetTradingData: (branch: "lab_a" | "lab_b" | "lab_c" | "lab_d", backup: boolean) => void;
   onSaveLabRules: (rules: AnyObj[]) => void;
   onSaveLabFromSliders: () => void;
   style?: CSSProperties;
 }) {
   const p = `lab_${branch}`;
-  const resetKey = branch === "a" ? "lab_a" : branch === "b" ? "lab_b" : "lab_c";
-  const title = branch === "a" ? "Lab A (staging)" : branch === "b" ? "Lab B (conservative)" : "Lab C (aggressive)";
+  const resetKey = branch === "a" ? "lab_a" : branch === "b" ? "lab_b" : branch === "c" ? "lab_c" : "lab_d";
+  const title = branch === "a" ? "Lab A (staging)" : branch === "b" ? "Lab B (conservative)" : branch === "c" ? "Lab C (aggressive)" : "Lab D (wild)";
   const autoResetTitle =
     "When enabled, wipe this lab’s SQLite trades/signals/equity once per bad streak if a tick ends with an error OR derived paper equity (seed + settled PnL − open commit) is ≤ 0—then the next tick starts from Paper balance (cents) in the sizing row above.";
   const note: ReactNode =
@@ -86,20 +86,24 @@ function LabBranchPanel({
     ) : branch === "b" ? (
       <>Clears <code>lab_b</code> rows only, once per bad streak (tick error or equity ≤ 0).</>
     ) : (
-      <>Clears <code>lab_c</code> rows only, once per bad streak (tick error or equity ≤ 0).</>
+      branch === "c" ? <>Clears <code>lab_c</code> rows only, once per bad streak (tick error or equity ≤ 0).</> : <>Clears <code>lab_d</code> rows only, once per bad streak (tick error or equity ≤ 0).</>
     );
   const resetConfirm =
     branch === "a"
       ? "Reset Lab A data only? Removes SQLite signals, trades, and equity snapshots for Lab A (including legacy sim_lab). Live and other labs are kept."
       : branch === "b"
         ? "Reset Lab B data only? Removes SQLite signals, trades, and equity snapshots for Lab B. Live and other labs are kept."
-        : "Reset Lab C data only? Removes SQLite signals, trades, and equity snapshots for Lab C. Live and other labs are kept.";
+        : branch === "c"
+          ? "Reset Lab C data only? Removes SQLite signals, trades, and equity snapshots for Lab C. Live and other labs are kept."
+          : "Reset Lab D data only? Removes SQLite signals, trades, and equity snapshots for Lab D. Live and other labs are kept.";
   const resetBtnTitle =
     branch === "a"
       ? "Deletes Lab A branch rows only (lab_a and legacy sim_lab)."
       : branch === "b"
         ? "Deletes Lab B branch rows only."
-        : "Deletes Lab C branch rows only.";
+        : branch === "c"
+          ? "Deletes Lab C branch rows only."
+          : "Deletes Lab D branch rows only.";
 
   return (
     <div
@@ -173,6 +177,7 @@ export type SettingsOverlayProps = {
   labA: AnyObj;
   labB: AnyObj;
   labC: AnyObj;
+  labD: AnyObj;
   busy: boolean;
   onSaveRules: (rules: AnyObj[]) => void | Promise<void>;
   onSaveYesSubtitleFilter: () => void | Promise<void>;
@@ -181,9 +186,11 @@ export type SettingsOverlayProps = {
   onSaveLabAFromSliders: () => void | Promise<void>;
   onSaveLabBFromSliders: () => void | Promise<void>;
   onSaveLabCFromSliders: () => void | Promise<void>;
+  onSaveLabDFromSliders: () => void | Promise<void>;
   onSaveLabARules: (rules: AnyObj[]) => void | Promise<void>;
   onSaveLabBRules: (rules: AnyObj[]) => void | Promise<void>;
   onSaveLabCRules: (rules: AnyObj[]) => void | Promise<void>;
+  onSaveLabDRules: (rules: AnyObj[]) => void | Promise<void>;
   onSaveDevSimHighYesPct: (pct: number | null) => void | Promise<void>;
   onSaveNoBetWhenYesBelow: (pct: number | null) => void | Promise<void>;
   onSaveSwingExitImpliedDropPct: (pct: number | null) => void | Promise<void>;
@@ -192,7 +199,7 @@ export type SettingsOverlayProps = {
   onSaveOptimizerConfig: (patch: AnyObj) => void | Promise<void>;
   optimizerSaving?: boolean;
   onResetTradingData: (
-    branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c",
+    branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d",
     backup: boolean,
   ) => void | Promise<void>;
   /** Direct ``PUT /api/config/lab-branches`` (merge + optional branch data reset); independent of optimizer. */
@@ -201,9 +208,11 @@ export type SettingsOverlayProps = {
   labEngineAOn: boolean;
   labEngineBOn: boolean;
   labEngineCOn: boolean;
+  labEngineDOn: boolean;
   onToggleLabA: () => void | Promise<void>;
   onToggleLabB: () => void | Promise<void>;
   onToggleLabC: () => void | Promise<void>;
+  onToggleLabD: () => void | Promise<void>;
   onAddAllLabsPaper: () => void | Promise<void>;
 };
 
@@ -215,6 +224,7 @@ export default function SettingsOverlay({
   labA,
   labB,
   labC,
+  labD,
   busy,
   onSaveRules,
   onSaveYesSubtitleFilter,
@@ -223,9 +233,11 @@ export default function SettingsOverlay({
   onSaveLabAFromSliders,
   onSaveLabBFromSliders,
   onSaveLabCFromSliders,
+  onSaveLabDFromSliders,
   onSaveLabARules,
   onSaveLabBRules,
   onSaveLabCRules,
+  onSaveLabDRules,
   onSaveDevSimHighYesPct,
   onSaveNoBetWhenYesBelow,
   onSaveSwingExitImpliedDropPct,
@@ -238,9 +250,11 @@ export default function SettingsOverlay({
   labEngineAOn,
   labEngineBOn,
   labEngineCOn,
+  labEngineDOn,
   onToggleLabA,
   onToggleLabB,
   onToggleLabC,
+  onToggleLabD,
   onAddAllLabsPaper,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
@@ -260,23 +274,31 @@ export default function SettingsOverlay({
   const showLabA = settingsTab === "lab_a" || settingsTab === "all";
   const showLabB = settingsTab === "lab_b" || settingsTab === "all";
   const showLabC = settingsTab === "lab_c" || settingsTab === "all";
+  const showLabD = settingsTab === "lab_d" || settingsTab === "all";
   /** Shared bankroll row: any tab except Live-only (includes optimizer tab). */
   const showLabSizingGrid = settingsTab !== "live";
   const showLabAColumn = settingsTab === "all" || settingsTab === "lab_a" || settingsTab === "lab_ab_optimizer";
   const showLabBColumn = settingsTab === "all" || settingsTab === "lab_b" || settingsTab === "lab_ab_optimizer";
   const showLabCColumn = settingsTab === "all" || settingsTab === "lab_c" || settingsTab === "lab_ab_optimizer";
+  const showLabDColumn = settingsTab === "all" || settingsTab === "lab_d" || settingsTab === "lab_ab_optimizer";
   const showCombinedLabReset =
-    settingsTab === "all" || settingsTab === "lab_ab_optimizer" || settingsTab === "lab_a" || settingsTab === "lab_b" || settingsTab === "lab_c";
-  const nLabSizingCols = [showLabAColumn, showLabBColumn, showLabCColumn].filter(Boolean).length;
+    settingsTab === "all" ||
+    settingsTab === "lab_ab_optimizer" ||
+    settingsTab === "lab_a" ||
+    settingsTab === "lab_b" ||
+    settingsTab === "lab_c" ||
+    settingsTab === "lab_d";
+  const nLabSizingCols = [showLabAColumn, showLabBColumn, showLabCColumn, showLabDColumn].filter(Boolean).length;
   const labSizingGridTemplate =
-    nLabSizingCols <= 1 ? "1fr" : nLabSizingCols === 2 ? "1fr 1fr" : "repeat(3, minmax(0, 1fr))";
+    nLabSizingCols <= 1 ? "1fr" : nLabSizingCols === 2 ? "1fr 1fr" : nLabSizingCols === 3 ? "repeat(3, minmax(0, 1fr))" : "repeat(4, minmax(0, 1fr))";
   // Optimizer controls + save button: dedicated tab, All, or any lab tab.
   const showOpt =
     settingsTab === "lab_ab_optimizer" ||
     settingsTab === "all" ||
     settingsTab === "lab_a" ||
     settingsTab === "lab_b" ||
-    settingsTab === "lab_c";
+    settingsTab === "lab_c" ||
+    settingsTab === "lab_d";
   const showData = settingsTab === "all";
   const historyRows = useMemo(
     () => (Array.isArray(optimizerCfg?.change_history) ? (optimizerCfg.change_history as AnyObj[]) : []),
@@ -309,6 +331,7 @@ export default function SettingsOverlay({
               ["lab_a", "Lab A"],
               ["lab_b", "Lab B"],
               ["lab_c", "Lab C"],
+              ["lab_d", "Lab D"],
               ["lab_ab_optimizer", "Optimizer"],
               ["all", "All"],
             ] as const
@@ -501,7 +524,7 @@ export default function SettingsOverlay({
 
         {showLabSizingGrid ? (
           <div
-            key={`lab-sizing-${String(labA.paper_balance_cents ?? "")}-${String(labB.paper_balance_cents ?? "")}-${String(labC.paper_balance_cents ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${String(labB.balance_fraction_per_window ?? "")}-${String(labC.balance_fraction_per_window ?? "")}`}
+            key={`lab-sizing-${String(labA.paper_balance_cents ?? "")}-${String(labB.paper_balance_cents ?? "")}-${String(labC.paper_balance_cents ?? "")}-${String(labD.paper_balance_cents ?? "")}-${String(labA.balance_fraction_per_window ?? "")}-${String(labB.balance_fraction_per_window ?? "")}-${String(labC.balance_fraction_per_window ?? "")}-${String(labD.balance_fraction_per_window ?? "")}`}
             className="panel settings-nested-panel"
             style={{ marginTop: showLive ? 20 : 12, padding: "12px 14px" }}
           >
@@ -517,7 +540,7 @@ export default function SettingsOverlay({
                   Lab engines
                 </strong>
                 <span className="sub" style={{ fontSize: 11 }}>
-                  Paper A / B / C — state from dashboard
+                  Paper A / B / C / D — state from dashboard
                 </span>
               </div>
               <div className="settings-lab-engine-status" aria-label="Lab engine running state">
@@ -530,6 +553,9 @@ export default function SettingsOverlay({
                 <span className={`pill ${labEngineCOn ? "pill--engine-on" : "pill--engine-off"}`}>
                   Lab C · <strong>{labEngineCOn ? "Active" : "Stopped"}</strong>
                 </span>
+                <span className={`pill ${labEngineDOn ? "pill--engine-on" : "pill--engine-off"}`}>
+                  Lab D · <strong>{labEngineDOn ? "Active" : "Stopped"}</strong>
+                </span>
               </div>
               <div className="settings-lab-engine-actions">
                 <button type="button" className="primary" disabled={busy} title="Lab A — staging paper engine." onClick={() => void onToggleLabA()}>
@@ -540,6 +566,9 @@ export default function SettingsOverlay({
                 </button>
                 <button type="button" className="primary" disabled={busy} title="Lab C — aggressive reference arm." onClick={() => void onToggleLabC()}>
                   Turn C {labEngineCOn ? "off" : "on"}
+                </button>
+                <button type="button" className="primary" disabled={busy} title="Lab D — wild reference arm." onClick={() => void onToggleLabD()}>
+                  Turn D {labEngineDOn ? "off" : "on"}
                 </button>
                 <button
                   type="button"
@@ -553,10 +582,11 @@ export default function SettingsOverlay({
             </div>
             <div className="panel settings-nested-panel" style={{ marginTop: 12, padding: "10px 12px" }}>
               <h3 className="section-tip" style={{ margin: 0, fontSize: 13 }} title="POST /api/data/reset?branch=all_labs — one wipe for all paper labs.">
-                Quick reset: all labs (A+B+C)
+                Quick reset: all labs (A+B+C+D)
               </h3>
               <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-                Deletes SQLite signals, trades, and equity snapshots for <strong>lab_a</strong>, <strong>lab_b</strong>, and <strong>lab_c</strong> only.{" "}
+                Deletes SQLite signals, trades, and equity snapshots for <strong>lab_a</strong>, <strong>lab_b</strong>, <strong>lab_c</strong>, and{" "}
+                <strong>lab_d</strong> only.{" "}
                 <strong>Live</strong> rows are not removed. Same as Data → reset with scope all_labs.
               </p>
               <label className="checkbox section-tip" style={{ border: "none", marginTop: 6 }}>
@@ -568,13 +598,13 @@ export default function SettingsOverlay({
                 className="primary"
                 style={{ marginTop: 8, borderColor: "#4a3a6b" }}
                 disabled={busy}
-                title="Clears paper history for Labs A, B, and C in one POST; server clears engine RAM dedupe for each lab."
+                title="Clears paper history for Labs A, B, C, and D in one POST; server clears engine RAM dedupe for each lab."
                 onClick={() => {
                   const el = document.getElementById("reset_all_labs_backup") as HTMLInputElement | null;
                   const backup = el ? el.checked : true;
                   if (
                     !window.confirm(
-                      "Reset ALL lab paper data (Lab A + B + C)?\n\nThis deletes SQLite signals, trades, and equity snapshots for lab_a, lab_b, and lab_c only. Live branch rows are NOT removed. Bot config is kept.",
+                      "Reset ALL lab paper data (Lab A + B + C + D)?\n\nThis deletes SQLite signals, trades, and equity snapshots for lab_a, lab_b, lab_c, and lab_d only. Live branch rows are NOT removed. Bot config is kept.",
                     )
                   ) {
                     return;
@@ -582,12 +612,12 @@ export default function SettingsOverlay({
                   void onResetTradingData("all_labs", backup);
                 }}
               >
-                Reset labs A+B+C (SQLite)
+                Reset labs A+B+C+D (SQLite)
               </button>
             </div>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               <strong>Lab A</strong> = staging (scheduled optimizer persists adaptive tuning here). <strong>Lab B</strong> = conservative and{" "}
-              <strong>Lab C</strong> = aggressive reference arms (same data to Claude for context; no auto-applied rule changes on B/C). Bankroll
+              <strong>Lab C</strong> = aggressive and <strong>Lab D</strong> = wild reference arms (same data to Claude for context; no auto-applied rule changes on B/C/D). Bankroll
               row values are used by per-lab <strong>Save … options</strong> and <code>PUT /api/config/lab-branches</code>. Per-lab YES/NO bands override Live until cleared in JSON;
               sliders fall back to the Live rule list when a lab has no saved <code>rules</code>.
             </p>
@@ -603,11 +633,12 @@ export default function SettingsOverlay({
               {showLabAColumn ? <LabSizingInputs which="a" lab={labA} cfg={cfg} busy={busy} /> : null}
               {showLabBColumn ? <LabSizingInputs which="b" lab={labB} cfg={cfg} busy={busy} /> : null}
               {showLabCColumn ? <LabSizingInputs which="c" lab={labC} cfg={cfg} busy={busy} /> : null}
+              {showLabDColumn ? <LabSizingInputs which="d" lab={labD} cfg={cfg} busy={busy} /> : null}
             </div>
             {showCombinedLabReset ? (
               <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
                 <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="Optional SQLite wipe, then merge the bankroll/sizing numbers above in one request.">
-                  Reset lab data + apply sizing (A / B / C)
+                  Reset lab data + apply sizing (A / B / C / D)
                 </h3>
                 <p className="sub" style={{ marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
                   Same scope as the per-lab reset buttons below, but you can wipe selected branches and push the sizing row above in one step.
@@ -621,8 +652,9 @@ export default function SettingsOverlay({
                     <option value="lab_a">Lab A only</option>
                     <option value="lab_b">Lab B only</option>
                     <option value="lab_c">Lab C only</option>
+                    <option value="lab_d">Lab D only</option>
                     <option value="both">Lab A + Lab B</option>
-                    <option value="all_labs">Lab A + B + C</option>
+                    <option value="all_labs">Lab A + B + C + D</option>
                   </select>
                 </div>
                 <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
@@ -655,10 +687,14 @@ export default function SettingsOverlay({
                     const lcPaper = parseC("lab_c_paper");
                     const lcFrac = parseF("lab_c_frac");
                     const lcWin = parseC("lab_c_win");
+                    const ldPaper = parseC("lab_d_paper");
+                    const ldFrac = parseF("lab_d_frac");
+                    const ldWin = parseC("lab_d_win");
                     // If a checkbox isn't rendered in this tab, keep current backend value instead of forcing false.
                     const laAutoReset = readBool("lab_a_auto_reset_failure", Boolean(labA?.auto_reset_paper_on_tick_failure));
                     const lbAutoReset = readBool("lab_b_auto_reset_failure", Boolean(labB?.auto_reset_paper_on_tick_failure));
                     const lcAutoReset = readBool("lab_c_auto_reset_failure", Boolean(labC?.auto_reset_paper_on_tick_failure));
+                    const ldAutoReset = readBool("lab_d_auto_reset_failure", Boolean(labD?.auto_reset_paper_on_tick_failure));
                     if (!Number.isFinite(laFrac) || laFrac < 0.0001 || laFrac > 1) {
                       window.alert("Lab A balance fraction must be between 0.0001 and 1.");
                       return;
@@ -669,6 +705,10 @@ export default function SettingsOverlay({
                     }
                     if (!Number.isFinite(lcFrac) || lcFrac < 0.0001 || lcFrac > 1) {
                       window.alert("Lab C balance fraction must be between 0.0001 and 1.");
+                      return;
+                    }
+                    if (!Number.isFinite(ldFrac) || ldFrac < 0.0001 || ldFrac > 1) {
+                      window.alert("Lab D balance fraction must be between 0.0001 and 1.");
                       return;
                     }
                     if (!Number.isFinite(laWin) || laWin < 1 || laWin > 1440 || !Number.isInteger(laWin)) {
@@ -683,6 +723,10 @@ export default function SettingsOverlay({
                       window.alert("Lab C window must be an integer 1–1440 minutes.");
                       return;
                     }
+                    if (!Number.isFinite(ldWin) || ldWin < 1 || ldWin > 1440 || !Number.isInteger(ldWin)) {
+                      window.alert("Lab D window must be an integer 1–1440 minutes.");
+                      return;
+                    }
                     if (!Number.isFinite(laPaper) || laPaper < 0 || !Number.isInteger(laPaper)) {
                       window.alert("Lab A paper balance must be a non-negative integer (cents).");
                       return;
@@ -695,12 +739,16 @@ export default function SettingsOverlay({
                       window.alert("Lab C paper balance must be a non-negative integer (cents).");
                       return;
                     }
+                    if (!Number.isFinite(ldPaper) || ldPaper < 0 || !Number.isInteger(ldPaper)) {
+                      window.alert("Lab D paper balance must be a non-negative integer (cents).");
+                      return;
+                    }
                     if (resetVal !== "none") {
                       const scope =
                         resetVal === "both"
                           ? "Lab A and Lab B"
                           : resetVal === "all_labs"
-                            ? "Lab A, Lab B, and Lab C"
+                            ? "Lab A, Lab B, Lab C, and Lab D"
                             : resetVal;
                       const ok = window.confirm(
                         `Reset SQLite trading data for ${scope} before saving new bankroll/sizing? This cannot be undone (backups may run).`,
@@ -727,6 +775,12 @@ export default function SettingsOverlay({
                         balance_fraction_per_window: lcFrac,
                         window_minutes: lcWin,
                         auto_reset_paper_on_tick_failure: lcAutoReset,
+                      },
+                      lab_d: {
+                        paper_balance_cents: ldPaper,
+                        balance_fraction_per_window: ldFrac,
+                        window_minutes: ldWin,
+                        auto_reset_paper_on_tick_failure: ldAutoReset,
                       },
                     });
                   }}
@@ -774,6 +828,18 @@ export default function SettingsOverlay({
             onSaveLabRules={onSaveLabCRules}
             onSaveLabFromSliders={onSaveLabCFromSliders}
             style={{ marginTop: showLabB || showLabA ? 12 : showLabSizingGrid ? 12 : 20 }}
+          />
+        ) : null}
+        {showLabD ? (
+          <LabBranchPanel
+            branch="d"
+            lab={labD}
+            cfg={cfg}
+            busy={busy}
+            onResetTradingData={onResetTradingData}
+            onSaveLabRules={onSaveLabDRules}
+            onSaveLabFromSliders={onSaveLabDFromSliders}
+            style={{ marginTop: showLabC || showLabB || showLabA ? 12 : showLabSizingGrid ? 12 : 20 }}
           />
         ) : null}
 
@@ -837,6 +903,10 @@ export default function SettingsOverlay({
               <input id="opt_lab_c_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.lab_c_enabled ?? true)} disabled={busy} />
               <span>Include Lab C in optimizer context</span>
             </label>
+            <label className="checkbox" style={{ border: "none" }}>
+              <input id="opt_lab_d_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.lab_d_enabled ?? true)} disabled={busy} />
+              <span>Include Lab D in optimizer context</span>
+            </label>
             <div className="field">
               <label>Lab A style</label>
               <select id="opt_lab_a_style" defaultValue={String(optimizerCfg?.lab_a_style || "blend")}>
@@ -856,6 +926,16 @@ export default function SettingsOverlay({
             <div className="field">
               <label>Lab C style</label>
               <select id="opt_lab_c_style" defaultValue={String(optimizerCfg?.lab_c_style || "aggressive")}>
+                <option value="aggressive">Aggressive</option>
+                <option value="conservative">Conservative</option>
+                <option value="blend">Blend</option>
+                <option value="wild">Wild</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>Lab D style</label>
+              <select id="opt_lab_d_style" defaultValue={String(optimizerCfg?.lab_d_style || "wild")}>
+                <option value="wild">Wild</option>
                 <option value="aggressive">Aggressive</option>
                 <option value="conservative">Conservative</option>
                 <option value="blend">Blend</option>
@@ -896,6 +976,14 @@ export default function SettingsOverlay({
             <div className="field">
               <label>Lab C min minutes-left floor</label>
               <input id="opt_lab_c_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_c_min_minutes_left ?? 3)} />
+            </div>
+            <div className="field">
+              <label>Lab D YES floor (%)</label>
+              <input id="opt_lab_d_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_d_yes_floor_pct ?? 50)} />
+            </div>
+            <div className="field">
+              <label>Lab D min minutes-left floor</label>
+              <input id="opt_lab_d_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_d_min_minutes_left ?? 2)} />
             </div>
             <div className="field">
               <label>Min settled trades before optimize</label>
@@ -946,9 +1034,11 @@ export default function SettingsOverlay({
                   lab_a_enabled: Boolean((document.getElementById("opt_lab_a_enabled") as HTMLInputElement | null)?.checked),
                   lab_b_enabled: Boolean((document.getElementById("opt_lab_b_enabled") as HTMLInputElement | null)?.checked),
                   lab_c_enabled: Boolean((document.getElementById("opt_lab_c_enabled") as HTMLInputElement | null)?.checked),
+                  lab_d_enabled: Boolean((document.getElementById("opt_lab_d_enabled") as HTMLInputElement | null)?.checked),
                   lab_a_style: String((document.getElementById("opt_lab_a_style") as HTMLSelectElement | null)?.value || "blend"),
                   lab_b_style: String((document.getElementById("opt_lab_b_style") as HTMLSelectElement | null)?.value || "conservative"),
                   lab_c_style: String((document.getElementById("opt_lab_c_style") as HTMLSelectElement | null)?.value || "aggressive"),
+                  lab_d_style: String((document.getElementById("opt_lab_d_style") as HTMLSelectElement | null)?.value || "wild"),
                   loss_streak_trigger: Number((document.getElementById("opt_loss_streak_trigger") as HTMLInputElement | null)?.value || 1),
                   threshold_step_pct: Number((document.getElementById("opt_threshold_step_pct") as HTMLInputElement | null)?.value || 2),
                   minute_step: Number((document.getElementById("opt_minute_step") as HTMLInputElement | null)?.value || 2),
@@ -958,6 +1048,8 @@ export default function SettingsOverlay({
                   lab_b_min_minutes_left: Number((document.getElementById("opt_lab_b_min_minutes_left") as HTMLInputElement | null)?.value || 3),
                   lab_c_yes_floor_pct: Number((document.getElementById("opt_lab_c_yes_floor_pct") as HTMLInputElement | null)?.value || 52),
                   lab_c_min_minutes_left: Number((document.getElementById("opt_lab_c_min_minutes_left") as HTMLInputElement | null)?.value || 3),
+                  lab_d_yes_floor_pct: Number((document.getElementById("opt_lab_d_yes_floor_pct") as HTMLInputElement | null)?.value || 50),
+                  lab_d_min_minutes_left: Number((document.getElementById("opt_lab_d_min_minutes_left") as HTMLInputElement | null)?.value || 2),
                   min_trades_for_optimize: Number((document.getElementById("opt_min_trades_for_optimize") as HTMLInputElement | null)?.value || 8),
                   min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 2),
                   regime_lookback_hours: Number((document.getElementById("opt_regime_lookback_hours") as HTMLInputElement | null)?.value || 4),

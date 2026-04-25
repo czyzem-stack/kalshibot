@@ -68,6 +68,7 @@ class BotConfigPayload(BaseModel):
     lab_a: dict[str, Any] | None = None
     lab_b: dict[str, Any] | None = None
     lab_c: dict[str, Any] | None = None
+    lab_d: dict[str, Any] | None = None
     sim_lab: dict[str, Any] | None = None
     optimizer: dict[str, Any] | None = None
 
@@ -145,6 +146,9 @@ class BotConfigPayload(BaseModel):
         if self.lab_c is not None:
             cur = merge_lab_branch_patch(dict(out.get("lab_c") or {}), self.lab_c)
             out["lab_c"] = expand_partial_lab_branch("lab_c", cur)
+        if self.lab_d is not None:
+            cur = merge_lab_branch_patch(dict(out.get("lab_d") or {}), self.lab_d)
+            out["lab_d"] = expand_partial_lab_branch("lab_d", cur)
         if self.optimizer is not None:
             cur = dict(out.get("optimizer") or {})
             for k, v in self.optimizer.items():

@@ -81,6 +81,8 @@ def _sql_branch_predicate(branch: str) -> str:
         return f"({key}) = 'lab_b'"
     if b == "lab_c":
         return f"({key}) = 'lab_c'"
+    if b == "lab_d":
+        return f"({key}) = 'lab_d'"
     if b == "live":
         return f"({key}) = 'live'"
     raise ValueError(f"unsupported branch for SQL filter: {branch!r}")
@@ -93,7 +95,7 @@ def normalize_trade_branch_for_db(branch: str | None) -> str:
         return "live"
     if b == "sim_lab":
         return "lab_a"
-    if b in ("live", "lab_a", "lab_b", "lab_c"):
+    if b in ("live", "lab_a", "lab_b", "lab_c", "lab_d"):
         return b
     return b
 
@@ -108,6 +110,15 @@ def _sql_sim_open_book_predicate(branch: str) -> str:
     """
     br = _sql_branch_predicate(branch)
     return f"simulated = 1 AND LOWER(COALESCE(status, '')) IN ('open', 'resting') AND ({br})"
+
+
+def _series_prefix_like_pattern(series_prefix: str) -> str | None:
+    """``LIKE`` pattern for ``UPPER(TRIM(ticker)) LIKE ? ESCAPE '\\'``; None if empty."""
+    pfx = str(series_prefix or "").strip().upper()
+    if not pfx:
+        return None
+    esc = pfx.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return esc + "%"
 
 
 SCHEMA = """
@@ -253,6 +264,18 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
+        # Lab D: wild reference branch; optimizer may use B/C momentum to influence Lab A sizing.
+        "lab_d": {
+            "engine_running": False,
+            "auto_optimize": False,
+            "auto_reset_paper_on_tick_failure": False,
+            "balance_fraction_per_window": 0.13,
+            "window_minutes": 10,
+            "paper_fee_model": "kalshi_taker",
+            "kalshi_fee_multiplier": 1.0,
+            "paper_fee_bps": 0,
+            "paper_balance_cents": 500_000,
+        },
         "optimizer": {
             "enabled": True,
             "interval_minutes": 20,
@@ -264,9 +287,11 @@ def default_bot_config() -> dict[str, Any]:
             "lab_a_enabled": True,
             "lab_b_enabled": True,
             "lab_c_enabled": True,
+            "lab_d_enabled": True,
             "lab_a_style": "blend",
             "lab_b_style": "conservative",
             "lab_c_style": "aggressive",
+            "lab_d_style": "wild",
             "loss_streak_trigger": 1,
             "threshold_step_pct": 2,
             "minute_step": 2,
@@ -274,9 +299,11 @@ def default_bot_config() -> dict[str, Any]:
             "lab_a_yes_floor_pct": 56,
             "lab_b_yes_floor_pct": 58,
             "lab_c_yes_floor_pct": 52,
+            "lab_d_yes_floor_pct": 50,
             "lab_a_min_minutes_left": 5,
             "lab_b_min_minutes_left": 6,
             "lab_c_min_minutes_left": 3,
+            "lab_d_min_minutes_left": 2,
             "min_trades_for_optimize": 8,
             "min_profitable_trades": 2,
             "optimize_bet_size": True,
@@ -301,8 +328,8 @@ def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any
     Shallow-merge ``lab`` over ``default_bot_config()[branch]`` so thin saves (e.g. only paper / fraction / window)
     cannot strip ``engine_running``, fee keys, or other lab defaults.
     """
-    if branch not in ("lab_a", "lab_b", "lab_c"):
-        raise ValueError(f"branch must be lab_a, lab_b, or lab_c, got {branch!r}")
+    if branch not in ("lab_a", "lab_b", "lab_c", "lab_d"):
+        raise ValueError(f"branch must be lab_a, lab_b, lab_c, or lab_d, got {branch!r}")
     base = dict(default_bot_config().get(branch) or {})
     base.update(lab)
     if isinstance(base.get("assets"), dict) and len(base["assets"]) == 0:
@@ -446,6 +473,14 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": 12,
             "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
         }
+    if "lab_d" not in cfg or not isinstance(cfg.get("lab_d"), dict):
+        cfg["lab_d"] = {
+            "engine_running": False,
+            "auto_optimize": False,
+            "balance_fraction_per_window": 0.13,
+            "window_minutes": 10,
+            "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
+        }
     dopt = dict(default_bot_config().get("optimizer") or {})
     cur_o = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     merged_o = {**dopt, **cur_o}
@@ -480,8 +515,10 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         cfg["lab_b"] = expand_partial_lab_branch("lab_b", dict(cfg["lab_b"]))
     if isinstance(cfg.get("lab_c"), dict):
         cfg["lab_c"] = expand_partial_lab_branch("lab_c", dict(cfg["lab_c"]))
+    if isinstance(cfg.get("lab_d"), dict):
+        cfg["lab_d"] = expand_partial_lab_branch("lab_d", dict(cfg["lab_d"]))
     # Per-lab ``assets: {}`` would override globals at merge time and disable all scanning for that lab.
-    for lk in ("lab_a", "lab_b", "lab_c"):
+    for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
         block = cfg.get(lk)
         if isinstance(block, dict) and isinstance(block.get("assets"), dict) and len(block["assets"]) == 0:
             del block["assets"]
@@ -567,10 +604,10 @@ class Store:
         ``paper_balance_cents``) then reflects all capital ever re-seeded into that lab.
         """
         br = str(branch or "").strip().lower()
-        if br not in ("lab_a", "lab_b", "lab_c"):
+        if br not in ("lab_a", "lab_b", "lab_c", "lab_d"):
             return
         cfg = await self.load_config()
-        lab_key = {"lab_a": "lab_a", "lab_b": "lab_b", "lab_c": "lab_c"}[br]
+        lab_key = {"lab_a": "lab_a", "lab_b": "lab_b", "lab_c": "lab_c", "lab_d": "lab_d"}[br]
         lab = dict(cfg.get(lab_key) or {})
         seed = int(lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
         prev = int(lab.get("paper_lifetime_basis_cents") or 0)
@@ -652,10 +689,14 @@ class Store:
         branch: str,
         trade_mode: str,
         market_ticker: str,
+        series_exclusive_prefix: str | None = None,
     ) -> int | None:
         """
-        Insert a simulated open trade only if no other open/resting sim row exists for the same branch and
-        **exact market ticker** (one open position per contract, not one for the whole series prefix).
+        Insert a simulated open trade only if no conflicting open/resting sim row exists for this branch.
+
+        When ``series_exclusive_prefix`` is set (e.g. ``KXETH15M``), at most **one** open sim is allowed for any
+        ticker starting with that prefix (one educated bet per series). Otherwise the legacy check applies:
+        at most one open per **exact** market ticker.
         Uses BEGIN IMMEDIATE so the re-check and INSERT share one write lock.
         """
         tk = str(market_ticker or row.get("ticker") or "").strip().upper()
@@ -664,17 +705,28 @@ class Store:
         _ = trade_mode
         branch_db = normalize_trade_branch_for_db(branch)
         open_book = _sql_sim_open_book_predicate(branch_db)
+        series_pat = _series_prefix_like_pattern(series_exclusive_prefix or "")
         async with self._open_db() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
-                cur = await db.execute(
-                    f"""
-                    SELECT COUNT(*) AS c FROM trades
-                    WHERE {open_book}
-                      AND UPPER(TRIM(ticker)) = ?
-                    """,
-                    (tk,),
-                )
+                if series_pat:
+                    cur = await db.execute(
+                        f"""
+                        SELECT COUNT(*) AS c FROM trades
+                        WHERE {open_book}
+                          AND UPPER(TRIM(ticker)) LIKE ? ESCAPE '\\'
+                        """,
+                        (series_pat,),
+                    )
+                else:
+                    cur = await db.execute(
+                        f"""
+                        SELECT COUNT(*) AS c FROM trades
+                        WHERE {open_book}
+                          AND UPPER(TRIM(ticker)) = ?
+                        """,
+                        (tk,),
+                    )
                 r = await cur.fetchone()
                 cnt = int(dict(r or {}).get("c") or 0) if r else 0
                 if cnt >= 1:
@@ -974,6 +1026,27 @@ class Store:
             row = await cur.fetchone()
         return row is not None
 
+    async def has_open_sim_for_series_prefix(self, branch: str, series_prefix: str) -> bool:
+        """
+        True if this branch already has any simulated open/resting row whose ticker starts with
+        ``series_prefix`` (Kalshi series family, e.g. KXETH15M). Used to enforce one open sim per series.
+        """
+        pat = _series_prefix_like_pattern(series_prefix)
+        if not pat:
+            return False
+        async with self._open_db() as db:
+            cur = await db.execute(
+                f"""
+                SELECT 1 FROM trades
+                WHERE {_sql_sim_open_book_predicate(branch)}
+                  AND UPPER(TRIM(ticker)) LIKE ? ESCAPE '\\'
+                LIMIT 1
+                """,
+                (pat,),
+            )
+            row = await cur.fetchone()
+        return row is not None
+
     async def open_committed_cents_for_branch_mode(self, branch: str, trade_mode: str) -> int:
         """
         Sum of premium tied up in open/resting simulated rows for one branch + mode.
@@ -1036,8 +1109,10 @@ class Store:
             bn = str(branch).strip().lower()
             if bn == "sim_lab":
                 bn = "lab_a"
-            if bn not in ("live", "lab_a", "lab_b", "lab_c"):
-                raise ValueError(f"branch filter must be live, lab_a, lab_b, lab_c, or sim_lab (legacy) (got {branch!r})")
+            if bn not in ("live", "lab_a", "lab_b", "lab_c", "lab_d"):
+                raise ValueError(
+                    f"branch filter must be live, lab_a, lab_b, lab_c, lab_d, or sim_lab (legacy) (got {branch!r})"
+                )
             where.append(_sql_branch_predicate(bn))
         if mode and table in {"signals", "trades", "equity_snapshots"}:
             m = str(mode).strip()
@@ -1139,7 +1214,7 @@ class Store:
         Delete signals, trades, and equity snapshots. Keeps ``bot_config``.
 
         * ``branch`` is None / ``\"all\"`` / empty: delete **all** rows (legacy behaviour).
-        * ``branch`` in ``live`` / ``lab_a`` / ``lab_b`` / ``lab_c``: delete only rows for that branch
+        * ``branch`` in ``live`` / ``lab_a`` / ``lab_b`` / ``lab_c`` / ``lab_d``: delete only rows for that branch
           (Lab A predicate includes legacy ``sim_lab``).
 
         When ``backup`` is True, copies the SQLite file and exports JSONL dumps under ``DATA_LOG_DIR/exports``.
@@ -1170,7 +1245,7 @@ class Store:
                 exports.append(f"jsonl_export_error:{e}")
         br_arg = str(branch or "").strip().lower()
         scope = "all" if br_arg in ("", "all") else br_arg
-        if scope not in ("all", "live", "lab_a", "lab_b", "lab_c"):
+        if scope not in ("all", "live", "lab_a", "lab_b", "lab_c", "lab_d"):
             raise ValueError(f"invalid reset branch: {branch!r}")
         pred = None if scope == "all" else _sql_branch_predicate(scope)
         async with self._open_db() as db:

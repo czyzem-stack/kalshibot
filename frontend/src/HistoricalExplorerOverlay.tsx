@@ -70,6 +70,7 @@ export default function HistoricalExplorerOverlay({
             <option value="lab_a">lab_a</option>
             <option value="lab_b">lab_b</option>
             <option value="lab_c">lab_c</option>
+            <option value="lab_d">lab_d</option>
           </select>
           <a href={exportHref} style={{ marginLeft: 10 }}>
             Export CSV
