@@ -3336,7 +3336,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="panel dashboard-grid-panel">
+        <div className="panel dashboard-grid-panel dashboard-grid-panel--assets">
           <div className="dashboard-grid-panel__head">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%" }}>
               <h2
@@ -3436,6 +3436,7 @@ export default function App() {
               </button>
             </div>
           </div>
+          <div className="dashboard-grid-panel__body dashboard-grid-panel__body--assets">
           {kalshiIsNonProd(kalshi?.env) ? (
             <div className="sub" style={{ marginBottom: 8, fontSize: 12 }} title="Non-production feed detected. Use Info for full notes.">
               Non-production host detected: <code>{String(kalshi?.env || "—")}</code>.
@@ -3446,141 +3447,158 @@ export default function App() {
               No assets configured.
             </div>
           ) : (
-            orderedAssetEntries(assets as AnyObj).map(([id, a]: [string, AnyObj]) => {
-              const posRow = (acctSnap?.position_by_asset as AnyObj | undefined)?.[id] as AnyObj | undefined;
-              const openRowsTab = dedupeAssetWatchOpenRowsByTicker(assetWatchOpenRowsForTab(posRow, assetWatchLab));
-              const hasExposureTab = openRowsTab.length > 0;
-              const exposureLabelsTab = exposureLabelsForAssetWatchTab(posRow, assetWatchLab);
-              const headlineSnap =
-                assetWatchLab === "live"
-                  ? (engineSnapsLive[id] as AnyObj | undefined)
-                  : assetWatchLab === "a"
-                    ? (engineSnapsLabA[id] as AnyObj | undefined)
-                    : assetWatchLab === "b"
-                      ? (engineSnapsLabB[id] as AnyObj | undefined)
-                      : assetWatchLab === "c"
-                        ? (engineSnapsLabC[id] as AnyObj | undefined)
-                        : (engineSnapsLabD[id] as AnyObj | undefined);
-              return (
-              <div
-                key={id}
-                className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
-                title={
-                  hasExposureTab
-                    ? `Open exposure for the “${assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
-                    : `Asset ${id}: series ${String(a.series_ticker || "")}.`
-                }
-              >
-                <div
-                  className="asset-watch-heading"
-                  style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 10px", marginBottom: 4 }}
-                  title={`${String(a.series_ticker || "")} · engine scans this series only if enabled in Settings.`}
-                >
-                  <strong title="Display label for this asset.">{a.label || id}</strong>
-                  <span style={{ color: "var(--muted)" }}>·</span>
-                  <code title="Kalshi series ticker for open markets.">{a.series_ticker}</code>
-                  {a.enabled === false ? (
-                    <span
-                      className="sub"
-                      style={{ fontSize: 11, color: "#ffc878" }}
-                      title="Disabled in config — set assets.{id}.enabled true via PUT /api/config or edit backend bot_config JSON."
+            <div className="asset-watch-scroll">
+              {(() => {
+                const entries = orderedAssetEntries(assets as AnyObj);
+                const enriched = entries.map(([id, a], idx) => {
+                  const posRow = (acctSnap?.position_by_asset as AnyObj | undefined)?.[id] as AnyObj | undefined;
+                  const openRowsTab = dedupeAssetWatchOpenRowsByTicker(assetWatchOpenRowsForTab(posRow, assetWatchLab));
+                  const headlineSnap =
+                    assetWatchLab === "live"
+                      ? (engineSnapsLive[id] as AnyObj | undefined)
+                      : assetWatchLab === "a"
+                        ? (engineSnapsLabA[id] as AnyObj | undefined)
+                        : assetWatchLab === "b"
+                          ? (engineSnapsLabB[id] as AnyObj | undefined)
+                          : assetWatchLab === "c"
+                            ? (engineSnapsLabC[id] as AnyObj | undefined)
+                            : (engineSnapsLabD[id] as AnyObj | undefined);
+                  const implied = Number(headlineSnap?.implied_prob);
+                  const impliedMove = Number.isFinite(implied) ? Math.abs(implied - 0.5) : 0;
+                  const rulesCount = Array.isArray(headlineSnap?.rules_matched) ? headlineSnap.rules_matched.length : 0;
+                  const movementScore = impliedMove + (rulesCount > 0 ? 0.15 : 0) + (headlineSnap?.has_orderbook ? 0.05 : 0);
+                  return { id, a, idx, posRow, openRowsTab, headlineSnap, hasExposureTab: openRowsTab.length > 0, movementScore };
+                });
+                enriched.sort((x, y) => {
+                  if (x.hasExposureTab !== y.hasExposureTab) return x.hasExposureTab ? -1 : 1;
+                  if (y.movementScore !== x.movementScore) return y.movementScore - x.movementScore;
+                  return x.idx - y.idx;
+                });
+                return enriched.map(({ id, a, posRow, openRowsTab, headlineSnap, hasExposureTab }) => {
+                  const exposureLabelsTab = exposureLabelsForAssetWatchTab(posRow, assetWatchLab);
+                  return (
+                    <div
+                      key={id}
+                      className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
+                      title={
+                        hasExposureTab
+                          ? `Open exposure for the “${assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
+                          : `Asset ${id}: series ${String(a.series_ticker || "")}.`
+                      }
                     >
-                      (engine off for this series)
-                    </span>
-                  ) : null}
-                  {hasExposureTab ? (
-                    <span
-                      className="asset-watch-exposure-badge"
-                      title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
-                    >
-                      Open ({assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}):{" "}
-                      {exposureLabelsTab.join(" · ")}
-                    </span>
-                  ) : null}
-                </div>
-                <div
-                  className="sub"
-                  style={{
-                    marginLeft: 28,
-                    marginTop: 6,
-                    fontSize: 12,
-                    lineHeight: 1.45,
-                  }}
-                >
-                  {assetWatchLab === "live" ? (
-                    <EngineAssetSnapBlock
-                      label="Live"
-                      snap={engineSnapsLive[id]}
-                      lastTick={dash?.engine?.live?.last_tick_at}
-                      engineOn={Boolean(cfg.engine_running)}
-                    />
-                  ) : assetWatchLab === "a" ? (
-                    labABranchEngineOn ? (
-                      <EngineAssetSnapBlock
-                        label="Sim · Lab A"
-                        snap={engineSnapsLabA[id]}
-                        lastTick={engineLabA?.last_tick_at}
-                        engineOn={labABranchEngineOn}
-                      />
-                    ) : (
-                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab A on in the toolbar to populate lab snapshots.">
-                        <strong>Sim · Lab A</strong> — engine off (no snapshot for this series).
+                      <div
+                        className="asset-watch-heading"
+                        style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 10px", marginBottom: 4 }}
+                        title={`${String(a.series_ticker || "")} · engine scans this series only if enabled in Settings.`}
+                      >
+                        <strong title="Display label for this asset.">{a.label || id}</strong>
+                        <span style={{ color: "var(--muted)" }}>·</span>
+                        <code title="Kalshi series ticker for open markets.">{a.series_ticker}</code>
+                        {a.enabled === false ? (
+                          <span
+                            className="sub"
+                            style={{ fontSize: 11, color: "#ffc878" }}
+                            title="Disabled in config — set assets.{id}.enabled true via PUT /api/config or edit backend bot_config JSON."
+                          >
+                            (engine off for this series)
+                          </span>
+                        ) : null}
+                        {hasExposureTab ? (
+                          <span
+                            className="asset-watch-exposure-badge"
+                            title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
+                          >
+                            Open ({assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}):{" "}
+                            {exposureLabelsTab.join(" · ")}
+                          </span>
+                        ) : null}
                       </div>
-                    )
-                  ) : assetWatchLab === "b" ? (
-                    labBBranchEngineOn ? (
-                      <EngineAssetSnapBlock
-                        label="Sim · Lab B"
-                        snap={engineSnapsLabB[id]}
-                        lastTick={engineLabB?.last_tick_at}
-                        engineOn={labBBranchEngineOn}
-                      />
-                    ) : (
-                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
-                        <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
+                      <div
+                        className="sub"
+                        style={{
+                          marginLeft: 28,
+                          marginTop: 6,
+                          fontSize: 12,
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        {assetWatchLab === "live" ? (
+                          <EngineAssetSnapBlock
+                            label="Live"
+                            snap={engineSnapsLive[id]}
+                            lastTick={dash?.engine?.live?.last_tick_at}
+                            engineOn={Boolean(cfg.engine_running)}
+                          />
+                        ) : assetWatchLab === "a" ? (
+                          labABranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab A"
+                              snap={engineSnapsLabA[id]}
+                              lastTick={engineLabA?.last_tick_at}
+                              engineOn={labABranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab A on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab A</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : assetWatchLab === "b" ? (
+                          labBBranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab B"
+                              snap={engineSnapsLabB[id]}
+                              lastTick={engineLabB?.last_tick_at}
+                              engineOn={labBBranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : assetWatchLab === "c" ? (
+                          labCBranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab C"
+                              snap={engineSnapsLabC[id]}
+                              lastTick={engineLabC?.last_tick_at}
+                              engineOn={labCBranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : assetWatchLab === "d" ? (
+                          labDBranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab D"
+                              snap={engineSnapsLabD[id]}
+                              lastTick={engineLabD?.last_tick_at}
+                              engineOn={labDBranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab D on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : null}
+                        <OpenExposureLinesForWatch
+                          rows={openRowsTab}
+                          headlineSnap={headlineSnap}
+                          seriesTicker={String(a.series_ticker || "")}
+                        />
                       </div>
-                    )
-                  ) : assetWatchLab === "c" ? (
-                    labCBranchEngineOn ? (
-                      <EngineAssetSnapBlock
-                        label="Sim · Lab C"
-                        snap={engineSnapsLabC[id]}
-                        lastTick={engineLabC?.last_tick_at}
-                        engineOn={labCBranchEngineOn}
-                      />
-                    ) : (
-                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
-                        <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
-                      </div>
-                    )
-                  ) : assetWatchLab === "d" ? (
-                    labDBranchEngineOn ? (
-                      <EngineAssetSnapBlock
-                        label="Sim · Lab D"
-                        snap={engineSnapsLabD[id]}
-                        lastTick={engineLabD?.last_tick_at}
-                        engineOn={labDBranchEngineOn}
-                      />
-                    ) : (
-                      <div className="sub" style={{ fontSize: 12 }} title="Turn Lab D on in the toolbar to populate lab snapshots.">
-                        <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
-                      </div>
-                    )
-                  ) : null}
-                  <OpenExposureLinesForWatch
-                    rows={openRowsTab}
-                    headlineSnap={headlineSnap}
-                    seriesTicker={String(a.series_ticker || "")}
-                  />
-                </div>
-              </div>
-            );
-            })
+                    </div>
+                  );
+                });
+              })()}
+            </div>
           )}
+          </div>
 
         </div>
 
-        <div className="panel dashboard-grid-panel">
+        <div className="panel dashboard-grid-panel dashboard-grid-panel--account">
           <div className="dashboard-grid-panel__head">
             <h2
               id="dash-heading-account"
@@ -3636,6 +3654,7 @@ export default function App() {
               </button>
             </div>
           </div>
+          <div className="dashboard-grid-panel__body dashboard-grid-panel__body--assets">
           {!remoteBal ? (
             <div
               className="sub"
@@ -3696,9 +3715,9 @@ export default function App() {
             ))}
           </div>
 
-          <div style={{ marginTop: 8 }}>
+          <div className="account-section-box" style={{ marginTop: 8 }}>
             {acctSnap?.position_by_asset && Object.keys(acctSnap.position_by_asset).length > 0 ? (
-              <div style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
+              <div className="account-section-scroll account-section-scroll--holdings" style={{ overflowX: "auto" }} title="Per configured asset: where exposure shows up.">
                 <table className="table">
                   <thead>
                     <tr>
@@ -3774,91 +3793,7 @@ export default function App() {
             )}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 14 }}>
-            <h3 className="section-tip" style={{ margin: 0, fontSize: 14, color: "var(--muted)" }} title="Branch engine status for the selected account tab.">
-              Engine
-            </h3>
-          </div>
-          <div className="sub" title="Engine polling status from /api/dashboard.">
-            {(() => {
-              const selectedIsLive = holdingsBranchTab === "live";
-              const label =
-                holdingsBranchTab === "live"
-                  ? "Live"
-                  : holdingsBranchTab === "a"
-                    ? "Lab A"
-                    : holdingsBranchTab === "b"
-                      ? "Lab B"
-                      : holdingsBranchTab === "c"
-                        ? "Lab C"
-                        : "Lab D";
-              const engineObj =
-                holdingsBranchTab === "live"
-                  ? (dash?.engine?.live as AnyObj | undefined)
-                  : holdingsBranchTab === "a"
-                    ? engineLabA
-                    : holdingsBranchTab === "b"
-                      ? engineLabB
-                      : holdingsBranchTab === "c"
-                        ? engineLabC
-                        : engineLabD;
-              const on =
-                holdingsBranchTab === "live"
-                  ? Boolean(dash?.engine?.live?.engine_running)
-                  : holdingsBranchTab === "a"
-                    ? labABranchEngineOn
-                    : holdingsBranchTab === "b"
-                      ? labBBranchEngineOn
-                      : holdingsBranchTab === "c"
-                        ? labCBranchEngineOn
-                        : labDBranchEngineOn;
-              const lastTick = engineObj?.last_tick_at;
-              const scanned = engineObj?.markets_scanned;
-              const errMsg = String(engineObj?.last_error || "");
-              return (
-                <>
-                  <div title={`${label} branch engine status from /api/dashboard.`}>
-                    <strong>{label}</strong> engine {on ? "on" : "off"} ·{" "}
-                    {selectedIsLive
-                      ? `orders ${dash?.engine?.live?.simulate_orders ? "simulated (paper)" : "real limit posts"}`
-                      : "always simulated"}{" "}
-                    · last tick: {lastTick ? fmtIsoLocal(String(lastTick)) : "—"} · scanned {String(scanned ?? "—")}
-                  </div>
-                  {errMsg ? (
-                    <div className="error" style={{ marginTop: 6 }} title={`Last ${label} engine error string.`}>
-                      {label}: {errMsg}
-                    </div>
-                  ) : null}
-                </>
-              );
-            })()}
-            <EngineTickTrace
-              title={
-                holdingsBranchTab === "live"
-                  ? "Live — last tick log"
-                  : holdingsBranchTab === "a"
-                    ? "Lab A — last tick log"
-                    : holdingsBranchTab === "b"
-                      ? "Lab B — last tick log"
-                      : holdingsBranchTab === "c"
-                        ? "Lab C — last tick log"
-                        : "Lab D — last tick log"
-              }
-              lines={
-                holdingsBranchTab === "live"
-                  ? dash?.engine?.live?.last_tick_trace
-                  : holdingsBranchTab === "a"
-                    ? engineLabA?.last_tick_trace
-                    : holdingsBranchTab === "b"
-                      ? engineLabB?.last_tick_trace
-                      : holdingsBranchTab === "c"
-                        ? engineLabC?.last_tick_trace
-                        : engineLabD?.last_tick_trace
-              }
-            />
-          </div>
-
-          <div style={{ marginTop: 16 }}>
+          <div className="account-section-box account-section-box--activity" style={{ marginTop: 16 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <h3 className="section-tip" style={{ margin: 0, fontSize: 16 }} title="Recent signal/trade rows from SQLite logs.">
                 Activity log
@@ -3890,42 +3825,45 @@ export default function App() {
                 Info
               </button>
             </div>
-            <div style={{ marginTop: 10 }}>
-              <div className="chart-tabs" role="tablist" aria-label="Account activity view" style={{ marginBottom: 10 }}>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={accountActivityView === "signals"}
-                  className={`chart-tab ${accountActivityView === "signals" ? "chart-tab--active" : ""}`}
-                  onClick={() => setAccountActivityView("signals")}
-                >
-                  Recent signals
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={accountActivityView === "trades"}
-                  className={`chart-tab ${accountActivityView === "trades" ? "chart-tab--active" : ""}`}
-                  onClick={() => setAccountActivityView("trades")}
-                >
-                  Recent trades
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={accountActivityView === "not_traded"}
-                  className={`chart-tab ${accountActivityView === "not_traded" ? "chart-tab--active" : ""}`}
-                  onClick={() => setAccountActivityView("not_traded")}
-                >
-                  Bets not traded
-                </button>
+            <div className="account-activity-fill account-section-scroll account-section-scroll--activity" style={{ marginTop: 10 }}>
+              <div className="account-activity-sticky-head">
+                <div className="chart-tabs" role="tablist" aria-label="Account activity view" style={{ marginBottom: 10 }}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={accountActivityView === "signals"}
+                    className={`chart-tab ${accountActivityView === "signals" ? "chart-tab--active" : ""}`}
+                    onClick={() => setAccountActivityView("signals")}
+                  >
+                    Recent signals
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={accountActivityView === "trades"}
+                    className={`chart-tab ${accountActivityView === "trades" ? "chart-tab--active" : ""}`}
+                    onClick={() => setAccountActivityView("trades")}
+                  >
+                    Recent trades
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={accountActivityView === "not_traded"}
+                    className={`chart-tab ${accountActivityView === "not_traded" ? "chart-tab--active" : ""}`}
+                    onClick={() => setAccountActivityView("not_traded")}
+                  >
+                    Bets not traded
+                  </button>
+                </div>
+                <p className="sub section-tip" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
+                  Showing <strong>{activityBranchTabLabel(accountActivityBranch)}</strong> only (follows Account branch tabs).
+                </p>
               </div>
-              <p className="sub section-tip" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
-                Showing <strong>{activityBranchTabLabel(accountActivityBranch)}</strong> only (follows Account branch tabs).
-              </p>
+              <div className="account-activity-scroll-content">
 
               {accountActivityView === "signals" ? (
-                <div className="panel">
+                <div className="panel account-activity-tab-panel">
                   <h3
                     className="section-tip"
                     style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
@@ -3950,7 +3888,7 @@ export default function App() {
               ) : null}
 
               {accountActivityView === "trades" ? (
-                <div className="panel">
+                <div className="panel account-activity-tab-panel">
                   <h3
                     className="section-tip"
                     style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
@@ -3975,7 +3913,7 @@ export default function App() {
               ) : null}
 
               {accountActivityView === "not_traded" ? (
-                <div className="panel">
+                <div className="panel account-activity-tab-panel">
                   <h3
                     className="section-tip"
                     style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
@@ -3999,7 +3937,95 @@ export default function App() {
                   />
                 </div>
               ) : null}
+              </div>
             </div>
+          </div>
+
+          <div className="account-section-box" style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <h3 className="section-tip" style={{ margin: 0, fontSize: 16 }} title="Branch engine status for the selected account tab.">
+                Engine
+              </h3>
+            </div>
+            <div className="sub account-section-scroll account-section-scroll--engine" style={{ marginTop: 10 }} title="Engine polling status from /api/dashboard.">
+              {(() => {
+                const selectedIsLive = holdingsBranchTab === "live";
+                const label =
+                  holdingsBranchTab === "live"
+                    ? "Live"
+                    : holdingsBranchTab === "a"
+                      ? "Lab A"
+                      : holdingsBranchTab === "b"
+                        ? "Lab B"
+                        : holdingsBranchTab === "c"
+                          ? "Lab C"
+                          : "Lab D";
+                const engineObj =
+                  holdingsBranchTab === "live"
+                    ? (dash?.engine?.live as AnyObj | undefined)
+                    : holdingsBranchTab === "a"
+                      ? engineLabA
+                      : holdingsBranchTab === "b"
+                        ? engineLabB
+                        : holdingsBranchTab === "c"
+                          ? engineLabC
+                          : engineLabD;
+                const on =
+                  holdingsBranchTab === "live"
+                    ? Boolean(dash?.engine?.live?.engine_running)
+                    : holdingsBranchTab === "a"
+                      ? labABranchEngineOn
+                      : holdingsBranchTab === "b"
+                        ? labBBranchEngineOn
+                        : holdingsBranchTab === "c"
+                          ? labCBranchEngineOn
+                          : labDBranchEngineOn;
+                const lastTick = engineObj?.last_tick_at;
+                const scanned = engineObj?.markets_scanned;
+                const errMsg = String(engineObj?.last_error || "");
+                return (
+                  <>
+                    <div title={`${label} branch engine status from /api/dashboard.`}>
+                      <strong>{label}</strong> engine {on ? "on" : "off"} ·{" "}
+                      {selectedIsLive
+                        ? `orders ${dash?.engine?.live?.simulate_orders ? "simulated (paper)" : "real limit posts"}`
+                        : "always simulated"}{" "}
+                      · last tick: {lastTick ? fmtIsoLocal(String(lastTick)) : "—"} · scanned {String(scanned ?? "—")}
+                    </div>
+                    {errMsg ? (
+                      <div className="error" style={{ marginTop: 6 }} title={`Last ${label} engine error string.`}>
+                        {label}: {errMsg}
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
+              <EngineTickTrace
+                title={
+                  holdingsBranchTab === "live"
+                    ? "Live — last tick log"
+                    : holdingsBranchTab === "a"
+                      ? "Lab A — last tick log"
+                      : holdingsBranchTab === "b"
+                        ? "Lab B — last tick log"
+                        : holdingsBranchTab === "c"
+                          ? "Lab C — last tick log"
+                          : "Lab D — last tick log"
+                }
+                lines={
+                  holdingsBranchTab === "live"
+                    ? dash?.engine?.live?.last_tick_trace
+                    : holdingsBranchTab === "a"
+                      ? engineLabA?.last_tick_trace
+                      : holdingsBranchTab === "b"
+                        ? engineLabB?.last_tick_trace
+                        : holdingsBranchTab === "c"
+                          ? engineLabC?.last_tick_trace
+                          : engineLabD?.last_tick_trace
+                }
+              />
+            </div>
+          </div>
           </div>
         </div>
       </div>
@@ -4467,7 +4493,15 @@ function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj })
   );
 }
 
-function SignalsTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: string }) {
+function SignalsTable({
+  rows,
+  emptyTitle,
+  scrollStyle,
+}: {
+  rows: AnyObj[];
+  emptyTitle?: string;
+  scrollStyle?: React.CSSProperties;
+}) {
   if (!rows.length)
     return (
       <div className="sub" title="No signal rows for this branch in the current sample; engines only write signals on certain paths.">
@@ -4475,7 +4509,7 @@ function SignalsTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: strin
       </div>
     );
   return (
-    <div className="table-scroll" title="Scroll vertically for older rows; header stays visible.">
+    <div className="table-scroll" style={scrollStyle} title="Scroll vertically for older rows; header stays visible.">
       <table className="table">
         <thead>
           <tr>
@@ -4515,7 +4549,15 @@ function SignalsTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: strin
   );
 }
 
-function TradesTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: string }) {
+function TradesTable({
+  rows,
+  emptyTitle,
+  scrollStyle,
+}: {
+  rows: AnyObj[];
+  emptyTitle?: string;
+  scrollStyle?: React.CSSProperties;
+}) {
   if (!rows.length)
     return (
       <div className="sub" title="No trades for this branch in the current sample; engine creates trades on fills or sim orders.">
@@ -4523,7 +4565,7 @@ function TradesTable({ rows, emptyTitle }: { rows: AnyObj[]; emptyTitle?: string
       </div>
     );
   return (
-    <div className="table-scroll" title="Scroll vertically for older rows; header stays visible.">
+    <div className="table-scroll" style={scrollStyle} title="Scroll vertically for older rows; header stays visible.">
       <table className="table">
         <thead>
           <tr>
