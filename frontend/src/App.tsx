@@ -619,173 +619,6 @@ function paperUnrealizedPnlDollars(m: AnyObj): number | null {
   return mtmN - st - r;
 }
 
-/** Stable signature for unresolved snap deltas (avoids resetting rotation on every poll when values unchanged). */
-function branchSnapStripSignature(m: AnyObj): string {
-  const cost = m.equity_snap_vs_calc_diff_dollars;
-  const mtmEdge = m.last_snap_mtm_minus_equity_dollars;
-  const c =
-    cost != null && Number.isFinite(Number(cost)) && Math.abs(Number(cost)) > 0.001 ? Number(cost) : null;
-  const e =
-    mtmEdge != null && Number.isFinite(Number(mtmEdge)) && Math.abs(Number(mtmEdge)) > 0.001
-      ? Number(mtmEdge)
-      : null;
-  if (c == null && e == null) return "";
-  return `${c ?? ""}\t${e ?? ""}`;
-}
-
-/** Absolute dollar gap under this is colored “good” (green); at or above → red. */
-const SNAP_RECON_AMOUNT_OK_UNDER = 1;
-
-const SNAP_RECON_GLOSSARY =
-  "Snap — Equity snapshot: one frozen row the engine saved (cost-basis equity, and sometimes MTM) for a tick; it is a point-in-time accounting capture, not a live quote. " +
-  "Cost snap off calc: dollars between that snapshot’s cost-basis total and the dashboard model (bankroll + realized PnL − committed open premium); differences are often tick timing or what was written vs what the UI recomputes. " +
-  "MTM — Mark-to-market: fair value of open positions at mids/marks vs cost on the same snapshot row when both columns exist; the gap is how much marking moved versus booked cost at that instant. " +
-  "Amount colors: green when |gap| is under $1 (minor); red when $1 or more (worth a closer look).";
-
-function snapReconAmountStyle(absDollars: number): CSSProperties {
-  const ok = Math.abs(absDollars) < SNAP_RECON_AMOUNT_OK_UNDER;
-  return {
-    color: ok ? "var(--ok)" : "var(--danger)",
-    fontVariantNumeric: "tabular-nums",
-    fontWeight: 600,
-  };
-}
-
-function snapReconAmountTitle(absDollars: number): string {
-  const mag = Math.abs(absDollars);
-  const ok = mag < SNAP_RECON_AMOUNT_OK_UNDER;
-  return ok
-    ? `Magnitude ${fmtMoney(mag)} (under $${SNAP_RECON_AMOUNT_OK_UNDER}) — treated as minor.`
-    : `Magnitude ${fmtMoney(mag)} is $${SNAP_RECON_AMOUNT_OK_UNDER} or more — worth verifying timing or open marks.`;
-}
-
-/** One branch line for the snap-reconcile strip (paper only); only dollar amounts are color-coded. */
-function renderBranchSnapLine(name: string, m: AnyObj): ReactNode | null {
-  const cost = m.equity_snap_vs_calc_diff_dollars;
-  const mtmEdge = m.last_snap_mtm_minus_equity_dollars;
-  const hasCost = cost != null && Number.isFinite(Number(cost)) && Math.abs(Number(cost)) > 0.001;
-  const hasMtm = mtmEdge != null && Number.isFinite(Number(mtmEdge)) && Math.abs(Number(mtmEdge)) > 0.001;
-  if (!hasCost && !hasMtm) return null;
-
-  const costN = hasCost ? Number(cost) : 0;
-  const mtmN = hasMtm ? Number(mtmEdge) : 0;
-
-  const pieces: ReactNode[] = [];
-  if (hasCost) {
-    pieces.push(
-      <span key="c1">cost snap </span>,
-      <span key="c2" style={snapReconAmountStyle(costN)} title={snapReconAmountTitle(costN)}>
-        {fmtMoney(costN)}
-      </span>,
-      <span key="c3"> off calc</span>,
-    );
-  }
-  if (hasMtm) {
-    if (pieces.length) pieces.push(<span key="dot"> · </span>);
-    pieces.push(
-      <span key="m1">MTM </span>,
-      <span key="m2" style={snapReconAmountStyle(mtmN)} title={snapReconAmountTitle(mtmN)}>
-        {fmtMoney(mtmN)}
-      </span>,
-      <span key="m3"> vs cost snap</span>,
-    );
-  }
-
-  return (
-    <>
-      {name} — {pieces}
-    </>
-  );
-}
-
-function SnapReconcileStrip({
-  cfg,
-  metrics,
-  metricsLabA,
-  metricsLabB,
-  metricsLabC,
-  metricsLabD,
-}: {
-  cfg: AnyObj;
-  metrics: AnyObj;
-  metricsLabA: AnyObj;
-  metricsLabB: AnyObj;
-  metricsLabC: AnyObj;
-  metricsLabD: AnyObj;
-}) {
-  const stripSig = `${branchSnapStripSignature(metrics)}|${branchSnapStripSignature(metricsLabA)}|${branchSnapStripSignature(metricsLabB)}|${branchSnapStripSignature(metricsLabC)}|${branchSnapStripSignature(metricsLabD)}`;
-
-  // stripSig encodes unresolved deltas so we do not rebuild bits every poll when values are unchanged.
-  const bits = useMemo(() => {
-    if (!cfg.simulate) return [] as ReactNode[];
-    return [
-      renderBranchSnapLine("Live", metrics),
-      renderBranchSnapLine("Lab A", metricsLabA),
-      renderBranchSnapLine("Lab B", metricsLabB),
-      renderBranchSnapLine("Lab C", metricsLabC),
-      renderBranchSnapLine("Lab D", metricsLabD),
-    ].filter(Boolean) as ReactNode[];
-  }, [cfg.simulate, stripSig]);
-
-  const [idx, setIdx] = useState(0);
-
-  useEffect(() => {
-    setIdx(0);
-  }, [stripSig]);
-
-  useEffect(() => {
-    if (bits.length <= 1) return;
-    const id = window.setInterval(() => setIdx((i) => (i + 1) % bits.length), 4500);
-    return () => window.clearInterval(id);
-  }, [bits.length, stripSig]);
-
-  if (!cfg.simulate || !bits.length) return null;
-
-  const line = bits[idx % bits.length];
-
-  return (
-    <div
-      className="section-tip"
-      style={{
-        marginTop: 10,
-        padding: "6px 12px",
-        borderRadius: 10,
-        border: "1px solid rgba(255, 200, 120, 0.38)",
-        background: "rgba(255, 200, 120, 0.09)",
-        color: "#ffc878",
-        fontSize: 12,
-        lineHeight: 1.35,
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        minWidth: 0,
-      }}
-      title="Rotates between branches when more than one still has a snap gap above the hide threshold."
-    >
-      <strong style={{ fontWeight: 700, flexShrink: 0 }}>Snap reconcile</strong>
-      <button
-        type="button"
-        className="snap-recon-info"
-        aria-label="What snap reconcile and MTM mean"
-        title={SNAP_RECON_GLOSSARY}
-      >
-        i
-      </button>
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {line}
-      </span>
-    </div>
-  );
-}
-
 function metricWinRateTone(pct: unknown): MetricValueTone {
   const x = Number(pct);
   if (!Number.isFinite(x)) return "neu";
@@ -2702,84 +2535,6 @@ export default function App() {
 
   return (
     <div className="page" title="Kalshi 15m bot — main dashboard. Hover controls for details.">
-      {optimizerNotifs.length ? (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 16,
-            right: 16,
-            top: "auto",
-            zIndex: 1200,
-            width: "min(400px, 94vw)",
-            maxHeight: "72vh",
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column-reverse",
-            gap: 8,
-          }}
-        >
-          {optimizerNotifs.map((n) => {
-            const tier = String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
-            const cardTone = tier ? ` optimizer-toast--${tier}` : "";
-            const segs = Array.isArray(n.segments) ? (n.segments as { tier?: string; text?: string }[]) : null;
-            return (
-            <div key={String(n.id)} className={`panel optimizer-toast${cardTone}`} style={{ padding: "10px 12px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                <div style={{ minWidth: 0 }}>
-                  <strong style={{ fontSize: 12 }}>{String(n.title)}</strong>
-                  {n.created_at ? (
-                    <div className="sub" style={{ fontSize: 10, opacity: 0.88, marginTop: 3 }} title="Event or toast time (local)">
-                      {fmtIsoLocal(String(n.created_at))}
-                    </div>
-                  ) : null}
-                </div>
-                <button
-                  type="button"
-                  style={{ padding: "2px 8px", fontSize: 11 }}
-                  onClick={() => {
-                    const id = String(n.id || "");
-                    if (id) {
-                      dismissedOptimizerEventIds.current.add(id);
-                      try {
-                        window.sessionStorage.setItem(
-                          OPTIMIZER_DISMISSED_IDS_KEY,
-                          JSON.stringify(Array.from(dismissedOptimizerEventIds.current).slice(-600)),
-                        );
-                      } catch {
-                        // Ignore storage errors.
-                      }
-                    }
-                    setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== String(n.id)));
-                  }}
-                >
-                  x
-                </button>
-              </div>
-              {segs && segs.length ? (
-                <div style={{ marginTop: 6 }}>
-                  {segs.map((s, i) => {
-                    const lt = String(s.tier || "neutral");
-                    const lineClass =
-                      lt === "green" || lt === "yellow" || lt === "red" || lt === "neutral"
-                        ? `optimizer-toast__line optimizer-toast__line--${lt}`
-                        : "optimizer-toast__line optimizer-toast__line--neutral";
-                    return (
-                      <div key={i} className={lineClass}>
-                        {String(s.text || "")}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="sub optimizer-toast__line optimizer-toast__line--neutral" style={{ marginTop: 4 }}>
-                  {String(n.body)}
-                </div>
-              )}
-            </div>
-            );
-          })}
-        </div>
-      ) : null}
       <div className="top">
         <div className="hero">
           <div className="hero-head">
@@ -2787,180 +2542,20 @@ export default function App() {
               className="title section-tip"
               title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
             >
-              Kalshi 15m crypto bot
+              Chomp's Diner
             </h1>
             {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
-          </div>
-          <div className="hero-meta" title="Kalshi REST host and environment loaded by the backend from .env.">
-            <span className="env-pill" title="Base URL the backend uses for Kalshi (demo vs prod).">
-              API:{" "}
-              <code>{kalshi?.api_base ? String(kalshi.api_base).replace("https://", "") : "—"}</code>
-            </span>
-            <span className="env-pill" title="KALSHI_ENV value (e.g. demo vs production).">
-              Environment: <code>{String(kalshi?.env || "—")}</code>
-            </span>
-            <a
-              className="muted-link"
-              href="https://docs.kalshi.com/getting_started/api_keys"
-              target="_blank"
-              rel="noreferrer"
-              title="Official Kalshi documentation for API keys."
+            <button
+              type="button"
+              className="primary"
+              style={{ marginLeft: "auto", padding: "6px 10px", minWidth: 0 }}
+              title="Open settings and controls"
+              onClick={() => setSettingsOpen(true)}
             >
-              Kalshi API keys (docs)
-            </a>
+              ⚙ Settings
+            </button>
           </div>
           {dash ? <BranchMarketTickers dash={dash} cfg={cfg} /> : null}
-          {dash ? (
-            <SnapReconcileStrip
-              cfg={cfg}
-              metrics={metrics}
-              metricsLabA={metricsLabA}
-              metricsLabB={metricsLabB}
-              metricsLabC={metricsLabC}
-              metricsLabD={metricsLabD}
-            />
-          ) : null}
-        </div>
-        <div className="toolbar-panel">
-          <div className="toolbar toolbar--dock">
-            <div className="toolbar-block" title="Refresh dashboard data and open full settings.">
-              <div className="toolbar-label">Controls</div>
-              <div className="toolbar-group">
-                <button
-                  className="primary"
-                  disabled={busy}
-                  title="Fetch /api/dashboard now (auto every ~8s). A new refresh aborts an older in-flight poll so the latest snapshot always wins."
-                  onClick={() => void refresh({ force: true })}
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  title="Filters, subtitle rules, sizing, poll/window, rule bands, JSON rules, sim lab parameters."
-                  onClick={() => setSettingsOpen(true)}
-                >
-                  Settings
-                </button>
-                <button type="button" disabled={busy} title="Explore saved historical rows and export CSV." onClick={() => setHistoryOpen(true)}>
-                  History
-                </button>
-              </div>
-            </div>
-            <div className="toolbar-block" title="Paper vs real fills on the Live branch, and whether the Live engine loop runs.">
-              <div className="toolbar-label">Live</div>
-              <div className="toolbar-group">
-                <button
-                  className={cfg.simulate ? "primary" : "danger"}
-                  disabled={busy}
-                  title={
-                    cfg.simulate
-                      ? "Live branch uses simulated fills only — no orders sent to Kalshi. Click to switch to Real $ (you will be asked to confirm)."
-                      : "Live branch can place real limit orders on Kalshi when the engine is on and a rule matches. Click to switch to Simulate (paper)."
-                  }
-                  onClick={() => setSimulate(!Boolean(cfg.simulate))}
-                >
-                  {cfg.simulate ? "Paper" : "Real $"}
-                </button>
-                <button
-                  className="primary"
-                  disabled={busy}
-                  title="Starts/stops the Live engine loop (market scan, rules, trades on the Live branch)."
-                  onClick={() => setRunning(!Boolean(cfg.engine_running))}
-                >
-                  Engine {cfg.engine_running ? "on" : "off"}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div className="toolbar-optimizer-foot" title="Anthropic-backed analysis on A/B/C paper data; auto-applied tuning targets Lab A only.">
-            <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
-              <button
-                type="button"
-                className={optimizerOpen ? "primary" : ""}
-                title="Open or close the Claude optimizer panel (labs-only data; stays clickable while other saves run)."
-                onClick={() => setOptimizerOpen((o) => !o)}
-              >
-                Optimizer{optimizerOpen ? " ▾" : ""}
-              </button>
-            {optimizerOpen ? (
-              <div
-                className="panel"
-                style={{
-                  position: "absolute",
-                  top: "100%",
-                  right: 0,
-                  zIndex: 50,
-                  width: "min(360px, 92vw)",
-                  maxHeight: "min(420px, 70vh)",
-                  overflow: "auto",
-                  marginTop: 8,
-                  padding: "12px 14px",
-                  boxShadow: "0 12px 40px rgba(0,0,0,0.45)",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <strong style={{ fontSize: 13 }}>Claude optimizer (labs only)</strong>
-                  <button type="button" style={{ padding: "4px 10px" }} onClick={() => setOptimizerOpen(false)}>
-                    Close
-                  </button>
-                </div>
-                <div className="sub" style={{ marginTop: 4 }}>
-                  Status: <strong>{String(optimizerCfg?.last_status || "idle")}</strong> · last run:{" "}
-                  {optimizerCfg?.last_run_at ? fmtIsoLocal(String(optimizerCfg.last_run_at)) : "—"}
-                </div>
-                {optimizerCfg?.last_error ? (
-                  <div className="error" style={{ marginTop: 8, fontSize: 12 }}>{String(optimizerCfg.last_error)}</div>
-                ) : null}
-                <div className="row" style={{ marginTop: 10 }}>
-                  <button
-                    className="primary"
-                    disabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      try {
-                        await apiPost("/api/optimizer/run");
-                        await loadOptimizer();
-                      } catch (e: any) {
-                        setErr(String(e?.message || e));
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                  >
-                    Run now
-                  </button>
-                  <button
-                    disabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      try {
-                        await apiPut("/api/optimizer/config", {
-                          enabled: !Boolean(optimizerCfg?.enabled),
-                          interval_minutes: Number(optimizerCfg?.interval_minutes || 20),
-                        });
-                        await loadOptimizer();
-                      } catch (e: any) {
-                        setErr(String(e?.message || e));
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                  >
-                    Scheduler: {optimizerCfg?.enabled ? "On" : "Off"}
-                  </button>
-                </div>
-                <div style={{ marginTop: 10 }}>
-                  {(optimizerRows || []).slice(0, 5).map((r, i) => (
-                    <div key={i} className="sub" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
-                      <strong>{fmtIsoLocal(String(r.created_at || ""))}</strong> — {String(r.summary || "")}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            </div>
-          </div>
         </div>
       </div>
 
@@ -3180,13 +2775,6 @@ export default function App() {
         </div>
       </section>
 
-      <OptimizerActivitySection
-        activity={dash.optimizer_activity as AnyObj | undefined}
-        onTradeLabSnapshot={pushTradeLabSnapshotToast}
-        tradeSnapshotDisabled={!dash}
-        snapshotUnseenChangeCount={tradeLabSnapshotUnseenCount}
-        onOpenInfo={(title, body) => setInfoPopup({ title, body })}
-      />
         </div>
 
         <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
@@ -4072,6 +3660,9 @@ export default function App() {
         onToggleLabC={() => void setLabRunning("c", !labCBranchEngineOn)}
         onToggleLabD={() => void setLabRunning("d", !labDBranchEngineOn)}
         onAddAllLabsPaper={() => void addAllLabsPaperBankroll()}
+        onRefresh={() => void refresh({ force: true })}
+        onOpenHistory={() => setHistoryOpen(true)}
+        kalshi={kalshi as AnyObj}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
       {infoPopup ? (

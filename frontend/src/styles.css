@@ -85,31 +85,6 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Snap reconcile strip: compact glossary trigger (native title tooltip). */
-button.snap-recon-info {
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  margin: 0;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffc878;
-  border-color: rgba(255, 200, 120, 0.45);
-  background: rgba(255, 200, 120, 0.12);
-  cursor: help;
-}
-
-button.snap-recon-info:hover {
-  border-color: rgba(255, 200, 120, 0.75);
-  background: rgba(255, 200, 120, 0.2);
-}
-
 .grid {
   display: grid;
   grid-template-columns: 1fr;

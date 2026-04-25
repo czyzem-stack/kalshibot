@@ -297,9 +297,6 @@ function SettingsHelpSection({
           <button type="button" className="primary" onClick={() => onOpenTab("lab_a")}>
             Open Lab A tab
           </button>
-          <button type="button" className="primary" onClick={() => onOpenTab("lab_ab_optimizer")}>
-            Open Optimizer tab
-          </button>
         </div>
       </div>
 
@@ -740,6 +737,9 @@ export type SettingsOverlayProps = {
   onToggleLabC: () => void | Promise<void>;
   onToggleLabD: () => void | Promise<void>;
   onAddAllLabsPaper: () => void | Promise<void>;
+  onRefresh: () => void | Promise<void>;
+  onOpenHistory: () => void | Promise<void>;
+  kalshi: AnyObj;
 };
 
 export default function SettingsOverlay({
@@ -784,6 +784,9 @@ export default function SettingsOverlay({
   onToggleLabC,
   onToggleLabD,
   onAddAllLabsPaper,
+  onRefresh,
+  onOpenHistory,
+  kalshi,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   const [labSizingTab, setLabSizingTab] = useState<LabBranchKey>("a");
@@ -834,14 +837,8 @@ export default function SettingsOverlay({
   ];
   const visibleSizingTabs = sizingTabs.filter((t) => t.visible);
   const activeLabSizingTab = visibleSizingTabs.some((t) => t.id === labSizingTab) ? labSizingTab : (visibleSizingTabs[0]?.id ?? "a");
-  // Optimizer controls + save button: dedicated tab, All, or any lab tab.
-  const showOpt =
-    settingsTab === "lab_ab_optimizer" ||
-    settingsTab === "all" ||
-    settingsTab === "lab_a" ||
-    settingsTab === "lab_b" ||
-    settingsTab === "lab_c" ||
-    settingsTab === "lab_d";
+  // Optimizer UI is intentionally hidden for now.
+  const showOpt = false;
   const showData = settingsTab === "all";
   const showHelp = settingsTab === "help";
   const historyRows = useMemo(
@@ -876,7 +873,6 @@ export default function SettingsOverlay({
               ["lab_b", "Lab B"],
               ["lab_c", "Lab C"],
               ["lab_d", "Lab D"],
-              ["lab_ab_optimizer", "Optimizer"],
               ["all", "All"],
               ["help", "Help"],
             ] as const
@@ -924,6 +920,23 @@ export default function SettingsOverlay({
             </span>
           </div>
           <div className="settings-lab-engine-actions">
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              title="Fetch /api/dashboard now (auto every ~8s)."
+              onClick={() => void onRefresh()}
+            >
+              Refresh now
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              title="Explore saved historical rows and export CSV."
+              onClick={() => void onOpenHistory()}
+            >
+              History
+            </button>
             <button type="button" className="primary" disabled={busy} title="Live engine loop." onClick={() => void onToggleLive()}>
               Turn Live {liveEngineOn ? "off" : "on"}
             </button>
@@ -947,6 +960,23 @@ export default function SettingsOverlay({
             >
               All +$100
             </button>
+          </div>
+          <div className="hero-meta" style={{ marginTop: 10 }} title="Kalshi REST host and environment loaded by the backend from .env.">
+            <span className="env-pill" title="Base URL the backend uses for Kalshi (demo vs prod).">
+              API: <code>{kalshi?.api_base ? String(kalshi.api_base).replace("https://", "") : "—"}</code>
+            </span>
+            <span className="env-pill" title="KALSHI_ENV value (e.g. demo vs production).">
+              Environment: <code>{String(kalshi?.env || "—")}</code>
+            </span>
+            <a
+              className="muted-link"
+              href="https://docs.kalshi.com/getting_started/api_keys"
+              target="_blank"
+              rel="noreferrer"
+              title="Official Kalshi documentation for API keys."
+            >
+              Kalshi API keys (docs)
+            </a>
           </div>
         </div>
         {showLive ? (
