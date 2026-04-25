@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -2252,6 +2251,8 @@ export default function App() {
       );
       if (!ok) return;
     }
+    const prevDash = dash;
+    if (prevDash) applyDashboardConfig({ ...cfg, simulate });
     setBusy(true);
     try {
       const out = (await apiPost(`/api/engine/toggle?simulate=${simulate ? "true" : "false"}`)) as AnyObj;
@@ -2259,6 +2260,7 @@ export default function App() {
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
       void refresh({ force: true });
     } catch (e: any) {
+      if (prevDash) setDash(prevDash);
       setErr(String(e?.message || e));
     } finally {
       setBusy(false);
@@ -2266,6 +2268,8 @@ export default function App() {
   };
 
   const setRunning = async (running: boolean) => {
+    const prevDash = dash;
+    if (prevDash) applyDashboardConfig({ ...cfg, engine_running: running });
     setBusy(true);
     try {
       const out = (await apiPost(`/api/engine/toggle?running=${running ? "true" : "false"}`)) as AnyObj;
@@ -2273,6 +2277,7 @@ export default function App() {
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
       void refresh({ force: true });
     } catch (e: any) {
+      if (prevDash) setDash(prevDash);
       setErr(String(e?.message || e));
     } finally {
       setBusy(false);
@@ -2280,6 +2285,15 @@ export default function App() {
   };
 
   const setLabRunning = async (lab: "a" | "b" | "c" | "d", running: boolean) => {
+    const prevDash = dash;
+    if (prevDash) {
+      const patch = { ...cfg } as AnyObj;
+      if (lab === "a") patch.lab_a = { ...(cfg.lab_a || EMPTY_LAB), engine_running: running };
+      else if (lab === "b") patch.lab_b = { ...(cfg.lab_b || EMPTY_LAB), engine_running: running };
+      else if (lab === "c") patch.lab_c = { ...(cfg.lab_c || EMPTY_LAB), engine_running: running };
+      else patch.lab_d = { ...(cfg.lab_d || EMPTY_LAB), engine_running: running };
+      applyDashboardConfig(patch);
+    }
     setBusy(true);
     try {
       const key = lab === "a" ? "lab_a_running" : lab === "b" ? "lab_b_running" : lab === "c" ? "lab_c_running" : "lab_d_running";
@@ -2288,6 +2302,7 @@ export default function App() {
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
       void refresh({ force: true });
     } catch (e: any) {
+      if (prevDash) setDash(prevDash);
       setErr(String(e?.message || e));
     } finally {
       setBusy(false);

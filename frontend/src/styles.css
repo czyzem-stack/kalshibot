@@ -10,7 +10,14 @@
   --danger: #ff6b7a;
   --ok: #5ef3a9;
   --border: #243055;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --tap-fast: 140ms var(--ease-out);
+  --focus-ring: 0 0 0 2px #0b1020, 0 0 0 4px rgba(110, 231, 255, 0.45);
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 * {
@@ -21,6 +28,20 @@ body {
   margin: 0;
   background: radial-gradient(1200px 800px at 20% 0%, #15224d 0%, var(--bg) 55%);
   color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+
+  .kalshi-setup-orb:hover {
+    transform: none;
+  }
 }
 
 a {
@@ -88,6 +109,33 @@ button {
   padding: 10px 12px;
   border-radius: 10px;
   cursor: pointer;
+  transition:
+    background var(--tap-fast),
+    border-color var(--tap-fast),
+    box-shadow var(--tap-fast),
+    transform 90ms var(--ease-out),
+    opacity var(--tap-fast);
+}
+
+button:hover:not(:disabled) {
+  border-color: rgba(110, 231, 255, 0.28);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 button.primary {
@@ -103,6 +151,8 @@ button.danger {
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .grid {
@@ -122,6 +172,10 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 14px;
+  transition:
+    border-color var(--tap-fast),
+    box-shadow var(--tap-fast),
+    background 180ms var(--ease-out);
 }
 
 .panel h2 {
@@ -1514,7 +1568,7 @@ input[type="number"] {
   margin-bottom: 2px;
 }
 
-/* Hero: compact Kalshi API + setup status (replaces large ConnectionStrip + checklist) */
+/* Hero: compact Kalshi API + setup status */
 .kalshi-setup-orbs {
   display: flex;
   flex-wrap: wrap;
@@ -1538,6 +1592,15 @@ input[type="number"] {
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-sizing: border-box;
   user-select: none;
+  transition:
+    transform 120ms var(--ease-out),
+    box-shadow var(--tap-fast),
+    border-color var(--tap-fast);
+}
+
+.kalshi-setup-orb:hover {
+  transform: scale(1.06);
+  box-shadow: 0 0 0 1px rgba(110, 231, 255, 0.12);
 }
 
 .kalshi-setup-orb--ok {
@@ -1610,11 +1673,6 @@ input[type="number"] {
 .callout-bad {
   background: rgba(120, 40, 50, 0.18);
   border-color: #6b2a33;
-}
-
-.callout-loading {
-  background: rgba(30, 50, 100, 0.2);
-  border-color: #2b4c86;
 }
 
 /* First dashboard fetch — full viewport, spinner + phased copy + asymptotic progress */
@@ -1913,6 +1971,11 @@ input[type="number"] {
   border: 1px solid var(--border);
   background: #0b1228;
   color: var(--muted);
+  transition:
+    color var(--tap-fast),
+    border-color var(--tap-fast),
+    background var(--tap-fast),
+    box-shadow var(--tap-fast);
 }
 
 .chart-tab:hover {
