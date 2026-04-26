@@ -11,6 +11,7 @@ import {
   RulesEditor,
   SwingExitImpliedDropControl,
 } from "./settingsRules";
+import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 
 type AnyObj = Record<string, any>;
 type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_ab_optimizer" | "all" | "help";
@@ -742,8 +743,8 @@ export type SettingsOverlayProps = {
   kalshi: AnyObj;
   heroMarqueeSpeedMult: number;
   onHeroMarqueeSpeedMultChange: (mult: number) => void;
-  heroMarqueeRotateSec: number;
-  onHeroMarqueeRotateSecChange: (sec: number) => void;
+  tradePopupToastsEnabled: boolean;
+  onTradePopupToastsEnabledChange: (on: boolean) => void;
 };
 
 export default function SettingsOverlay({
@@ -793,8 +794,8 @@ export default function SettingsOverlay({
   kalshi,
   heroMarqueeSpeedMult,
   onHeroMarqueeSpeedMultChange,
-  heroMarqueeRotateSec,
-  onHeroMarqueeRotateSecChange,
+  tradePopupToastsEnabled,
+  onTradePopupToastsEnabledChange,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   const [labSizingTab, setLabSizingTab] = useState<LabBranchKey>("a");
@@ -898,6 +899,23 @@ export default function SettingsOverlay({
           ))}
         </div>
         <div
+          className="section-tip"
+          style={{ marginTop: 10 }}
+          title="Each dot reflects live signals from the last /api/dashboard — same 8 steps as the former home hero row (backend, .env, public API, private portfolio, engines, simulate, writes, notes)."
+        >
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <strong style={{ fontSize: 11, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--muted)" }}>
+              Kalshi & connection
+            </strong>
+            <span className="sub" style={{ fontSize: 11 }}>
+              Read / write, keys, and engine polling — hover each orb
+            </span>
+          </div>
+          <div style={{ marginTop: 8, overflowX: "auto" }}>
+            <KalshiSetupOrbRow dash={dash} cfg={cfg} />
+          </div>
+        </div>
+        <div
           className="section-tip settings-lab-engines-panel"
           style={{ marginTop: 12 }}
           title="Start/stop the Live and paper lab engine loops. Status reflects the last dashboard poll."
@@ -995,7 +1013,7 @@ export default function SettingsOverlay({
               Hero ticker & balance tile
             </h3>
             <p className="sub" style={{ marginTop: 6, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-              Horizontal marquee speed, how fast the Live / Lab A–D column cycles, and legibility of the balance readout — all live here; nothing on the hero bar itself.
+              Marquee speed; the right column shows a fixed five-row snapshot (Live + Lab A–D with $ and return). Stored in this browser only.
             </p>
             <div className="field" style={{ marginBottom: 0 }} title="Multiplier for how fast the combined branch line scrolls (drag / throw still works).">
               <label htmlFor="hero_marquee_speed_mult">
@@ -1011,19 +1029,17 @@ export default function SettingsOverlay({
                 onChange={(e) => onHeroMarqueeSpeedMultChange(Number(e.target.value))}
               />
             </div>
-            <div className="field" style={{ marginTop: 12, marginBottom: 0 }} title="Time each Live / Lab balance slide stays visible before auto-advancing (click still advances immediately).">
-              <label htmlFor="hero_marquee_rotate_sec">
-                Balance tile rotate: <strong>{heroMarqueeRotateSec.toFixed(1)}s</strong> per branch
+            <div className="field" style={{ marginTop: 14, marginBottom: 0 }} title="Bottom-right cards when a trade opens or settles (Live or sim). Stored in this browser only.">
+              <label className="section-tip" style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={tradePopupToastsEnabled}
+                  onChange={(e) => onTradePopupToastsEnabledChange(e.target.checked)}
+                />
+                <span>
+                  Trade open / settle toasts <span className="sub">(bottom-right)</span>
+                </span>
               </label>
-              <input
-                id="hero_marquee_rotate_sec"
-                type="range"
-                min="0.8"
-                max="6"
-                step="0.1"
-                value={heroMarqueeRotateSec}
-                onChange={(e) => onHeroMarqueeRotateSecChange(Number(e.target.value))}
-              />
             </div>
           </div>
         </div>

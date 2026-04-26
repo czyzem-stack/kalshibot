@@ -549,11 +549,37 @@ function heroMarqueeDurationSec(segments: TickerSeg[]): number {
 /** Autoplay pixels/sec vs baseline; 0.7 ≈ 30% slower horizontal marquee (drag/throw unchanged). */
 const HERO_MARQUEE_SCROLL_PACE = 0.7;
 
-/** Fixed slide height for vertical rotor (fits Live $ + % + optional cash line). */
-const HERO_SLIDE_PX = 78;
+function branchHeadlineDollars(
+  m: AnyObj,
+  which: "live" | "lab",
+  livePaper: boolean,
+  keys: boolean,
+  rb: AnyObj | undefined,
+): number | null {
+  if (which === "live") {
+    if (livePaper) {
+      const v = m.current_mtm_dollars ?? m.current_equity_dollars;
+      return v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+    }
+    const pv = m.exchange_portfolio_value_dollars;
+    if (pv != null && pv !== "" && Number.isFinite(Number(pv))) return Number(pv);
+    if (rb?.portfolio_value != null && Number.isFinite(Number(rb.portfolio_value))) return Number(rb.portfolio_value) / 100;
+    return null;
+  }
+  const v = m.current_mtm_dollars ?? m.current_equity_dollars;
+  return v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+}
 
-/** Single scrolling strip for all branches + rotating balance column (hero, between title and Kalshi orbs). */
-export function BranchHeroMarquee({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }): ReactNode {
+/** Single scrolling strip for all branches + optional five-row snapshot (Live + Lab A–D, no rotation). */
+export function BranchHeroMarquee({
+  dash,
+  cfg,
+  showSnapshot = true,
+}: {
+  dash: AnyObj;
+  cfg: AnyObj;
+  showSnapshot?: boolean;
+}): ReactNode {
   const kalshiPrivateOk = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const acct = dash?.account_snapshot as AnyObj | undefined;
   const posBy = acct?.position_by_asset as AnyObj | undefined;
@@ -624,83 +650,49 @@ export function BranchHeroMarquee({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }):
   const speedScale = Number.isFinite(speedMult) && speedMult > 0 ? Math.min(4, Math.max(0.35, speedMult)) : 1;
   const dur = useMemo(() => heroMarqueeDurationSec(combined) / speedScale, [combined, speedScale]);
 
-  const rotateSecRaw = Number(cfg?.hero_marquee_rotate_sec);
-  const rotateMs = Math.round(
-    1000 * (Number.isFinite(rotateSecRaw) && rotateSecRaw > 0 ? Math.min(6, Math.max(0.8, rotateSecRaw)) : 1.8),
-  );
-
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const livePaper = Boolean(cfg.simulate);
-  const portfolioLive = livePaper
-    ? fmtNum$(mLive.current_mtm_dollars ?? mLive.current_equity_dollars)
-    : fmtNum$(mLive.exchange_portfolio_value_dollars ?? (rb?.portfolio_value != null ? Number(rb.portfolio_value) / 100 : null));
-  const cashLive =
-    livePaper || !keys
-      ? null
-      : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
-  const labAeq = fmtNum$(mA.current_mtm_dollars ?? mA.current_equity_dollars);
-  const labBeq = fmtNum$(mB.current_mtm_dollars ?? mB.current_equity_dollars);
-  const labCeq = fmtNum$(mC.current_mtm_dollars ?? mC.current_equity_dollars);
-  const labDeq = fmtNum$(mD.current_mtm_dollars ?? mD.current_equity_dollars);
+  const dLive = branchHeadlineDollars(mLive, "live", livePaper, keys, rb);
+  const dA = branchHeadlineDollars(mA, "lab", livePaper, keys, rb);
+  const dB = branchHeadlineDollars(mB, "lab", livePaper, keys, rb);
+  const dC = branchHeadlineDollars(mC, "lab", livePaper, keys, rb);
+  const dD = branchHeadlineDollars(mD, "lab", livePaper, keys, rb);
   const tipLive = livePaper
     ? "Live paper: headline $ is mark-to-market total (last equity snapshot); % uses MTM vs bankroll when available."
     : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
-
-  const slides = [
+  const labTip = (lab: "A" | "B" | "C" | "D") =>
+    `Lab ${lab}: $ = MTM or cost-basis equity; % = return vs bankroll (MTM) when present.`;
+  const snapshotRows: {
+    key: string;
+    label: string;
+    valueStr: string;
+    metrics: AnyObj;
+    accent: string;
+    title: string;
+    extraCash?: { label: string; value: string } | null;
+  }[] = [
     {
-      key: "live" as const,
+      key: "live",
       label: "Live",
-      accent: HERO_BRANCH_ACCENT.live,
-      value: portfolioLive,
+      valueStr: dLive == null || !Number.isFinite(dLive) ? "—" : fmt$(dLive),
       metrics: mLive,
+      accent: HERO_BRANCH_ACCENT.live,
       title: tipLive,
+      extraCash:
+        !livePaper && cashLiveStr
+          ? { label: "Cash", value: cashLiveStr }
+          : null,
     },
-    {
-      key: "lab_a" as const,
-      label: "Lab A",
-      accent: HERO_BRANCH_ACCENT.lab_a,
-      value: labAeq,
-      metrics: mA,
-      title: "Lab A: $ = MTM or cost-basis equity; % = MTM vs bankroll when present.",
-    },
-    {
-      key: "lab_b" as const,
-      label: "Lab B",
-      accent: HERO_BRANCH_ACCENT.lab_b,
-      value: labBeq,
-      metrics: mB,
-      title: "Lab B: $ = MTM or cost-basis equity; % = MTM vs bankroll when present.",
-    },
-    {
-      key: "lab_c" as const,
-      label: "Lab C",
-      accent: HERO_BRANCH_ACCENT.lab_c,
-      value: labCeq,
-      metrics: mC,
-      title: "Lab C: $ = MTM or cost-basis equity; % = MTM vs bankroll when present.",
-    },
-    {
-      key: "lab_d" as const,
-      label: "Lab D",
-      accent: HERO_BRANCH_ACCENT.lab_d,
-      value: labDeq,
-      metrics: mD,
-      title: "Lab D: $ = MTM or cost-basis equity; % = MTM vs bankroll when present.",
-    },
+    { key: "lab_a", label: "Lab A", valueStr: dA == null || !Number.isFinite(dA) ? "—" : fmt$(dA), metrics: mA, accent: HERO_BRANCH_ACCENT.lab_a, title: labTip("A") },
+    { key: "lab_b", label: "Lab B", valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB), metrics: mB, accent: HERO_BRANCH_ACCENT.lab_b, title: labTip("B") },
+    { key: "lab_c", label: "Lab C", valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC), metrics: mC, accent: HERO_BRANCH_ACCENT.lab_c, title: labTip("C") },
+    { key: "lab_d", label: "Lab D", valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD), metrics: mD, accent: HERO_BRANCH_ACCENT.lab_d, title: labTip("D") },
   ];
+  const snapshotAsideTitle = "All branches: headline $ and return vs start (arrows) from last /api/dashboard — Live plus Lab A through Lab D.";
 
-  const slideCount = slides.length;
-  const [rotateIx, setRotateIx] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const firstHalfRef = useRef<HTMLSpanElement | null>(null);
-  const markerRefs = useRef<Record<BranchKey, HTMLSpanElement | null>>({
-    live: null,
-    lab_a: null,
-    lab_b: null,
-    lab_c: null,
-    lab_d: null,
-  });
   const offsetRef = useRef(0);
   const velocityRef = useRef(0);
   const dragRef = useRef<{ active: boolean; startX: number; startOffset: number; lastX: number; lastT: number }>({
@@ -721,37 +713,6 @@ export function BranchHeroMarquee({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }):
     if (v > 0) v -= w;
     return v;
   }, []);
-
-  const jumpToBranch = useCallback(
-    (branch: BranchKey) => {
-      const vp = viewportRef.current;
-      const marker = markerRefs.current[branch];
-      const half = firstHalfRef.current;
-      if (!vp || !marker || !half) return;
-      const w = half.scrollWidth || halfWidth;
-      const next = normalizeOffset(-marker.offsetLeft, w || 1);
-      offsetRef.current = next;
-      velocityRef.current = 0;
-      setTrackX(next);
-    },
-    [halfWidth, normalizeOffset],
-  );
-
-  const advanceRotor = useCallback(() => {
-    setRotateIx((i) => {
-      const next = (i + 1) % slideCount;
-      const key = slides[next]?.key;
-      if (key) jumpToBranch(key);
-      return next;
-    });
-  }, [jumpToBranch, slideCount, slides]);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setRotateIx((i) => (i + 1) % slideCount), rotateMs);
-    return () => window.clearInterval(id);
-  }, [slideCount, rotateMs]);
-
-  const active = slides[rotateIx] ?? slides[0];
 
   useLayoutEffect(() => {
     const vp = viewportRef.current;
@@ -836,7 +797,6 @@ export function BranchHeroMarquee({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }):
     <span ref={copy === "a" ? firstHalfRef : undefined} className="branch-hero-marquee__chunk branch-ticker-chunk--rich">
       {HERO_BRANCH_ORDER.map((b, i) => (
         <span key={`${copy}-${b}`} className="branch-hero-marquee__branch">
-          <span ref={copy === "a" ? (el) => (markerRefs.current[b] = el) : undefined} className="branch-hero-marquee__marker" />
           {i > 0 ? <span className="ticker-seg ticker-seg--muted">  ◆  </span> : null}
           <span className="ticker-seg ticker-seg--warn">{`${HERO_BRANCH_TAG[b]} · `}</span>
           <TickerSegRun segments={segBundles[b]} />
@@ -848,9 +808,9 @@ export function BranchHeroMarquee({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }):
 
   return (
     <div
-      className="branch-hero-marquee section-tip"
-      title="All-branch market readout. Drag to throw; click right tile to rotate branches and snap marquee."
-      aria-label="Combined Live and lab market ticker with rotating portfolio snapshot"
+      className={`branch-hero-marquee section-tip${showSnapshot ? "" : " branch-hero-marquee--ticker-only"}`}
+      title="All-branch market readout. Drag to throw. Right: five-row snapshot of Live and Lab A–D ($ and return)."
+      aria-label="Combined Live and lab market ticker with all-branch balance snapshot"
     >
       <div className="branch-hero-marquee__scroll" role="presentation">
         <div
@@ -868,57 +828,113 @@ export function BranchHeroMarquee({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }):
           </div>
         </div>
       </div>
-      <aside
-        className="branch-hero-marquee__rotor section-tip branch-hero-marquee__rotor--interactive"
-        title={`${active.title} — click anywhere ($, %, or cash) or press Space/Enter for next branch (Live → Lab A → …).`}
-        aria-live="polite"
-        aria-label={`${active.label} balance and return vs start. Button: cycle to next branch.`}
-        role="button"
-        tabIndex={0}
-        onClick={advanceRotor}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            advanceRotor();
-          }
-        }}
-      >
-        <div
-          className="branch-hero-marquee__rotor-track"
-          style={{
-            transform: `translateY(-${rotateIx * HERO_SLIDE_PX}px)`,
-          }}
+      {showSnapshot ? (
+        <aside
+          className="branch-hero-marquee__rotor branch-hero-marquee__rotor--snapshot section-tip"
+          title={snapshotAsideTitle}
+          aria-live="polite"
+          aria-label="Live and Lab A through D: balance and return each"
         >
-          {slides.map((s) => (
-            <div
-              key={s.key}
-              className="branch-hero-marquee__slide"
-              style={{ minHeight: HERO_SLIDE_PX, borderColor: `${s.accent}55` }}
-              onClick={(e) => {
-                e.stopPropagation();
-                advanceRotor();
-              }}
-              role="presentation"
-            >
-              <div className="branch-hero-marquee__slide-label" style={{ color: s.accent }}>
-                {s.label}
-              </div>
-              <div className="branch-hero-marquee__slide-row">
-                <span className="branch-hero-marquee__slide-val" style={{ color: s.accent }}>
-                  {s.value}
-                </span>
-                <ReturnBadge metrics={s.metrics} />
-              </div>
-              {s.key === "live" && !livePaper && cashLive ? (
-                <div className="branch-hero-marquee__cash" title="Cash balance from Kalshi.">
-                  <span className="branch-hero-marquee__cash-k">Cash</span>
-                  <span>{cashLive}</span>
+          <div className="branch-hero-snapshot" role="list">
+            {snapshotRows.map((row) => (
+              <div
+                key={row.key}
+                className="branch-hero-snapshot__row"
+                style={{ borderLeftColor: `${row.accent}88` }}
+                title={row.title}
+                role="listitem"
+              >
+                <div className="branch-hero-snapshot__row-main">
+                  <span className="branch-hero-snapshot__name" style={{ color: row.accent }}>
+                    {row.label}
+                  </span>
+                  <div className="branch-hero-snapshot__row-right">
+                    <span className="branch-hero-snapshot__val" style={{ color: row.accent }}>
+                      {row.valueStr}
+                    </span>
+                    <ReturnBadge metrics={row.metrics} />
+                  </div>
                 </div>
-              ) : null}
+                {row.extraCash ? (
+                  <div className="branch-hero-snapshot__extra" title="Live cash (exchange) from last refresh.">
+                    <span className="branch-hero-snapshot__extra-k">{row.extraCash.label}</span>
+                    <span>{row.extraCash.value}</span>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </aside>
+      ) : null}
+    </div>
+  );
+}
+
+/** Centered header snapshot (under title): Live + Lab A–D, no marquee/scrolling track. */
+export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }): ReactNode {
+  const rb = dash?.remote_balance as AnyObj | undefined;
+  const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
+  const livePaper = Boolean(cfg.simulate);
+  const mLive = (dash?.metrics || {}) as AnyObj;
+  const mA = ((dash?.metrics_lab_a || dash?.metrics_sim_lab) || {}) as AnyObj;
+  const mB = (dash?.metrics_lab_b || {}) as AnyObj;
+  const mC = (dash?.metrics_lab_c || {}) as AnyObj;
+  const mD = (dash?.metrics_lab_d || {}) as AnyObj;
+  const dLive = branchHeadlineDollars(mLive, "live", livePaper, keys, rb);
+  const dA = branchHeadlineDollars(mA, "lab", livePaper, keys, rb);
+  const dB = branchHeadlineDollars(mB, "lab", livePaper, keys, rb);
+  const dC = branchHeadlineDollars(mC, "lab", livePaper, keys, rb);
+  const dD = branchHeadlineDollars(mD, "lab", livePaper, keys, rb);
+  const cashLiveStr =
+    livePaper || !keys
+      ? null
+      : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
+  const rows: {
+    key: string;
+    label: string;
+    valueStr: string;
+    metrics: AnyObj;
+    accent: string;
+  }[] = [
+    {
+      key: "live",
+      label: "Live",
+      valueStr: dLive == null || !Number.isFinite(dLive) ? "—" : fmt$(dLive),
+      metrics: mLive,
+      accent: HERO_BRANCH_ACCENT.live,
+    },
+    { key: "lab_a", label: "Lab A", valueStr: dA == null || !Number.isFinite(dA) ? "—" : fmt$(dA), metrics: mA, accent: HERO_BRANCH_ACCENT.lab_a },
+    { key: "lab_b", label: "Lab B", valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB), metrics: mB, accent: HERO_BRANCH_ACCENT.lab_b },
+    { key: "lab_c", label: "Lab C", valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC), metrics: mC, accent: HERO_BRANCH_ACCENT.lab_c },
+    { key: "lab_d", label: "Lab D", valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD), metrics: mD, accent: HERO_BRANCH_ACCENT.lab_d },
+  ];
+  return (
+    <div
+      className="branch-hero-snapshot branch-hero-snapshot--header"
+      role="list"
+      aria-live="polite"
+      aria-label="Live and Lab A through D: balance and return each"
+    >
+      {rows.map((row) => (
+        <div
+          key={row.key}
+          className="branch-hero-snapshot__row"
+          style={{ borderLeftColor: `${row.accent}88` }}
+          role="listitem"
+        >
+          <div className="branch-hero-snapshot__row-main">
+            <span className="branch-hero-snapshot__name" style={{ color: row.accent }}>
+              {row.label}
+            </span>
+            <div className="branch-hero-snapshot__row-right">
+              <span className="branch-hero-snapshot__val" style={{ color: row.accent }}>
+                {row.valueStr}
+              </span>
+              <ReturnBadge metrics={row.metrics} />
             </div>
-          ))}
+          </div>
         </div>
-      </aside>
+      ))}
     </div>
   );
 }

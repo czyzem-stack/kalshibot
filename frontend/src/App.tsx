@@ -10,7 +10,8 @@ import {
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import SettingsOverlay from "./SettingsOverlay";
 import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
-import { BranchHeroMarquee } from "./BranchMarketTickers";
+import { BranchHeroMarquee, BranchHeroSnapshotHeader } from "./BranchMarketTickers";
+import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 
 type AnyObj = Record<string, any>;
 
@@ -209,7 +210,6 @@ function fmtMoney(n: number) {
 }
 
 const HERO_MARQUEE_SPEED_KEY = "kalshibot_hero_marquee_speed_mult_v1";
-const HERO_MARQUEE_ROTATE_SEC_KEY = "kalshibot_hero_marquee_rotate_sec_v1";
 
 function readHeroMarqueeSpeedMult(): number {
   try {
@@ -231,21 +231,21 @@ function persistHeroMarqueeSpeedMult(mult: number) {
   }
 }
 
-function readHeroMarqueeRotateSec(): number {
+const TRADE_POPUP_TOASTS_KEY = "kalshibot_trade_popup_toasts_v1";
+
+function readTradePopupToastsEnabled(): boolean {
   try {
-    const raw = window.localStorage.getItem(HERO_MARQUEE_ROTATE_SEC_KEY);
-    if (!raw) return 1.8;
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return 1.8;
-    return Math.min(6, Math.max(0.8, n));
+    const v = window.localStorage.getItem(TRADE_POPUP_TOASTS_KEY);
+    if (v === null || v === "") return true;
+    return v !== "0" && v !== "false";
   } catch {
-    return 1.8;
+    return true;
   }
 }
 
-function persistHeroMarqueeRotateSec(sec: number) {
+function persistTradePopupToastsEnabled(on: boolean) {
   try {
-    window.localStorage.setItem(HERO_MARQUEE_ROTATE_SEC_KEY, String(Math.min(6, Math.max(0.8, sec))));
+    window.localStorage.setItem(TRADE_POPUP_TOASTS_KEY, on ? "1" : "0");
   } catch {
     // ignore
   }
@@ -829,15 +829,52 @@ function optimizerReportOverlayBody(dash: AnyObj): ReactNode {
 
 function optimizerBriefInfoBody(): ReactNode {
   return (
-    <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.5 }}>
+    <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <p>
-        <strong>Experiments</strong> overlays Live + Lab A–D paper MTM from the same window start so you can compare paths.
+        <strong>What this panel is for.</strong> The Optimizer block is your at-a-glance view of <em>adaptive paper tuning</em> and
+        experiment comparison. The large chart (Experiments) does not place trades by itself; it visualizes how each branch’s
+        mark-to-market path evolved from a common reference window. Use it to see whether Lab A (staging) is diverging from B/C/D
+        reference arms before you promote anything to Live.
       </p>
       <p>
-        <strong>Lab pulse</strong> is the scrolling ticker under the chart — one line for all labs from the latest poll.
+        <strong>Experiments (mini chart).</strong> Each colored line is indexed MTM (or a blended MTM / cost-basis readout, depending
+        on backend rollups) for Live vs Lab A–D, starting from the same time bucket so the curves are comparable. Flatter or smoother
+        lines are not “better” by default: high volatility can mean the book is open and marked often. Crossovers mean branches took
+        different fills or risk because rules, sizing, or paper bankrolls differ. Zoom mentally with the time-scale tabs in Equity
+        curves for longer history; this block is a short window.
       </p>
       <p>
-        <strong>report</strong> opens the full overlay: next movement vs gates, schedule, pulse, rollups, and settlements.
+        <strong>Lab pulse (scrolling line below the chart).</strong> This is a dense, tick-by-tick-style digest of the last engine
+        poll: implied probabilities, which rules matched, minutes to close, skip reasons, and small KPI snippets the backend
+        attached. It scrolls for legibility, not because time is “moving” faster. If pulse shows many{" "}
+        <code>series_has_open_sim</code> skips, you still have an open sim blocking new entries in that series—resolve or
+        time-out close stale rows (see auto-close behavior on the server) before expecting new paper fills.
+      </p>
+      <p>
+        <strong>Adaptive / scheduled optimizer (backend).</strong> When enabled, the server can adjust thresholds, bet fraction,
+        and related knobs using recent <em>settled</em> paper history, with guardrails (minimum trades, no wild jumps during drawdowns,
+        etc.). By design, <strong>only Lab A</strong> receives auto-applied fraction/threshold writes unless you explicitly use other
+        APIs; B/C/D stay reference paths. The dashboard shows recommendations and pulse traces, but the source of truth is the API
+        response and SQLite change log.
+      </p>
+      <p>
+        <strong>“report” (button next to this Info).</strong> Opens the full-page optimizer report overlay: last persisted change
+        records, next-movement heuristics, schedule windows, paper settlement rollups, and raw pulse traces pulled from the same
+        dashboard object. Use that overlay when you need to copy IDs, verify timestamps, or read the unabbreviated log lines that
+        do not fit in the small chart.
+      </p>
+      <p>
+        <strong>What to ignore / misread.</strong> (1) A spike in one branch line while another is flat often means a fill or
+        exit happened in that branch only. (2) If Live is in real-cash mode, only Live is tied to the exchange; labs remain paper.
+        (3) Empty or stale pulse lines usually mean engines are off, Kalshi 429/timeout, or the tick did not run—check the Engine
+        strip under Account, not this panel alone. (4) PnL on the main tiles is rollups; this chart is experimental visualization—
+        reconcile against Branch performance and Activity log.
+      </p>
+      <p>
+        <strong>Operational workflow.</strong> (1) Confirm engines and rules in Settings. (2) Watch Experiments for divergence.
+        (3) Read Lab pulse for concrete skip reasons. (4) If satisfied with Lab A, use promote-to-Live (separate action, gated) not
+        this Info dialog. (5) If numbers look wrong, export SQLite or open “report” before changing rules, so you have a before/
+        after snapshot in the overlay.
       </p>
     </div>
   );
@@ -1124,6 +1161,71 @@ function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   if (s === "lab_c") return "lab_c";
   if (s === "lab_d") return "lab_d";
   return "live";
+}
+
+const BRANCH_SWATCH: Record<ActivityBranchKey, string> = {
+  live: "#6ee7ff",
+  lab_a: "#c4b5fd",
+  lab_b: "#fdba74",
+  lab_c: "#f9a8d4",
+  lab_d: "#fca5a5",
+};
+
+function branchToastSwatch(branchRaw: unknown): string {
+  return BRANCH_SWATCH[normalizeSignalTradeBranch(branchRaw)];
+}
+
+/** Open / resting sim rows plus common Kalshi in-flight order states (see engine ``insert_trade``). */
+function tradeStatusIsActiveBid(st: string): boolean {
+  const s = st.trim().toLowerCase();
+  return (
+    s === "open" ||
+    s === "resting" ||
+    s === "pending" ||
+    s === "active" ||
+    s === "executed" ||
+    s === "partial" ||
+    s === "partially_filled" ||
+    s === "submitted" ||
+    s === "processing" ||
+    s === "queued" ||
+    s === "filled" ||
+    s === "matched"
+  );
+}
+
+function tradeToastRowKey(t: AnyObj): string {
+  const idStr = String(t?.id ?? "").trim();
+  if (idStr) return idStr;
+  const orderId = String(t?.order_id ?? "").trim();
+  if (orderId) return `oid:${orderId}`;
+  const clientOrderId = String(t?.client_order_id ?? "").trim();
+  if (clientOrderId) return `cid:${clientOrderId}`;
+  const ca = String(t?.created_at ?? "").trim();
+  const tk = String(t?.ticker ?? "").trim();
+  const side = String(t?.side ?? "").trim();
+  const amt = String(t?.amount_cents ?? "").trim();
+  const mode = String(t?.mode ?? "").trim();
+  return `row:${ca}|${tk}|${side}|${amt}|${mode}`;
+}
+
+function tradeRowLooksResolved(t: AnyObj): boolean {
+  const st = String(t?.status || "").trim().toLowerCase();
+  if (
+    st === "settled" ||
+    st === "closed" ||
+    st === "finalized" ||
+    st === "determined" ||
+    st === "complete" ||
+    st === "inactive" ||
+    st === "resolved"
+  ) {
+    return true;
+  }
+  if (t?.pnl_cents != null && String(t.pnl_cents).trim() !== "") return true;
+  if (t?.settled_at != null && String(t.settled_at).trim() !== "") return true;
+  if (t?.result != null && String(t.result).trim() !== "") return true;
+  return false;
 }
 
 function activityBranchTabLabel(b: ActivityBranchKey): string {
@@ -1650,17 +1752,24 @@ function EngineAssetSnapBlock({
 export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
+  const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
+  const DASHBOARD_STALE_INFLIGHT_MS = DASHBOARD_REQUEST_TIMEOUT_MS + 5_000;
   const [dash, setDash] = useState<AnyObj | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [heroMarqueeSpeedMult, setHeroMarqueeSpeedMult] = useState(readHeroMarqueeSpeedMult);
-  const [heroMarqueeRotateSec, setHeroMarqueeRotateSec] = useState(readHeroMarqueeRotateSec);
+  const tradeToastsBootstrappedRef = useRef(false);
+  const seenTradeInitRef = useRef<Set<string>>(new Set());
+  const seenTradeSettleRef = useRef<Set<string>>(new Set());
+  const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
+  const [tradePopupToastsEnabled, setTradePopupToastsEnabled] = useState(true);
   const [optimizerRows, setOptimizerRows] = useState<AnyObj[]>([]);
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
+  const [toastTradeRows, setToastTradeRows] = useState<AnyObj[] | null>(null);
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
   const optimizerHistoryBootstrapped = useRef(false);
@@ -1683,79 +1792,97 @@ export default function App() {
   const dashSnapshotRef = useRef<AnyObj | null>(null);
 
   /**
-   * Latest dashboard fetch only: aborts the previous request so a slow poll cannot finish after a newer one
-   * (avoids stale ``setDash`` overwriting optimistic engine toggles). A monotonic epoch lets superseded or
-   * unmount-aborted fetches skip ``setDash``/``setErr`` so React Strict Mode and rapid Refresh clicks cannot strand
-   * the UI with no data and no error.
-   *
-   * **Overlapping polls:** the 8s interval used to call ``refresh()`` while the prior fetch was still running;
-   * each call aborted the previous request. Aborted handlers return without setting ``err``, so if every poll
-   * arrived before the prior response (slow Kalshi + MTM), ``dash`` never loaded — endless "Loading dashboard…".
-   * Scheduled polls therefore skip when a flight is already active; use ``refresh({ force: true })`` from the
-   * Refresh button or after mutations to abort and supersede.
+   * Dashboard fetch coordination:
+   * - reuse one in-flight refresh Promise for non-forced callers (polls, startup, passive refreshes)
+   * - force refresh explicitly aborts and supersedes
+   * A monotonic epoch still lets superseded/unmount-aborted fetches skip stale setState.
    */
   const dashboardAbortRef = useRef<AbortController | null>(null);
   const dashboardFetchEpoch = useRef(0);
-  const dashboardFlightSerialRef = useRef(0);
-  const dashboardActiveFlightRef = useRef(0);
-
-  const refresh = useCallback(async (opts?: { force?: boolean }): Promise<AnyObj | null> => {
+  const dashboardInFlightRef = useRef<Promise<AnyObj | null> | null>(null);
+  const dashboardInFlightStartedAtRef = useRef(0);
+  const firstDashLoadedRef = useRef(false);
+  const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
-    if (dashboardActiveFlightRef.current !== 0 && !force) {
-      return null;
+    const inFlight = dashboardInFlightRef.current;
+    const hasFreshInFlight =
+      inFlight &&
+      Date.now() - dashboardInFlightStartedAtRef.current < DASHBOARD_STALE_INFLIGHT_MS;
+    if (hasFreshInFlight && !force) {
+      return inFlight;
     }
-    dashboardAbortRef.current?.abort();
-    const myEpoch = ++dashboardFetchEpoch.current;
-    const myFlight = ++dashboardFlightSerialRef.current;
-    dashboardActiveFlightRef.current = myFlight;
-    const ac = new AbortController();
-    dashboardAbortRef.current = ac;
-    const maxMs = 90_000;
-    const tid = window.setTimeout(() => ac.abort(), maxMs);
-    let payload: AnyObj | null = null;
-    try {
-      setErr(null);
-      const r = await fetch("/api/dashboard", { signal: ac.signal });
-      if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
-      const d = (await r.json()) as AnyObj;
-      if (myEpoch !== dashboardFetchEpoch.current) return null;
-      setDash(d);
-      payload = d;
-    } catch (e: any) {
-      if (myEpoch !== dashboardFetchEpoch.current) return null;
-      const msg = String(e?.message || e);
-      const aborted =
-        String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
-      if (aborted) {
-        // Superseded fetch (force refresh / new poll) also aborts — do not show the slow-dashboard error for that.
-        if (dashboardActiveFlightRef.current !== myFlight) {
-          return null;
+    if (dashboardInFlightRef.current && !hasFreshInFlight) {
+      // Recovery path for wedged Promises: stop reusing stale in-flight work.
+      dashboardAbortRef.current?.abort();
+      dashboardInFlightRef.current = null;
+      dashboardInFlightStartedAtRef.current = 0;
+    }
+    if (force) {
+      dashboardAbortRef.current?.abort();
+    }
+    const req = (async (): Promise<AnyObj | null> => {
+      const myEpoch = ++dashboardFetchEpoch.current;
+      const ac = new AbortController();
+      dashboardAbortRef.current = ac;
+      const maxMs = DASHBOARD_REQUEST_TIMEOUT_MS;
+      const tid = window.setTimeout(() => ac.abort(), maxMs);
+      let payload: AnyObj | null = null;
+      try {
+        setErr(null);
+        const r = await fetch("/api/dashboard", { signal: ac.signal });
+        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
+        const text = await r.text();
+        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        const d: AnyObj = (() => {
+          try {
+            return JSON.parse(text) as AnyObj;
+          } catch {
+            throw new Error("Invalid JSON from /api/dashboard");
+          }
+        })();
+        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        setDash(d);
+        firstDashLoadedRef.current = true;
+        payload = d;
+      } catch (e: any) {
+        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        const msg = String(e?.message || e);
+        const aborted =
+          String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
+        if (aborted) {
+          setErr(
+            `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
+          );
+        } else if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
+          setErr(
+            "Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app at http://localhost:5173 — not the API port alone.",
+          );
+        } else if (/\b404\b/.test(msg)) {
+          setErr(
+            "Got 404 from /api — use the Vite URL http://localhost:5173 so /api is proxied to the Python server.",
+          );
+        } else {
+          setErr(msg);
         }
-        setErr(
-          `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
-        );
-      } else if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
-        setErr(
-          "Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app at http://localhost:5173 — not the API port alone.",
-        );
-      } else if (/\b404\b/.test(msg)) {
-        setErr(
-          "Got 404 from /api — use the Vite URL http://localhost:5173 so /api is proxied to the Python server.",
-        );
-      } else {
-        setErr(msg);
+      } finally {
+        window.clearTimeout(tid);
+        if (dashboardAbortRef.current === ac) {
+          dashboardAbortRef.current = null;
+        }
       }
-    } finally {
-      window.clearTimeout(tid);
-      if (dashboardActiveFlightRef.current === myFlight) {
-        dashboardActiveFlightRef.current = 0;
+      return payload;
+    })();
+
+    dashboardInFlightRef.current = req;
+    dashboardInFlightStartedAtRef.current = Date.now();
+    return req.finally(() => {
+      if (dashboardInFlightRef.current === req) {
+        dashboardInFlightRef.current = null;
+        dashboardInFlightStartedAtRef.current = 0;
       }
-      if (dashboardAbortRef.current === ac) {
-        dashboardAbortRef.current = null;
-      }
-    }
-    return payload;
-  }, []);
+    });
+  }, [DASHBOARD_REQUEST_TIMEOUT_MS, DASHBOARD_STALE_INFLIGHT_MS]);
 
   /** Merge saved bot config into dashboard state without waiting on slow ``/api/dashboard`` (MTM, order books). */
   const applyDashboardConfig = useCallback((nextConfig: AnyObj) => {
@@ -1830,6 +1957,26 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [optimizerOpen, loadOptimizer]);
 
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const d = await apiGet<AnyObj>("/api/trades?limit=160");
+        if (!alive) return;
+        const rows = Array.isArray(d) ? d : Array.isArray((d as AnyObj)?.rows) ? ((d as AnyObj).rows as AnyObj[]) : [];
+        setToastTradeRows(rows);
+      } catch {
+        // Ignore toast poll failures; dashboard path remains as fallback.
+      }
+    };
+    void poll();
+    const id = window.setInterval(() => void poll(), 10000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
   const cfg = dash?.config || {};
   const setHeroMarqueeSpeedMultPersist = useCallback((mult: number) => {
     const clamped = Math.min(4, Math.max(0.35, mult));
@@ -1837,15 +1984,200 @@ export default function App() {
     setHeroMarqueeSpeedMult(clamped);
   }, []);
 
-  const setHeroMarqueeRotateSecPersist = useCallback((sec: number) => {
-    const clamped = Math.min(6, Math.max(0.8, sec));
-    persistHeroMarqueeRotateSec(clamped);
-    setHeroMarqueeRotateSec(clamped);
+  const setTradePopupToastsEnabledPersist = useCallback((on: boolean) => {
+    persistTradePopupToastsEnabled(on);
+    setTradePopupToastsEnabled(on);
   }, []);
 
   useEffect(() => {
     if (dash) dashSnapshotRef.current = dash as AnyObj;
   }, [dash]);
+
+  useEffect(() => {
+    if (tradePopupToastsEnabled) return;
+    setOptimizerNotifs((prev) =>
+      prev.filter((n) => {
+        const id = String(n.id || "");
+        return !id.startsWith("trade-initiated-") && !id.startsWith("trade-resolved-");
+      }),
+    );
+  }, [tradePopupToastsEnabled]);
+
+  const visibleOptimizerNotifs = useMemo(() => {
+    return optimizerNotifs.filter((n) => {
+      const id = String(n.id || "");
+      if (id.startsWith("trade-initiated-") || id.startsWith("trade-resolved-")) return tradePopupToastsEnabled;
+      return true;
+    });
+  }, [optimizerNotifs, tradePopupToastsEnabled]);
+
+  /**
+   * Bottom-right cards when a sim/live trade row first appears or settles. Bootstraps from current
+   * ``recent_trades`` on first run so a reload does not replay history as toasts.
+   */
+  useEffect(() => {
+    const rows = ((toastTradeRows && toastTradeRows.length ? toastTradeRows : dash?.recent_trades) || []) as AnyObj[];
+    if (!rows.length) return;
+    if (!tradeToastsBootstrappedRef.current) {
+      const bootToAdd: AnyObj[] = [];
+      const nowMs = Date.now();
+      for (const t of rows) {
+        const idStr = tradeToastRowKey(t);
+        if (!idStr) continue;
+        const st = String(t.status || "").toLowerCase();
+        const resolved = tradeRowLooksResolved(t);
+        const createdMs = Date.parse(String(t.created_at || ""));
+        const isRecent = Number.isFinite(createdMs) && nowMs - createdMs <= 120000;
+        const branch = branchLabelForTradeToast(t.branch);
+        const tick = String(t.ticker || "").slice(0, 48);
+        const side = String(t.side || "").toUpperCase() || "—";
+        const sim = Boolean(Number(t.simulated));
+        if (resolved) {
+          seenTradeSettleRef.current.add(idStr);
+          seenTradeInitRef.current.add(idStr);
+          if (tradePopupToastsEnabled && isRecent) {
+            const rawP = t.pnl_cents;
+            const pnl =
+              rawP == null || rawP === ""
+                ? null
+                : (() => {
+                    const n = Number(rawP);
+                    return Number.isFinite(n) ? n / 100.0 : null;
+                  })();
+            let lineTier: "green" | "red" | "yellow" | "neutral" = "neutral";
+            if (pnl != null) {
+              if (pnl > 0) lineTier = "green";
+              else if (pnl < 0) lineTier = "red";
+              else lineTier = "yellow";
+            }
+            const cardTone = pnl != null && pnl < 0 ? "red" : pnl != null && pnl > 0 ? "green" : "yellow";
+            const pnlText = pnl == null ? "Settled" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+            bootToAdd.push({
+              id: `trade-resolved-${idStr}`,
+              title: sim ? "Sim trade resolved" : "Trade resolved",
+              body: "",
+              tone: cardTone,
+              branch_swatch: branchToastSwatch(t.branch),
+              branch_tip: branch,
+              segments: [
+                { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+                { tier: lineTier, text: pnlText },
+                ...(t.result ? [{ tier: "neutral" as const, text: `Result: ${String(t.result)}` }] : []),
+              ],
+              created_at: new Date().toISOString(),
+            });
+          }
+        } else if (tradeStatusIsActiveBid(st)) {
+          seenTradeInitRef.current.add(idStr);
+          if (tradePopupToastsEnabled && isRecent) {
+            const cost = Number(t.amount_cents || 0) / 100.0;
+            bootToAdd.push({
+              id: `trade-initiated-${idStr}`,
+              title: sim ? "Sim trade opened" : "Order / trade active",
+              body: "",
+              tone: "green",
+              branch_swatch: branchToastSwatch(t.branch),
+              branch_tip: branch,
+              segments: [
+                { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+                { tier: "green", text: `≈ $${cost.toFixed(2)} at entry · ${st}` },
+              ],
+              created_at: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      tradeToastsBootstrappedRef.current = true;
+      if (bootToAdd.length) {
+        setOptimizerNotifs((prev) => {
+          const byId = new Map<string, AnyObj>();
+          for (const n of prev) byId.set(String(n.id), n);
+          for (const n of bootToAdd) byId.set(String(n.id), n);
+          const merged = Array.from(byId.values());
+          merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+          return merged.slice(0, 28);
+        });
+      }
+      return;
+    }
+    if (!tradePopupToastsEnabled) return;
+    const toAdd: AnyObj[] = [];
+    for (const t of rows) {
+      const idStr = tradeToastRowKey(t);
+      if (!idStr) continue;
+      const st = String(t.status || "").toLowerCase();
+      const resolved = tradeRowLooksResolved(t);
+      const branch = branchLabelForTradeToast(t.branch);
+      const tick = String(t.ticker || "").slice(0, 48);
+      const side = String(t.side || "").toUpperCase() || "—";
+      const sim = Boolean(Number(t.simulated));
+      if (resolved) {
+        if (seenTradeSettleRef.current.has(idStr)) continue;
+        seenTradeSettleRef.current.add(idStr);
+        if (!seenTradeInitRef.current.has(idStr)) {
+          seenTradeInitRef.current.add(idStr);
+        }
+        const rawP = t.pnl_cents;
+        const pnl =
+          rawP == null || rawP === ""
+            ? null
+            : (() => {
+                const n = Number(rawP);
+                return Number.isFinite(n) ? n / 100.0 : null;
+              })();
+        let lineTier: "green" | "red" | "yellow" | "neutral" = "neutral";
+        if (pnl != null) {
+          if (pnl > 0) lineTier = "green";
+          else if (pnl < 0) lineTier = "red";
+          else lineTier = "yellow";
+        }
+        const cardTone = pnl != null && pnl < 0 ? "red" : pnl != null && pnl > 0 ? "green" : "yellow";
+        const pnlText = pnl == null ? "Settled" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+        toAdd.push({
+          id: `trade-resolved-${idStr}`,
+          title: sim ? "Sim trade resolved" : "Trade resolved",
+          body: "",
+          tone: cardTone,
+          branch_swatch: branchToastSwatch(t.branch),
+          branch_tip: branch,
+          segments: [
+            { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+            { tier: lineTier, text: pnlText },
+            ...(t.result ? [{ tier: "neutral" as const, text: `Result: ${String(t.result)}` }] : []),
+          ],
+          created_at: new Date().toISOString(),
+        });
+        continue;
+      }
+      if (tradeStatusIsActiveBid(st)) {
+        if (seenTradeInitRef.current.has(idStr)) continue;
+        seenTradeInitRef.current.add(idStr);
+        const cost = Number(t.amount_cents || 0) / 100.0;
+        toAdd.push({
+          id: `trade-initiated-${idStr}`,
+          title: sim ? "Sim trade opened" : "Order / trade active",
+          body: "",
+          tone: "green",
+          branch_swatch: branchToastSwatch(t.branch),
+          branch_tip: branch,
+          segments: [
+            { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+            { tier: "green", text: `≈ $${cost.toFixed(2)} at entry · ${st}` },
+          ],
+          created_at: new Date().toISOString(),
+        });
+      }
+    }
+    if (!toAdd.length) return;
+    setOptimizerNotifs((prev) => {
+      const byId = new Map<string, AnyObj>();
+      for (const n of prev) byId.set(String(n.id), n);
+      for (const n of toAdd) byId.set(String(n.id), n);
+      const merged = Array.from(byId.values());
+      merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+      return merged.slice(0, 28);
+    });
+  }, [dash, toastTradeRows, tradePopupToastsEnabled]);
 
   const optimizerChangeHistoryMerged = useMemo(() => {
     const oc = (cfg as AnyObj)?.optimizer;
@@ -1979,7 +2311,7 @@ export default function App() {
         confirm: true,
         ack_live: ack,
       });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2132,7 +2464,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { rules });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2144,7 +2476,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { no_bet_when_yes_below_pct: pct });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2166,7 +2498,7 @@ export default function App() {
       const out = (await apiPost(`/api/engine/toggle?simulate=${simulate ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh({ force: true });
+      void refresh();
     } catch (e: any) {
       if (prevDash) setDash(prevDash);
       setErr(String(e?.message || e));
@@ -2183,7 +2515,7 @@ export default function App() {
       const out = (await apiPost(`/api/engine/toggle?running=${running ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh({ force: true });
+      void refresh();
     } catch (e: any) {
       if (prevDash) setDash(prevDash);
       setErr(String(e?.message || e));
@@ -2208,7 +2540,7 @@ export default function App() {
       const out = (await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh({ force: true });
+      void refresh();
     } catch (e: any) {
       if (prevDash) setDash(prevDash);
       setErr(String(e?.message || e));
@@ -2251,7 +2583,7 @@ export default function App() {
         reset_data: "none",
         ...(lab === "a" ? { lab_a: patch } : lab === "b" ? { lab_b: patch } : lab === "c" ? { lab_c: patch } : { lab_d: patch }),
       });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2271,7 +2603,7 @@ export default function App() {
         reset_data: "none",
         ...(lab === "a" ? { lab_a: { rules } } : lab === "b" ? { lab_b: { rules } } : lab === "c" ? { lab_c: { rules } } : { lab_d: { rules } }),
       });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2312,7 +2644,7 @@ export default function App() {
         poll_seconds: poll,
         paper_balance_cents: paper,
       });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2325,7 +2657,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { only_yes_subtitle_contains: raw });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2338,7 +2670,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { exclude_yes_subtitle_contains: raw });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2350,7 +2682,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { dev_sim_yes_implied_ge_pct: pct });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2362,7 +2694,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", { swing_exit_implied_drop_pct: pct });
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2374,7 +2706,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPut("/api/config", patch);
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2388,7 +2720,7 @@ export default function App() {
     try {
       await apiPut("/api/optimizer/config", patch as AnyObj);
       await loadOptimizer();
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2400,7 +2732,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPutLabBranches(body);
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2434,7 +2766,7 @@ export default function App() {
       setBusy(false);
     }
     // Run after clearing busy so a slow /api/dashboard poll does not freeze the whole toolbar for tens of seconds.
-    void refresh({ force: true });
+    void refresh();
   };
 
   const addAllLabsPaperBankroll = async () => {
@@ -2447,7 +2779,7 @@ export default function App() {
     setBusy(true);
     try {
       await apiPostJson("/api/config/labs/add-paper-bankroll", {});
-      await refresh({ force: true });
+      await refresh();
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -2461,39 +2793,109 @@ export default function App() {
   const accountLinked = Boolean(kalshi?.private_ok);
 
   return (
-    <div
-      className="page"
-      title="Kalshi 15m bot — main dashboard. Hover controls for details."
-    >
+    <div className={dash ? "page page--bottom-marquee" : "page"}>
+      {visibleOptimizerNotifs.length ? (
+        <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade notifications">
+          {visibleOptimizerNotifs.map((n) => {
+            const tier =
+              String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
+            const cardTone = tier ? ` optimizer-toast--${tier}` : "";
+            const segs = Array.isArray(n.segments) ? (n.segments as { tier?: string; text?: string }[]) : null;
+            const swatch = typeof n.branch_swatch === "string" ? String(n.branch_swatch) : "";
+            const branchTip = typeof n.branch_tip === "string" ? String(n.branch_tip) : "";
+            return (
+              <div key={String(n.id)} className={`panel optimizer-toast${cardTone}`} style={{ padding: "10px 12px" }}>
+                <div className="optimizer-toast__body">
+                  {swatch ? (
+                    <span
+                      className="optimizer-toast__branch-dot"
+                      style={{ backgroundColor: swatch }}
+                      title={branchTip || "Branch"}
+                      aria-label={branchTip ? `${branchTip} branch` : "Branch color"}
+                    />
+                  ) : null}
+                  <div className="optimizer-toast__main">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <strong style={{ fontSize: 12 }}>{String(n.title)}</strong>
+                        {n.created_at ? (
+                          <div className="sub" style={{ fontSize: 10, opacity: 0.88, marginTop: 3 }} title="Toast time (local)">
+                            {fmtIsoLocal(String(n.created_at))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <button
+                        type="button"
+                        style={{ padding: "2px 8px", fontSize: 11 }}
+                        onClick={() => {
+                          const id = String(n.id || "");
+                          setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== id));
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {segs && segs.length ? (
+                      <div style={{ marginTop: 6 }}>
+                        {segs.map((s, i) => {
+                          const lt = String(s.tier || "neutral");
+                          const lineClass =
+                            lt === "green" || lt === "yellow" || lt === "red" || lt === "neutral"
+                              ? `optimizer-toast__line optimizer-toast__line--${lt}`
+                              : "optimizer-toast__line optimizer-toast__line--neutral";
+                          return (
+                            <div key={i} className={lineClass}>
+                              {String(s.text || "")}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="sub optimizer-toast__line optimizer-toast__line--neutral" style={{ marginTop: 4 }}>
+                        {String(n.body)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       <div className="top">
         <div className="hero">
           <div className="hero-head">
-            <h1
-              className="title section-tip"
-              title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
-            >
-              Chomp's Diner
-            </h1>
+            <div className="hero-head__main">
+              <div className="hero-head__title-stack">
+                <h1
+                  className="title section-tip"
+                  title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
+                >
+                  Chomp's Diner
+                </h1>
+              </div>
+              <button
+                type="button"
+                className="primary hero-settings-icon-btn"
+                style={{ marginLeft: "auto" }}
+                aria-label="Open settings"
+                title="Settings — rules, engines, lab sizing, Kalshi connection orbs, hero ticker"
+                onClick={() => setSettingsOpen(true)}
+              >
+                ⚙
+              </button>
+            </div>
             {dash ? (
-              <BranchHeroMarquee
-                dash={dash}
-                cfg={{
-                  ...(cfg as AnyObj),
-                  hero_marquee_speed_mult: heroMarqueeSpeedMult,
-                  hero_marquee_rotate_sec: heroMarqueeRotateSec,
-                }}
-              />
+              <div className="hero-head__snapshot-center">
+                <BranchHeroSnapshotHeader
+                  dash={dash}
+                  cfg={{
+                    ...(cfg as AnyObj),
+                    hero_marquee_speed_mult: heroMarqueeSpeedMult,
+                  }}
+                />
+              </div>
             ) : null}
-            {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
-            <button
-              type="button"
-              className="primary"
-              style={{ marginLeft: "auto", padding: "6px 10px", minWidth: 0 }}
-              title="Open settings and controls"
-              onClick={() => setSettingsOpen(true)}
-            >
-              ⚙ Settings
-            </button>
           </div>
         </div>
       </div>
@@ -2523,31 +2925,79 @@ export default function App() {
               type="button"
               className="chart-tab"
               style={{ padding: "4px 10px" }}
-              title="How to read branch tiles and settled vs unrealized PnL."
+              title={
+                "Branch performance is five independent per-branch rollups in SQLite, not one shared wallet. " +
+                "The Live, Lab A, Lab B, Lab C, and Lab D tabs each show metrics for that branch only—switching tabs does not re-run " +
+                "trades, it just changes which paper bankroll, fees, and open rows are displayed. " +
+                "Settled PnL is realized only: it increments when a position is closed in SQLite with a final PnL after Kalshi (or the sim) " +
+                "has settled the market; it does not move when MTM swings on an open sim. " +
+                "Open / mark P&amp;L (est.) and MTM (est.) describe unrealized exposure from marks on still-open sim rows, using the " +
+                "server’s last snapshot. " +
+                "In Real $ on Live, Cash and portfolio tiles come from signed Kalshi balance APIs; labs always show paper bankrolls. " +
+                "The bottom ticker shows settled PnL for Labs A–D on the same basis used to gate “Apply Lab A to Live” (Lab A must beat B/C/D " +
+                "on settled, not on MTM). " +
+                "If two tiles seem contradictory, read settled vs open vs bankroll: book steps on fills, MTM wiggles on every poll, settled only " +
+                "steps on final resolution."
+              }
               onClick={() =>
                 setInfoPopup({
                   title: "Branch performance",
                   body: (
-                    <div className="dash-section__legend">
+                    <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                       <p>
-                        Tiles follow the branch tab - each of Live / Lab A / B / C / D is a separate SQLite rollup.{" "}
-                        <strong>Settled PnL</strong> is <em>only</em> from finalized/closed sim rows; it stays $0 until a
-                        contract settles, even when MTM is up or down on open sims. Use <strong>open / mark P&amp;L</strong>{" "}
-                        for the unrealized piece (MTM - start - settled).
+                        <strong>What you are looking at.</strong> This card is the canonical accounting view for a single
+                        engine branch (Live, Lab A, Lab B, Lab C, or Lab D) at the moment of the last{" "}
+                        <code>/api/dashboard</code> poll. Each branch has its own paper bankroll (except Live in Real $ mode, where
+                        exchange-reported cash partially substitutes), its own list of sim trades, and its own rollups. Nothing here
+                        “splits one wallet five ways” — the labs are real parallel experiments, not views on the same ledger.
                       </p>
                       <p>
-                        Settled = closed in SQLite with realized PnL (Kalshi must finalize the contract for sim). Open
-                        (paper) = premium held in open sim rows (subtracted from estimated equity).
+                        <strong>Settled PnL (the headline realized number).</strong> This is the sum of PnL from rows that the
+                        engine has marked closed and settled in SQLite, after Kalshi finalizes the contract in live mode, or
+                        when the sim marks resolution in paper mode. It does <em>not</em> include open marks. A common confusion is
+                        seeing green MTM and $0 settled: that means the position is open or not yet final in the sim. Only when
+                        the row is closed and realized does it flow into this tile and into win/loss, avg hourly, and promote
+                        gating. Skim the Activity log to match timestamps to what “settled” means for a given row.
                       </p>
-                      {!cfg.simulate && perfBranchMeta.isLive ? (
-                        <p>Cash / portfolio = Kalshi signed portfolio reads when API keys are configured.</p>
-                      ) : null}
-                      {cfg.simulate || !perfBranchMeta.isLive ? (
-                        <p>
-                          Reconcile {perfBranchMeta.reconcileLabel}: MTM (est.) below = last snapshot mark-to-market total.
-                          Equity (cost basis) = bankroll + realized PnL - committed premium.
-                        </p>
-                      ) : null}
+                      <p>
+                        <strong>MTM (est.) and open / mark P&amp;L (est.) on paper / lab branches.</strong> MTM is a mark-to-market
+                        or blended snapshot total for that branch, derived from the last engine tick and stored metrics.
+                        <strong> Open / mark P&amp;L</strong> is the unrealized component: how much the open book is up or down
+                        versus bankroll and realized PnL combined. Reconcile mentally as: MTM (est.) &asymp; bankroll + settled +
+                        mark on opens; the exact numbers follow backend helpers that may coalesce with cost-basis when marks are
+                        missing.
+                      </p>
+                      <p>
+                        <strong>Live in Real $.</strong> When simulation is off and API keys are valid, <strong>Cash (Kalshi)</strong> and{" "}
+                        <strong>Portfolio value</strong> come from signed GET portfolio/balance (and related) responses, not from
+                        SQLite paper. Bot settled PnL, fees, and “settled (bot)” counts still refer to what this bot’s Live branch
+                        has recorded, which should align with exchange fills but is not a duplicate of the exchange P&amp;L report.
+                        If keys are wrong or expired, you will see “public data only” in Account; these tiles will show placeholders.
+                      </p>
+                      <p>
+                        <strong>Other tiles on this card.</strong> <strong>Total fees</strong> is modeled Kalshi entry/exit
+                        frictions accumulated for the branch. <strong>Avg hourly</strong> divides realized PnL by the wall-clock
+                        span of settled activity—useful for intensity, not for annualizing. <strong>Win/loss and %</strong> count
+                        settled rows only. <strong>Sim assets</strong> and <strong>committed</strong> describe how many
+                        open rows span configured assets and how much premium is locked in the book; high committed% means less
+                        headroom for new entries. Cross-check with Holdings under Account and with “Assets to watch” snapshots.
+                      </p>
+                      <p>
+                        <strong>Settled PnL ticker and Apply Lab A to Live.</strong> The one-line strip lists settled PnL for
+                        Labs A–D only (not Live) using the same sums as promote gating. “Apply Lab A to Live” copies Lab
+                        A’s trading overlays into the Live config only when Lab A’s settled PnL strictly exceeds B, C, and D, plus
+                        extra confirmation when not in sim mode. It does <em>not</em> merge bankrolls; it is a config promotion, not
+                        a money transfer.
+                      </p>
+                      <p>
+                        <strong>When numbers look “wrong.”</strong> (1) Refresh: metrics come from the last dashboard payload; after
+                        a big fill, wait a tick. (2) Branch mismatch: ensure the tab you read matches the Activity log filter. (3) Open
+                        sim blocking: a stuck open row can depress new entries—see not-traded and engine skip reasons. (4) Compare to
+                        Equity curves (book vs MTM) for the same branch for a time-series check; compare Branch performance to the
+                        Optimizer’s Experiments chart for experiment divergence, not for identical dollar values (different
+                        baselines/indices). (5) Export or inspect SQLite for forensic reconciliation if the UI and the exchange
+                        disagree beyond latency.
+                      </p>
                     </div>
                   ),
                 })
@@ -2720,7 +3170,13 @@ export default function App() {
                   type="button"
                   className="chart-tab"
                   style={{ padding: "4px 10px" }}
-                  title="What the Optimizer panel shows."
+                  title={
+                    "Optimizer: Experiments multi-line chart = indexed MTM (or similar) for Live + Lab A–D from a shared window, for comparing paths; " +
+                    "it does not submit orders. Lab pulse = scrolling digest of the last engine tick (fills, skips, minutes-to-close, rule hints). " +
+                    "The report button opens a full overlay (schedule, next movement, rollups, raw pulse). Adaptive tuning on the server may adjust " +
+                    "Lab A parameters from settled paper history with guardrails; B/C/D stay reference. If pulse is empty, check engine on/off and " +
+                    "API health in Account, not just this card."
+                  }
                   onClick={() => setInfoPopup({ title: "Optimizer", body: optimizerBriefInfoBody() })}
                 >
                   Info
@@ -2761,20 +3217,69 @@ export default function App() {
                 type="button"
                 className="chart-tab"
                 style={{ padding: "4px 10px" }}
-                title="How to read book vs MTM equity lines."
+                title={
+                  "Equity: five small-multiple charts (Live + Lab A–D), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
+                  "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
+                  "Time-scale tabs re-bucket the same stored snapshots: Intraday = last 400 points in time order; D/W/M/Y = last snapshot " +
+                  "per calendar bucket (day/week start UTC/month/year). Use Compare to overlay branches in one frame. " +
+                  "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
+                }
                 onClick={() =>
                   setInfoPopup({
                     title: "Equity curves",
                     body: (
-                      <div className="dash-section__legend dash-equity-panel__legend">
+                      <div className="dash-section__legend dash-equity-panel__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
-                          All four use the time-scale tabs. <strong>Book (solid)</strong> = cash-ledger: start + realized PnL,
-                          minus premium still tied up in open sims (it <em>steps</em> on fill, exit, or settlement).{" "}
-                          <strong>MTM (dashed)</strong> = that cash-ledger <em>plus</em> the current fair value of those open
-                          sims. On a <strong>new open</strong>, book usually <em>drops</em> by what you paid, while total MTM
-                          can <em>stay near</em> the line you had before if the position is marked close to cost - the two
-                          series are from the same sim state but are <strong>not</strong> the same number. Dashed then wiggles
-                          with every poll; solid stays flat until the next ledger event. That split is expected, not a bug.
+                          <strong>What each chart shows.</strong> You get <strong>five</strong> independent panels, one per branch. Each
+                          panel has two series over time: a <strong>solid</strong> line (book or cost-basis / cash-ledger path) and a{" "}
+                          <strong>dashed</strong> line (mark-to-market “total worth” that includes the fair value of open positions on top
+                          of the same ledger). All branches use the <em>same</em> time-scale control so you can line up “what the market
+                          did to my marks” (dashed) against “what my ledger actually recorded” (solid). This is the right place to spot
+                          drift, stuck marks, or one lab taking different fills than another.
+                        </p>
+                        <p>
+                          <strong>Book (solid), precisely.</strong> Book is built from: starting paper bankroll (for labs) or
+                          reconciled start for Live, plus <strong>realized</strong> PnL from settled / closed rows, <strong>minus</strong>{" "}
+                          premium and fees still committed in open sim rows (or Live analogs) until those rows close. So when you <em>open</em> a
+                          new sim, the solid line typically <strong>steps down</strong> by the price you paid; it does <em>not</em> get a
+                          “free” mark-to-market offset on that same event—unrealized PnL is the dashed line’s job. When you exit or settle, solid
+                          steps by the full realized PnL including fees. If you see a flat solid and a wiggly dashed, that is usually open risk
+                          being marked; if both jump together, a settlement or large exit probably landed.
+                        </p>
+                        <p>
+                          <strong>MTM (dashed), precisely.</strong> Dashed = book-ledger <strong>plus</strong> the current fair value
+                          (mid-based in paper, same signal chain as the engine’s last tick) of everything still open. It should hug book when
+                          there is no open risk. After an open, dashed may sit near the pre-open level if the position is near cost, while
+                          solid is lower—<strong>that gap is the premium you paid, not a bug</strong>. Intraday mode may append a trailing point
+                          on every dashboard refresh so the tail tracks “right now” more closely than a sparse historical series.
+                        </p>
+                        <p>
+                          <strong>Time-scale tabs (Intraday, D, W, M, Y).</strong> All four labels apply to <em>all</em> five charts.{" "}
+                          <strong>Intraday</strong> plots raw snapshot order (up to the last 400 points) for responsive debugging. <strong>
+                            D / W / M / Y
+                          </strong>{" "}
+                          collapse to the last point in each UTC calendar day, week (Monday start), month, or year so you can de-noise. Labels on
+                          day view use the snapshot’s <em>local</em> calendar date, not a synthetic “end of day” you might expect from
+                          equities—this is a Kalshi 24/7 world clock.
+                        </p>
+                        <p>
+                          <strong>Compare (separate button).</strong> That overlay puts multiple branch curves in one frame with toggles so you
+                          can eyeball <em>shape</em> and divergence, not to sum dollars (each bankroll differs). Use it when Optimizer
+                          “Experiments” and these equity charts disagree on <em>direction</em>—one might be an indexed or shorter window, the
+                          other raw dollars over long history.
+                        </p>
+                        <p>
+                          <strong>Failure modes to read correctly.</strong> (1) Flatlines everywhere: no snapshots yet, engines off, or
+                          no trades in that branch. (2) Dashed &gt; solid persistently: material open positions marked above cost, or
+                          stale mark not caught up. (3) Dashed &lt; solid: marks below cost, or a bug in mid; compare “Assets to watch” for
+                          broken quotes. (4) Mismatch with Branch performance: performance tiles are one instant; these charts are
+                          time-series—always compare the same branch tab and the same time window mentally.
+                        </p>
+                        <p>
+                          <strong>How to work with the rest of the UI.</strong> After a trade, expect dashed to move first, solid to move on
+                          fill/settlement. Use Activity log for the exact event order. Use Account holdings for per-asset exposure, not
+                          the chart’s y-axis, when reconciling. Use Branch performance for headline settled/realized numbers in dollars;
+                          use Equity curves for path and stress shape.
                         </p>
                       </div>
                     ),
@@ -2866,25 +3371,61 @@ export default function App() {
                 type="button"
                 className="chart-tab"
                 style={{ padding: "4px 10px" }}
-                title="How to read asset watch snapshots."
+                title={
+                  "Per-asset engine snapshot cards: Live vs Lab A–D select which branch’s last tick view you read; config is unchanged. " +
+                  "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
+                  "window, target, and open-sim hints. If “No snapshot”, the engine may be off, the series has no active 15m row yet, " +
+                  "or Kalshi returned no book. On sandbox/draft hosts, TBD or 0.00 bid/ask often means missing books, not a bug in your " +
+                  "rules. Enable/disable assets in Settings; this panel is read-only telemetry."
+                }
                 onClick={() =>
                   setInfoPopup({
                     title: "Assets to watch",
                     body: (
-                      <div className="dash-section__legend">
+                      <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
-                          Snapshots are per-asset/per-branch engine reads. The branch tabs switch which branch snapshot is
-                          shown; they do not change your underlying config.
+                          <strong>Purpose.</strong> This grid is a <em>telemetry heat map</em> of what the engine last knew about each
+                          configured asset (BTC, ETH, …) for a <em>single branch at a time</em> (Live, Lab A, Lab B, Lab C, Lab D). It
+                          answers: “Is there a current 15-minute (or configured) market row? What were the mids or implieds? Are we
+                          blocked from new entries in this series because of an open sim?” It does <strong>not</strong> edit rules;
+                          it reflects the product of config + engine + Kalshi feed.
                         </p>
                         <p>
-                          Asset scanning is controlled by each asset&apos;s <code>enabled</code> flag in config. "No snapshot"
-                          usually means the branch engine is off, Kalshi has not published quotes yet, or the branch has not
-                          ticked since startup.
+                          <strong>Branch tabs vs config.</strong> Switching Live / Lab A / Lab B / Lab C / Lab D only swaps which
+                          branch’s <code>asset_snapshots</code> (or equivalent) object the UI reads from the dashboard payload. Your
+                          SQLite config and environment files are untouched. If two branches show different numbers, that is expected:
+                          they may have different paper positions, different rule packs, or different last-tick times.
                         </p>
                         <p>
-                          On non-production Kalshi hosts, many 15m rows can show delayed/missing books (for example 0.00
-                          bid/ask or "Target price: TBD"). That indicates unavailable quotes on that environment, not an app
-                          filter issue.
+                          <strong>Which assets appear.</strong> Only assets present in bot config with reasonable keys are listed. Order
+                          is stable (for example headline crypto first, then alphabetical). If you add a new asset in Settings, you may
+                          need a save + engine tick before a card appears. An asset with <code>enabled: false</code> is typically omitted
+                          or shown as inactive—check Settings for the authoritative flag; the UI may still show a stub for visibility.
+                        </p>
+                        <p>
+                          <strong>“No snapshot” and empty fields.</strong> Common causes: branch engine toggled off for that run; Kalshi
+                          API rate limit or outage; no market row in the series for the current clock; first tick after startup not
+                          completed yet. Distinguish “no data yet” from “data is zero”—read the Engine section under Account for{" "}
+                          <code>last_tick_at</code> and error strings. If <code>last_tick</code> is fresh but the card is empty, the
+                          series might not have a tradable row in this environment.
+                        </p>
+                        <p>
+                          <strong>Non-production and draft Kalshi hosts.</strong> Sandbox and internal hosts often show{" "}
+                          <code>Target price: TBD</code>, <code>0.00</code> bid/ask, or obviously stale books for many 15m contracts. That
+                          is a feed limitation, not your filter string. Do not tune rules against those numbers; use production-like
+                          markets or verify on the official site. The yellow “non-production feed” banner (if present) calls this out.
+                        </p>
+                        <p>
+                          <strong>How this ties to trades and skips.</strong> If a card shows an open sim or a series lock, cross-check
+                          Activity log and “Bets not traded” for <code>series_has_open_sim</code> or similar. If implieds look
+                          nonsensical (e.g. 0% or 100% with no book), the engine may still skip entries for safety. Use Optimizer Lab
+                          pulse for the same tick’s narrative; use Branch performance for money impact, not this panel.
+                        </p>
+                        <p>
+                          <strong>Operational checklist.</strong> (1) Confirm each engine is on for the branch you are reading. (2) Confirm
+                          each asset you care about is enabled. (3) If only one branch is stale, restart or inspect that branch’s engine
+                          state in the dashboard JSON. (4) If all branches are stale, the backend or Kalshi connectivity is the prime
+                          suspect before you change strategy.
                         </p>
                       </div>
                     ),
@@ -3138,28 +3679,69 @@ export default function App() {
                 type="button"
                 className="chart-tab"
                 style={{ padding: "4px 10px" }}
-                title="How account and holdings data are sourced."
+                title={
+                  "Account: optional signed Kalshi balance/positions when API keys are set; otherwise public market data only. " +
+                  "Holdings table merges per-asset rows: exchange-open columns vs per-branch sim-open columns. Paper and live can diverge " +
+                  "by design. Engine status below is polled from the dashboard, not the exchange. " +
+                  "Set KALSHI_API_KEY_ID and private key in .env, restart the API, reload. " +
+                  "Glossary: market lines = distinct tickers in a cell; contracts = summed YES/NO size on those tickers."
+                }
                 onClick={() =>
                   setInfoPopup({
                     title: "Account and holdings",
                     body: (
-                      <div className="dash-section__legend">
+                      <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
-                          When Kalshi credentials are linked, this section shows signed portfolio balance/positions from
-                          exchange APIs. Without credentials, the dashboard still uses public market data but omits exchange
-                          account details.
+                          <strong>What this block is for.</strong> The Account area is the bridge between <em>this bot’s SQLite
+                          universe</em> and <em>Kalshi’s exchange state</em> when (and only when) you have provided API credentials on
+                          the backend. It shows: aggregate balance and portfolio value (in cents) from signed endpoints, counts of
+                          open positions and resting orders, and a <strong>per-asset</strong> table that lines up your configured
+                          assets (BTC, ETH, …) with (a) what Kalshi says you hold and (b) what each branch’s sim engine thinks is open
+                          in SQLite.
                         </p>
                         <p>
-                          Sim columns are local SQLite paper rows by branch (Live/Lab A/B/C/D). Kalshi columns are exchange
-                          positions; the two can differ during paper testing.
+                          <strong>“Kalshi linked” vs “Public data only”.</strong> The badge is an integration summary, not a strategy
+                          toggle. <strong>Linked</strong> means the backend completed at least one successful private read recently
+                          enough that the UI can show exchange-backed numbers. <strong>Public data only</strong> means you still get
+                          market discovery and the bot can run paper, but you will not see real balance, real fills in Live without
+                          keys, and some tiles (Cash on Branch performance) may stay empty. Never assume paper PnL equals your actual
+                          exchange PnL when the badge is not linked.
                         </p>
                         <p>
-                          If account data is missing, set <code>KALSHI_API_KEY_ID</code> and your RSA private key in{" "}
-                          <code>.env</code>, restart the backend, then reload.
+                          <strong>Per-branch holdings columns.</strong> The Live, Lab A, Lab B, Lab C, and Lab D tabs switch which
+                          branch’s <code>bot_sim_open_*</code> arrays feed the “sim” side of the table. Live shows{" "}
+                          <code>bot_sim_open_live</code>; Lab A also accepts legacy <code>bot_sim_open_lab</code> for older rows. Each
+                          cell summarizes many tickers into: <em>market lines</em> (count of distinct market_ids / tickers with
+                          exposure) and a short text of tickers, plus <em>contracts</em> (summed size in exchange units, not
+                          “number of markets”). If Kalshi and sim disagree, the engine may not have written the close yet, you may
+                          be looking at a different branch, or a manual trade happened outside the bot.
                         </p>
                         <p>
-                          Holdings table glossary: "market lines" = distinct exposed tickers in a cell; "contracts" = summed
-                          YES/NO position size on those lines.
+                          <strong>When balance is missing or partial.</strong> Set <code>KALSHI_API_KEY_ID</code> and the RSA private
+                          key (path or PEM) in the backend <code>.env</code> as documented in the repo, restart the API process, and
+                          hard-reload the dashboard. If you see a <code>private_error</code> line, read it literally—signature/clock
+                          issues and rate limits are common. The UI will surface whatever error string the backend last captured; open
+                          server logs for stack traces. Remember: the frontend never stores your private key; only the server process
+                          you control should.
+                        </p>
+                        <p>
+                          <strong>How this pairs with the Engine strip below.</strong> The Engine subsection shows, for the{" "}
+                          <em>same</em> branch tab, whether that branch’s engine loop is on, last tick time, and scan breadth. A
+                          healthy <code>last_tick_at</code> with linked Kalshi and strange holdings usually means a logic issue; a very
+                          old tick means you are staring at static UI while the world moved—refresh dashboard or restart the process
+                          on the host. Engine “simulate orders” on Live in sim mode is expected; in Real $ it should reflect
+                          real posting when rules fire.
+                        </p>
+                        <p>
+                          <strong>Privacy and scope.</strong> All numbers here are whatever your backend fetches. If you self-host, you
+                          are the custodian. If you use a shared binary, know that the same data appears in logs; treat API keys and
+                          screenshots as secret. The Activity log and trade JSONL on disk are separate but related—delete old logs on
+                          shared machines.
+                        </p>
+                        <p>
+                          <strong>Reconciliation workflow.</strong> (1) Confirm badge linked. (2) Match one open position in Kalshi UI
+                          to a row in this table. (3) For each branch, check sim column vs Activity log. (4) If Branch performance PnL
+                          disagrees, trace settled trades, not this snapshot alone—this is exposure, not full PnL.
                         </p>
                       </div>
                     ),
@@ -3318,20 +3900,70 @@ export default function App() {
                 type="button"
                 className="chart-tab"
                 style={{ padding: "4px 10px" }}
-                title="How branch filters apply in activity tables."
+                title={
+                  "Activity log: server sends capped recent signal + trade history (e.g. up to 500 each); the Live/Lab tabs filter " +
+                  "by branch (legacy sim_lab = Lab A). “Recent trade/signal” tables share one filter; the “Bets not traded” block below " +
+                  "has its own independent branch pickers. Timestamps are log order; for forensics, pair with JSONL on disk. " +
+                  "Skips, fills, and rule names appear as returned by the API—if a row is missing, it may have been truncated by the cap."
+                }
                 onClick={() =>
                   setInfoPopup({
                     title: "Activity log",
                     body: (
-                      <div className="dash-section__legend">
+                      <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
-                          The API sends up to 500 recent signals and 500 trades across branches; each tab shows rows whose
-                          branch matches (legacy sim_lab counts as Lab A). Use branch tabs for <code>lab_b</code>,{" "}
-                          <code>lab_c</code>, and <code>lab_d</code> rows.
+                          <strong>What this is.</strong> The Activity log is a read-only, reverse-chronological view of the bot’s
+                          recent <strong>signals</strong> (rule evaluations and intent) and <strong>trades</strong> (rows the engine
+                          created or the exchange returned, depending on mode). The backend reads SQLite (and sometimes hydrates
+                          with Kalshi) and returns a bounded list so the UI stays snappy. It is the first place to look after “why
+                          did / didn’t a trade land?”
+                        </p>
+                        <p>
+                          <strong>Limits and truncation.</strong> The API typically caps each stream (for example, the last 500
+                          signals and 500 trades <em>combined across branches in the response shape you have</em>—treat the exact
+                          number as implementation detail). If you do not see an old fill, it may have rolled off; check on-disk
+                          JSONL in <code>data/logs</code> or run SQL against the local DB. Truncation is normal for long runs.
+                        </p>
+                        <p>
+                          <strong>Branch tabs (Live, Lab A, Lab B, Lab C, Lab D) for “Recent” tables.</strong> These tabs are a
+                          <em>row filter on the in-memory list</em>. Only rows whose <code>branch</code> (or historical{" "}
+                          <code>sim_lab</code> for Lab A) match are shown. Switching tabs does not refetch; it re-slices. If you
+                          expect a Lab C row and see nothing, either the event never had <code>branch=lab_c</code> or it fell out
+                          of the cap, not because the filter is broken.
+                        </p>
+                        <p>
+                          <strong>Legacy <code>sim_lab</code>.</strong> Older rows may only carry a generic lab bit; the UI still
+                          maps them into the Lab A bucket for display consistency. When correlating to SQLite, use ids and
+                          market tickers, not only the human label in the first column.
+                        </p>
+                        <p>
+                          <strong>“Bets not traded” (separate card below).</strong> That block is its <em>own</em> branch filter and
+                          query path: it lists situations where a rule pattern matched the market state but the engine did not
+                          place an order—risk caps, <code>series_has_open_sim</code>, time-to-close, fee floors, or hard skips.
+                          Do not expect that tab to match the count of the ordinary signals tab: different semantics entirely.
+                        </p>
+                        <p>
+                          <strong>Interpreting columns.</strong> You will see rule names, market tickers, side, notional, skip
+                          reason codes, and engine timestamps. A row with <em>no</em> trade in the “Trades” sub-tab is expected when
+                          the log line was a pure signal. A trade row with <code>error</code> or empty exchange id in Live mode
+                          requires cross-checking Kalshi; in paper, check SQLite for duplicate sims or post failures. Color and
+                          badges, if any, follow the table component— they are not legal settlement records.
+                        </p>
+                        <p>
+                          <strong>When things look out of order.</strong> (1) Clock skew: server logs use UTC/ISO; your browser
+                          localizes. (2) Batch latency: a signal may preface a trade by seconds. (3) Engine off: you may only see
+                          stale items until tick resumes. (4) Multi-branch tests: the same market can produce five rows; always read
+                          the branch column. (5) Compare to Optimizer Lab pulse: narrative vs structured rows here.
+                        </p>
+                        <p>
+                          <strong>Operational use.</strong> (1) Debug skips before changing rules. (2) After deploy, verify a single
+                          expected fill path end-to-end. (3) Before promoting Lab A, scan all labs’ activity for unintended live-only
+                          paths. (4) If support asks for “logs”, export the JSONL plus a screenshot of this table with branch visible.
                         </p>
                         <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
-                          Recent signals/trades use one branch filter; <strong>Bets not traded</strong> uses its own independent
-                          branch tabs below.
+                          <strong>Reminder.</strong> Recent signals and recent trades (above) use the branch tab in this header.{" "}
+                          <strong>Bets not traded</strong> uses a separate set of branch tabs in its own sub-panel; keep both
+                          consistent when you are debugging a single market.
                         </p>
                       </div>
                     ),
@@ -3593,8 +4225,8 @@ export default function App() {
         kalshi={kalshi as AnyObj}
         heroMarqueeSpeedMult={heroMarqueeSpeedMult}
         onHeroMarqueeSpeedMultChange={setHeroMarqueeSpeedMultPersist}
-        heroMarqueeRotateSec={heroMarqueeRotateSec}
-        onHeroMarqueeRotateSecChange={setHeroMarqueeRotateSecPersist}
+        tradePopupToastsEnabled={tradePopupToastsEnabled}
+        onTradePopupToastsEnabledChange={setTradePopupToastsEnabledPersist}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
       {equityCompareOpen ? (
@@ -3705,6 +4337,16 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      <div className="app-bottom-marquee" aria-label="Live and lab branch tickers (persistent)">
+        <BranchHeroMarquee
+          dash={dash}
+          cfg={{
+            ...(cfg as AnyObj),
+            hero_marquee_speed_mult: heroMarqueeSpeedMult,
+          }}
+          showSnapshot={false}
+        />
+      </div>
         </>
       ) : null}
     </div>
@@ -3854,43 +4496,18 @@ function ApiOfflineCallout({ message }: { message: string }) {
   );
 }
 
-/** Full-screen first paint while waiting for the initial `/api/dashboard` response. */
+/** First dashboard fetch: spinner + honest copy. Elapsed time is the only “progress” the UI can know. */
 function DashboardLoadingScreen() {
-  const [progress, setProgress] = useState(0);
-  const [phase, setPhase] = useState<"connect" | "fetch" | "wait">("connect");
-  const startedAt = useRef<number>(Date.now());
-
+  const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    startedAt.current = Date.now();
-    const tick = () => {
-      const elapsed = Date.now() - startedAt.current;
-      if (elapsed < 900) setPhase("connect");
-      else if (elapsed < 12_000) setPhase("fetch");
-      else setPhase("wait");
-      setProgress((p) => {
-        if (p >= 88) return p;
-        const bump = Math.max(0.35, (90 - p) * 0.028);
-        return Math.min(88, p + bump);
-      });
-    };
-    tick();
-    const id = window.setInterval(tick, 140);
+    const id = window.setInterval(() => setElapsedSec((n) => n + 1), 1000);
     return () => {
       window.clearInterval(id);
       document.body.style.overflow = prevOverflow;
     };
   }, []);
-
-  const status =
-    phase === "connect"
-      ? "Connecting to local API…"
-      : phase === "fetch"
-        ? "Loading dashboard — GET /api/dashboard (config, engines, metrics, Kalshi state)…"
-        : "Still working — MTM and open paper positions can make this take a while…";
-
-  const pct = Math.round(progress);
 
   return (
     <div
@@ -3898,167 +4515,27 @@ function DashboardLoadingScreen() {
       role="status"
       aria-live="polite"
       aria-busy="true"
-      aria-label="Loading dashboard"
+      aria-label="Loading dashboard, waiting for the API"
     >
       <div className="app-loading-screen__panel">
         <div className="app-loading-screen__spinner" aria-hidden />
         <h1 className="app-loading-screen__title">Chomp's Diner</h1>
-        <p className="app-loading-screen__status" title="This screen clears when the first dashboard JSON arrives.">
-          {status}
-        </p>
-        <div
-          className="app-loading-screen__bar-track"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={pct}
-          aria-valuetext={`${pct}% (estimated while waiting)`}
+        <p className="app-loading-screen__line">Loading dashboard</p>
+        <p
+          className="app-loading-screen__sub"
+          title="The browser has no way to know how long the server will take. Only the clock below is real."
         >
-          <div className="app-loading-screen__bar-fill" style={{ width: `${pct}%` }} />
-        </div>
+          Waiting on the first <code className="app-loading-screen__code">/api/dashboard</code> response. There is no real
+          percent-complete—if this runs long, the slow work is on the server or network, not a stuck animation.
+        </p>
+        <p className="app-loading-screen__elapsed" aria-live="off">
+          Elapsed: {elapsedSec}s
+        </p>
         <p className="app-loading-screen__hint">
-          Use <code className="app-loading-screen__code">http://localhost:5173</code> so <code className="app-loading-screen__code">/api</code> proxies to
-          Python. First load may take up to ~90s.
+          Use <code className="app-loading-screen__code">http://localhost:5173</code> so <code className="app-loading-screen__code">/api</code> proxies
+          to the Python app. The browser times out the request after 90s with an error if it never returns.
         </p>
       </div>
-    </div>
-  );
-}
-
-/** One-row Kalshi API + getting-started status; hover each orb for the old card/checklist copy. */
-function KalshiSetupOrbRow({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj }) {
-  const k = dash?.kalshi as AnyObj | undefined;
-  if (!dash || !k) return null;
-  const cred = (k.credentials || {}) as AnyObj;
-  const credOk = Boolean(cred.api_key_id_configured) && Boolean(cred.private_key_configured);
-  const pub = Boolean(k.public_ok);
-  const priv = Boolean(k.private_ok);
-  const simLive = Boolean(k.simulate_live);
-  const writes = Boolean(k.order_writes_live);
-  const poll = Boolean(k.polling_enabled);
-  const pos = Number(k.position_count ?? 0);
-  const ord = Number(k.resting_order_count ?? 0);
-  const notes = k.portfolio_notes ? String(k.portfolio_notes) : "";
-
-  const writeDetail = simLive
-    ? "Live branch uses paper fills; Kalshi does not receive orders from Live."
-    : writes
-      ? "Live branch can POST limit orders when the Live engine is on and a rule matches."
-      : priv
-        ? "Authenticated but order posting is not enabled for this configuration."
-        : "Fix authentication before enabling real orders.";
-
-  let writeState: "ok" | "warn" | "bad";
-  if (simLive) writeState = "ok";
-  else if (writes) writeState = "warn";
-  else if (priv) writeState = "warn";
-  else writeState = "bad";
-
-  const privateMissingTooltip = `Public data only — no Kalshi account linked. Quotes, series, and engine ticks use the public API; balance and exchange positions stay hidden until you add KALSHI_API_KEY_ID and your RSA private key to .env (optional for paper / signals).${k.private_error ? ` ${String(k.private_error)}` : ""}`;
-
-  const orbs: {
-    step: number;
-    title: string;
-    subtitle: string;
-    hint: string;
-    /** When set, used as the native tooltip (full diagnosis); otherwise step title + subtitle + hint. */
-    tooltip?: string;
-    state: "ok" | "warn" | "bad" | "fatal";
-  }[] = [
-    {
-      step: 1,
-      title: "Backend and this page are running",
-      subtitle: "Dashboard",
-      hint: "You already loaded the dashboard from npm run dev with the API proxy.",
-      state: dash ? "ok" : "bad",
-    },
-    {
-      step: 2,
-      title: "Configure .env for Kalshi",
-      subtitle: "Keys in .env",
-      hint:
-        cred.private_key_source === "file_missing"
-          ? "KALSHI_PRIVATE_KEY_PATH points to a file that was not found."
-          : "Copy .env.example to .env in the repo root; set KALSHI_API_KEY_ID and PEM path or KALSHI_PRIVATE_KEY_PEM.",
-      state: credOk ? "ok" : "warn",
-    },
-    {
-      step: 3,
-      title: "Markets (public read)",
-      subtitle: pub ? "Reachable" : "Unreachable",
-      hint: pub
-        ? "Kalshi public API responded OK. Used for quotes, series, and sim settlement checks."
-        : "Cannot reach public Kalshi API. Check KALSHI_ENV and network.",
-      state: pub ? "ok" : "bad",
-    },
-    {
-      step: 4,
-      title: "Portfolio (private read)",
-      subtitle: priv ? `Signed in · ${pos} pos, ${ord} orders` : pub ? "Public only" : "Not signed in",
-      hint: priv
-        ? `Signed portfolio API. Loaded ${pos} position(s), ${ord} resting order(s).`
-        : pub
-          ? "Hover the red indicator for what is missing (keys in .env)."
-          : "Cannot use portfolio API until public Kalshi read works.",
-      tooltip: priv ? undefined : pub ? privateMissingTooltip : undefined,
-      state: priv ? "ok" : pub ? "fatal" : "bad",
-    },
-    {
-      step: 5,
-      title: "Turn on an engine to stream markets into the bot",
-      subtitle: poll ? "Polling on" : "Engines idle",
-      hint: "Enable Live engine and/or labs so ticks run and markets_scanned updates.",
-      state: poll ? "ok" : "warn",
-    },
-    {
-      step: 6,
-      title: "Live mode (simulate vs real)",
-      subtitle: cfg.simulate ? "Paper (simulate)" : "Real $",
-      hint: cfg.simulate
-        ? "Simulate is on — Live branch will not POST orders to Kalshi."
-        : "Real $ is on — Live branch can POST limit orders when the Live engine runs and a rule matches.",
-      state: cfg.simulate ? "ok" : "warn",
-    },
-    {
-      step: 7,
-      title: "Live orders (write)",
-      subtitle: simLive ? "Simulated" : writes ? "Real posts on" : "Blocked",
-      hint: writeDetail,
-      state: writeState,
-    },
-    {
-      step: 8,
-      title: "Portfolio notes",
-      subtitle: notes ? "See tooltip" : "No warnings",
-      hint: notes || "No extra portfolio notes from the last signed read.",
-      state: notes ? "warn" : "ok",
-    },
-  ];
-
-  return (
-    <div
-      className="kalshi-setup-orbs section-tip"
-      role="list"
-      title="Kalshi API (read / write) and getting started — hover each dot for status. Red ☐ = public data only (no signed account); hover for full detail."
-      aria-label="Kalshi connection and setup checklist as compact status dots"
-    >
-      {orbs.map((o) => {
-        const fullTitle = `${o.step}. ${o.title} · ${o.subtitle} — ${o.hint}`;
-        const hoverTitle = o.tooltip ?? fullTitle;
-        const tone = o.state;
-        const glyph = o.state === "ok" ? "✓" : o.state === "fatal" ? "☐" : String(o.step);
-        return (
-          <span
-            key={o.step}
-            className={`kalshi-setup-orb kalshi-setup-orb--${tone} section-tip`}
-            role="listitem"
-            title={hoverTitle}
-            aria-label={o.tooltip ? `${o.title}. ${o.subtitle}. ${o.tooltip}` : `${o.title}. ${o.subtitle}. ${o.hint}`}
-          >
-            {glyph}
-          </span>
-        );
-      })}
     </div>
   );
 }
@@ -4112,7 +4589,7 @@ function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj })
       text: `Cannot reach Kalshi (${String(k.api_base || "")}, env=${String(k.env || "")}). ${k.public_error ? String(k.public_error) : ""}`,
     });
   }
-  /* Public-only / missing keys: full copy lives on hero orb 4 (red ☐) tooltip — avoid duplicating here. */
+  /* Public-only / missing keys: full copy lives on Settings → Kalshi & connection orb 4 (red ☐) — avoid duplicating here. */
   const polling = Boolean(k.polling_enabled);
   if (!polling && k.public_ok) {
     blocks.push({

@@ -1926,6 +1926,134 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
     return closed_n
 
 
+async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: dict[str, Any]) -> int:
+    """
+    Auto-close stale simulated open rows so one-open-per-series guards cannot stall trading indefinitely.
+
+    Uses a conservative bid-side close when market data is available; otherwise falls back to entry premium.
+    Set ``auto_close_open_sim_minutes`` to <=0 to disable for a branch.
+    """
+    branch = engine.branch
+    cfg = merge_branch_config(full_cfg, branch)
+    try:
+        timeout_min = float(cfg.get("auto_close_open_sim_minutes") or full_cfg.get("auto_close_open_sim_minutes") or 75)
+    except (TypeError, ValueError):
+        timeout_min = 75.0
+    if timeout_min <= 0:
+        return 0
+    open_rows = await engine.store.open_sim_trades_for_branch(branch)
+    if not open_rows:
+        return 0
+    now = utc_now()
+    fee_bps_now = effective_paper_fee_bps(full_cfg, branch)
+    closed_n = 0
+    for t in open_rows:
+        try:
+            tid_raw = t.get("id")
+            if tid_raw is None:
+                continue
+            tid = int(tid_raw)
+            created_raw = str(t.get("created_at") or "").strip()
+            if not created_raw:
+                continue
+            created_dt = dateparser.isoparse(created_raw)
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=dt.timezone.utc)
+            age_min = (now - created_dt.astimezone(dt.timezone.utc)).total_seconds() / 60.0
+            if age_min < timeout_min:
+                continue
+            ticker = str(t.get("ticker") or "").strip()
+            if not ticker:
+                continue
+            side = str(t.get("side") or "yes").strip().lower()
+            if side not in ("yes", "no"):
+                continue
+            contracts = _parse_contracts_fp(t.get("contracts_fp"))
+            if contracts <= 0:
+                continue
+            cost = int(t.get("amount_cents") or 0)
+            try:
+                raw_ex = json.loads(str(t.get("extra_json") or "{}"))
+                extra = dict(raw_ex) if isinstance(raw_ex, dict) else {}
+            except json.JSONDecodeError:
+                extra = {}
+
+            exit_px: float | None = None
+            try:
+                data = await engine.client.get_public(_public_market_path(ticker))
+                m = market_dict_from_public_response(data)
+                yb = dollars_to_float(m.get("yes_bid_dollars"))
+                ya = dollars_to_float(m.get("yes_ask_dollars"))
+                exit_px = exit_bid_for_side_close(m, side, yb, ya)
+            except Exception:
+                exit_px = None
+            if exit_px is None or exit_px <= 0:
+                ep = dollars_to_float(extra.get("entry_implied_yes"))
+                if ep is not None:
+                    exit_px = ep if side == "yes" else (1.0 - ep)
+            if exit_px is None or exit_px <= 0:
+                premium_cents = int(extra.get("entry_premium_cents") or 0)
+                if premium_cents > 0:
+                    exit_px = max(0.0, min(1.0, premium_cents / (100.0 * contracts)))
+            if exit_px is None or exit_px <= 0:
+                # Final fallback: close as full loss to unblock stale guard.
+                exit_px = 0.0
+
+            proceeds_cents = int(round(contracts * exit_px * 100.0))
+            fee_model = resolve_paper_fee_model(extra, full_cfg, branch)
+            fee_mult = resolve_kalshi_fee_multiplier(extra, full_cfg, branch)
+            kalshi_maker = fee_model == "kalshi_maker"
+            if fee_model in ("kalshi_taker", "kalshi_maker"):
+                net_proceeds_cents, _kb = kalshi_sell_credit_cents(
+                    contracts, exit_px, maker=kalshi_maker, fee_multiplier=fee_mult
+                )
+                exit_fee_cents = max(0, proceeds_cents - net_proceeds_cents)
+                fee_bps_used = float(extra.get("paper_fee_bps", 0.0))
+            elif fee_model == "none":
+                net_proceeds_cents = proceeds_cents
+                exit_fee_cents = 0
+                fee_bps_used = 0.0
+            else:
+                fee_bps_used = fee_bps_now
+                try:
+                    fee_bps_used = float(extra.get("paper_fee_bps", fee_bps_now))
+                except (TypeError, ValueError):
+                    fee_bps_used = fee_bps_now
+                exit_fee_cents = fee_cents_for_notional(proceeds_cents, fee_bps_used)
+                net_proceeds_cents = max(0, proceeds_cents - exit_fee_cents)
+            pnl = net_proceeds_cents - cost
+            extra.update(
+                {
+                    "auto_timeout_close": True,
+                    "auto_timeout_minutes": timeout_min,
+                    "auto_timeout_age_minutes": round(age_min, 2),
+                    "auto_timeout_exit_bid": exit_px,
+                    "paper_fee_model": fee_model,
+                    "paper_fee_bps": fee_bps_used,
+                    "auto_timeout_exit_fee_cents": exit_fee_cents,
+                    "auto_timeout_gross_proceeds_cents": proceeds_cents,
+                    "auto_timeout_net_proceeds_cents": net_proceeds_cents,
+                }
+            )
+            await engine.store.update_trade_sim_early_close(
+                tid,
+                pnl_cents=int(pnl),
+                settled_at=iso(now),
+                result="auto_timeout",
+                extra_json=json.dumps(extra),
+            )
+            closed_n += 1
+            _engine_trace_note(
+                engine,
+                f"timeout-close {branch} {ticker[:36]}… age={age_min:.1f}m side={side.upper()} "
+                f"exit≈{exit_px:.3f} pnl¢={pnl}",
+            )
+        except Exception as e:
+            _engine_trace_note(engine, f"timeout-close {branch}: row err {str(e)[:120]}")
+            continue
+    return closed_n
+
+
 async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> int:
     """Mark simulated open rows settled when Kalshi market is finalized. Returns count updated this pass."""
     open_trades = await engine.store.open_sim_trades_for_branch(engine.branch)
@@ -2110,6 +2238,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
 
             n_settled: dict[str, int] = {}
             n_swing: dict[str, int] = {}
+            n_timeout: dict[str, int] = {}
             for br in branch_order:
                 eng = engines.get(br)
                 if not eng:
@@ -2117,6 +2246,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                 try:
                     n_settled[br] = await settle_simulated_trades(eng, full_cfg=full_cfg)
                     n_swing[br] = await maybe_swing_exit_open_sim_trades(eng, cfg)
+                    n_timeout[br] = await maybe_timeout_close_open_sim_trades(eng, full_cfg=full_cfg)
                 except Exception as e:
                     err = str(e)
                     _data_log(
@@ -2187,7 +2317,12 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             # Paper equity is derived from SQLite only — snapshot often so the chart matches settled/open counts.
             # Live real mode still snapshots only every 5 ticks while the engine runs (balance API).
             if simulate_live:
-                if snap_period or n_settled.get(BRANCH_LIVE, 0) > 0 or n_swing.get(BRANCH_LIVE, 0) > 0:
+                if (
+                    snap_period
+                    or n_settled.get(BRANCH_LIVE, 0) > 0
+                    or n_swing.get(BRANCH_LIVE, 0) > 0
+                    or n_timeout.get(BRANCH_LIVE, 0) > 0
+                ):
                     try:
                         await snapshot_equity(eng_live, full_cfg=full_cfg)
                     except Exception as e:
