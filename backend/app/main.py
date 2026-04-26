@@ -756,6 +756,28 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
         eng._sim_asset_budget_fired.clear()
 
 
+_MAX_UNIFORM_PAPER_BALANCE_CENTS = 100_000_000
+
+
+async def _apply_uniform_paper_balance_after_scope_reset(scope: str, cents: int) -> dict[str, Any]:
+    """After ``all`` or ``all_labs`` reset, set the same paper bankroll seed on Live and every lab."""
+    s = str(scope or "").strip().lower()
+    if s not in ("all", "all_labs"):
+        return {}
+    c = max(0, min(_MAX_UNIFORM_PAPER_BALANCE_CENTS, int(cents)))
+    cfg = await store.load_config()
+    cfg["paper_balance_cents"] = c
+    for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+        block = dict(cfg.get(lk) or {})
+        block["paper_balance_cents"] = c
+        cfg[lk] = expand_partial_lab_branch(lk, block)
+    await store.save_config(cfg)
+    return {
+        "paper_balance_cents": c,
+        "applied_to": ["live_paper", "lab_a", "lab_b", "lab_c", "lab_d"],
+    }
+
+
 @app.post("/api/data/reset")
 async def data_reset(
     request: Request,
@@ -765,10 +787,17 @@ async def data_reset(
         "all",
         description="all | all_labs | live | lab_a | lab_b | lab_c | lab_d — scope of DELETE on signals/trades/equity_snapshots",
     ),
+    uniform_paper_balance_cents: int | None = Query(
+        None,
+        description="When branch is all or all_labs: after reset, set this paper_balance_cents on Live + every lab",
+    ),
 ) -> dict[str, Any]:
     """
     Wipe **signals**, **trades**, and **equity_snapshots** (all rows, or one branch). ``bot_config`` is kept.
     Optional env ``DATA_RESET_TOKEN``: then require header ``X-Reset-Token`` matching it.
+
+    When ``branch`` is ``all`` or ``all_labs`` and ``uniform_paper_balance_cents`` is set, Live paper and each lab's
+    ``paper_balance_cents`` are updated to that value after the wipe (same starting bankroll everywhere).
     """
     if str(confirm).lower() not in ("yes", "true", "1", "y"):
         raise HTTPException(
@@ -784,6 +813,11 @@ async def data_reset(
             status_code=400,
             detail="branch must be all, all_labs, live, lab_a, lab_b, lab_c, or lab_d",
         )
+    if uniform_paper_balance_cents is not None and br not in ("all", "all_labs"):
+        raise HTTPException(
+            status_code=400,
+            detail="uniform_paper_balance_cents is only allowed when branch is all or all_labs",
+        )
     try:
         if br == "all_labs":
             for br2 in ("lab_a", "lab_b", "lab_c", "lab_d"):
@@ -797,6 +831,10 @@ async def data_reset(
             out = dict(out)
             out["branch"] = "all_labs"
             await _seed_equity_snapshots_after_reset("all_labs")
+            if uniform_paper_balance_cents is not None:
+                u = await _apply_uniform_paper_balance_after_scope_reset("all_labs", uniform_paper_balance_cents)
+                if u:
+                    out["uniform_paper_balance"] = u
             return out
         pre_scope = "all" if br == "all" else br
         _clear_engine_mem_after_reset(pre_scope)
@@ -805,7 +843,13 @@ async def data_reset(
         raise HTTPException(status_code=400, detail=str(e)) from e
     _clear_engine_mem_after_reset(out.get("branch") or "all")
     await _seed_equity_snapshots_after_reset(str(out.get("branch") or "all"))
-    return out
+    out_final = dict(out)
+    scope_ret = str(out_final.get("branch") or "all")
+    if uniform_paper_balance_cents is not None and scope_ret in ("all", "all_labs"):
+        u = await _apply_uniform_paper_balance_after_scope_reset(scope_ret, uniform_paper_balance_cents)
+        if u:
+            out_final["uniform_paper_balance"] = u
+    return out_final
 
 
 @app.get("/api/config")

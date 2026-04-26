@@ -24,10 +24,12 @@ from .branch_config import (
     effective_swing_exit_implied_drop_pct,
     kalshi_fee_multiplier_from_cfg,
     merge_branch_config,
+    min_hold_minutes_before_stop_from_cfg,
     paper_fee_bps_from_cfg,
     paper_fee_model_from_cfg,
     resolve_kalshi_fee_multiplier,
     resolve_paper_fee_model,
+    stop_loss_trigger_pct_from_cfg,
 )
 from .kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kalshi_settlement_credit_cents
 from .kalshi_client import KalshiClient
@@ -791,6 +793,14 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     engine.state.markets_scanned = scanned
     engine.state.asset_snapshots = snapshots
     engine.state.last_tick_trace = trace[-150:]
+
+    try:
+        n_psl = await _handle_patient_stop_loss_exits(engine, full_cfg=full_cfg, cfg=cfg, now=now, trace=trace)
+        if n_psl:
+            _trace_append(trace, f"patient_stop_loss {branch}: closed {n_psl} position(s) this tick")
+    except Exception as e:
+        _trace_append(trace, f"patient_stop_loss {branch}: handler error {str(e)[:200]}")
+        engine.state.last_error = f"patient_stop_loss: {e}"
 
     await _maybe_auto_reset_lab_paper_on_tick_failure(engine, full_cfg)
 
@@ -1793,6 +1803,220 @@ def fee_cents_for_notional(notional_cents: int, fee_bps: float) -> int:
     if notional_cents <= 0 or fee_bps <= 0:
         return 0
     return int(math.ceil((float(notional_cents) * float(fee_bps)) / 10000.0 - 1e-12))
+
+
+def _calculate_net_unrealized_pct_after_fees(
+    position: dict[str, Any],
+    current_mid: float,
+    *,
+    full_cfg: dict[str, Any],
+    branch: str,
+) -> float:
+    """
+    Unrealized return (%) on total cash debited at entry (``amount_cents``) if we sold the open sim
+    at a limit price derived from ``current_mid`` (implied YES 0–1), using the same fee model as
+    swing / timeout exits (Kalshi quadratic or bps or none).
+
+    Includes full round-trip fee impact on exit (entry fee is already embedded in ``amount_cents``;
+    this subtracts modeled sell-side fees from hypothetical proceeds).
+    """
+    try:
+        py = float(current_mid)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(py):
+        return 0.0
+    py = max(0.0, min(1.0, py))
+    side = str(position.get("side") or "yes").strip().lower()
+    if side not in ("yes", "no"):
+        return 0.0
+    contracts = _parse_contracts_fp(position.get("contracts_fp"))
+    if contracts <= 0:
+        return 0.0
+    cost = int(position.get("amount_cents") or 0)
+    if cost <= 0:
+        return 0.0
+    exit_px = py if side == "yes" else max(1e-6, min(1.0 - 1e-6, 1.0 - py))
+    proceeds_cents = int(round(contracts * exit_px * 100.0))
+    try:
+        raw_ex = json.loads(str(position.get("extra_json") or "{}"))
+        extra = dict(raw_ex) if isinstance(raw_ex, dict) else {}
+    except json.JSONDecodeError:
+        extra = {}
+    fee_model = resolve_paper_fee_model(extra, full_cfg, branch)
+    fee_mult = resolve_kalshi_fee_multiplier(extra, full_cfg, branch)
+    kalshi_maker = fee_model == "kalshi_maker"
+    fee_bps_now = effective_paper_fee_bps(full_cfg, branch)
+    if fee_model in ("kalshi_taker", "kalshi_maker"):
+        net_proceeds_cents, _kb = kalshi_sell_credit_cents(
+            contracts, exit_px, maker=kalshi_maker, fee_multiplier=fee_mult
+        )
+    elif fee_model == "none":
+        net_proceeds_cents = proceeds_cents
+    else:
+        fee_bps_used = fee_bps_now
+        try:
+            fee_bps_used = float(extra.get("paper_fee_bps", fee_bps_now))
+        except (TypeError, ValueError):
+            fee_bps_used = fee_bps_now
+        exit_fee_cents = fee_cents_for_notional(proceeds_cents, fee_bps_used)
+        net_proceeds_cents = max(0, proceeds_cents - exit_fee_cents)
+    unrealized_cents = int(net_proceeds_cents) - int(cost)
+    return (float(unrealized_cents) / float(cost)) * 100.0
+
+
+async def _handle_patient_stop_loss_exits(
+    engine: TradingEngine,
+    *,
+    full_cfg: dict[str, Any],
+    cfg: dict[str, Any],
+    now: dt.datetime,
+    trace: list[str],
+) -> int:
+    """
+    Paper sim: after rules run, close positions held long enough whose fee-aware mark-to-exit P&L%
+    is at or below ``stop_loss_trigger_pct`` (negative threshold vs entry debit).
+    """
+    branch = str(cfg.get("_branch") or engine.branch)
+    if branch == BRANCH_LIVE and not bool(full_cfg.get("simulate")):
+        return 0
+    if not bool(cfg.get("enable_patient_stop_loss", True)):
+        _trace_append(trace, f"patient_stop_loss {branch}: disabled in config, skip")
+        return 0
+    thr = float(stop_loss_trigger_pct_from_cfg(cfg))
+    min_hold = int(min_hold_minutes_before_stop_from_cfg(cfg))
+    open_rows = await engine.store.open_sim_trades_for_branch(branch)
+    if not open_rows:
+        return 0
+    closed_n = 0
+    for t in open_rows:
+        if int(t.get("simulated") or 0) != 1:
+            continue
+        try:
+            tid_raw = t.get("id")
+            if tid_raw is None:
+                continue
+            tid = int(tid_raw)
+            ticker = str(t.get("ticker") or "").strip()
+            if not ticker:
+                continue
+            side = str(t.get("side") or "yes").strip().lower()
+            if side not in ("yes", "no"):
+                continue
+            created_raw = str(t.get("created_at") or "").strip()
+            if not created_raw:
+                continue
+            created_dt = dateparser.isoparse(created_raw)
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=dt.timezone.utc)
+            minutes_held = (now - created_dt.astimezone(dt.timezone.utc)).total_seconds() / 60.0
+            if minutes_held < float(min_hold):
+                continue
+            try:
+                data = await engine.client.get_public(_public_market_path(ticker))
+            except Exception as e:
+                _trace_append(trace, f"patient_stop_loss {branch} {ticker[:28]}… fetch err {str(e)[:80]}")
+                continue
+            m = market_dict_from_public_response(data)
+            st = str(m.get("status") or "").strip().lower()
+            if st in ("finalized", "closed", "determined", "settled", "settlement", "complete", "inactive"):
+                continue
+            yb = dollars_to_float(m.get("yes_bid_dollars"))
+            ya = dollars_to_float(m.get("yes_ask_dollars"))
+            prob = implied_yes_probability(yb, ya)
+            if prob is None:
+                continue
+            net_pct = _calculate_net_unrealized_pct_after_fees(t, prob, full_cfg=full_cfg, branch=branch)
+            if net_pct > thr:
+                continue
+            contracts = _parse_contracts_fp(t.get("contracts_fp"))
+            if contracts <= 0:
+                continue
+            cost = int(t.get("amount_cents") or 0)
+            exit_px = exit_bid_for_side_close(m, side, yb, ya)
+            if exit_px is None or exit_px <= 0:
+                _trace_append(trace, f"patient_stop_loss {branch} {ticker[:28]}… skip (no exit bid)")
+                continue
+            try:
+                raw_ex = json.loads(str(t.get("extra_json") or "{}"))
+                extra = dict(raw_ex) if isinstance(raw_ex, dict) else {}
+            except json.JSONDecodeError:
+                extra = {}
+            proceeds_cents = int(round(contracts * exit_px * 100.0))
+            fee_model = resolve_paper_fee_model(extra, full_cfg, branch)
+            fee_mult = resolve_kalshi_fee_multiplier(extra, full_cfg, branch)
+            kalshi_maker = fee_model == "kalshi_maker"
+            fee_bps_now = effective_paper_fee_bps(full_cfg, branch)
+            if fee_model in ("kalshi_taker", "kalshi_maker"):
+                net_proceeds_cents, _kb = kalshi_sell_credit_cents(
+                    contracts, exit_px, maker=kalshi_maker, fee_multiplier=fee_mult
+                )
+                exit_fee_cents = max(0, proceeds_cents - net_proceeds_cents)
+                fee_bps_used = float(extra.get("paper_fee_bps", 0.0))
+            elif fee_model == "none":
+                net_proceeds_cents = proceeds_cents
+                exit_fee_cents = 0
+                fee_bps_used = 0.0
+            else:
+                fee_bps_used = fee_bps_now
+                try:
+                    fee_bps_used = float(extra.get("paper_fee_bps", fee_bps_now))
+                except (TypeError, ValueError):
+                    fee_bps_used = fee_bps_now
+                exit_fee_cents = fee_cents_for_notional(proceeds_cents, fee_bps_used)
+                net_proceeds_cents = max(0, proceeds_cents - exit_fee_cents)
+            pnl = int(net_proceeds_cents) - int(cost)
+            extra.update(
+                {
+                    "patient_stop_loss": True,
+                    "patient_stop_loss_mark_implied_yes": prob,
+                    "patient_stop_loss_net_unrealized_pct_after_fees": round(net_pct, 4),
+                    "patient_stop_loss_minutes_held": round(minutes_held, 2),
+                    "patient_stop_loss_exit_bid": exit_px,
+                    "paper_fee_model": fee_model,
+                    "paper_fee_bps": fee_bps_used,
+                    "patient_stop_loss_exit_fee_cents": exit_fee_cents,
+                    "patient_stop_loss_gross_proceeds_cents": proceeds_cents,
+                    "patient_stop_loss_net_proceeds_cents": int(net_proceeds_cents),
+                },
+            )
+            await engine.store.update_trade_sim_early_close(
+                tid,
+                pnl_cents=int(pnl),
+                settled_at=iso(now),
+                result="patient_stop_loss",
+                extra_json=json.dumps(extra),
+            )
+            closed_n += 1
+            msg = (
+                f"Patient stop-loss triggered for {ticker} at {net_pct:.1f}% (after fees) after {int(round(minutes_held))} min"
+            )
+            _trace_append(trace, f"patient_stop_loss {branch}: {msg}")
+            _data_log(
+                "trading",
+                {
+                    "event": "patient_stop_loss_triggered",
+                    "branch": branch,
+                    "trade_id": tid,
+                    "ticker": ticker,
+                    "side": side,
+                    "minutes_held": round(minutes_held, 2),
+                    "net_unrealized_pct_after_fees": round(net_pct, 4),
+                    "trigger_pct": thr,
+                    "min_hold_minutes": min_hold,
+                    "exit_bid": exit_px,
+                    "pnl_cents": int(pnl),
+                    "contracts": contracts,
+                    "gross_proceeds_cents": proceeds_cents,
+                    "exit_fee_cents": exit_fee_cents,
+                    "net_proceeds_cents": int(net_proceeds_cents),
+                    "amount_cents_debit": cost,
+                },
+            )
+        except Exception as e:
+            _trace_append(trace, f"patient_stop_loss {branch}: row err {str(e)[:160]}")
+            continue
+    return closed_n
 
 
 async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict[str, Any]) -> int:

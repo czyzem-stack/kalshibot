@@ -11,6 +11,7 @@ from typing import Any
 
 import aiosqlite
 
+from .branch_config import ensure_patient_stop_loss_on_branch_dict
 from .settings_env import env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -223,6 +224,9 @@ def default_bot_config() -> dict[str, Any]:
         "no_bet_when_yes_below_pct": 32,
         "dev_sim_yes_implied_ge_pct": None,
         "swing_exit_implied_drop_pct": 25,
+        "enable_patient_stop_loss": True,
+        "stop_loss_trigger_pct": -10.0,
+        "min_hold_minutes_before_stop": 45,
         "min_contracts": 1,
         "paper_fee_model": "kalshi_taker",
         "kalshi_fee_multiplier": 1.0,
@@ -233,6 +237,9 @@ def default_bot_config() -> dict[str, Any]:
             "engine_running": False,
             "auto_optimize": True,
             "auto_reset_paper_on_tick_failure": False,
+            "enable_patient_stop_loss": True,
+            "stop_loss_trigger_pct": -6.0,
+            "min_hold_minutes_before_stop": 20,
             "balance_fraction_per_window": 0.055,
             "window_minutes": 15,
             "paper_fee_model": "kalshi_taker",
@@ -245,6 +252,9 @@ def default_bot_config() -> dict[str, Any]:
             "engine_running": False,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
+            "enable_patient_stop_loss": True,
+            "stop_loss_trigger_pct": -8.0,
+            "min_hold_minutes_before_stop": 30,
             "balance_fraction_per_window": 0.04,
             "window_minutes": 18,
             "paper_fee_model": "kalshi_taker",
@@ -257,6 +267,9 @@ def default_bot_config() -> dict[str, Any]:
             "engine_running": False,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
+            "enable_patient_stop_loss": True,
+            "stop_loss_trigger_pct": -12.0,
+            "min_hold_minutes_before_stop": 60,
             "balance_fraction_per_window": 0.11,
             "window_minutes": 12,
             "paper_fee_model": "kalshi_taker",
@@ -269,6 +282,9 @@ def default_bot_config() -> dict[str, Any]:
             "engine_running": False,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
+            "enable_patient_stop_loss": True,
+            "stop_loss_trigger_pct": -7.0,
+            "min_hold_minutes_before_stop": 25,
             "balance_fraction_per_window": 0.13,
             "window_minutes": 10,
             "paper_fee_model": "kalshi_taker",
@@ -337,6 +353,7 @@ def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any
     base.update(lab)
     if isinstance(base.get("assets"), dict) and len(base["assets"]) == 0:
         del base["assets"]
+    ensure_patient_stop_loss_on_branch_dict(base)
     return base
 
 

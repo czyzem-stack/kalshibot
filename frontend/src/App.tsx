@@ -348,6 +348,21 @@ function persistTradePopupToastsEnabled(on: boolean) {
   }
 }
 
+const DISMISSED_TRADE_TOAST_IDS_CAP = 360;
+
+/** Remember toast ids the user dismissed so dashboard/poll effect merges cannot resurrect them. */
+function rememberDismissedTradeToastIds(set: Set<string>, ids: Iterable<string>) {
+  for (const raw of ids) {
+    const id = String(raw || "").trim();
+    if (id) set.add(id);
+  }
+  while (set.size > DISMISSED_TRADE_TOAST_IDS_CAP) {
+    const first = set.values().next().value as string | undefined;
+    if (first == null) break;
+    set.delete(first);
+  }
+}
+
 function fmtPct(n: unknown, digits = 2): string {
   if (n == null || n === "") return "—";
   const x = Number(n);
@@ -1341,6 +1356,59 @@ function tradeRowLooksResolved(t: AnyObj): boolean {
   return false;
 }
 
+/** Kalshi market outcome (``yes``/``no``) vs paper sim exit before finalization. */
+function tradeResolutionLines(t: AnyObj): { title: string; resolutionTier: "green" | "yellow" | "red" | "neutral"; lines: string[] } {
+  const r = String(t?.result ?? "").trim().toLowerCase();
+  const side = String(t?.side ?? "yes").trim().toLowerCase();
+  if (r === "yes" || r === "no") {
+    const won = (side === "yes" && r === "yes") || (side === "no" && r === "no");
+    return {
+      title: "Purchase resolved",
+      resolutionTier: won ? "green" : "red",
+      lines: [
+        `Contract settled · market ${r.toUpperCase()} · your ${side.toUpperCase()} ${won ? "won" : "lost"}`,
+        "Held until Kalshi resolution",
+      ],
+    };
+  }
+  if (r === "swing_exit") {
+    return {
+      title: "Purchase resolved",
+      resolutionTier: "yellow",
+      lines: ["Sold before contract expiry · swing exit (bid)", "Early close — not final market settlement"],
+    };
+  }
+  if (r === "patient_stop_loss") {
+    return {
+      title: "Purchase resolved",
+      resolutionTier: "yellow",
+      lines: ["Sold before contract expiry · patient stop-loss", "Early close — not final market settlement"],
+    };
+  }
+  if (r === "auto_timeout") {
+    return {
+      title: "Purchase resolved",
+      resolutionTier: "yellow",
+      lines: ["Sold before contract expiry · auto timeout", "Early close — not final market settlement"],
+    };
+  }
+  if (r) {
+    return {
+      title: "Purchase resolved",
+      resolutionTier: "neutral",
+      lines: [
+        `Sold before contract expiry · ${r.replace(/_/g, " ")}`,
+        "Early close — not final market settlement",
+      ],
+    };
+  }
+  return {
+    title: "Purchase resolved",
+    resolutionTier: "neutral",
+    lines: ["Settled", "Outcome details not on this row"],
+  };
+}
+
 function activityBranchTabLabel(b: ActivityBranchKey): string {
   if (b === "live") return "Live";
   if (b === "lab_a") return "Lab A";
@@ -1957,6 +2025,8 @@ export default function App() {
   const tradeToastsBootstrappedRef = useRef(false);
   const seenTradeInitRef = useRef<Set<string>>(new Set());
   const seenTradeSettleRef = useRef<Set<string>>(new Set());
+  /** User-dismissed trade toast ids (``trade-initiated-*`` / ``trade-resolved-*``); survives effect re-runs. */
+  const dismissedTradeToastIdsRef = useRef<Set<string>>(new Set());
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
   const [tradePopupToastsEnabled, setTradePopupToastsEnabled] = useState(() => readTradePopupToastsEnabled());
   const [optimizerRows, setOptimizerRows] = useState<AnyObj[]>([]);
@@ -2163,7 +2233,10 @@ export default function App() {
         const rows = Array.isArray(d) ? d : Array.isArray((d as AnyObj)?.rows) ? ((d as AnyObj).rows as AnyObj[]) : [];
         setToastTradeRows(rows);
       } catch {
-        // Ignore toast poll failures; dashboard path remains as fallback.
+        if (!alive) return;
+        // First completed attempt (even on failure) unblocks toast bootstrap so we do not treat
+        // the full merged history as "new" when /api/trades is slow or errors once.
+        setToastTradeRows((prev) => (prev === null ? [] : prev));
       }
     };
     void poll();
@@ -2209,94 +2282,33 @@ export default function App() {
   }, [optimizerNotifs, tradePopupToastsEnabled]);
 
   /**
-   * Bottom-right cards when a sim/live trade row first appears or settles. Bootstraps from current
-   * ``recent_trades`` on first run so a reload does not replay history as toasts.
+   * Bottom-right cards when a sim/live trade row first appears or settles.
+   * Bootstrap runs only after **both** the dashboard snapshot and at least one ``/api/trades`` response
+   * (success or empty/error fallback). That way a later poll cannot merge hundreds of “new” ids vs
+   * an early partial seed and spam toasts on load.
    */
   useEffect(() => {
     const rows = mergeTradeRowsForToastEffect(dash?.recent_trades, toastTradeRows);
-    if (!rows.length) return;
+    const dashReady = dash != null;
+    const tradesPollCompleted = toastTradeRows !== null;
     if (!tradeToastsBootstrappedRef.current) {
-      const bootToAdd: AnyObj[] = [];
-      const nowMs = Date.now();
+      if (!dashReady || !tradesPollCompleted) return;
       for (const t of rows) {
         const idStr = tradeToastRowKey(t);
         if (!idStr) continue;
         const st = String(t.status || "").toLowerCase();
         const resolved = tradeRowLooksResolved(t);
-        const createdMs = Date.parse(String(t.created_at || ""));
-        const isRecent = Number.isFinite(createdMs) && nowMs - createdMs <= 120000;
-        const branch = branchLabelForTradeToast(t.branch);
-        const tick = String(t.ticker || "").slice(0, 48);
-        const side = String(t.side || "").toUpperCase() || "—";
-        const sim = Boolean(Number(t.simulated));
         if (resolved) {
           seenTradeSettleRef.current.add(idStr);
           seenTradeInitRef.current.add(idStr);
-          if (tradePopupToastsEnabled && isRecent) {
-            const rawP = t.pnl_cents;
-            const pnl =
-              rawP == null || rawP === ""
-                ? null
-                : (() => {
-                    const n = Number(rawP);
-                    return Number.isFinite(n) ? n / 100.0 : null;
-                  })();
-            let lineTier: "green" | "red" | "yellow" | "neutral" = "neutral";
-            if (pnl != null) {
-              if (pnl > 0) lineTier = "green";
-              else if (pnl < 0) lineTier = "red";
-              else lineTier = "yellow";
-            }
-            const cardTone = pnl != null && pnl < 0 ? "red" : pnl != null && pnl > 0 ? "green" : "yellow";
-            const pnlText = pnl == null ? "Settled" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
-            bootToAdd.push({
-              id: `trade-resolved-${idStr}`,
-              title: sim ? "Sim trade resolved" : "Trade resolved",
-              body: "",
-              tone: cardTone,
-              branch_swatch: branchToastSwatch(t.branch),
-              branch_tip: branch,
-              segments: [
-                { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-                { tier: lineTier, text: pnlText },
-                ...(t.result ? [{ tier: "neutral" as const, text: `Result: ${String(t.result)}` }] : []),
-              ],
-              created_at: new Date().toISOString(),
-            });
-          }
         } else if (tradeStatusIsActiveBid(st)) {
           seenTradeInitRef.current.add(idStr);
-          if (tradePopupToastsEnabled && isRecent) {
-            const cost = Number(t.amount_cents || 0) / 100.0;
-            bootToAdd.push({
-              id: `trade-initiated-${idStr}`,
-              title: sim ? "Sim trade opened" : "Order / trade active",
-              body: "",
-              tone: "green",
-              branch_swatch: branchToastSwatch(t.branch),
-              branch_tip: branch,
-              segments: [
-                { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-                { tier: "green", text: `≈ $${cost.toFixed(2)} at entry · ${st}` },
-              ],
-              created_at: new Date().toISOString(),
-            });
-          }
         }
       }
       tradeToastsBootstrappedRef.current = true;
-      if (bootToAdd.length) {
-        setOptimizerNotifs((prev) => {
-          const byId = new Map<string, AnyObj>();
-          for (const n of prev) byId.set(String(n.id), n);
-          for (const n of bootToAdd) byId.set(String(n.id), n);
-          const merged = Array.from(byId.values());
-          merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-          return merged.slice(0, 28);
-        });
-      }
       return;
     }
+    if (!rows.length) return;
     if (!tradePopupToastsEnabled) return;
     const toAdd: AnyObj[] = [];
     for (const t of rows) {
@@ -2328,38 +2340,46 @@ export default function App() {
           else if (pnl < 0) lineTier = "red";
           else lineTier = "yellow";
         }
+        const resMeta = tradeResolutionLines(t);
         const cardTone = pnl != null && pnl < 0 ? "red" : pnl != null && pnl > 0 ? "green" : "yellow";
-        const pnlText = pnl == null ? "Settled" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
-        toAdd.push({
-          id: `trade-resolved-${idStr}`,
-          title: sim ? "Sim trade resolved" : "Trade resolved",
-          body: "",
-          tone: cardTone,
-          branch_swatch: branchToastSwatch(t.branch),
-          branch_tip: branch,
-          segments: [
-            { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-            { tier: lineTier, text: pnlText },
-            ...(t.result ? [{ tier: "neutral" as const, text: `Result: ${String(t.result)}` }] : []),
-          ],
-          created_at: new Date().toISOString(),
-        });
+        const pnlText = pnl == null ? "PnL —" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+        const toastId = `trade-resolved-${idStr}`;
+        if (!dismissedTradeToastIdsRef.current.has(toastId)) {
+          toAdd.push({
+            id: toastId,
+            title: sim ? resMeta.title : resMeta.title.replace(/^Purchase /, "Trade "),
+            body: "",
+            tone: cardTone,
+            branch_swatch: branchToastSwatch(t.branch),
+            branch_tip: branch,
+            segments: [
+              { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+              { tier: lineTier, text: pnlText },
+              { tier: resMeta.resolutionTier, text: resMeta.lines[0] ?? "" },
+              ...(resMeta.lines[1] ? [{ tier: "neutral" as const, text: resMeta.lines[1] }] : []),
+            ],
+            created_at: new Date().toISOString(),
+          });
+        }
         continue;
       }
       if (tradeStatusIsActiveBid(st)) {
         if (seenTradeInitRef.current.has(idStr)) continue;
         seenTradeInitRef.current.add(idStr);
+        const toastId = `trade-initiated-${idStr}`;
+        if (dismissedTradeToastIdsRef.current.has(toastId)) continue;
         const cost = Number(t.amount_cents || 0) / 100.0;
         toAdd.push({
-          id: `trade-initiated-${idStr}`,
-          title: sim ? "Sim trade opened" : "Order / trade active",
+          id: toastId,
+          title: sim ? "Sim purchase" : "Purchase / order active",
           body: "",
           tone: "green",
           branch_swatch: branchToastSwatch(t.branch),
           branch_tip: branch,
           segments: [
             { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-            { tier: "green", text: `≈ $${cost.toFixed(2)} at entry · ${st}` },
+            { tier: "green", text: `≈ $${cost.toFixed(2)} debit · ${st}` },
+            { tier: "neutral", text: "Awaiting resolution (settle or early exit)" },
           ],
           created_at: new Date().toISOString(),
         });
@@ -2368,8 +2388,16 @@ export default function App() {
     if (!toAdd.length) return;
     setOptimizerNotifs((prev) => {
       const byId = new Map<string, AnyObj>();
-      for (const n of prev) byId.set(String(n.id), n);
-      for (const n of toAdd) byId.set(String(n.id), n);
+      for (const n of prev) {
+        const pid = String(n.id || "");
+        if (dismissedTradeToastIdsRef.current.has(pid)) continue;
+        byId.set(pid, n);
+      }
+      for (const n of toAdd) {
+        const nid = String(n.id || "");
+        if (dismissedTradeToastIdsRef.current.has(nid)) continue;
+        byId.set(nid, n);
+      }
       const merged = Array.from(byId.values());
       merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
       return merged.slice(0, 28);
@@ -2913,6 +2941,31 @@ export default function App() {
     }
   };
 
+  const savePatientStopLossLive = async (patch: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      await apiPut("/api/config", patch);
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const savePatientStopLossLab = async (lab: "a" | "b" | "c" | "d", patch: Record<string, unknown>) => {
+    const key = lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : "lab_d";
+    setBusy(true);
+    try {
+      await apiPutLabBranches({ reset_data: "none", [key]: patch });
+      await refresh();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveOptimizerConfig = async (patch: Record<string, unknown>) => {
     // Do not use global `busy` here — it disables the top-right Claude optimizer toggle and feels like a freeze.
     setOptimizerSaving(true);
@@ -2955,6 +3008,7 @@ export default function App() {
   const resetTradingData = async (
     branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d",
     backup: boolean,
+    uniformPaperBalanceCents?: number | null,
   ) => {
     setBusy(true);
     setErr(null);
@@ -2964,6 +3018,16 @@ export default function App() {
         backup: backup ? "true" : "false",
         branch,
       });
+      if (
+        (branch === "all" || branch === "all_labs") &&
+        uniformPaperBalanceCents != null &&
+        Number.isFinite(uniformPaperBalanceCents)
+      ) {
+        const c = Math.round(Number(uniformPaperBalanceCents));
+        if (c >= 0 && c <= 100_000_000) {
+          q.set("uniform_paper_balance_cents", String(c));
+        }
+      }
       const headers: Record<string, string> = {};
       if (dash?.storage?.data_reset_token_configured) {
         const el = document.getElementById("reset_token_field") as HTMLInputElement | null;
@@ -3041,6 +3105,7 @@ export default function App() {
                         style={{ padding: "2px 8px", fontSize: 11 }}
                         onClick={() => {
                           const id = String(n.id || "");
+                          rememberDismissedTradeToastIds(dismissedTradeToastIdsRef.current, [id]);
                           setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== id));
                         }}
                       >
@@ -3076,7 +3141,15 @@ export default function App() {
             <button
               type="button"
               className="optimizer-toast-stack__clear-all"
-              onClick={() => setOptimizerNotifs([])}
+              onClick={() =>
+                setOptimizerNotifs((prev) => {
+                  rememberDismissedTradeToastIds(
+                    dismissedTradeToastIdsRef.current,
+                    prev.map((x) => String(x.id || "")),
+                  );
+                  return [];
+                })
+              }
               title="Dismiss every notification in this stack"
             >
               Clear all
@@ -4422,6 +4495,8 @@ export default function App() {
         onSaveDevSimHighYesPct={saveDevSimHighYesPct}
         onSaveNoBetWhenYesBelow={saveNoBetWhenYesBelow}
         onSaveSwingExitImpliedDropPct={saveSwingExitImpliedDropPct}
+        onSavePatientStopLossLive={savePatientStopLossLive}
+        onSavePatientStopLossLab={savePatientStopLossLab}
         onSavePaperFees={savePaperFees}
         optimizerCfg={(cfg?.optimizer || optimizerCfg || {}) as AnyObj}
         onSaveOptimizerConfig={saveOptimizerConfig}

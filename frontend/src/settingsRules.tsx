@@ -470,6 +470,111 @@ export function SwingExitImpliedDropControl({
   );
 }
 
+function clampPatientTriggerPct(n: number): number {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return -8;
+  const v = x > 0 ? -Math.abs(x) : x;
+  const stepped = Math.round(v * 2) / 2;
+  return Math.max(-20, Math.min(-2, stepped));
+}
+
+function clampPatientHoldMin(n: number): number {
+  const s = Math.round(Number(n));
+  if (!Number.isFinite(s)) return 30;
+  return Math.max(5, Math.min(120, Math.round(s / 5) * 5));
+}
+
+/** Per-branch patient stop-loss: toggle + loss % trigger + min hold (paper sim). */
+export function PatientStopLossPanel({
+  title,
+  busy,
+  enable,
+  triggerPct,
+  minHold,
+  onSave,
+}: {
+  title: string;
+  busy: boolean;
+  enable: boolean;
+  triggerPct: number;
+  minHold: number;
+  onSave: (patch: AnyObj) => void | Promise<void>;
+}) {
+  const [en, setEn] = useState(Boolean(enable));
+  const [tr, setTr] = useState(() => clampPatientTriggerPct(triggerPct));
+  const [mh, setMh] = useState(() => clampPatientHoldMin(minHold));
+
+  useEffect(() => {
+    setEn(Boolean(enable));
+    setTr(clampPatientTriggerPct(triggerPct));
+    setMh(clampPatientHoldMin(minHold));
+  }, [enable, triggerPct, minHold]);
+
+  return (
+    <details className="panel settings-nested-panel" style={{ marginTop: 16, padding: "12px 14px" }}>
+      <summary className="section-tip" style={{ cursor: "pointer" }} title="Paper sim: close at bid after min hold when fee-aware unrealized P&amp;L % hits the loss trigger.">
+        <strong>Patient Stop-Loss (Loss-Recoup Exits)</strong>
+        <span className="sub" style={{ marginLeft: 8, fontWeight: 400 }}>
+          — {title}
+        </span>
+      </summary>
+      <p className="sub" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
+        Uses the same Kalshi fee model as swing exits on the <strong>sell</strong> side. Trigger compares net unrealized % vs
+        total entry debit (includes entry fee already in amount).
+      </p>
+      <label className="checkbox section-tip" style={{ border: "none", marginTop: 10 }}>
+        <input type="checkbox" checked={en} disabled={busy} onChange={(e) => setEn(e.target.checked)} />
+        <span>Enable patient stop-loss</span>
+      </label>
+      <div className="field" style={{ marginTop: 10, opacity: en ? 1 : 0.5 }}>
+        <label className="section-tip" title="Negative percent vs entry debit; exit when net unrealized (after sell fees) is at or below this.">
+          % loss trigger: <strong>{tr.toFixed(1)}%</strong>
+        </label>
+        <input
+          type="range"
+          min={-20}
+          max={-2}
+          step={0.5}
+          disabled={busy || !en}
+          value={tr}
+          onChange={(e) => setTr(clampPatientTriggerPct(Number(e.target.value)))}
+          style={{ width: "100%" }}
+        />
+      </div>
+      <div className="field" style={{ marginTop: 10, opacity: en ? 1 : 0.5 }}>
+        <label className="section-tip" title="Minimum minutes from open before the stop can fire.">
+          Min hold minutes: <strong>{mh}</strong>
+        </label>
+        <input
+          type="range"
+          min={5}
+          max={120}
+          step={5}
+          disabled={busy || !en}
+          value={mh}
+          onChange={(e) => setMh(clampPatientHoldMin(Number(e.target.value)))}
+          style={{ width: "100%" }}
+        />
+      </div>
+      <button
+        className="primary"
+        style={{ marginTop: 12 }}
+        disabled={busy}
+        title="Writes enable_patient_stop_loss, stop_loss_trigger_pct, min_hold_minutes_before_stop for this branch."
+        onClick={() =>
+          void onSave({
+            enable_patient_stop_loss: en,
+            stop_loss_trigger_pct: tr,
+            min_hold_minutes_before_stop: mh,
+          })
+        }
+      >
+        Save patient stop-loss ({title})
+      </button>
+    </details>
+  );
+}
+
 function normalizeFeeModelId(raw: unknown): string {
   if (raw == null || raw === "") return "bps";
   const s = String(raw).trim().toLowerCase().replace(/-/g, "_");

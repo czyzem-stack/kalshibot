@@ -38,6 +38,9 @@ LAB_BRANCH_OVERLAY_KEYS = (
     "no_bet_when_yes_below_pct",
     "dev_sim_yes_implied_ge_pct",
     "swing_exit_implied_drop_pct",
+    "enable_patient_stop_loss",
+    "stop_loss_trigger_pct",
+    "min_hold_minutes_before_stop",
     "paper_fee_bps",
     "paper_fee_model",
     "kalshi_fee_multiplier",
@@ -118,6 +121,7 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
         sim = bool(full_cfg.get("simulate"))
         out["_simulate_orders"] = sim
         out["_trade_mode"] = "simulate" if sim else "live"
+        apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg, branch, out)
         return out
 
     lab_key = _lab_key_for_branch(branch)
@@ -138,6 +142,7 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
         out["_branch"] = branch
         out["_simulate_orders"] = True
         out["_trade_mode"] = "simulate"
+        apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg, branch, out)
         return out
 
     return None
@@ -214,6 +219,87 @@ def paper_fee_bps_from_cfg(cfg: dict[str, Any]) -> float:
     if v <= 0:
         return 0.0
     return max(0.0, min(500.0, v))
+
+
+def enable_patient_stop_loss_from_cfg(cfg: dict[str, Any]) -> bool:
+    """Paper sim: time + fee-aware drawdown exit. Default on when key missing."""
+    raw = cfg.get("enable_patient_stop_loss")
+    if raw is None or raw == "":
+        return True
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    if s in ("0", "false", "no", "off"):
+        return False
+    return bool(raw)
+
+
+def stop_loss_trigger_pct_from_cfg(cfg: dict[str, Any]) -> float:
+    """
+    Negative percent vs entry premium (e.g. -8.0 = exit when unrealized loss reaches ~8% of stake after sell fees).
+    Clamped to [-20, -2].
+    """
+    raw = cfg.get("stop_loss_trigger_pct")
+    if raw is None or raw is False or raw == "":
+        return -8.0
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return -8.0
+    if v != v:  # NaN
+        return -8.0
+    if v > 0:
+        v = -abs(v)
+    return max(-20.0, min(-2.0, v))
+
+
+def min_hold_minutes_before_stop_from_cfg(cfg: dict[str, Any]) -> int:
+    try:
+        v = int(cfg.get("min_hold_minutes_before_stop") or 30)
+    except (TypeError, ValueError):
+        v = 30
+    return max(5, min(120, v))
+
+
+def ensure_patient_stop_loss_on_branch_dict(d: dict[str, Any]) -> None:
+    """Mutate a lab or live trading dict in place: normalize and clamp patient stop-loss keys."""
+    d["enable_patient_stop_loss"] = enable_patient_stop_loss_from_cfg(d)
+    d["stop_loss_trigger_pct"] = stop_loss_trigger_pct_from_cfg(d)
+    d["min_hold_minutes_before_stop"] = min_hold_minutes_before_stop_from_cfg(d)
+
+
+# Per-branch defaults when keys are absent from stored config (A/B testing across labs).
+_PATIENT_STOP_DEFAULTS: dict[str, tuple[bool, float, int]] = {
+    BRANCH_LIVE: (True, -10.0, 45),
+    BRANCH_LAB_A: (True, -6.0, 20),
+    BRANCH_LAB_B: (True, -8.0, 30),
+    BRANCH_LAB_C: (True, -12.0, 60),
+    BRANCH_LAB_D: (True, -7.0, 25),
+}
+
+
+def apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg: dict[str, Any], branch: str, out: dict[str, Any]) -> None:
+    """
+    After ``merge_branch_config`` builds ``out``, fill patient stop-loss keys from the branch lab dict / live root,
+    falling back to per-branch defaults (not Live globals on lab rows).
+    """
+    defs = _PATIENT_STOP_DEFAULTS.get(branch, _PATIENT_STOP_DEFAULTS[BRANCH_LIVE])
+    lab_key = _lab_key_for_branch(branch)
+    if branch == BRANCH_LIVE:
+        src: dict[str, Any] = full_cfg if isinstance(full_cfg, dict) else {}
+    else:
+        raw = full_cfg.get(lab_key or "") if lab_key else None
+        src = raw if isinstance(raw, dict) else {}
+
+    def pick(k: str, default: Any) -> Any:
+        if k in src and src[k] is not None and src[k] != "":
+            return src[k]
+        return default
+
+    out["enable_patient_stop_loss"] = pick("enable_patient_stop_loss", defs[0])
+    out["stop_loss_trigger_pct"] = pick("stop_loss_trigger_pct", defs[1])
+    out["min_hold_minutes_before_stop"] = pick("min_hold_minutes_before_stop", defs[2])
+    ensure_patient_stop_loss_on_branch_dict(out)
 
 
 def kalshi_fee_multiplier_from_cfg(cfg: dict[str, Any]) -> float:

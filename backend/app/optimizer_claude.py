@@ -17,6 +17,9 @@ from .branch_config import (
     MIN_BALANCE_FRACTION_PER_WINDOW,
     _lab_key_for_branch,
     clamp_balance_fraction_per_window,
+    enable_patient_stop_loss_from_cfg,
+    min_hold_minutes_before_stop_from_cfg,
+    stop_loss_trigger_pct_from_cfg,
 )
 from .engine import rule_matches
 from .optimizer.fitness import composite_fitness_score, is_statistically_better
@@ -85,6 +88,9 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("optimize_rules_with_claude", True)
     out.setdefault("optimizer_cycle_count", 0)
     out.setdefault("claude_proposals_trace", [])
+    # Patient stop-loss is modeled on each ``lab_*`` / Live trading dict (``enable_patient_stop_loss``,
+    # ``stop_loss_trigger_pct``, ``min_hold_minutes_before_stop``). ``replay_under_rules_detail`` accepts
+    # ``branch_trading_cfg`` to clamp replay PnL vs. those stops when evaluating fitness.
     return out
 
 
@@ -187,6 +193,7 @@ def _replay_pnl_under_rules(
     signals_desc: list[dict[str, Any]],
     *,
     include_fees_in_score: bool,
+    branch_trading_cfg: dict[str, Any] | None = None,
 ) -> tuple[int, int, int]:
     """
     Replay: sum settled PnL for trades whose entry (implied YES, minutes) would match at least one rule.
@@ -198,6 +205,7 @@ def _replay_pnl_under_rules(
         signals_desc,
         include_fees_in_score=include_fees_in_score,
         max_considered=200,
+        branch_trading_cfg=branch_trading_cfg,
     )
     return int(d["total_pnl_cents"]), int(d["matched_n"]), int(d["considered_n"])
 
@@ -224,6 +232,7 @@ def replay_under_rules_detail(
     *,
     include_fees_in_score: bool,
     max_considered: int = 500,
+    branch_trading_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Replay over the first ``max_considered`` rows of ``settled`` (caller passes query order: typically
@@ -246,14 +255,29 @@ def replay_under_rules_detail(
         if not any(rule_matches(prob, mins, r) for r in clean_rules):
             continue
         pnl = int(t.get("pnl_cents") or 0)
+        ex: dict[str, Any] = {}
+        try:
+            ex = json.loads(str(t.get("extra_json") or "{}"))
+        except Exception:
+            ex = {}
         if include_fees_in_score:
-            ex: dict[str, Any] = {}
-            try:
-                ex = json.loads(str(t.get("extra_json") or "{}"))
-            except Exception:
-                ex = {}
             fees = int(ex.get("entry_fee_cents") or 0) + int(ex.get("settlement_exit_fee_cents") or 0)
             pnl -= fees
+        if branch_trading_cfg is not None and enable_patient_stop_loss_from_cfg(branch_trading_cfg):
+            thr = float(stop_loss_trigger_pct_from_cfg(branch_trading_cfg))
+            min_hold = int(min_hold_minutes_before_stop_from_cfg(branch_trading_cfg))
+            entry_prem = int(ex.get("entry_premium_cents") or 0)
+            if entry_prem <= 0:
+                ac = int(t.get("amount_cents") or 0)
+                entry_prem = max(0, ac - int(ex.get("entry_fee_cents") or 0))
+            ca_o = _parse_iso_dt(t.get("created_at"))
+            ca_s = _parse_iso_dt(t.get("settled_at"))
+            if entry_prem > 0 and ca_o is not None and ca_s is not None and thr < 0:
+                held_m = (ca_s - ca_o).total_seconds() / 60.0
+                if held_m >= float(min_hold):
+                    stop_cents = int(round(float(entry_prem) * thr / 100.0))
+                    if pnl < stop_cents:
+                        pnl = max(pnl, stop_cents)
         total += pnl
         matched += 1
         per_trade.append(pnl)
@@ -275,6 +299,7 @@ def _replay_fitness_bundle(
     *,
     include_fees_in_score: bool,
     max_rows: int = 200,
+    branch_trading_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Replay plus composite fitness (drawdown / vol / Sharpe blend)."""
     d = replay_under_rules_detail(
@@ -283,6 +308,7 @@ def _replay_fitness_bundle(
         signals_desc,
         include_fees_in_score=include_fees_in_score,
         max_considered=max_rows,
+        branch_trading_cfg=branch_trading_cfg,
     )
     fit = composite_fitness_score(
         total_pnl_cents=int(d["total_pnl_cents"]),
@@ -401,10 +427,18 @@ def _build_metrics_context(
     _, rules_b = _ensure_lab_rules(cfg, BRANCH_LAB_B)
     _, rules_c = _ensure_lab_rules(cfg, BRANCH_LAB_C)
     _, rules_d = _ensure_lab_rules(cfg, BRANCH_LAB_D)
-    rep_a = _replay_pnl_under_rules(st_a, rules_a, sa, include_fees_in_score=include_fees)
-    rep_b = _replay_pnl_under_rules(st_b, rules_b, sb, include_fees_in_score=include_fees)
-    rep_c = _replay_pnl_under_rules(st_c, rules_c, sc, include_fees_in_score=include_fees)
-    rep_d = _replay_pnl_under_rules(st_d, rules_d, sd, include_fees_in_score=include_fees)
+    rep_a = _replay_pnl_under_rules(
+        st_a, rules_a, sa, include_fees_in_score=include_fees, branch_trading_cfg=lab_a
+    )
+    rep_b = _replay_pnl_under_rules(
+        st_b, rules_b, sb, include_fees_in_score=include_fees, branch_trading_cfg=lab_b
+    )
+    rep_c = _replay_pnl_under_rules(
+        st_c, rules_c, sc, include_fees_in_score=include_fees, branch_trading_cfg=lab_c
+    )
+    rep_d = _replay_pnl_under_rules(
+        st_d, rules_d, sd, include_fees_in_score=include_fees, branch_trading_cfg=lab_d
+    )
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
@@ -784,10 +818,20 @@ def _apply_adaptive_lab_tuning(
         sig_desc = _signals_sorted_desc(signals)
         fee_flag = bool(oc.get("include_fees_in_score", True))
         base_fb = _replay_fitness_bundle(
-            settled, rules_base, sig_desc, include_fees_in_score=fee_flag, max_rows=200
+            settled,
+            rules_base,
+            sig_desc,
+            include_fees_in_score=fee_flag,
+            max_rows=200,
+            branch_trading_cfg=lab_base,
         )
         new_fb = _replay_fitness_bundle(
-            settled, proposed_rules, sig_desc, include_fees_in_score=fee_flag, max_rows=200
+            settled,
+            proposed_rules,
+            sig_desc,
+            include_fees_in_score=fee_flag,
+            max_rows=200,
+            branch_trading_cfg=lab_base,
         )
         if float(new_fb["score_dollars"]) <= float(base_fb["score_dollars"]) and not bool(
             oc.get("adaptive_skip_backtest_gate", False)
@@ -902,10 +946,20 @@ def _apply_adaptive_win_relax_lab_a(
         sig_desc = _signals_sorted_desc(signals)
         fee_flag = bool(oc.get("include_fees_in_score", True))
         base_fb = _replay_fitness_bundle(
-            settled, rules_base, sig_desc, include_fees_in_score=fee_flag, max_rows=200
+            settled,
+            rules_base,
+            sig_desc,
+            include_fees_in_score=fee_flag,
+            max_rows=200,
+            branch_trading_cfg=lab_base,
         )
         new_fb = _replay_fitness_bundle(
-            settled, proposed_rules, sig_desc, include_fees_in_score=fee_flag, max_rows=200
+            settled,
+            proposed_rules,
+            sig_desc,
+            include_fees_in_score=fee_flag,
+            max_rows=200,
+            branch_trading_cfg=lab_base,
         )
         if float(new_fb["score_dollars"]) <= float(base_fb["score_dollars"]) and not bool(
             oc.get("adaptive_skip_backtest_gate", False)
@@ -992,7 +1046,14 @@ def _internal_lab_a_bet_pulse(
     pnl = sum(int(t.get("pnl_cents") or 0) for t in window) / max(1, len(window))
     sig_desc = _signals_sorted_desc(sg_a)
     fee_flag = bool(oc.get("include_fees_in_score", True))
-    fb = _replay_fitness_bundle(window, rules_a, sig_desc, include_fees_in_score=fee_flag, max_rows=40)
+    fb = _replay_fitness_bundle(
+        window,
+        rules_a,
+        sig_desc,
+        include_fees_in_score=fee_flag,
+        max_rows=40,
+        branch_trading_cfg=lab_base,
+    )
     matched_n = int(fb.get("matched_n") or 0)
     fitness_score = float(fb.get("score_dollars") or 0.0)
     drive = fitness_score if matched_n >= 2 else (pnl / 100.0)
@@ -1349,10 +1410,20 @@ def apply_claude_rule_changes(
     a_tail = st_a[:tail_n]
 
     base_fb = _replay_fitness_bundle(
-        a_tail, rules_base, sig_a, include_fees_in_score=fee_flag, max_rows=tail_n
+        a_tail,
+        rules_base,
+        sig_a,
+        include_fees_in_score=fee_flag,
+        max_rows=tail_n,
+        branch_trading_cfg=lab_base,
     )
     prop_fb = _replay_fitness_bundle(
-        a_tail, merged, sig_a, include_fees_in_score=fee_flag, max_rows=tail_n
+        a_tail,
+        merged,
+        sig_a,
+        include_fees_in_score=fee_flag,
+        max_rows=tail_n,
+        branch_trading_cfg=lab_base,
     )
     meta["score_before"] = float(base_fb["score_dollars"])
     meta["score_after"] = float(prop_fb["score_dollars"])
@@ -1362,8 +1433,15 @@ def apply_claude_rule_changes(
     ) -> dict[str, Any]:
         stx = [t for t in st if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
         _, rx = _ensure_lab_rules(cfg, br)
+        lk = _lab_key_for_branch(br) or "lab_a"
+        lab_sub = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
         return _replay_fitness_bundle(
-            stx[:tail_n], rx, _signals_sorted_desc(sg), include_fees_in_score=fee_flag, max_rows=tail_n
+            stx[:tail_n],
+            rx,
+            _signals_sorted_desc(sg),
+            include_fees_in_score=fee_flag,
+            max_rows=tail_n,
+            branch_trading_cfg=lab_sub,
         )
 
     fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B)

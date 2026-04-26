@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .branch_config import normalize_paper_fee_model
+from .branch_config import ensure_patient_stop_loss_on_branch_dict, normalize_paper_fee_model
 from .persistence import expand_partial_lab_branch
 
 
@@ -29,6 +29,8 @@ def normalize_rules_list(raw: Any, *, max_rules: int = 48) -> list[dict[str, Any
     Coerce and validate each rule with ``RuleCfg`` (same constraints as ``PUT /api/config`` for the ``rules`` field).
 
     Used for lab-branch saves (which bypass ``BotConfigPayload`` nested validation) and ``POST /api/config/validate-rules``.
+    Patient stop-loss fields (``enable_patient_stop_loss``, etc.) are **not** part of ``rules``; they live on the Live root
+    or each ``lab_*`` object and are clamped via ``branch_config.ensure_patient_stop_loss_on_branch_dict``.
     """
     if not isinstance(raw, list):
         raise ValueError("rules must be a JSON array")
@@ -80,6 +82,10 @@ class BotConfigPayload(BaseModel):
     dev_sim_yes_implied_ge_pct: float | int | None = Field(default=None, ge=1, le=99)
     # Paper sim: if implied YES moves against the entry by at least this many percentage points (e.g. 50 = 75%→25%), close at bid.
     swing_exit_implied_drop_pct: float | int | None = Field(default=None, ge=0, le=95)
+    # Paper sim: time + fee-aware stop (see engine ``_handle_patient_stop_loss_exits``).
+    enable_patient_stop_loss: bool | None = None
+    stop_loss_trigger_pct: float | None = None
+    min_hold_minutes_before_stop: int | None = None
     # Paper sim fee model in basis points (bps) per execution notional. 20 = 0.20%.
     paper_fee_bps: float | int | None = Field(default=None, ge=0, le=500)
     # Kalshi quadratic fee schedule (see https://kalshi.com/docs/kalshi-fee-schedule.pdf) vs flat bps.
@@ -127,6 +133,22 @@ class BotConfigPayload(BaseModel):
             else:
                 fv = float(v)
                 out["swing_exit_implied_drop_pct"] = None if fv <= 0 else fv
+        if "enable_patient_stop_loss" in self.model_fields_set and self.enable_patient_stop_loss is not None:
+            out["enable_patient_stop_loss"] = bool(self.enable_patient_stop_loss)
+        if "stop_loss_trigger_pct" in self.model_fields_set and self.stop_loss_trigger_pct is not None:
+            try:
+                fv = float(self.stop_loss_trigger_pct)
+                if fv > 0:
+                    fv = -abs(fv)
+                out["stop_loss_trigger_pct"] = max(-20.0, min(-2.0, fv))
+            except (TypeError, ValueError):
+                pass
+        if "min_hold_minutes_before_stop" in self.model_fields_set and self.min_hold_minutes_before_stop is not None:
+            try:
+                iv = int(self.min_hold_minutes_before_stop)
+                out["min_hold_minutes_before_stop"] = max(5, min(120, iv))
+            except (TypeError, ValueError):
+                pass
         if "paper_fee_bps" in self.model_fields_set:
             v = self.paper_fee_bps
             if v is None:
@@ -177,4 +199,9 @@ class BotConfigPayload(BaseModel):
                 if v is not None:
                     cur[k] = v
             out["optimizer"] = cur
+        ensure_patient_stop_loss_on_branch_dict(out)
+        for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+            sub = out.get(lk)
+            if isinstance(sub, dict):
+                ensure_patient_stop_loss_on_branch_dict(sub)
         return out
