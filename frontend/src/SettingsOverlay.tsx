@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   DevSimHighYesControl,
   EMPTY_RULES_LIST,
@@ -18,8 +19,8 @@ type AnyObj = Record<string, any>;
 type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_ab_optimizer" | "all" | "help";
 type LabBranchKey = "a" | "b" | "c" | "d";
 
-/** Local display for optimizer ``claude_proposals_trace[].at`` (ISO from backend). */
-function formatClaudeTraceAt(iso: string): string {
+/** Local display for optimizer trace ``at`` ISO timestamps. */
+function formatOptimizerTraceAt(iso: string): string {
   const s = String(iso || "").trim();
   if (!s) return "—";
   const ms = Date.parse(s);
@@ -687,7 +688,7 @@ function SettingsHelpSection({
             {
               name: "Lab include toggles + Lab style selectors (A / B / C / D)",
               what: "Decides which labs participate in optimizer context and their posture labels (blend, conservative, aggressive, wild).",
-              impact: "Changes context interpretation for all four arms; persisted adaptive writes still target Lab A. Turning Lab D off removes the wild arm from the narrative Claude sees.",
+              impact: "Changes context interpretation for all four arms; persisted adaptive writes still target Lab A. Turning Lab D off removes the wild arm from the internal optimizer narrative.",
             },
             {
               name: "Losses trigger / threshold step / minute step / YES floors / min-minutes-left",
@@ -970,14 +971,49 @@ export default function SettingsOverlay({
   ];
   const visibleSizingTabs = sizingTabs.filter((t) => t.visible);
   const activeLabSizingTab = visibleSizingTabs.some((t) => t.id === labSizingTab) ? labSizingTab : (visibleSizingTabs[0]?.id ?? "a");
-  // Optimizer UI is intentionally hidden for now.
-  const showOpt = false;
+  const showOpt = settingsTab === "lab_ab_optimizer" || settingsTab === "all";
   const showData = settingsTab === "all";
   const showHelp = settingsTab === "help";
   const historyRows = useMemo(
     () => (Array.isArray(optimizerCfg?.change_history) ? (optimizerCfg.change_history as AnyObj[]) : []),
     [optimizerCfg?.change_history],
   );
+  const optimizerTraceRows = useMemo(() => {
+    const src = Array.isArray(optimizerCfg?.internal_optimizer_trace)
+      ? (optimizerCfg.internal_optimizer_trace as AnyObj[])
+      : [];
+    return src.slice(0, 20);
+  }, [optimizerCfg?.internal_optimizer_trace]);
+  const optimizerTraceChartRows = useMemo(
+    () =>
+      optimizerTraceRows
+        .slice()
+        .reverse()
+        .map((r, i) => ({
+          idx: i + 1,
+          score: Number.isFinite(Number(r?.score_after ?? r?.score ?? r?.score_before))
+            ? Number(r?.score_after ?? r?.score ?? r?.score_before)
+            : null,
+          accepted: r?.accepted ? 1 : 0,
+          rejected: r?.accepted ? 0 : 1,
+          at: String(r?.at || ""),
+          label: formatOptimizerTraceAt(String(r?.at || "")),
+        })),
+    [optimizerTraceRows],
+  );
+  const optimizerTraceStats = useMemo(() => {
+    const n = optimizerTraceRows.length;
+    if (!n) return { cycles: 0, accepted: 0, rate: 0, lastScore: null as number | null, avgTrend: 0 };
+    const accepted = optimizerTraceRows.filter((r) => Boolean(r?.accepted)).length;
+    const scores = optimizerTraceRows
+      .slice()
+      .reverse()
+      .map((r) => Number(r?.score_after ?? r?.score ?? r?.score_before))
+      .filter((v) => Number.isFinite(v)) as number[];
+    const lastScore = scores.length ? scores[scores.length - 1] : null;
+    const avgTrend = scores.length >= 2 ? (scores[scores.length - 1] - scores[0]) / Math.max(1, scores.length - 1) : 0;
+    return { cycles: n, accepted, rate: (accepted * 100) / n, lastScore, avgTrend };
+  }, [optimizerTraceRows]);
 
   if (!open) return null;
 
@@ -1365,7 +1401,7 @@ export default function SettingsOverlay({
             </h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               <strong>Lab A</strong> = staging (scheduled optimizer persists adaptive tuning here). <strong>Lab B</strong> = conservative and{" "}
-              <strong>Lab C</strong> = aggressive and <strong>Lab D</strong> = wild reference arms (same data to Claude for context; no auto-applied rule changes on B/C/D). Bankroll
+              <strong>Lab C</strong> = aggressive and <strong>Lab D</strong> = wild reference arms (same data for optimizer context; no auto-applied rule changes on B/C/D). Bankroll
               row values are used by per-lab <strong>Save … options</strong> and <code>PUT /api/config/lab-branches</code>. Per-lab YES/NO bands override Live until cleared in JSON;
               sliders fall back to the Live rule list when a lab has no saved <code>rules</code>.
             </p>
@@ -1613,7 +1649,7 @@ export default function SettingsOverlay({
 
         {showOpt ? (
           <div className="panel settings-nested-panel" style={{ marginTop: 16, padding: "12px 14px" }}>
-            <h2 className="section-tip" style={{ marginTop: 0 }} title="Scheduled Claude + adaptive loop; persists rule/threshold and bet-fraction changes to Lab A only.">
+            <h2 className="section-tip" style={{ marginTop: 0 }} title="Scheduled internal optimizer + adaptive loop; persists rule/threshold and bet-fraction changes to Lab A only.">
               Optimizer (labs)
             </h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
@@ -1657,7 +1693,7 @@ export default function SettingsOverlay({
               <span>Enable adaptive threshold/time auto-correction</span>
             </label>
             <div className="sub" style={{ margin: "-4px 0 8px 26px", fontSize: 11, lineHeight: 1.45, color: "var(--muted)" }}>
-              Internal pulse (loss-streak tighten, optional win-path ease, Lab A bet fraction) runs on the optimizer interval even when the Claude scheduler is off.
+              Internal pulse (loss-streak tighten, optional win-path ease, Lab A bet fraction) runs on the optimizer interval even when scheduled runs are off.
             </div>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_lab_a_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.lab_a_enabled ?? true)} disabled={busy} />
@@ -1771,12 +1807,12 @@ export default function SettingsOverlay({
             </label>
             <label className="checkbox" style={{ border: "none" }}>
               <input
-                id="opt_optimize_rules_with_claude"
+                id="opt_optimize_internal_mutations"
                 type="checkbox"
-                defaultChecked={Boolean(optimizerCfg?.optimize_rules_with_claude ?? true)}
+                defaultChecked={Boolean(optimizerCfg?.optimize_internal_mutations ?? true)}
                 disabled={busy}
               />
-              <span>Let Claude mutate Lab A rules (replay + statistical gate before apply)</span>
+              <span>Enable internal mutant-cycle rule/parameter mutations (replay + statistical gate before apply)</span>
             </label>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_include_fees_in_score" type="checkbox" defaultChecked={Boolean(optimizerCfg?.include_fees_in_score ?? true)} disabled={busy} />
@@ -1831,8 +1867,8 @@ export default function SettingsOverlay({
                   min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 2),
                   regime_lookback_hours: Number((document.getElementById("opt_regime_lookback_hours") as HTMLInputElement | null)?.value || 4),
                   optimize_bet_size: Boolean((document.getElementById("opt_optimize_bet_size") as HTMLInputElement | null)?.checked),
-                  optimize_rules_with_claude: Boolean(
-                    (document.getElementById("opt_optimize_rules_with_claude") as HTMLInputElement | null)?.checked,
+                  optimize_internal_mutations: Boolean(
+                    (document.getElementById("opt_optimize_internal_mutations") as HTMLInputElement | null)?.checked,
                   ),
                   include_fees_in_score: Boolean((document.getElementById("opt_include_fees_in_score") as HTMLInputElement | null)?.checked),
                   backtest_proposals: Boolean((document.getElementById("opt_backtest_proposals") as HTMLInputElement | null)?.checked),
@@ -1849,75 +1885,53 @@ export default function SettingsOverlay({
                 type="button"
                 className="primary"
                 disabled={busy || optimizerSaving || !onRunOptimizerNow}
-                title="POST /api/optimizer/run — runs internal pulse plus Claude when API key and rules/bet toggles allow."
+                title="POST /api/optimizer/run — runs internal pulse and mutant-cycle checks immediately."
                 onClick={() => void onRunOptimizerNow?.()}
               >
-                Force optimizer / Claude cycle now
+                Force optimizer cycle now
               </button>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
-                Uses <code>force=true</code> so Claude runs even if the scheduler checkbox is off (still requires{" "}
-                <code>ANTHROPIC_API_KEY</code>).
+                Uses <code>force=true</code> to run the internal pulse immediately even if scheduled mode is off.
               </p>
             </div>
             <div style={{ marginTop: 16 }}>
-              <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Claude proposals trace (last 10)</h3>
-              <p className="sub" style={{ marginBottom: 8, fontSize: 11 }}>
-                Each row is one proposal cycle. Expand for scores and summary; reasoning has its own toggle.
-              </p>
-              {(Array.isArray(optimizerCfg?.claude_proposals_trace) ? (optimizerCfg.claude_proposals_trace as AnyObj[]) : []).map(
-                (row, i) => {
-                  const ts = formatClaudeTraceAt(String(row.at || ""));
-                  const headline = `${ts}${row.mutant ? " · mutant" : ""} · ${row.accepted ? "accepted" : "rejected"}`;
-                  return (
-                    <details
-                      key={String(row.at || i)}
-                      className="sub"
-                      style={{
-                        marginTop: 10,
-                        fontSize: 11,
-                        lineHeight: 1.45,
-                        border: "1px solid var(--border)",
-                        borderRadius: 6,
-                        padding: "6px 10px",
+              <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Internal Optimizer Trace (last 20 cycles)</h3>
+              <div className="sub" style={{ display: "grid", gap: 4, marginBottom: 8, fontSize: 11 }}>
+                <div>Cycles: <strong>{optimizerTraceStats.cycles}</strong></div>
+                <div>Acceptance rate: <strong>{optimizerTraceStats.rate.toFixed(1)}%</strong></div>
+                <div>Last fitness score: <strong>{optimizerTraceStats.lastScore == null ? "—" : optimizerTraceStats.lastScore.toFixed(3)}</strong></div>
+                <div>Average score trend/cycle: <strong>{optimizerTraceStats.avgTrend >= 0 ? "+" : ""}{optimizerTraceStats.avgTrend.toFixed(3)}</strong></div>
+              </div>
+              <div style={{ width: "100%", height: 180, marginTop: 8 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={optimizerTraceChartRows}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
+                    <XAxis dataKey="idx" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={40} />
+                    <Tooltip
+                      formatter={(value: unknown) => (value == null ? "—" : Number(value).toFixed(3))}
+                      labelFormatter={(label: unknown) => {
+                        const i = Number(label) - 1;
+                        const row = optimizerTraceChartRows[i];
+                        return row ? `${row.label}` : `Cycle ${String(label)}`;
                       }}
-                    >
-                      <summary style={{ cursor: "pointer", fontWeight: 600, listStylePosition: "outside" }}>{headline}</summary>
-                      <div style={{ marginTop: 8, paddingLeft: 2 }}>
-                        <div className="sub" style={{ fontSize: 10, opacity: 0.85 }} title="Raw ISO timestamp from server">
-                          UTC / stored: <code>{String(row.at || "—")}</code>
-                        </div>
-                        {row.reject_reason ? (
-                          <div style={{ marginTop: 6 }}>
-                            <code>{String(row.reject_reason)}</code>
-                          </div>
-                        ) : null}
-                        {row.score_before != null || row.score_after != null ? (
-                          <div style={{ marginTop: 6 }}>
-                            Score {String(row.score_before ?? "—")} → {String(row.score_after ?? "—")}
-                          </div>
-                        ) : null}
-                        {row.summary ? <div style={{ marginTop: 6 }}>{String(row.summary).slice(0, 400)}</div> : null}
-                        {row.reasoning ? (
-                          <details style={{ marginTop: 8 }}>
-                            <summary style={{ cursor: "pointer", fontWeight: 500 }}>Reasoning (full)</summary>
-                            <pre
-                              style={{
-                                marginTop: 6,
-                                whiteSpace: "pre-wrap",
-                                fontSize: 10,
-                                maxHeight: 220,
-                                overflow: "auto",
-                              }}
-                            >
-                              {String(row.reasoning)}
-                            </pre>
-                          </details>
-                        ) : null}
-                      </div>
-                    </details>
-                  );
-                },
-              )}
+                    />
+                    <Line type="monotone" dataKey="score" stroke="#6ee7ff" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ width: "100%", height: 120, marginTop: 10 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={[{ name: "decisions", accepted: optimizerTraceStats.accepted, rejected: Math.max(0, optimizerTraceStats.cycles - optimizerTraceStats.accepted) }]}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={40} allowDecimals={false} />
+                    <Tooltip />
+                    <Bar dataKey="accepted" fill="#3ddc97" />
+                    <Bar dataKey="rejected" fill="#ff8a80" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
             <div style={{ marginTop: 12 }}>
               <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Change history</h3>

@@ -55,7 +55,7 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("interval_minutes", 20)
     out.setdefault("lookback_hours", 48)
     out.setdefault("max_rows_per_table", 5000)
-    out.setdefault("model", "claude-sonnet-4-5")
+    out.setdefault("model", "internal")
     out.setdefault("adaptive_enabled", True)
     out.setdefault("mode", "duel")  # duel | independent
     out.setdefault("lab_a_enabled", True)
@@ -85,9 +85,11 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("next_tick_preview", "")
     out.setdefault("pulse_eval_count", 0)
     out.setdefault("last_pulse_eval_at", "")
-    out.setdefault("optimize_rules_with_claude", True)
+    out.setdefault("optimize_internal_mutations", True)
     out.setdefault("optimizer_cycle_count", 0)
-    out.setdefault("claude_proposals_trace", [])
+    out.setdefault("internal_optimizer_trace", [])
+    out.setdefault("last_mutation_at", "")
+    out.setdefault("best_fitness_score_7d", 0.0)
     # Patient stop-loss is modeled on each ``lab_*`` / Live trading dict (``enable_patient_stop_loss``,
     # ``stop_loss_trigger_pct``, ``min_hold_minutes_before_stop``). ``replay_under_rules_detail`` accepts
     # ``branch_trading_cfg`` to clamp replay PnL vs. those stops when evaluating fitness.
@@ -370,6 +372,34 @@ def _equity_slope_dollars_per_hour(snaps: list[dict[str, Any]]) -> float | None:
     t1, e1 = pts[-1]
     hours = max(1e-6, (t1 - t0).total_seconds() / 3600.0)
     return (e1 - e0) / hours
+
+
+def _fitness_score_trend_from_trace(trace_rows: list[dict[str, Any]], *, max_rows: int = 20) -> float | None:
+    """
+    Approximate score slope per cycle from the most recent trace entries.
+
+    Positive means improving recent composite fitness; negative means deterioration.
+    """
+    vals: list[float] = []
+    rows = trace_rows[: max(2, max_rows)]
+    for row in reversed(rows):
+        try:
+            v = float(row.get("score") if row.get("score") is not None else row.get("score_after"))
+        except (TypeError, ValueError):
+            continue
+        if v == v:
+            vals.append(v)
+    if len(vals) < 2:
+        return None
+    return (vals[-1] - vals[0]) / float(max(1, len(vals) - 1))
+
+
+def _append_internal_trace(oc: dict[str, Any], entry: dict[str, Any]) -> None:
+    """Keep the internal optimizer trace bounded (newest first)."""
+    rows = oc.get("internal_optimizer_trace")
+    prev = rows if isinstance(rows, list) else []
+    out = [entry, *prev][:20]
+    oc["internal_optimizer_trace"] = out
 
 
 def _regime_volatility(signals: list[dict[str, Any]], *, hours: float, end: dt.datetime) -> dict[str, Any]:
@@ -1012,9 +1042,16 @@ def _internal_lab_a_bet_pulse(
     tr_c: list[dict[str, Any]],
     tr_d: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
+    eq_a: list[dict[str, Any]],
     at_iso: str,
 ) -> dict[str, Any] | None:
-    """Rule-based Lab A bet fraction nudge from replay fitness on recent settled window (fallback: mean ¢/trade)."""
+    """
+    Proactive Lab A fraction pulse driven by:
+    - replay composite fitness on recent settled rows,
+    - recent fitness trend from internal trace,
+    - equity slope ($/hour),
+    - regime volatility bucket (high-vol shrinks adjustments).
+    """
     if not bool(oc.get("optimize_bet_size", True)):
         return None
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
@@ -1040,7 +1077,7 @@ def _internal_lab_a_bet_pulse(
     except (TypeError, ValueError):
         old_f = 0.03
 
-    window = st_a[:40]
+    window = st_a[:48]
     if len(window) < 4:
         return None
     pnl = sum(int(t.get("pnl_cents") or 0) for t in window) / max(1, len(window))
@@ -1056,19 +1093,20 @@ def _internal_lab_a_bet_pulse(
     )
     matched_n = int(fb.get("matched_n") or 0)
     fitness_score = float(fb.get("score_dollars") or 0.0)
-    drive = fitness_score if matched_n >= 2 else (pnl / 100.0)
-    step = 0.003
-    style_d = _branch_style(oc, BRANCH_LAB_D)
-    if style_d == "wild":
-        b_tail = st_b[:24]
-        c_tail = st_c[:24]
-        b_mean = (sum(int(t.get("pnl_cents") or 0) for t in b_tail) / len(b_tail)) if b_tail else 0.0
-        c_mean = (sum(int(t.get("pnl_cents") or 0) for t in c_tail) / len(c_tail)) if c_tail else 0.0
-        bc_boost = max(b_mean, c_mean)
-        if bc_boost >= 15:
-            step = 0.005
-        elif bc_boost <= -15:
-            step = 0.0045
+    regime_h = max(1.0, float(oc.get("regime_lookback_hours") or 4))
+    regime = _regime_volatility(sg_a, hours=regime_h, end=_parse_iso_dt(at_iso) or _utc_now())
+    regime_bucket = str(regime.get("bucket") or "unknown")
+    # High-vol cuts aggressiveness; low-vol allows slightly larger nudges.
+    regime_mult = 0.65 if regime_bucket == "high_vol" else 1.15 if regime_bucket == "low_vol" else 1.0
+    eq_slope = _equity_slope_dollars_per_hour(eq_a) or 0.0
+    trace_rows = oc.get("internal_optimizer_trace")
+    trace_list = trace_rows if isinstance(trace_rows, list) else []
+    fitness_slope = _fitness_score_trend_from_trace(trace_list, max_rows=20) or 0.0
+    base_drive = fitness_score if matched_n >= 2 else (pnl / 100.0)
+    drive = base_drive + (eq_slope * 0.05) + (fitness_slope * 3.0)
+    # Dynamic pulse size grows with trend confidence but stays capped by global min/max fractions.
+    mag = min(1.6, max(0.35, abs(drive) / 6.0))
+    step = 0.0022 * regime_mult * mag
     if drive > 0:
         new_f = min(MAX_BALANCE_FRACTION_PER_WINDOW, old_f + step)
     elif drive < 0:
@@ -1086,14 +1124,12 @@ def _internal_lab_a_bet_pulse(
     )
     cfg["lab_a"] = lab
     reason = (
-        f"internal pulse: Lab A last-{len(window)} settled fitness {fitness_score:.3f} "
-        f"(mean {pnl:.0f}¢/trade, {matched_n} replay-matched)"
+        f"internal pulse: fitness={fitness_score:.3f}, trend={fitness_slope:+.3f}/cycle, "
+        f"equity_slope={eq_slope:+.2f}$/h, regime={regime_bucket}, mean={pnl:.0f}¢, matched={matched_n}"
     )
-    if style_d == "wild":
-        reason += " (Lab D wild bias from B/C momentum)"
     hint = (
         f"Next tick uses bet fraction ~{new_f:.2%} of Lab A paper per window (was ~{old_f:.2%}). "
-        f"Threshold rules unchanged unless the loss-streak adaptive fires."
+        f"Pulse scales with replay fitness trend and equity slope; high-vol regime reduces step size."
     )
     bc = _optimizer_pulse_bc_enrichment(cfg, oc)
     item = _history_bet_item(
@@ -1135,6 +1171,146 @@ def _history_bet_item(
         "before": {"balance_fraction_per_window": before_f},
         "after": after,
     }
+
+
+def _internal_mutate_rules_and_params(
+    *,
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    st_a: list[dict[str, Any]],
+    st_b: list[dict[str, Any]],
+    st_c: list[dict[str, Any]],
+    st_d: list[dict[str, Any]],
+    sg_a: list[dict[str, Any]],
+    sg_b: list[dict[str, Any]],
+    sg_c: list[dict[str, Any]],
+    sg_d: list[dict[str, Any]],
+    at_iso: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """
+    Internal mutant cycle: deterministic + random perturbations to Lab A rules/sizing.
+
+    Applies only when replay fitness improves and statistical gate vs B/C/D passes.
+    Returns ``(history_row_or_none, meta)``.
+    """
+    meta: dict[str, Any] = {"accepted": False, "mutant_run": True, "reject_reason": ""}
+    if not bool(oc.get("optimize_internal_mutations", True)):
+        meta["reject_reason"] = "mutations_disabled"
+        return None, meta
+    if len(st_a) < max(8, int(oc.get("min_trades_for_optimize") or 8)):
+        meta["reject_reason"] = "insufficient_lab_a_settled"
+        return None, meta
+    lab_a, rules_base = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    if not rules_base:
+        meta["reject_reason"] = "no_rules"
+        return None, meta
+    sig_a = _signals_sorted_desc(sg_a)
+    fee_flag = bool(oc.get("include_fees_in_score", True))
+    tail_n = 120
+    base_fb = _replay_fitness_bundle(
+        st_a[:tail_n],
+        rules_base,
+        sig_a,
+        include_fees_in_score=fee_flag,
+        max_rows=tail_n,
+        branch_trading_cfg=lab_a,
+    )
+    meta["score_before"] = float(base_fb["score_dollars"])
+    cyc = max(1, _safe_int(oc.get("optimizer_cycle_count"), 1))
+    rng = random.Random(cyc * 997 + len(st_a) * 17 + len(sg_a))
+    drift = max(-0.03, min(0.03, float(base_fb["sharpe_approx"]) * 0.01))
+    mutated_rules: list[dict[str, Any]] = []
+    for i, r in enumerate(rules_base):
+        nr = dict(r)
+        side = str(nr.get("side") or "yes").strip().lower()
+        if side == "no":
+            mutated_rules.append(nr)
+            continue
+        jitter_prob = rng.uniform(-0.015, 0.015) + drift
+        jitter_mins = rng.randint(-1, 1)
+        lo = max(0.01, min(0.99, _safe_float(nr.get("min_prob"), 0.0) + jitter_prob))
+        hi = max(lo + 0.005, min(0.995, _safe_float(nr.get("max_prob"), 1.0) + jitter_prob))
+        minm = max(0, min(60, _safe_int(nr.get("min_minutes_left"), 0) + jitter_mins))
+        maxm = max(minm, min(120, _safe_int(nr.get("max_minutes_left"), 60) + jitter_mins))
+        nr["min_prob"] = round(lo, 4)
+        nr["max_prob"] = round(hi, 4)
+        nr["min_minutes_left"] = int(minm)
+        nr["max_minutes_left"] = int(maxm)
+        if i == 0:
+            nr["name"] = f"{str(nr.get('name') or 'rule')[:48]} · m{cyc}"
+        mutated_rules.append(nr)
+    try:
+        mutated_rules = normalize_rules_list(mutated_rules)
+    except Exception as e:
+        meta["reject_reason"] = f"normalize_failed:{e}"
+        return None, meta
+    old_f = clamp_balance_fraction_per_window(
+        _safe_float(lab_a.get("balance_fraction_per_window"), _safe_float(cfg.get("balance_fraction_per_window"), 0.03))
+    )
+    frac_step = rng.uniform(-0.0035, 0.0035) + drift * 0.35
+    new_f = clamp_balance_fraction_per_window(old_f + frac_step)
+    mut_lab = dict(lab_a)
+    mut_lab["balance_fraction_per_window"] = round(new_f, 4)
+    prop_fb = _replay_fitness_bundle(
+        st_a[:tail_n],
+        mutated_rules,
+        sig_a,
+        include_fees_in_score=fee_flag,
+        max_rows=tail_n,
+        branch_trading_cfg=mut_lab,
+    )
+    meta["score_after"] = float(prop_fb["score_dollars"])
+    if meta["score_after"] <= meta["score_before"]:
+        meta["reject_reason"] = "fitness_not_improved"
+        return None, meta
+    def _tail_fb(st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str) -> dict[str, Any]:
+        _, r = _ensure_lab_rules(cfg, br)
+        lk = _lab_key_for_branch(br) or "lab_a"
+        lb = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
+        return _replay_fitness_bundle(
+            st[:tail_n],
+            r,
+            _signals_sorted_desc(sg),
+            include_fees_in_score=fee_flag,
+            max_rows=tail_n,
+            branch_trading_cfg=lb,
+        )
+    fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B)
+    fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C)
+    fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D)
+    a_d = [x / 100.0 for x in prop_fb["per_trade_pnl_cents_chrono"]]
+    ctrl_d = (
+        [x / 100.0 for x in fb_b["per_trade_pnl_cents_chrono"]]
+        + [x / 100.0 for x in fb_c["per_trade_pnl_cents_chrono"]]
+        + [x / 100.0 for x in fb_d["per_trade_pnl_cents_chrono"]]
+    )
+    ctrl_scores = [float(fb_b["score_dollars"]), float(fb_c["score_dollars"]), float(fb_d["score_dollars"])]
+    stat_ok, stat_detail = is_statistically_better(a_d, ctrl_d, lab_a_score=meta["score_after"], control_scores=ctrl_scores)
+    meta["statistical_detail"] = stat_detail
+    if not stat_ok:
+        meta["reject_reason"] = "statistical_gate_failed"
+        return None, meta
+    mut_lab["rules"] = mutated_rules
+    mut_lab["optimizer_note"] = f"internal_mutation cycle={cyc} score={meta['score_before']:.3f}->{meta['score_after']:.3f}"
+    cfg["lab_a"] = mut_lab
+    oc["last_mutation_at"] = at_iso
+    meta["accepted"] = True
+    meta["reject_reason"] = ""
+    row = {
+        "id": uuid4().hex,
+        "created_at": at_iso,
+        "branch": BRANCH_LAB_A,
+        "lab_label": "Lab A",
+        "style": "internal_mutation",
+        "reason": "mutant cycle accepted via replay + statistical gates",
+        "summary": (
+            f"Lab A mutant cycle: score {meta['score_before']:.3f}->{meta['score_after']:.3f}, "
+            f"fraction {old_f:.4f}->{new_f:.4f}, rules={len(mutated_rules)}"
+        )[:400],
+        "before": {"score": meta["score_before"], "balance_fraction_per_window": old_f, "rules_count": len(rules_base)},
+        "after": {"score": meta["score_after"], "balance_fraction_per_window": round(new_f, 4), "rules_count": len(mutated_rules)},
+    }
+    return row, meta
 
 
 def _apply_claude_bet_recommendations(
@@ -1661,11 +1837,33 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         cw = _apply_adaptive_win_relax_lab_a(cfg=cfg, oc=oc, trades=tr_a, signals=sg_a, at_iso=end_iso)
         if cw:
             changes.append(cw)
+    eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
     bi = _internal_lab_a_bet_pulse(
-        cfg=cfg, oc=oc, tr_a=tr_a, tr_b=tr_b, tr_c=tr_c, tr_d=tr_d, sg_a=sg_a, at_iso=end_iso
+        cfg=cfg, oc=oc, tr_a=tr_a, tr_b=tr_b, tr_c=tr_c, tr_d=tr_d, sg_a=sg_a, eq_a=eq_a, at_iso=end_iso
     )
     if bi:
         changes.append(bi)
+    mutation_meta: dict[str, Any] = {"accepted": False, "mutant_run": mutant_run, "reject_reason": ""}
+    if mutant_run:
+        st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        mut_row, mutation_meta = _internal_mutate_rules_and_params(
+            cfg=cfg,
+            oc=oc,
+            st_a=st_a,
+            st_b=st_b,
+            st_c=st_c,
+            st_d=st_d,
+            sg_a=sg_a,
+            sg_b=sg_b,
+            sg_c=sg_c,
+            sg_d=sg_d,
+            at_iso=end_iso,
+        )
+        if mut_row:
+            changes.append(mut_row)
 
     _set_next_tick_preview(
         oc,
@@ -1684,226 +1882,51 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         oc["last_change_at"] = end_iso
         _merge_pulse_trace(oc, changes)
     bet_frac_n = sum(1 for c in changes if str(c.get("style") or "") == "bet_size")
-
-    key = env.anthropic_api_key.strip()
-    want_claude = (bool(sched) or bool(force)) and bool(key)
-    if not want_claude:
-        oc["last_run_at"] = end_iso
-        oc["last_status"] = "ok_internal_pulse" if changes else "ok_noop"
-        oc["last_error"] = ""
-        cfg["optimizer"] = oc
-        await store.save_config(
-            cfg,
-            history_branch="global",
-            history_changed_by="optimizer_claude",
-            history_reason="ok_internal_pulse" if changes else "ok_noop",
-        )
-        return {
-            "ok": True,
-            "adaptive_only": True,
-            "internal_only": True,
-            "changes_applied": len(changes),
-            "bet_fraction_changes": bet_frac_n,
-            "window_start": start_iso,
-            "window_end": end_iso,
-        }
-
-    cfg["optimizer"] = oc
-    await store.save_config(
-        cfg, history_branch="global", history_changed_by="optimizer_claude", history_reason="pre_claude_checkpoint"
-    )
-    cfg = await store.load_config()
-    oc = _norm_opt_cfg(_opt_cfg(cfg))
-
-    eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
-    eq_b = await store.equity_series(limit=500, branch=BRANCH_LAB_B)
-    eq_c = await store.equity_series(limit=500, branch=BRANCH_LAB_C)
-    eq_d = await store.equity_series(limit=500, branch=BRANCH_LAB_D)
-    metrics = _build_metrics_context(
-        cfg=cfg,
-        oc=oc,
-        tr_a=tr_a,
-        tr_b=tr_b,
-        tr_c=tr_c,
-        tr_d=tr_d,
-        sg_a=sg_a,
-        sg_b=sg_b,
-        sg_c=sg_c,
-        sg_d=sg_d,
-        eq_a=eq_a,
-        eq_b=eq_b,
-        eq_c=eq_c,
-        eq_d=eq_d,
-        end=end,
-    )
-    payload = _build_payload(
-        cfg=cfg,
-        trades=[*tr_a, *tr_b, *tr_c, *tr_d],
-        signals=[*sg_a, *sg_b, *sg_c, *sg_d],
-        metrics=metrics,
-        oc=oc,
-    )
-    la_stats = metrics.get("lab_a") if isinstance(metrics.get("lab_a"), dict) else {}
-    regime_hint = json.dumps(
-        {
-            "primary": la_stats.get("regime"),
-            "replay_pnl_cents": la_stats.get("replay_under_current_rules_pnl_cents"),
-        },
-        default=str,
-    )[:1200]
-    payload["per_rule_performance_48h_lab_a"] = la_stats.get("per_rule_stats_48h")
-    payload["settled_trade_examples_lab_a"] = _settled_trade_examples_for_prompt(st_a_prev, n=5)
-    if mutant_run:
-        payload["optimizer_mutant_hints"] = _mutant_optimizer_hints(oc)
-        logger.info("optimizer_mutant_cycle: hints=%s", payload.get("optimizer_mutant_hints"))
-    payload["optimizer_cycle"] = {"count": oc.get("optimizer_cycle_count"), "mutant": mutant_run}
-
-    model = str(oc.get("model") or "claude-sonnet-4-5")
-    body = {
-        "model": model,
-        "max_tokens": 4200,
-        "temperature": 0.28 if mutant_run else 0.32,
-        "system": _build_claude_system_prompt(mutant_run=mutant_run, regime_hint=regime_hint),
-        "messages": [{"role": "user", "content": json.dumps(payload, default=str)}],
-    }
-
-    import httpx
-
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        r = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=body,
-        )
-        r.raise_for_status()
-        out = r.json()
-
-    txt = ""
-    for c in out.get("content") or []:
-        if isinstance(c, dict) and c.get("type") == "text":
-            txt += str(c.get("text") or "")
-    txt = txt.strip()
-    parsed, raw_meta = parse_claude_optimizer_json(txt)
-    rec: dict[str, Any]
-    if parsed is not None:
-        rec = parsed.model_dump()
-    else:
-        rec = {"summary": txt[:500], "recommendations": [], "trend_notes": [], "parse_error": raw_meta}
-        logger.warning("claude_json_parse_failed: %s", raw_meta)
-
-    rid = await store.insert_optimizer_recommendation(
-        created_at=_iso(end),
-        window_start=start_iso,
-        window_end=end_iso,
-        source_branches=[BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D],
-        summary=str(rec.get("summary") or "")[:2000],
-        recommendation_json=rec if isinstance(rec, dict) else {"raw": rec},
-        raw_json=out if isinstance(out, dict) else None,
-    )
-
-    st_a_settled = [
-        t
-        for t in tr_a
-        if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
-    ]
-    st_b_settled = [
-        t
-        for t in tr_b
-        if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
-    ]
-    st_c_settled = [
-        t
-        for t in tr_c
-        if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
-    ]
-    st_d_settled = [
-        t
-        for t in tr_d
-        if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
-    ]
-
-    claude_extra: list[dict[str, Any]] = []
-    rule_meta: dict[str, Any] = {}
-    if parsed is not None:
-        rule_hist, rule_meta = apply_claude_rule_changes(
-            cfg=cfg,
-            oc=oc,
-            parsed=parsed,
-            st_a=st_a_settled,
-            sg_a=sg_a,
-            st_b=st_b_settled,
-            sg_b=sg_b,
-            st_c=st_c_settled,
-            sg_c=sg_c,
-            st_d=st_d_settled,
-            sg_d=sg_d,
-            at_iso=_iso(end),
-            mutant_run=mutant_run,
-        )
-        claude_extra.extend(rule_hist)
-        if mutant_run and rule_hist:
-            rule_hist[0]["reason"] = (
-                f"[mutant exploration] {rule_hist[0].get('reason', '')}"[:500]
-            )
-
-    param_hist = _apply_claude_lab_parameter_patch(
-        cfg=cfg, oc=oc, parsed=parsed, at_iso=_iso(end)
-    ) if parsed is not None else []
-    claude_extra.extend(param_hist)
-
-    bet_hist = _apply_claude_bet_recommendations(
-        cfg=cfg,
-        oc=oc,
-        rec=rec if isinstance(rec, dict) else {},
-        tr_a=tr_a,
-        tr_b=tr_b,
-        tr_c=tr_c,
-        tr_d=tr_d,
-        at_iso=_iso(end),
-    )
-    claude_extra.extend(bet_hist)
-
     trace_entry: dict[str, Any] = {
-        "at": _iso(end),
-        "reasoning": (parsed.reasoning if parsed else "")[:2000],
-        "summary": (parsed.summary if parsed else str(rec.get("summary") or ""))[:800],
-        "score_before": rule_meta.get("score_before"),
-        "score_after": rule_meta.get("score_after"),
-        "accepted": bool(rule_meta.get("accepted")),
-        "reject_reason": rule_meta.get("reject_reason"),
-        "mutant": mutant_run,
-        "rule_ops": len(parsed.rule_operations) if parsed else 0,
-        "changes_n": len(claude_extra),
+        "at": end_iso,
+        "cycle": int(oc.get("optimizer_cycle_count") or 0),
+        "score": mutation_meta.get("score_after")
+        if mutation_meta.get("score_after") is not None
+        else mutation_meta.get("score_before"),
+        "score_before": mutation_meta.get("score_before"),
+        "score_after": mutation_meta.get("score_after"),
+        "accepted": bool(mutation_meta.get("accepted")),
+        "reject_reason": str(mutation_meta.get("reject_reason") or ""),
+        "mutant": bool(mutant_run),
+        "changes_n": len(changes),
     }
-    _append_claude_trace(oc, trace_entry)
-
-    if claude_extra:
-        hist2 = oc.get("change_history")
-        old2 = hist2 if isinstance(hist2, list) else []
-        lim2 = max(20, min(500, _safe_int(oc.get("max_history"), 120)))
-        oc["change_history"] = [*claude_extra, *old2][:lim2]
-        oc["last_change_at"] = _iso(end)
-        _merge_pulse_trace(oc, claude_extra)
-
-    oc["last_run_at"] = _iso(end)
-    oc["last_status"] = "ok"
+    _append_internal_trace(oc, trace_entry)
+    tr_rows = oc.get("internal_optimizer_trace")
+    tr_list = tr_rows if isinstance(tr_rows, list) else []
+    accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
+    total_n = len(tr_list)
+    oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    oc["last_run_at"] = end_iso
+    oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else ("ok_internal_pulse" if changes else "ok_noop")
     oc["last_error"] = ""
+    if mutation_meta.get("score_after") is not None:
+        try:
+            best = float(oc.get("best_fitness_score_7d") or 0.0)
+            new_best = max(best, float(mutation_meta["score_after"]))
+            oc["best_fitness_score_7d"] = round(new_best, 6)
+        except (TypeError, ValueError):
+            pass
     cfg["optimizer"] = oc
     await store.save_config(
-        cfg, history_branch="global", history_changed_by="optimizer_claude", history_reason="claude_run_complete"
+        cfg,
+        history_branch="global",
+        history_changed_by="optimizer_internal",
+        history_reason=oc["last_status"],
     )
     return {
         "ok": True,
-        "id": rid,
+        "adaptive_only": True,
+        "internal_only": True,
         "window_start": start_iso,
         "window_end": end_iso,
-        "changes_applied": len(changes) + len(claude_extra),
-        "bet_fraction_changes": len(bet_hist),
+        "changes_applied": len(changes),
+        "bet_fraction_changes": bet_frac_n,
         "mutant_run": mutant_run,
-        "claude_rule_accepted": bool(rule_meta.get("accepted")),
+        "mutation_accepted": bool(mutation_meta.get("accepted")),
     }
 

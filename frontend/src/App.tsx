@@ -657,7 +657,7 @@ function formatBranchRollupLine(label: string, m: AnyObj): string {
   return `${label}: ${settled} settled (${wls})${pnlPart}${openPart}`;
 }
 
-/** Short note: how this branch’s fills relate to the internal pulse / Claude optimizer (paper lab lookback). */
+/** Short note: how this branch’s fills relate to the internal optimizer pulse (paper lab lookback). */
 function tradeBranchOptimizerLens(branchRaw: unknown): string {
   const s = String(branchRaw || "live").trim().toLowerCase();
   if (s === "lab_a" || s === "sim_lab") {
@@ -716,7 +716,7 @@ function optimizerTradesContextExplainer(dash: AnyObj): string {
     `• Gates: needs enough settled paper trades (≥${minTr} total with PnL, ≥${minProf} winners across the check) before nudging Lab A.`,
     `• Adaptive (Lab A): stacks losing settles whose entry matched the YES implied floor (~${floor}%). At ${trig} such losses it may tighten YES floor / min minutes left if a rule replay shows better PnL; can ease after a clean win path.`,
     `• Bet pulse (Lab A): last ~40 Lab A settled mean PnL moves balance_fraction_per_window; B/C/D help pass the same gates; Lab D “wild” can change step size from B/C tails.`,
-    `• Claude scheduler ${sched ? "on" : "off"} · adaptive ${adapt ? "on" : "off"} · optimize bet ${betOpt ? "on" : "off"} — model sees all labs; persisted auto-tuning targets Lab A only.`,
+    `• Scheduled optimizer ${sched ? "on" : "off"} · adaptive ${adapt ? "on" : "off"} · optimize bet ${betOpt ? "on" : "off"} — context uses all labs; persisted auto-tuning targets Lab A only.`,
   ].join("\n");
 }
 
@@ -2532,6 +2532,24 @@ export default function App() {
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
   const metricsLabD = (dash?.metrics_lab_d || {}) as AnyObj;
+  const optimizerStatus = useMemo(() => {
+    const oc = (cfg?.optimizer || {}) as AnyObj;
+    const activity = ((dash as AnyObj | null)?.optimizer_activity || {}) as AnyObj;
+    const trace = Array.isArray(oc?.internal_optimizer_trace) ? (oc.internal_optimizer_trace as AnyObj[]) : [];
+    const cycles = Number(oc.optimizer_cycle_count || 0);
+    const accepted = trace.filter((r) => Boolean(r?.accepted)).length;
+    const total = trace.length;
+    const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
+    const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
+    return {
+      cycles,
+      lastRunAt: String(oc.last_run_at || activity.last_pulse_eval_at || ""),
+      acceptanceRatePct,
+      bestFitnessWeek,
+      pulseStatus: String(oc.last_status || "idle"),
+      pulseEvalCount: Number(activity.pulse_eval_count || 0),
+    };
+  }, [cfg?.optimizer, dash]);
 
   const promoteLabAToLive = async () => {
     const pnlA = Number(metricsLabA.total_pnl_dollars ?? 0);
@@ -2995,7 +3013,7 @@ export default function App() {
   };
 
   const saveOptimizerConfig = async (patch: Record<string, unknown>) => {
-    // Do not use global `busy` here — it disables the top-right Claude optimizer toggle and feels like a freeze.
+    // Do not use global `busy` here — it disables the top-right optimizer controls and feels like a freeze.
     setOptimizerSaving(true);
     try {
       await apiPut("/api/optimizer/config", patch as AnyObj);
@@ -3500,6 +3518,40 @@ export default function App() {
                 >
                   Info
                 </button>
+              </div>
+            </div>
+            <div
+              className="panel"
+              style={{
+                margin: "8px 0 12px 0",
+                padding: "10px 12px",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                background: "linear-gradient(180deg,rgba(24,30,48,.65),rgba(14,18,30,.78))",
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Optimizer Status</div>
+              <div className="sub" style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(110px,1fr))", gap: 8, fontSize: 12 }}>
+                <div>
+                  <div style={{ opacity: 0.8 }}>Current cycle</div>
+                  <div>{String(optimizerStatus.cycles)}</div>
+                </div>
+                <div>
+                  <div style={{ opacity: 0.8 }}>Last run</div>
+                  <div>{optimizerStatus.lastRunAt ? fmtIsoLocal(optimizerStatus.lastRunAt) : "—"}</div>
+                </div>
+                <div>
+                  <div style={{ opacity: 0.8 }}>Acceptance rate</div>
+                  <div>{optimizerStatus.acceptanceRatePct.toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div style={{ opacity: 0.8 }}>Best fitness (7d)</div>
+                  <div>{optimizerStatus.bestFitnessWeek.toFixed(3)}</div>
+                </div>
+                <div>
+                  <div style={{ opacity: 0.8 }}>Live pulse status</div>
+                  <div>{optimizerStatus.pulseStatus || "idle"}</div>
+                </div>
               </div>
             </div>
             <BranchOptimizerVisualizer
