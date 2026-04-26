@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import statistics
 import tempfile
@@ -237,6 +238,194 @@ class SimulateDisableGuardTest(unittest.TestCase):
             with c2:
                 r2 = c2.post("/api/engine/toggle?simulate=false&confirm=YES")
         self.assertEqual(r2.status_code, 200, msg=r2.text)
+
+
+class OptimizerReplayStopLossTest(unittest.TestCase):
+    def _base_rule(self) -> dict:
+        return {
+            "name": "r1",
+            "side": "yes",
+            "min_prob": 0.4,
+            "max_prob": 0.6,
+            "min_minutes_left": 0.0,
+            "max_minutes_left": 20.0,
+        }
+
+    def _sig(self) -> list[dict]:
+        return [
+            {
+                "id": 10,
+                "ticker": "KX-TEST-REPLAY-1",
+                "implied_prob": 0.5,
+                "minutes_left": 8.0,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+
+    @patch("app.optimizer_claude._calculate_net_unrealized_pct_after_fees", return_value=-8.0)
+    def test_replay_simulates_patient_stop_on_open_positions(self, _mock_net: object) -> None:
+        from app import optimizer_claude as opt_mod
+        from app.branch_config import BRANCH_LAB_A
+
+        open_pos = [
+            {
+                "simulated": 1,
+                "ticker": "KX-TEST-REPLAY-1",
+                "side": "yes",
+                "status": "open",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "amount_cents": 10_000,
+                "contracts_fp": "100",
+                "extra_json": '{"paper_fee_model": "none"}',
+            }
+        ]
+        full_cfg: dict = {"paper_balance_cents": 500_000, "paper_fee_bps": 0}
+        sig = sorted(self._sig(), key=lambda s: -int(s.get("id") or 0))
+        end = dt.datetime(2026, 1, 1, 1, 0, 0, tzinfo=dt.timezone.utc)
+        d = opt_mod.replay_under_rules_detail(
+            [],
+            [self._base_rule()],
+            sig,
+            include_fees_in_score=True,
+            branch_trading_cfg={
+                "enable_patient_stop_loss": True,
+                "stop_loss_trigger_pct": -0.1,
+                "min_hold_minutes_before_stop": 0,
+            },
+            open_positions=open_pos,
+            full_cfg=full_cfg,
+            branch=BRANCH_LAB_A,
+            replay_end_time=end,
+        )
+        self.assertEqual(int(d.get("open_simulated_stop_exits_n") or 0), 1)
+        self.assertEqual(int(d.get("stop_loss_exits_n") or 0), 1)
+        self.assertGreater(float(d.get("stop_loss_trigger_rate") or 0.0), 0.0)
+
+    def test_replay_no_simulated_exits_when_stop_disabled(self) -> None:
+        from app import optimizer_claude as opt_mod
+        from app.branch_config import BRANCH_LAB_A
+
+        open_pos = [
+            {
+                "simulated": 1,
+                "ticker": "KX-TEST-REPLAY-1",
+                "side": "yes",
+                "status": "open",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "amount_cents": 10_000,
+                "contracts_fp": "100",
+                "extra_json": "{}",
+            }
+        ]
+        full_cfg: dict = {"paper_balance_cents": 500_000}
+        sig = sorted(self._sig(), key=lambda s: -int(s.get("id") or 0))
+        end = dt.datetime(2026, 1, 1, 1, 0, 0, tzinfo=dt.timezone.utc)
+        d = opt_mod.replay_under_rules_detail(
+            [],
+            [self._base_rule()],
+            sig,
+            include_fees_in_score=True,
+            branch_trading_cfg={
+                "enable_patient_stop_loss": False,
+                "stop_loss_trigger_pct": -0.1,
+                "min_hold_minutes_before_stop": 0,
+            },
+            open_positions=open_pos,
+            full_cfg=full_cfg,
+            branch=BRANCH_LAB_A,
+            replay_end_time=end,
+        )
+        self.assertEqual(int(d.get("open_simulated_stop_exits_n") or 0), 0)
+        self.assertEqual(len(d.get("per_trade_pnl_cents_chrono") or []), 0)
+
+    def test_replay_rate_and_pnl_from_stops_historical(self) -> None:
+        from app import optimizer_claude as opt_mod
+
+        settled = [
+            {
+                "id": 1,
+                "status": "settled",
+                "ticker": "KX-TEST-REPLAY-1",
+                "pnl_cents": -200,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "settled_at": "2026-01-01T00:20:00+00:00",
+                "result": "patient_stop_loss",
+                "extra_json": json.dumps(
+                    {
+                        "patient_stop_loss": True,
+                        "entry_premium_cents": 10_000,
+                        "entry_fee_cents": 0,
+                        "settlement_exit_fee_cents": 0,
+                    }
+                ),
+            },
+            {
+                "id": 2,
+                "status": "settled",
+                "ticker": "KX-TEST-REPLAY-1",
+                "pnl_cents": 500,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "settled_at": "2026-01-01T00:20:00+00:00",
+                "extra_json": "{}",
+            },
+        ]
+        sig = sorted(self._sig(), key=lambda s: -int(s.get("id") or 0))
+        d = opt_mod.replay_under_rules_detail(
+            settled,
+            [self._base_rule()],
+            sig,
+            include_fees_in_score=True,
+            branch_trading_cfg={
+                "enable_patient_stop_loss": True,
+                "stop_loss_trigger_pct": -0.1,
+                "min_hold_minutes_before_stop": 0,
+            },
+        )
+        per = d.get("per_trade_pnl_cents_chrono") or []
+        self.assertEqual(len(per), 2)
+        self.assertEqual(int(d.get("total_pnl_from_stops_cents") or 0), -200)
+        self.assertEqual(float(d.get("stop_loss_trigger_rate") or 0.0), 50.0)
+        self.assertEqual(int(d.get("stop_loss_exits_n") or 0), 1)
+
+    @patch("app.optimizer_claude._calculate_net_unrealized_pct_after_fees", return_value=-10.0)
+    def test_fitness_score_includes_synthetic_open_stop(self, _m: object) -> None:
+        from app import optimizer_claude as opt_mod
+        from app.branch_config import BRANCH_LAB_A
+
+        open_pos = [
+            {
+                "simulated": 1,
+                "ticker": "KX-TEST-REPLAY-1",
+                "side": "yes",
+                "status": "open",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "amount_cents": 10_000,
+                "contracts_fp": "100",
+                "extra_json": '{"paper_fee_model": "none"}',
+            }
+        ]
+        full_cfg: dict = {"paper_balance_cents": 500_000, "paper_fee_bps": 0}
+        sig = sorted(self._sig(), key=lambda s: -int(s.get("id") or 0))
+        end = dt.datetime(2026, 1, 1, 1, 0, 0, tzinfo=dt.timezone.utc)
+        b = opt_mod._replay_fitness_bundle(
+            [],
+            [self._base_rule()],
+            sig,
+            include_fees_in_score=True,
+            max_rows=20,
+            branch_trading_cfg={
+                "enable_patient_stop_loss": True,
+                "stop_loss_trigger_pct": -0.1,
+                "min_hold_minutes_before_stop": 0,
+            },
+            open_positions=open_pos,
+            full_cfg=full_cfg,
+            branch=BRANCH_LAB_A,
+            replay_end_time=end,
+        )
+        self.assertLess(float(b["total_pnl_cents"]), 0.0)
+        self.assertIn("score_dollars", b)
+        self.assertNotEqual(int(b.get("total_pnl_from_stops_cents") or 0), 0)
 
 
 if __name__ == "__main__":

@@ -993,16 +993,20 @@ export default function SettingsOverlay({
       optimizerTraceRows
         .slice()
         .reverse()
-        .map((r, i) => ({
-          idx: i + 1,
-          score: Number.isFinite(Number(r?.score_after ?? r?.score ?? r?.score_before))
-            ? Number(r?.score_after ?? r?.score ?? r?.score_before)
-            : null,
-          accepted: r?.accepted ? 1 : 0,
-          rejected: r?.accepted ? 0 : 1,
-          at: String(r?.at || ""),
-          label: formatOptimizerTraceAt(String(r?.at || "")),
-        })),
+        .map((r, i) => {
+          const sc = Number(r?.score_after ?? r?.score ?? r?.score_before);
+          return {
+            idx: i + 1,
+            score: Number.isFinite(sc) ? sc : null,
+            accepted: r?.accepted ? 1 : 0,
+            rejected: r?.accepted ? 0 : 1,
+            at: String(r?.at || ""),
+            label: formatOptimizerTraceAt(String(r?.at || "")),
+            stopN: Number(r?.stop_loss_exits_n ?? 0) || 0,
+            stopRate: Number(r?.stop_loss_trigger_rate_pct ?? 0) || 0,
+            stopPnl: Number(r?.total_pnl_from_stops_dollars ?? 0) || 0,
+          };
+        }),
     [optimizerTraceRows],
   );
   const optimizerTraceStats = useMemo(() => {
@@ -1955,16 +1959,75 @@ export default function SettingsOverlay({
                     <XAxis dataKey="idx" tick={{ fontSize: 10 }} />
                     <YAxis tick={{ fontSize: 10 }} width={40} />
                     <Tooltip
-                      formatter={(value: unknown) => (value == null ? "—" : Number(value).toFixed(3))}
-                      labelFormatter={(label: unknown) => {
-                        const i = Number(label) - 1;
-                        const row = optimizerTraceChartRows[i];
-                        return row ? `${row.label}` : `Cycle ${String(label)}`;
+                      content={({ active, payload, label }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        const p = payload[0].payload as {
+                          score: number | null;
+                          label: string;
+                          stopN: number;
+                          stopRate: number;
+                          stopPnl: number;
+                        };
+                        return (
+                          <div
+                            style={{
+                              background: "rgba(20,24,40,.95)",
+                              border: "1px solid var(--border)",
+                              borderRadius: 6,
+                              padding: "8px 10px",
+                              fontSize: 11,
+                              lineHeight: 1.45,
+                            }}
+                          >
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>Cycle {String(label)} · {p.label}</div>
+                            <div>
+                              Fitness: {p.score == null ? "—" : p.score.toFixed(3)}
+                            </div>
+                            <div>
+                              Stop-loss exits: {p.stopN} ({p.stopRate.toFixed(1)}% of replay trades)
+                            </div>
+                            <div>
+                              PnL from stops: {p.stopPnl >= 0 ? "+" : ""}
+                              {p.stopPnl.toFixed(2)} $
+                            </div>
+                          </div>
+                        );
                       }}
                     />
                     <Line type="monotone" dataKey="score" stroke="#6ee7ff" strokeWidth={2} dot={false} isAnimationActive={false} />
                   </LineChart>
                 </ResponsiveContainer>
+              </div>
+              <div
+                className="sub"
+                style={{ marginTop: 8, maxHeight: 160, overflowY: "auto", fontSize: 10, lineHeight: 1.4 }}
+                title="One line per stored trace row (newest first). Stop metrics come from the Lab A replay used for that cycle."
+              >
+                {optimizerTraceRows.map((r, i) => {
+                  const sn = Number(r?.stop_loss_exits_n ?? 0) || 0;
+                  const sr = Number(r?.stop_loss_trigger_rate_pct ?? 0) || 0;
+                  const sp = Number(r?.total_pnl_from_stops_dollars ?? 0) || 0;
+                  const sc = r?.score_after ?? r?.score ?? r?.score_before;
+                  return (
+                    <div
+                      key={`${String(r?.at || "")}-${i}`}
+                      style={{
+                        marginBottom: 6,
+                        paddingBottom: 6,
+                        borderBottom: "1px solid var(--border)",
+                      }}
+                    >
+                      <div>
+                        <strong>#{i + 1}</strong> {formatOptimizerTraceAt(String(r?.at || ""))} · fitness{" "}
+                        {sc != null && Number.isFinite(Number(sc)) ? Number(sc).toFixed(3) : "—"}
+                      </div>
+                      <div style={{ opacity: 0.85 }}>
+                        Stop-loss exits: {sn} trades ({sr.toFixed(1)}%) · PnL from stops: {sp >= 0 ? "+" : ""}
+                        {sp.toFixed(2)} $
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
               <div style={{ width: "100%", height: 120, marginTop: 10 }}>
                 <ResponsiveContainer width="100%" height="100%">

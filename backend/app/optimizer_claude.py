@@ -21,7 +21,7 @@ from .branch_config import (
     min_hold_minutes_before_stop_from_cfg,
     stop_loss_trigger_pct_from_cfg,
 )
-from .engine import rule_matches
+from .engine import _calculate_net_unrealized_pct_after_fees, rule_matches
 from .optimizer.fitness import composite_fitness_score, is_statistically_better
 from .optimizer.schemas import ClaudeOptimizerResponse, parse_claude_optimizer_json
 from .settings_env import env
@@ -235,6 +235,10 @@ def replay_under_rules_detail(
     include_fees_in_score: bool,
     max_considered: int = 500,
     branch_trading_cfg: dict[str, Any] | None = None,
+    open_positions: list[dict[str, Any]] | None = None,
+    full_cfg: dict[str, Any] | None = None,
+    branch: str = BRANCH_LAB_A,
+    replay_end_time: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """
     Replay over the first ``max_considered`` rows of ``settled`` (caller passes query order: typically
@@ -249,6 +253,9 @@ def replay_under_rules_detail(
     per_trade: list[int] = []
     cumulative: list[int] = [0]
     cur = 0
+    total_pnl_from_stops_cents = 0
+    n_stop_hits = 0
+    n_open_sim_stops = 0
     for t in pool:
         considered += 1
         prob, mins = _entry_prob_mins_for_trade(t, signals_desc)
@@ -280,17 +287,67 @@ def replay_under_rules_detail(
                     stop_cents = int(round(float(entry_prem) * thr / 100.0))
                     if pnl < stop_cents:
                         pnl = max(pnl, stop_cents)
+        is_stop_exit = bool(ex.get("patient_stop_loss")) or str(t.get("result") or "").lower() == "patient_stop_loss"
+        if is_stop_exit:
+            n_stop_hits += 1
+            total_pnl_from_stops_cents += pnl
         total += pnl
         matched += 1
         per_trade.append(pnl)
         cur += pnl
         cumulative.append(cur)
+    # Simulate future patient stop-loss on open positions (mark-to-exit PnL% vs threshold, like the live handler).
+    if (
+        open_positions
+        and full_cfg is not None
+        and branch_trading_cfg is not None
+        and enable_patient_stop_loss_from_cfg(branch_trading_cfg)
+        and replay_end_time is not None
+    ):
+        thr_p = float(stop_loss_trigger_pct_from_cfg(branch_trading_cfg))
+        min_hold_p = int(min_hold_minutes_before_stop_from_cfg(branch_trading_cfg))
+        for pos in open_positions:
+            if int(pos.get("simulated") or 0) != 1:
+                continue
+            prob_o, mins_o = _entry_prob_mins_for_trade(pos, signals_desc)
+            if prob_o is None or mins_o is None:
+                continue
+            if not any(rule_matches(prob_o, mins_o, r) for r in clean_rules):
+                continue
+            ca0 = _parse_iso_dt(pos.get("created_at"))
+            if ca0 is None:
+                continue
+            held_m = (replay_end_time - ca0).total_seconds() / 60.0
+            if held_m < float(min_hold_p):
+                continue
+            net_pct = _calculate_net_unrealized_pct_after_fees(
+                pos, float(prob_o), full_cfg=full_cfg, branch=branch
+            )
+            if not (net_pct <= thr_p):
+                continue
+            cost = int(pos.get("amount_cents") or 0)
+            if cost <= 0:
+                continue
+            pnl = int(round(float(cost) * (float(net_pct) / 100.0)))
+            total += pnl
+            n_stop_hits += 1
+            n_open_sim_stops += 1
+            total_pnl_from_stops_cents += pnl
+            per_trade.append(pnl)
+            cur += pnl
+            cumulative.append(cur)
+    n_per = len(per_trade)
+    stop_loss_trigger_rate = (100.0 * float(n_stop_hits) / float(max(1, n_per))) if n_per else 0.0
     return {
         "total_pnl_cents": total,
         "matched_n": matched,
         "considered_n": considered,
         "per_trade_pnl_cents_chrono": per_trade,
         "cumulative_equity_cents": cumulative,
+        "total_pnl_from_stops_cents": int(total_pnl_from_stops_cents),
+        "stop_loss_trigger_rate": float(stop_loss_trigger_rate),
+        "stop_loss_exits_n": int(n_stop_hits),
+        "open_simulated_stop_exits_n": int(n_open_sim_stops),
     }
 
 
@@ -302,6 +359,10 @@ def _replay_fitness_bundle(
     include_fees_in_score: bool,
     max_rows: int = 200,
     branch_trading_cfg: dict[str, Any] | None = None,
+    open_positions: list[dict[str, Any]] | None = None,
+    full_cfg: dict[str, Any] | None = None,
+    branch: str = BRANCH_LAB_A,
+    replay_end_time: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Replay plus composite fitness (drawdown / vol / Sharpe blend)."""
     d = replay_under_rules_detail(
@@ -311,6 +372,10 @@ def _replay_fitness_bundle(
         include_fees_in_score=include_fees_in_score,
         max_considered=max_rows,
         branch_trading_cfg=branch_trading_cfg,
+        open_positions=open_positions,
+        full_cfg=full_cfg,
+        branch=branch,
+        replay_end_time=replay_end_time,
     )
     fit = composite_fitness_score(
         total_pnl_cents=int(d["total_pnl_cents"]),
@@ -318,6 +383,24 @@ def _replay_fitness_bundle(
         per_trade_pnl_cents=d["per_trade_pnl_cents_chrono"],
     )
     return {**d, **fit}
+
+
+def _open_sim_rows(trades: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not trades:
+        return []
+    return [t for t in trades if str(t.get("status") or "").lower() in ("open", "resting")]
+
+
+def _replay_open_kw(
+    cfg: dict[str, Any], *, at_iso: str, branch: str, trades: list[dict[str, Any]] | None
+) -> dict[str, Any]:
+    op = _open_sim_rows(trades)
+    return {
+        "open_positions": op or None,
+        "full_cfg": cfg,
+        "branch": branch,
+        "replay_end_time": _parse_iso_dt(at_iso) or _utc_now(),
+    }
 
 
 def _per_rule_stats_48h(
@@ -847,6 +930,7 @@ def _apply_adaptive_lab_tuning(
     if bool(oc.get("backtest_proposals", True)):
         sig_desc = _signals_sorted_desc(signals)
         fee_flag = bool(oc.get("include_fees_in_score", True))
+        rok = _replay_open_kw(cfg, at_iso=at_iso, branch=branch, trades=trades)
         base_fb = _replay_fitness_bundle(
             settled,
             rules_base,
@@ -854,6 +938,7 @@ def _apply_adaptive_lab_tuning(
             include_fees_in_score=fee_flag,
             max_rows=200,
             branch_trading_cfg=lab_base,
+            **rok,
         )
         new_fb = _replay_fitness_bundle(
             settled,
@@ -862,6 +947,7 @@ def _apply_adaptive_lab_tuning(
             include_fees_in_score=fee_flag,
             max_rows=200,
             branch_trading_cfg=lab_base,
+            **rok,
         )
         if float(new_fb["score_dollars"]) <= float(base_fb["score_dollars"]) and not bool(
             oc.get("adaptive_skip_backtest_gate", False)
@@ -975,6 +1061,7 @@ def _apply_adaptive_win_relax_lab_a(
     if bool(oc.get("backtest_proposals", True)):
         sig_desc = _signals_sorted_desc(signals)
         fee_flag = bool(oc.get("include_fees_in_score", True))
+        rok = _replay_open_kw(cfg, at_iso=at_iso, branch=BRANCH_LAB_A, trades=trades)
         base_fb = _replay_fitness_bundle(
             settled,
             rules_base,
@@ -982,6 +1069,7 @@ def _apply_adaptive_win_relax_lab_a(
             include_fees_in_score=fee_flag,
             max_rows=200,
             branch_trading_cfg=lab_base,
+            **rok,
         )
         new_fb = _replay_fitness_bundle(
             settled,
@@ -990,6 +1078,7 @@ def _apply_adaptive_win_relax_lab_a(
             include_fees_in_score=fee_flag,
             max_rows=200,
             branch_trading_cfg=lab_base,
+            **rok,
         )
         if float(new_fb["score_dollars"]) <= float(base_fb["score_dollars"]) and not bool(
             oc.get("adaptive_skip_backtest_gate", False)
@@ -1083,6 +1172,7 @@ def _internal_lab_a_bet_pulse(
     pnl = sum(int(t.get("pnl_cents") or 0) for t in window) / max(1, len(window))
     sig_desc = _signals_sorted_desc(sg_a)
     fee_flag = bool(oc.get("include_fees_in_score", True))
+    rok = _replay_open_kw(cfg, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a)
     fb = _replay_fitness_bundle(
         window,
         rules_a,
@@ -1090,6 +1180,7 @@ def _internal_lab_a_bet_pulse(
         include_fees_in_score=fee_flag,
         max_rows=40,
         branch_trading_cfg=lab_base,
+        **rok,
     )
     matched_n = int(fb.get("matched_n") or 0)
     fitness_score = float(fb.get("score_dollars") or 0.0)
@@ -1186,6 +1277,10 @@ def _internal_mutate_rules_and_params(
     sg_c: list[dict[str, Any]],
     sg_d: list[dict[str, Any]],
     at_iso: str,
+    tr_a: list[dict[str, Any]] | None = None,
+    tr_b: list[dict[str, Any]] | None = None,
+    tr_c: list[dict[str, Any]] | None = None,
+    tr_d: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """
     Internal mutant cycle: deterministic + random perturbations to Lab A rules/sizing.
@@ -1207,6 +1302,7 @@ def _internal_mutate_rules_and_params(
     sig_a = _signals_sorted_desc(sg_a)
     fee_flag = bool(oc.get("include_fees_in_score", True))
     tail_n = 120
+    rk_a = _replay_open_kw(cfg, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a)
     base_fb = _replay_fitness_bundle(
         st_a[:tail_n],
         rules_base,
@@ -1214,6 +1310,7 @@ def _internal_mutate_rules_and_params(
         include_fees_in_score=fee_flag,
         max_rows=tail_n,
         branch_trading_cfg=lab_a,
+        **rk_a,
     )
     meta["score_before"] = float(base_fb["score_dollars"])
     cyc = max(1, _safe_int(oc.get("optimizer_cycle_count"), 1))
@@ -1251,6 +1348,7 @@ def _internal_mutate_rules_and_params(
     new_f = clamp_balance_fraction_per_window(old_f + frac_step)
     mut_lab = dict(lab_a)
     mut_lab["balance_fraction_per_window"] = round(new_f, 4)
+    rk_m = _replay_open_kw(cfg, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a)
     prop_fb = _replay_fitness_bundle(
         st_a[:tail_n],
         mutated_rules,
@@ -1258,15 +1356,19 @@ def _internal_mutate_rules_and_params(
         include_fees_in_score=fee_flag,
         max_rows=tail_n,
         branch_trading_cfg=mut_lab,
+        **rk_m,
     )
     meta["score_after"] = float(prop_fb["score_dollars"])
     if meta["score_after"] <= meta["score_before"]:
         meta["reject_reason"] = "fitness_not_improved"
         return None, meta
-    def _tail_fb(st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str) -> dict[str, Any]:
+    def _tail_fb(
+        st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str, tr_all: list[dict[str, Any]] | None
+    ) -> dict[str, Any]:
         _, r = _ensure_lab_rules(cfg, br)
         lk = _lab_key_for_branch(br) or "lab_a"
         lb = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
+        rko = _replay_open_kw(cfg, at_iso=at_iso, branch=br, trades=tr_all)
         return _replay_fitness_bundle(
             st[:tail_n],
             r,
@@ -1274,10 +1376,11 @@ def _internal_mutate_rules_and_params(
             include_fees_in_score=fee_flag,
             max_rows=tail_n,
             branch_trading_cfg=lb,
+            **rko,
         )
-    fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B)
-    fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C)
-    fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D)
+    fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B, tr_b)
+    fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C, tr_c)
+    fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D, tr_d)
     a_d = [x / 100.0 for x in prop_fb["per_trade_pnl_cents_chrono"]]
     ctrl_d = (
         [x / 100.0 for x in fb_b["per_trade_pnl_cents_chrono"]]
@@ -1548,6 +1651,10 @@ def apply_claude_rule_changes(
     sg_d: list[dict[str, Any]],
     at_iso: str,
     mutant_run: bool,
+    tr_a: list[dict[str, Any]] | None = None,
+    tr_b: list[dict[str, Any]] | None = None,
+    tr_c: list[dict[str, Any]] | None = None,
+    tr_d: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Merge Claude ``rule_operations`` into Lab A after replay + statistical gate vs B/C/D tails.
@@ -1584,6 +1691,7 @@ def apply_claude_rule_changes(
     fee_flag = bool(oc.get("include_fees_in_score", True))
     tail_n = max(40, min(160, _safe_int(oc.get("min_trades_for_optimize"), 8) * 5))
     a_tail = st_a[:tail_n]
+    rk_cl = _replay_open_kw(cfg, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a)
 
     base_fb = _replay_fitness_bundle(
         a_tail,
@@ -1592,6 +1700,7 @@ def apply_claude_rule_changes(
         include_fees_in_score=fee_flag,
         max_rows=tail_n,
         branch_trading_cfg=lab_base,
+        **rk_cl,
     )
     prop_fb = _replay_fitness_bundle(
         a_tail,
@@ -1600,17 +1709,19 @@ def apply_claude_rule_changes(
         include_fees_in_score=fee_flag,
         max_rows=tail_n,
         branch_trading_cfg=lab_base,
+        **rk_cl,
     )
     meta["score_before"] = float(base_fb["score_dollars"])
     meta["score_after"] = float(prop_fb["score_dollars"])
 
     def _tail_fb(
-        st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str
+        st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str, tr_all: list[dict[str, Any]] | None
     ) -> dict[str, Any]:
         stx = [t for t in st if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
         _, rx = _ensure_lab_rules(cfg, br)
         lk = _lab_key_for_branch(br) or "lab_a"
         lab_sub = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
+        rko = _replay_open_kw(cfg, at_iso=at_iso, branch=br, trades=tr_all)
         return _replay_fitness_bundle(
             stx[:tail_n],
             rx,
@@ -1618,11 +1729,12 @@ def apply_claude_rule_changes(
             include_fees_in_score=fee_flag,
             max_rows=tail_n,
             branch_trading_cfg=lab_sub,
+            **rko,
         )
 
-    fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B)
-    fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C)
-    fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D)
+    fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B, tr_b)
+    fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C, tr_c)
+    fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D, tr_d)
     a_dollars = [x / 100.0 for x in prop_fb["per_trade_pnl_cents_chrono"]]
     ctrl_pool: list[float] = (
         [x / 100.0 for x in fb_b["per_trade_pnl_cents_chrono"]]
@@ -1861,6 +1973,10 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             sg_c=sg_c,
             sg_d=sg_d,
             at_iso=end_iso,
+            tr_a=tr_a,
+            tr_b=tr_b,
+            tr_c=tr_c,
+            tr_d=tr_d,
         )
         if mut_row:
             changes.append(mut_row)
@@ -1882,6 +1998,22 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         oc["last_change_at"] = end_iso
         _merge_pulse_trace(oc, changes)
     bet_frac_n = sum(1 for c in changes if str(c.get("style") or "") == "bet_size")
+    lab_tr, rules_tr = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    st_tr = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    rb_lab = _replay_fitness_bundle(
+        st_tr[:200],
+        rules_tr,
+        _signals_sorted_desc(sg_a),
+        include_fees_in_score=bool(oc.get("include_fees_in_score", True)),
+        max_rows=200,
+        branch_trading_cfg=lab_tr,
+        **_replay_open_kw(cfg, at_iso=end_iso, branch=BRANCH_LAB_A, trades=tr_a),
+    )
+    sl_rate = float(rb_lab.get("stop_loss_trigger_rate") or 0.0)
+    sl_cents = int(rb_lab.get("total_pnl_from_stops_cents") or 0)
+    sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
+    oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
+    oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
     trace_entry: dict[str, Any] = {
         "at": end_iso,
         "cycle": int(oc.get("optimizer_cycle_count") or 0),
@@ -1894,6 +2026,11 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "reject_reason": str(mutation_meta.get("reject_reason") or ""),
         "mutant": bool(mutant_run),
         "changes_n": len(changes),
+        "total_pnl_from_stops_cents": sl_cents,
+        "total_pnl_from_stops_dollars": round(sl_cents / 100.0, 4),
+        "stop_loss_trigger_rate_pct": sl_rate,
+        "stop_loss_exits_n": sl_n,
+        "open_simulated_stop_exits_n": int(rb_lab.get("open_simulated_stop_exits_n") or 0),
     }
     _append_internal_trace(oc, trace_entry)
     tr_rows = oc.get("internal_optimizer_trace")
@@ -1976,6 +2113,10 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         sg_c=sg_c,
         sg_d=sg_d,
         at_iso=end_iso,
+        tr_a=tr_a,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        tr_d=tr_d,
     )
     if row:
         hist = oc.get("change_history")
@@ -1985,6 +2126,21 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         oc["last_change_at"] = end_iso
         _merge_pulse_trace(oc, [row])
 
+    lab_tr, rules_tr = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    rb_lab = _replay_fitness_bundle(
+        st_a[:200],
+        rules_tr,
+        _signals_sorted_desc(sg_a),
+        include_fees_in_score=bool(oc.get("include_fees_in_score", True)),
+        max_rows=200,
+        branch_trading_cfg=lab_tr,
+        **_replay_open_kw(cfg, at_iso=end_iso, branch=BRANCH_LAB_A, trades=tr_a),
+    )
+    sl_rate = float(rb_lab.get("stop_loss_trigger_rate") or 0.0)
+    sl_cents = int(rb_lab.get("total_pnl_from_stops_cents") or 0)
+    sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
+    oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
+    oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
     trace_entry = {
         "at": end_iso,
         "cycle": int(oc.get("optimizer_cycle_count") or 0),
@@ -1996,6 +2152,11 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         "mutant": True,
         "changes_n": 1 if row else 0,
         "forced": True,
+        "total_pnl_from_stops_cents": sl_cents,
+        "total_pnl_from_stops_dollars": round(sl_cents / 100.0, 4),
+        "stop_loss_trigger_rate_pct": sl_rate,
+        "stop_loss_exits_n": sl_n,
+        "open_simulated_stop_exits_n": int(rb_lab.get("open_simulated_stop_exits_n") or 0),
     }
     _append_internal_trace(oc, trace_entry)
     tr_rows = oc.get("internal_optimizer_trace")

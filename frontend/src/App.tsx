@@ -977,8 +977,9 @@ function optimizerBriefInfoBody(): ReactNode {
       </p>
       <p>
         <strong>Health badge.</strong> Badge color is acceptance-rate based: <strong>green</strong> when rate &gt; 60,{" "}
-        <strong>yellow</strong> for 30-60, and <strong>red</strong> below 30. The same badge appears in the bottom marquee for quick
-        visibility when you are focused on other sections.
+        <strong>yellow</strong> for 30-60, and <strong>red</strong> below 30. A pill in the <strong>header</strong> (next to the ⚙
+        settings control) shows the same status; hover the pill for a short explanation. The Optimizer block’s status card shows a
+        matching health pill as well.
       </p>
       <p>
         <strong>Experiments (mini chart).</strong> Each colored line is indexed MTM (or a blended MTM / cost-basis readout, depending
@@ -2590,6 +2591,8 @@ export default function App() {
       equitySlopePerHour = (p1.eq - p0.eq) / hours;
     }
     const health = acceptanceRatePct > 60 ? "green" : acceptanceRatePct >= 30 ? "yellow" : "red";
+    const stopLossHitRate = Number(oc.replay_stop_loss_trigger_rate_pct ?? 0);
+    const stopsPnlDollars = Number(oc.replay_total_pnl_from_stops_dollars ?? 0);
     return {
       cycles,
       lastRunAt: String(oc.last_run_at || activity.last_pulse_eval_at || ""),
@@ -2600,6 +2603,8 @@ export default function App() {
       chart,
       equitySlopePerHour,
       health,
+      stopLossHitRate,
+      stopsPnlDollars,
     };
   }, [cfg?.optimizer, dash]);
 
@@ -3271,8 +3276,8 @@ export default function App() {
       <div className="top">
         <div className="hero">
           <div className="hero-head">
-            <div className="hero-head__main">
-              <div className="hero-head__title-stack">
+            <div className="hero-head__main" style={{ width: "100%" }}>
+              <div className="hero-head__title-stack" style={{ flex: 1, minWidth: 0 }}>
                 <h1
                   className="title section-tip"
                   title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
@@ -3280,10 +3285,39 @@ export default function App() {
                   Chomp's Diner
                 </h1>
               </div>
+              {dash ? (
+                <span
+                  className="sub"
+                  style={{
+                    flexShrink: 0,
+                    padding: "3px 10px",
+                    borderRadius: 999,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.02em",
+                    border: "1px solid var(--border)",
+                    background:
+                      optimizerStatus.health === "green"
+                        ? "rgba(61,220,151,.18)"
+                        : optimizerStatus.health === "yellow"
+                          ? "rgba(255,214,102,.18)"
+                          : "rgba(255,122,122,.18)",
+                    color:
+                      optimizerStatus.health === "green"
+                        ? "#7af0ba"
+                        : optimizerStatus.health === "yellow"
+                          ? "#ffd666"
+                          : "#ff9a9a",
+                  }}
+                  title="Internal optimizer health from acceptance rate in the last trace window: green if >60% of decisions were accepted, yellow for 30–60%, red below 30%. Also shown on the Optimizer card in the main grid. Open Settings → Lab & optimizer for trace and controls."
+                >
+                  Optimizer {optimizerStatus.health.toUpperCase()}
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="primary hero-settings-icon-btn"
-                style={{ marginLeft: "auto" }}
+                style={{ flexShrink: 0 }}
                 aria-label="Open settings"
                 title="Settings — rules, engines, lab sizing, Kalshi connection orbs, hero ticker"
                 onClick={() => setSettingsOpen(true)}
@@ -3620,7 +3654,7 @@ export default function App() {
                 background: "linear-gradient(180deg,rgba(24,30,48,.65),rgba(14,18,30,.78))",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
                 <div style={{ fontWeight: 700 }}>Optimizer Status</div>
                 <div
                   className="sub"
@@ -3633,6 +3667,31 @@ export default function App() {
                     {optimizerStatus.equitySlopePerHour.toFixed(2)} $/h
                   </strong>
                 </div>
+              </div>
+              <div
+                className="sub"
+                style={{
+                  fontSize: 10,
+                  display: "flex",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  marginBottom: 8,
+                  opacity: 0.9,
+                }}
+              >
+                <span
+                  title="Share of Lab A replay closes (settled + simulated patient exits) that were stop-loss—related, from the last optimizer replay snapshot."
+                >
+                  Stop hit:{" "}
+                  <strong>{optimizerStatus.stopLossHitRate.toFixed(1)}%</strong>
+                </span>
+                <span title="Dollar PnL attributed to patient stop-loss: historical `patient_stop_loss` exits plus simulated exits on open positions that would trigger at replay time.">
+                  PnL from stops:{" "}
+                  <strong>
+                    {optimizerStatus.stopsPnlDollars >= 0 ? "+" : ""}
+                    {optimizerStatus.stopsPnlDollars.toFixed(2)} $
+                  </strong>
+                </span>
               </div>
               <div
                 style={{ width: "100%", height: 96, marginBottom: 8 }}
@@ -4890,25 +4949,6 @@ export default function App() {
           }}
           showSnapshot={false}
         />
-        <span
-          className="sub"
-          style={{
-            marginLeft: 8,
-            padding: "2px 8px",
-            borderRadius: 999,
-            fontSize: 11,
-            border: "1px solid var(--border)",
-            background:
-              optimizerStatus.health === "green"
-                ? "rgba(61,220,151,.16)"
-                : optimizerStatus.health === "yellow"
-                  ? "rgba(255,214,102,.16)"
-                  : "rgba(255,122,122,.16)",
-          }}
-          title="Optimizer health badge from acceptance rate."
-        >
-          Optimizer {optimizerStatus.health.toUpperCase()}
-        </span>
       </div>
         </>
       ) : null}
