@@ -1249,7 +1249,7 @@ function orderedAssetEntries(assetsObj: AnyObj | undefined): [string, AnyObj][] 
 
 type EquityGranularity = "intraday" | "dd" | "ww" | "mm" | "yy";
 
-type EquityChartRow = { t: string; equity: number; mtm: number | null; synthetic?: boolean };
+type EquityChartRow = { t: string; tsMs: number; equity: number; mtm: number | null; synthetic?: boolean };
 
 function mondayUtcKey(iso: string): string {
   const d = new Date(iso);
@@ -1289,6 +1289,7 @@ function buildEquityChartSeries(
   if (mode === "intraday") {
     return rows.slice(-400).map((r) => ({
       t: fmtIsoLocalFn(r.at, false),
+      tsMs: r.ts,
       equity: r.eq,
       mtm: r.mtm,
     }));
@@ -1339,7 +1340,7 @@ function buildEquityChartSeries(
         })}`;
       }
     }
-    return { t, equity: cell.eq, mtm: cell.mtm };
+    return { t, tsMs: cell.ts, equity: cell.eq, mtm: cell.mtm };
   });
 }
 
@@ -1377,12 +1378,15 @@ function equitySeriesWithLiveTail(
     // New labs can start with no snapshot history; add an anchor point so a 2-point flat line is visible.
     const anchorIso = new Date(Date.now() - 60_000).toISOString();
     const anchorT = fmtIsoLocalFn(anchorIso, true);
+    const anchorMs = new Date(anchorIso).getTime();
+    const tailMs = Date.now();
     return [
-      { t: anchorT, equity, mtm, synthetic: true },
-      { t: tailT, equity, mtm, synthetic: true },
+      { t: anchorT, tsMs: anchorMs, equity, mtm, synthetic: true },
+      { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true },
     ];
   }
-  return [...base, { t: tailT, equity, mtm, synthetic: true }];
+  const tailMs = Date.now();
+  return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
 }
 
 /** Stable fingerprint so Recharts remounts whenever snapshots, tail time, metrics, or values change. */
@@ -1396,7 +1400,7 @@ function equityChartRevision(snaps: AnyObj[], rows: EquityChartRow[], metrics?: 
     : "";
   if (!rows.length) return `0|${tailSnap}|${m}`;
   const L = rows[rows.length - 1];
-  return `${tailSnap}|n=${rows.length}|t=${L.t}|eq=${L.equity}|mtm=${L.mtm ?? ""}|syn=${L.synthetic ? 1 : 0}|${m}`;
+  return `${tailSnap}|n=${rows.length}|t=${L.t}|ts=${L.tsMs}|eq=${L.equity}|mtm=${L.mtm ?? ""}|syn=${L.synthetic ? 1 : 0}|${m}`;
 }
 
 function equityRowMtmOrEq(row: EquityChartRow): number | null {
@@ -1404,6 +1408,68 @@ function equityRowMtmOrEq(row: EquityChartRow): number | null {
   if (m != null && Number.isFinite(Number(m))) return Number(m);
   const e = row.equity;
   return Number.isFinite(Number(e)) ? Number(e) : null;
+}
+
+type OverlayBranchKey = "live" | "a" | "b" | "c" | "d";
+
+/** Chronological union of branch snapshots with forward-filled values so overlay lines share one true time axis. */
+function mergeEquityOverlayRows(
+  live: EquityChartRow[],
+  labA: EquityChartRow[],
+  labB: EquityChartRow[],
+  labC: EquityChartRow[],
+  labD: EquityChartRow[],
+): AnyObj[] {
+  type Pt = { tsMs: number; t: string; branch: OverlayBranchKey; equity: number; mtm: number };
+  const pts: Pt[] = [];
+  const push = (rows: EquityChartRow[], branch: OverlayBranchKey) => {
+    for (const row of rows) {
+      if (!Number.isFinite(row.tsMs)) continue;
+      const mtm = row.mtm != null && Number.isFinite(Number(row.mtm)) ? Number(row.mtm) : row.equity;
+      pts.push({ tsMs: row.tsMs, t: row.t, branch, equity: row.equity, mtm });
+    }
+  };
+  push(live, "live");
+  push(labA, "a");
+  push(labB, "b");
+  push(labC, "c");
+  push(labD, "d");
+  if (!pts.length) return [];
+  pts.sort((x, y) => x.tsMs - y.tsMs);
+
+  const byTs = new Map<number, Pt[]>();
+  for (const p of pts) {
+    const g = byTs.get(p.tsMs);
+    if (g) g.push(p);
+    else byTs.set(p.tsMs, [p]);
+  }
+  const uniqTs = [...byTs.keys()].sort((a, b) => a - b);
+
+  const last: Record<OverlayBranchKey, { eq: number; mtm: number } | null> = { live: null, a: null, b: null, c: null, d: null };
+  const branches: OverlayBranchKey[] = ["live", "a", "b", "c", "d"];
+  const out: AnyObj[] = [];
+
+  for (const tsMs of uniqTs) {
+    const hits = byTs.get(tsMs)!;
+    let tLabel = "";
+    for (const h of hits) {
+      last[h.branch] = { eq: h.equity, mtm: h.mtm };
+      if (h.branch === "live") tLabel = h.t;
+    }
+    if (!tLabel) tLabel = hits[0].t;
+
+    const row: AnyObj = { tsMs, t: tLabel };
+    for (const br of branches) {
+      const L = last[br];
+      if (!L) continue;
+      row[`${br}Eq`] = L.eq;
+      row[`${br}Mtm`] = L.mtm;
+      row[`${br}Blend`] = (L.eq + L.mtm) / 2;
+      row[`${br}Pot`] = L.mtm - L.eq;
+    }
+    out.push(row);
+  }
+  return out;
 }
 
 /** Align branches on snapshot timestamps; normalize MTM (or book) to index 100 at first in-window point per series. */
@@ -1415,32 +1481,47 @@ function buildExperimentBrainLineRows(
   labD: EquityChartRow[],
   maxPoints: number,
 ): AnyObj[] {
-  const toMap = (rows: EquityChartRow[]) => {
-    const m = new Map<string, number>();
+  type Col = "live" | "a" | "b" | "c" | "d";
+  type Pt = { tsMs: number; t: string; branch: Col; v: number };
+  const pts: Pt[] = [];
+  const add = (rows: EquityChartRow[], branch: Col) => {
     for (const row of rows) {
       const v = equityRowMtmOrEq(row);
-      if (v == null) continue;
-      m.set(String(row.t), v);
+      if (v == null || !Number.isFinite(row.tsMs)) continue;
+      pts.push({ tsMs: row.tsMs, t: row.t, branch, v });
     }
-    return m;
   };
-  const ml = toMap(live);
-  const ma = toMap(labA);
-  const mb = toMap(labB);
-  const mc = toMap(labC);
-  const md = toMap(labD);
-  const allT = new Set<string>();
-  for (const mp of [ml, ma, mb, mc, md]) for (const t of mp.keys()) allT.add(t);
-  const sorted = Array.from(allT).sort();
-  const tail = sorted.slice(-Math.max(12, Math.min(maxPoints, 200)));
-  type Col = "live" | "a" | "b" | "c" | "d";
-  const maps: Record<Col, Map<string, number>> = { live: ml, a: ma, b: mb, c: mc, d: md };
+  add(live, "live");
+  add(labA, "a");
+  add(labB, "b");
+  add(labC, "c");
+  add(labD, "d");
+  if (!pts.length) return [];
+  pts.sort((x, y) => x.tsMs - y.tsMs);
+  const byTs = new Map<number, Pt[]>();
+  for (const p of pts) {
+    const g = byTs.get(p.tsMs);
+    if (g) g.push(p);
+    else byTs.set(p.tsMs, [p]);
+  }
+  const uniqTs = [...byTs.keys()].sort((a, b) => a - b);
+  const tailTs = uniqTs.slice(-Math.max(12, Math.min(maxPoints, 200)));
+
+  const last: Record<Col, number | null> = { live: null, a: null, b: null, c: null, d: null };
   const cols: Col[] = ["live", "a", "b", "c", "d"];
-  const rawRows = tail.map((t, idx) => {
-    const row: AnyObj = { t, idx };
-    for (const c of cols) row[c] = maps[c].get(t) ?? null;
-    return row;
-  });
+  const rawRows: AnyObj[] = [];
+  for (const tsMs of tailTs) {
+    const hits = byTs.get(tsMs)!;
+    let tLabel = "";
+    for (const h of hits) {
+      last[h.branch] = h.v;
+      if (h.branch === "live") tLabel = h.t;
+    }
+    if (!tLabel) tLabel = hits[0].t;
+    const row: AnyObj = { t: tLabel, tsMs, idx: rawRows.length };
+    for (const c of cols) row[c] = last[c];
+    rawRows.push(row);
+  }
   const baseline: Partial<Record<Col, number>> = {};
   for (const c of cols) {
     for (const r of rawRows) {
@@ -2387,28 +2468,10 @@ export default function App() {
     () => equitySeriesWithLiveTail(equitySnapsLabD, equityGranularity, metricsLabD, fmtIsoLocal),
     [equitySnapsLabD, equityGranularity, metricsLabD, fmtIsoLocal],
   );
-  const equityOverlayData = useMemo(() => {
-    const byT = new Map<string, AnyObj>();
-    const append = (series: EquityChartRow[], key: "live" | "a" | "b" | "c" | "d") => {
-      for (const row of series) {
-        const t = String(row.t);
-        const dst = byT.get(t) || { t };
-        const eq = Number(row.equity);
-        const mtm = row.mtm != null && Number.isFinite(Number(row.mtm)) ? Number(row.mtm) : eq;
-        dst[`${key}Eq`] = eq;
-        dst[`${key}Mtm`] = mtm;
-        dst[`${key}Blend`] = (eq + mtm) / 2;
-        dst[`${key}Pot`] = mtm - eq;
-        byT.set(t, dst);
-      }
-    };
-    append(chartData, "live");
-    append(chartDataLabA, "a");
-    append(chartDataLabB, "b");
-    append(chartDataLabC, "c");
-    append(chartDataLabD, "d");
-    return Array.from(byT.values());
-  }, [chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
+  const equityOverlayData = useMemo(
+    () => mergeEquityOverlayRows(chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD),
+    [chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD],
+  );
   const equityOverlayRevision = `${equityChartRevision(snaps, chartData, metrics)}|${equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}|${equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}|${equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}|${equityChartRevision(equitySnapsLabD, chartDataLabD, metricsLabD)}`;
 
   const branchBrainLineRows = useMemo(
@@ -4290,7 +4353,7 @@ export default function App() {
               <ResponsiveContainer key={equityOverlayRevision} width="100%" height="100%">
                 <LineChart data={equityOverlayData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                  <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
                   <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
                   <Tooltip contentStyle={{ background: "#0b1228", border: "1px solid #243055" }} formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]} />
                   <Legend verticalAlign="bottom" height={28} wrapperStyle={{ fontSize: 11, paddingTop: 6 }} formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>} />
