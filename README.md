@@ -4,7 +4,7 @@
 
 It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys), runs **rule-based engines** per branch, and ships a **Vite** dashboard for config, charts, and health—**no separate hosted control plane**; your keys and data stay on the machine you run it on.
 
-**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Developer notes](#developer-notes)
+**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Optimizer visualizations](#optimizer-visualizations) · [Developer notes](#developer-notes)
 
 **Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
@@ -46,7 +46,7 @@ Exact numbers live in `default_bot_config()` and your SQLite config; the table r
 - **Engines** — Background loops scan markets, evaluate rules, and manage positions per branch (see `backend/app/engine.py`).
 - **Dashboard** — Single-page UI: branch performance, equity charts, holdings, signals and trades, Kalshi connection status, settings (rules, filters, sizing, engines, optimizer), historical export, and more. The dev server proxies `/api` to the backend. A small **optimizer health** pill (green / yellow / red from internal trace acceptance) sits in the **top bar next to the settings (⚙) control** (hover for a tooltip); it is not shown on the bottom ticker strip.
 - **Persistence** — Config (active row + **`config_history`** audit table), trades, signals, and snapshots are stored under `data/` (default SQLite: `data/bot.sqlite3`). Optional **JSONL** logs for signals and trades (and optional equity logging) under `data/logs/` when enabled in `.env`.
-- **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard **does not** currently expose a "mutate rules with Claude" panel—**Settings** is the natural home if that returns, so operators keep one serious surface for config. The main dashboard surfaces a compact **“Optimizer Thinking”** radar: six normalized 0–100 spokes (e.g. fitness, acceptance, mutation, stop‑loss safety, equity momentum, inverted red streak) for **Live + Labs**, with **Lab A** called out; double‑click expands for a tabular readout. That chart is a **readout of internal metrics**, not a second trading engine.
+- **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; optional Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard does not ship a separate “Claude rule editor” surface—**Settings** holds serious config. The main **Optimizer** card shows a **“Optimizer Thinking (Lab A)”** radar, a **mutation** summary row, and a **lab pulse** ticker; see [Optimizer visualizations](#optimizer-visualizations) below. The radar is a **readout of internal metrics** (not a second trading engine).
 - **Polling** — The UI leans on **`GET /api/dashboard/equity`** and focused routes for high-frequency updates and **`GET /api/dashboard`** for heavier “full” snapshots, so a slow home Wi‑Fi or large open-book payload does not block the whole page forever.
 
 ---
@@ -60,10 +60,34 @@ Where the main **React** surface puts things (all optional panels depending on y
 | **Top bar** | Connection / engine at-a-glance, **Settings (⚙)**, **optimizer health** color pill (hovers explain acceptance band), toasts. |
 | **Branch strip / hero** | Per-branch (Live + A–D) PnL and key metrics; clicking usually ties into compare / filters. |
 | **Compare (equity) region** | Multi-line equity / blended or potential view; overplot toggles, granularity tabs; many charts are **double‑click to expand** in a lightbox (Esc to close), matching the pattern used on the **optimizer** radar. |
-| **Branch brain (optimizer block)** | **Optimizer Status** (slopes, mutation dial, last revert) plus the **radar** above a **lab pulse** ticker. Promote **Lab A → Live** and dangerous toggles still require confirms documented in the UI. |
+| **Branch brain (optimizer block)** | **Optimizer Thinking** radar (double‑click to expand), **mutation** row (tier, effective scale, 0–1 dial bar) directly under the chart, then **lab pulse** ticker. Full run metrics, trace, and equity sparklines are in the **report** overlay—not duplicate tiles on the card. Promote **Lab A → Live** and dangerous toggles still require confirms documented in the UI. |
 | **Settings overlay** | Full **JSON** config editor, per-lab overlays, rules, fees, **patient** stop, optimizer tuning—this is the authoritative place for `PUT /api/config` and lab parity with `merge_branch_config`. |
 
 **Resize / mobile:** the compare row and optimizer column use **flex** (`row` on wide, **stack** on small screens); if something looks “missing,” zoom out or widen—the layout does not hard-require two monitors, but the dense dashboard targets **~1280px** width for the full two-column branch experience.
+
+---
+
+## Optimizer visualizations
+
+The **Optimizer** column is **read-only telemetry** for the internal and optional external optimizer. Nothing on this card places orders; engines still run from **Settings** and the dual-engine loop.
+
+### What you see on the card
+
+| Element | What it means |
+|--------|----------------|
+| **Title row** | **force** — runs an internal mutation path immediately (`POST /api/optimizer/force-internal-mutation`), gated by the same fitness/stat checks as scheduled runs. **report** — opens a full **Optimizer report** overlay (run metrics, acceptance, schedule, change history, pulse log, and richer tables than the main card). **Info** — in-page explainer for the column. |
+| **Health dot** (red / yellow / green) | **Internal-mutation acceptance rate** over recent trace rows: **>60%** green, **30–60%** yellow, **&lt;30%** red. The same field drives long-form `optimizer_suggested_action` toasts (throttled), not a duplicate of the dot. |
+| **Optimizer Thinking (radar)** | A **Recharts** spider / radar: **six** axes, each **0–100** after server-side normalization so you can compare branches on one scale. Typical spokes: **fitness** (composite replay score), **acceptance** (mutant acceptance %), **mutation** (dial and tier rolled into one view), **stop‑loss safety** (replay stop burden), **equity momentum** (Lab A $/h slope from snapshots), and **streak (inverted)** so **higher = better** (low red-stress). Colored **bands** = **Live + Lab A–D**; **Lab A** is the primary “staging” readout. **Double-click** the chart to open a large modal with a tabular **detail** block and the same series—**Esc** closes. If a branch is cold or lacks data, a spoke can sit in the **mid-50s** or look flat until fresh settles and snapshots exist. |
+| **Mutation row** (under the radar) | A compact **tier** label (**Light** / **Medium** / **Strong** — driven by the same acceptance bands as health), the **effective mutation scale** (0–1 internal blend of tier and `mutation_aggressiveness`), and a **horizontal “Dial (0–1)”** bar showing persisted **`mutation_aggressiveness`**. This replaces the old single-line “key internal metrics…” caption: it is the at-a-glance **exploration pressure** readout. |
+| **Lab pulse** | A scrolling line of short **engine / optimizer** hints (e.g. open sim, return vs basis, last optimizer note). Sourced from dashboard `lab_thoughts` / `optimizer_activity` slices—useful for “what happened last tick” without opening Settings. |
+
+### How it connects to the backend
+
+- The radar and health dot are built from **`GET /api/dashboard`** (and related) metrics: `cfg.optimizer` (acceptance, best fitness, red streak, effective scale, `mutation_tier`, etc.) plus branch rollups. The exact spoke formulas live in the **dashboard builder** in `backend/app/main.py` and the **React** bundle in `App.tsx` (`optimizerThinkingRadarBundle` and friends)—they are **heuristic**, not raw exchange PnL.
+- **Intraday equity movement** and **book vs MTM** on the main **Equity curves** block are **separate** from the optimizer card: the optimizer radar does not replace the equity small-multiples; use both together.
+- If **`optimizer.enabled`** is false and no internal pulses have run, spokes may look **neutral**; enable the scheduler in **Settings → Optimizer** and let **Lab A** accumulate **sim** settles so fitness and acceptance have signal.
+
+For **internal pulse vs optional Claude** and what can auto-persist, see [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude).
 
 ---
 
