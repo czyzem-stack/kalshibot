@@ -767,14 +767,20 @@ async def _apply_uniform_paper_balance_after_scope_reset(scope: str, cents: int)
     c = max(0, min(_MAX_UNIFORM_PAPER_BALANCE_CENTS, int(cents)))
     cfg = await store.load_config()
     cfg["paper_balance_cents"] = c
+    # Live has no lab lifetime key; labs can carry ``paper_lifetime_basis_cents`` from auto-reset /
+    # add-bankroll. ``lab_paper_equity_start_cents`` prefers lifetime over ``paper_balance_cents``, so
+    # clearing it keeps dashboard / equity baseline aligned with the new uniform seed.
+    cfg.pop("paper_lifetime_basis_cents", None)
     for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
         block = dict(cfg.get(lk) or {})
         block["paper_balance_cents"] = c
+        block.pop("paper_lifetime_basis_cents", None)
         cfg[lk] = expand_partial_lab_branch(lk, block)
     await store.save_config(cfg)
     return {
         "paper_balance_cents": c,
         "applied_to": ["live_paper", "lab_a", "lab_b", "lab_c", "lab_d"],
+        "paper_lifetime_basis_cents_cleared": True,
     }
 
 

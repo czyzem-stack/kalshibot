@@ -1987,7 +1987,8 @@ export default function SettingsOverlay({
           />
           <div className="sub" style={{ marginTop: 4, fontSize: 11, opacity: 0.88 }}>
             Example: <code>500000</code> = $5,000.00 per branch. Empty = do not change bankroll fields in{" "}
-            <code>bot_config</code>.
+            <code>bot_config</code>. When set, per-lab <code>paper_lifetime_basis_cents</code> is cleared so Labs
+            A–D and Live all use the same equity baseline (otherwise older labs could keep a higher lifetime basis).
           </div>
         </div>
         <button
