@@ -17,6 +17,15 @@ type AnyObj = Record<string, any>;
 type SettingsTab = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_ab_optimizer" | "all" | "help";
 type LabBranchKey = "a" | "b" | "c" | "d";
 
+/** Local display for optimizer ``claude_proposals_trace[].at`` (ISO from backend). */
+function formatClaudeTraceAt(iso: string): string {
+  const s = String(iso || "").trim();
+  if (!s) return "—";
+  const ms = Date.parse(s);
+  if (!Number.isFinite(ms)) return s;
+  return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
 function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: AnyObj; cfg: AnyObj; busy: boolean }) {
   const p = `lab_${which}`;
   const defFrac = which === "a" ? 0.055 : which === "b" ? 0.06 : which === "c" ? 0.1 : 0.13;
@@ -722,6 +731,8 @@ export type SettingsOverlayProps = {
   optimizerCfg: AnyObj;
   onSaveOptimizerConfig: (patch: AnyObj) => void | Promise<void>;
   optimizerSaving?: boolean;
+  /** POST /api/optimizer/run (force); refreshes config when done. */
+  onRunOptimizerNow?: () => void | Promise<void>;
   onResetTradingData: (
     branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d",
     backup: boolean,
@@ -778,6 +789,7 @@ export default function SettingsOverlay({
   optimizerCfg,
   onSaveOptimizerConfig,
   optimizerSaving = false,
+  onRunOptimizerNow,
   onResetTradingData,
   onApplyLabBranches,
   liveEngineOn,
@@ -1636,6 +1648,15 @@ export default function SettingsOverlay({
               <span>Let optimizer suggest Lab A bet fraction (only lab_a is auto-applied)</span>
             </label>
             <label className="checkbox" style={{ border: "none" }}>
+              <input
+                id="opt_optimize_rules_with_claude"
+                type="checkbox"
+                defaultChecked={Boolean(optimizerCfg?.optimize_rules_with_claude ?? true)}
+                disabled={busy}
+              />
+              <span>Let Claude mutate Lab A rules (replay + statistical gate before apply)</span>
+            </label>
+            <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_include_fees_in_score" type="checkbox" defaultChecked={Boolean(optimizerCfg?.include_fees_in_score ?? true)} disabled={busy} />
               <span>Include fees in adaptive replay score</span>
             </label>
@@ -1688,6 +1709,9 @@ export default function SettingsOverlay({
                   min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 2),
                   regime_lookback_hours: Number((document.getElementById("opt_regime_lookback_hours") as HTMLInputElement | null)?.value || 4),
                   optimize_bet_size: Boolean((document.getElementById("opt_optimize_bet_size") as HTMLInputElement | null)?.checked),
+                  optimize_rules_with_claude: Boolean(
+                    (document.getElementById("opt_optimize_rules_with_claude") as HTMLInputElement | null)?.checked,
+                  ),
                   include_fees_in_score: Boolean((document.getElementById("opt_include_fees_in_score") as HTMLInputElement | null)?.checked),
                   backtest_proposals: Boolean((document.getElementById("opt_backtest_proposals") as HTMLInputElement | null)?.checked),
                   adaptive_skip_backtest_gate: Boolean(
@@ -1698,6 +1722,81 @@ export default function SettingsOverlay({
             >
               Save optimizer settings
             </button>
+            <div style={{ marginTop: 14 }} className="field">
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || optimizerSaving || !onRunOptimizerNow}
+                title="POST /api/optimizer/run — runs internal pulse plus Claude when API key and rules/bet toggles allow."
+                onClick={() => void onRunOptimizerNow?.()}
+              >
+                Force optimizer / Claude cycle now
+              </button>
+              <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
+                Uses <code>force=true</code> so Claude runs even if the scheduler checkbox is off (still requires{" "}
+                <code>ANTHROPIC_API_KEY</code>).
+              </p>
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Claude proposals trace (last 10)</h3>
+              <p className="sub" style={{ marginBottom: 8, fontSize: 11 }}>
+                Each row is one proposal cycle. Expand for scores and summary; reasoning has its own toggle.
+              </p>
+              {(Array.isArray(optimizerCfg?.claude_proposals_trace) ? (optimizerCfg.claude_proposals_trace as AnyObj[]) : []).map(
+                (row, i) => {
+                  const ts = formatClaudeTraceAt(String(row.at || ""));
+                  const headline = `${ts}${row.mutant ? " · mutant" : ""} · ${row.accepted ? "accepted" : "rejected"}`;
+                  return (
+                    <details
+                      key={String(row.at || i)}
+                      className="sub"
+                      style={{
+                        marginTop: 10,
+                        fontSize: 11,
+                        lineHeight: 1.45,
+                        border: "1px solid var(--border)",
+                        borderRadius: 6,
+                        padding: "6px 10px",
+                      }}
+                    >
+                      <summary style={{ cursor: "pointer", fontWeight: 600, listStylePosition: "outside" }}>{headline}</summary>
+                      <div style={{ marginTop: 8, paddingLeft: 2 }}>
+                        <div className="sub" style={{ fontSize: 10, opacity: 0.85 }} title="Raw ISO timestamp from server">
+                          UTC / stored: <code>{String(row.at || "—")}</code>
+                        </div>
+                        {row.reject_reason ? (
+                          <div style={{ marginTop: 6 }}>
+                            <code>{String(row.reject_reason)}</code>
+                          </div>
+                        ) : null}
+                        {row.score_before != null || row.score_after != null ? (
+                          <div style={{ marginTop: 6 }}>
+                            Score {String(row.score_before ?? "—")} → {String(row.score_after ?? "—")}
+                          </div>
+                        ) : null}
+                        {row.summary ? <div style={{ marginTop: 6 }}>{String(row.summary).slice(0, 400)}</div> : null}
+                        {row.reasoning ? (
+                          <details style={{ marginTop: 8 }}>
+                            <summary style={{ cursor: "pointer", fontWeight: 500 }}>Reasoning (full)</summary>
+                            <pre
+                              style={{
+                                marginTop: 6,
+                                whiteSpace: "pre-wrap",
+                                fontSize: 10,
+                                maxHeight: 220,
+                                overflow: "auto",
+                              }}
+                            >
+                              {String(row.reasoning)}
+                            </pre>
+                          </details>
+                        ) : null}
+                      </div>
+                    </details>
+                  );
+                },
+              )}
+            </div>
             <div style={{ marginTop: 12 }}>
               <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Change history</h3>
               {(historyRows || []).slice(0, 12).map((h, i) => (

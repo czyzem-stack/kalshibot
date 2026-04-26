@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import random
+from typing import Any
 
-from .branch_config import (
+from ..branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
@@ -11,7 +12,7 @@ from .branch_config import (
     MIN_BALANCE_FRACTION_PER_WINDOW,
     _lab_key_for_branch,
 )
-from .persistence import Store
+from ..persistence import Store
 
 
 def _trade_branch_matches_lab_row(row_branch: Any, engine_branch: str) -> bool:
@@ -71,4 +72,3 @@ async def maybe_auto_optimize(store: Store, branch: str) -> None:
     cfg = dict(cfg)
     cfg[lk] = lab
     await store.save_config(cfg)
-

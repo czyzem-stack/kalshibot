@@ -2022,7 +2022,9 @@ export default function App() {
       const tid = window.setTimeout(() => ac.abort(), maxMs);
       let payload: AnyObj | null = null;
       try {
-        setErr(null);
+        // Do not clear errors on every poll: a slow /api/dashboard would otherwise flip the UI to
+        // the loading screen (!dash && !err) until the request finishes or times out.
+        if (force) setErr(null);
         const r = await fetch("/api/dashboard", { signal: ac.signal });
         if (myEpoch !== dashboardFetchEpoch.current) return null;
         if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
@@ -2036,6 +2038,7 @@ export default function App() {
           }
         })();
         if (myEpoch !== dashboardFetchEpoch.current) return null;
+        setErr(null);
         setDash(d);
         firstDashLoadedRef.current = true;
         payload = d;
@@ -2923,6 +2926,19 @@ export default function App() {
       setOptimizerSaving(false);
     }
   };
+
+  const runOptimizerNow = useCallback(async () => {
+    setOptimizerSaving(true);
+    try {
+      await apiPostJson("/api/optimizer/run", {});
+      await loadOptimizer();
+      await refresh({ force: true });
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setOptimizerSaving(false);
+    }
+  }, [loadOptimizer, refresh]);
 
   const applyLabBranchesBulk = async (body: AnyObj) => {
     setBusy(true);
@@ -4410,6 +4426,7 @@ export default function App() {
         optimizerCfg={(cfg?.optimizer || optimizerCfg || {}) as AnyObj}
         onSaveOptimizerConfig={saveOptimizerConfig}
         optimizerSaving={optimizerSaving}
+        onRunOptimizerNow={runOptimizerNow}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
         liveEngineOn={liveBranchEngineOn}

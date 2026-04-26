@@ -40,6 +40,7 @@ from .kalshi_portfolio import fetch_portfolio_snapshot
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import Store, expand_partial_lab_branch
+from .optimizer.promotion import lab_a_promotion_report
 from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
 from .settings_env import env, kalshi_credentials_report
 
@@ -941,6 +942,13 @@ async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict
                 status_code=400,
                 detail="lab_a_settled_pnl_cents_must_exceed_lab_b_and_lab_c_and_lab_d",
             )
+        promo = await lab_a_promotion_report(store, cfg)
+        if not bool(promo.get("promotion_gates_ok")):
+            logger.warning("promotion_blocked report=%s", promo)
+            raise HTTPException(
+                status_code=400,
+                detail="lab_a_must_pass_composite_and_statistical_gates_vs_controls",
+            )
     lab_a = cfg.get("lab_a")
     if not isinstance(lab_a, dict):
         raise HTTPException(status_code=400, detail="lab_a_not_configured")
@@ -1818,6 +1826,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         "include_fees_in_score",
         "backtest_proposals",
         "adaptive_skip_backtest_gate",
+        "optimize_rules_with_claude",
     ):
         if k in body:
             v = body[k]
@@ -1846,7 +1855,13 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                     nxt[k] = max(5, min(24 * 60, int(float(v))))
                 except (TypeError, ValueError):
                     nxt[k] = v
-            elif k in ("optimize_bet_size", "include_fees_in_score", "backtest_proposals", "adaptive_skip_backtest_gate"):
+            elif k in (
+                "optimize_bet_size",
+                "include_fees_in_score",
+                "backtest_proposals",
+                "adaptive_skip_backtest_gate",
+                "optimize_rules_with_claude",
+            ):
                 nxt[k] = bool(v)
             else:
                 nxt[k] = v
