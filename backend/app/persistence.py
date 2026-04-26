@@ -11,7 +11,7 @@ from typing import Any
 
 import aiosqlite
 
-from .branch_config import ensure_patient_stop_loss_on_branch_dict
+from .branch_config import ensure_patient_stop_loss_on_branch_dict, sync_live_paper_trading_keys
 from .settings_env import env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -128,6 +128,18 @@ CREATE TABLE IF NOT EXISTS bot_config (
   json TEXT NOT NULL
 );
 
+-- Append-only audit log of full config JSON after each successful save. The active row remains in
+-- ``bot_config`` (id=1); this table enables rollback / forensics without replacing the hot path.
+CREATE TABLE IF NOT EXISTS config_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_name TEXT NOT NULL DEFAULT 'global',
+  timestamp TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  changed_by TEXT,
+  reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_config_history_ts ON config_history (timestamp DESC);
+
 CREATE TABLE IF NOT EXISTS signals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,
@@ -191,6 +203,7 @@ CREATE TABLE IF NOT EXISTS optimizer_recommendations (
 def default_bot_config() -> dict[str, Any]:
     return {
         "simulate": True,
+        "live_paper_trading": True,  # canonical; mirrored to ``simulate`` (see ``sync_live_paper_trading_keys``)
         "engine_running": False,
         "poll_seconds": 8,
         "balance_fraction_per_window": 0.03,
@@ -546,6 +559,7 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Drop legacy mirror key from persisted config (clients use lab_a only).
     if "sim_lab" in cfg:
         del cfg["sim_lab"]
+    sync_live_paper_trading_keys(cfg)
     return cfg
 
 
@@ -611,10 +625,80 @@ class Store:
                 return _normalize_loaded_config(merged)
             return _normalize_loaded_config(parsed)
 
-    async def save_config(self, cfg: dict[str, Any]) -> None:
+    async def save_config(
+        self,
+        cfg: dict[str, Any],
+        *,
+        history_branch: str = "global",
+        history_changed_by: str | None = "api",
+        history_reason: str | None = None,
+        skip_config_history: bool = False,
+    ) -> None:
+        """
+        Persist the merged bot config to the single active row in ``bot_config`` (id=1).
+
+        Unless ``skip_config_history`` is True, also appends a full JSON snapshot to ``config_history``
+        for audit and optional rollback. ``branch_name`` in history is a logical tag (e.g. ``global``,
+        ``lab_a``) for who initiated the change; the stored ``config_json`` is always the full config object.
+        """
+        sync_live_paper_trading_keys(cfg)
+        payload = json.dumps(cfg, default=str)
+        ts = datetime.now(timezone.utc).isoformat()
+        br = (history_branch or "global").strip() or "global"
         async with self._open_db() as db:
-            await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(cfg),))
+            if not skip_config_history:
+                await db.execute(
+                    """
+                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (br, ts, payload, history_changed_by, history_reason),
+                )
+            await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
             await db.commit()
+
+    async def list_config_history(
+        self, limit: int = 20, *, include_config: bool = False
+    ) -> list[dict[str, Any]]:
+        """
+        Return the most recent entries from ``config_history`` (newest first). When
+        ``include_config`` is False, only row metadata and ``config_bytes`` are returned (lighter for UI).
+        """
+        n = max(1, min(100, int(limit)))
+        out: list[dict[str, Any]] = []
+        async with self._open_db() as db:
+            if include_config:
+                cur = await db.execute(
+                    """
+                    SELECT id, branch_name, timestamp, config_json, changed_by, reason
+                    FROM config_history
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (n,),
+                )
+            else:
+                cur = await db.execute(
+                    """
+                    SELECT id, branch_name, timestamp, changed_by, reason, length(config_json) AS config_bytes
+                    FROM config_history
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (n,),
+                )
+            rows = await cur.fetchall()
+        for r in rows:
+            d = dict(r)
+            if include_config:
+                raw = d.pop("config_json", None)
+                if raw is not None:
+                    try:
+                        d["config"] = json.loads(str(raw))
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        d["config"] = None
+            out.append(d)
+        return out
 
     async def bump_lab_paper_lifetime_basis(self, branch: str) -> None:
         """

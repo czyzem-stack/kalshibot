@@ -4,7 +4,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .branch_config import ensure_patient_stop_loss_on_branch_dict, normalize_paper_fee_model
+from .branch_config import (
+    LIVE_PAPER_TRADING_KEY,
+    ensure_patient_stop_loss_on_branch_dict,
+    normalize_paper_fee_model,
+)
 from .persistence import expand_partial_lab_branch
 
 
@@ -103,7 +107,9 @@ class BotConfigPayload(BaseModel):
     def merged_into(self, current: dict[str, Any]) -> dict[str, Any]:
         out = dict(current)
         if self.simulate is not None:
-            out["simulate"] = bool(self.simulate)
+            v = bool(self.simulate)
+            out["simulate"] = v
+            out[LIVE_PAPER_TRADING_KEY] = v
         if self.engine_running is not None:
             out["engine_running"] = bool(self.engine_running)
         if self.poll_seconds is not None:

@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,7 +27,9 @@ from .branch_config import (
     BRANCH_LIVE,
     build_optimizer_radar_payload,
     lab_paper_equity_start_cents,
+    live_paper_trading_enabled,
     merge_branch_config,
+    sync_live_paper_trading_keys,
 )
 from .engine import (
     TradingEngine,
@@ -50,6 +53,10 @@ logger = logging.getLogger("kalshibot.api")
 # Must match ``default_bot_config`` / snapshot_equity Live paper fallback so tiles and chart tail
 # never disagree when ``paper_balance_cents`` is unset.
 _DEFAULT_PAPER_BALANCE_CENTS = 500_000
+
+# Filled on each full dashboard run with Kalshi mark refresh; read by ``GET /api/dashboard/orderbooks``.
+_DASHBOARD_ORDERBOOK_CACHE: dict[str, Any] = {"t_mono": 0.0, "payload": None}
+DASHBOARD_ORDERBOOK_CACHE_TTL_S = 5.0
 
 
 def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
@@ -139,7 +146,9 @@ async def _optimizer_loop(stop: asyncio.Event) -> None:
                     oo["last_status"] = "error"
                     oo["last_error"] = str(e)[:500]
                     cur["optimizer"] = oo
-                    await store.save_config(cur)
+                    await store.save_config(
+                        cur, history_branch="global", history_changed_by="optimizer", history_reason="last_run_error"
+                    )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=float(interval_m * 60))
             except TimeoutError:
@@ -776,7 +785,12 @@ async def _apply_uniform_paper_balance_after_scope_reset(scope: str, cents: int)
         block["paper_balance_cents"] = c
         block.pop("paper_lifetime_basis_cents", None)
         cfg[lk] = expand_partial_lab_branch(lk, block)
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:data_reset",
+        history_reason="uniform_paper_balance_after_scope_reset",
+    )
     return {
         "paper_balance_cents": c,
         "applied_to": ["live_paper", "lab_a", "lab_b", "lab_c", "lab_d"],
@@ -863,11 +877,52 @@ async def get_config() -> dict[str, Any]:
     return await store.load_config()
 
 
+def _config_live_paper_flag(cfg: dict[str, Any]) -> bool:
+    """
+    **Protected** key: when ``True``, Live uses paper / simulated order flow. Canonical
+    ``live_paper_trading`` is kept in sync with legacy ``simulate``; writes are restricted when
+    disabling paper (real orders) on Live.
+    """
+    return live_paper_trading_enabled(cfg)
+
+
+@app.get("/api/config/history")
+async def get_config_history(
+    limit: int = Query(20, ge=1, le=100),
+    include_config: bool = Query(False, description="Include full parsed config objects (large)"),
+) -> dict[str, Any]:
+    """Return recent ``config_history`` rows (newest first; default last 20)."""
+    rows = await store.list_config_history(limit, include_config=include_config)
+    return {"count": len(rows), "rows": rows}
+
+
 @app.put("/api/config")
-async def put_config(body: BotConfigPayload) -> dict[str, Any]:
+async def put_config(
+    request: Request,
+    body: BotConfigPayload,
+    confirm: str = Query("", description="Required YES when setting simulate=False (disable Live paper)"),
+    config_change_reason: str | None = Query(None, description="Optional short note stored on config_history"),
+) -> dict[str, Any]:
     cur = await store.load_config()
+    was_paper = _config_live_paper_flag(cur)
     merged = body.merged_into(cur)
-    await store.save_config(merged)
+    if was_paper and not _config_live_paper_flag(merged):
+        if str(confirm).strip().upper() != "YES":
+            logger.warning(
+                "blocked PUT /api/config: disabling Live paper (simulate->false) without confirm=YES from %s",
+                getattr(getattr(request, "client", None), "host", "unknown"),
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Disabling paper trading for Live (simulate=false) requires query confirm=YES (real orders if keys allow).",
+            )
+        logger.info("PUT /api/config: Live paper trading disabled (simulate=False) with confirm=YES")
+    await store.save_config(
+        merged,
+        history_branch="global",
+        history_changed_by="api:put_config",
+        history_reason=config_change_reason,
+    )
     return merged
 
 
@@ -955,7 +1010,12 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
         merged_d = merge_lab_branch_patch(dict(cfg.get("lab_d") or {}), ld)
         _coerce_rules_in_lab_patch(merged_d)
         cfg["lab_d"] = expand_partial_lab_branch("lab_d", merged_d)
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:put_lab_branches",
+        history_reason=str(body.get("reset_data") or "lab_merge")[:200] or None,
+    )
     return {"ok": True, "config": await store.load_config()}
 
 
@@ -970,7 +1030,7 @@ async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict
     if not bool(body.get("confirm")):
         raise HTTPException(status_code=400, detail="confirm must be true")
     cfg = await store.load_config()
-    simulate = bool(cfg.get("simulate", True))
+    simulate = live_paper_trading_enabled(cfg)
     if not simulate:
         if str(body.get("ack_live") or "").strip() != "APPLY_LIVE":
             raise HTTPException(
@@ -1011,7 +1071,12 @@ async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict
         if k == "assets" and isinstance(v, dict) and len(v) == 0:
             continue
         cfg[k] = copy.deepcopy(v) if isinstance(v, (dict, list)) else v
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:promote_lab_a_to_live",
+        history_reason=None,
+    )
     return {"ok": True, "config": await store.load_config()}
 
 
@@ -1066,7 +1131,12 @@ async def add_labs_paper_bankroll(body: dict[str, Any] = Body(default_factory=di
     for br_key, lab, new_bal in updates:
         lab["paper_balance_cents"] = new_bal
         cfg[br_key] = expand_partial_lab_branch(br_key, lab)
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:add_labs_paper_bankroll",
+        history_reason=f"add_cents={add_cents}",
+    )
     out_lt: dict[str, int | None] = {}
     for br_key, lab, _new_bal in updates:
         v = lab.get("paper_lifetime_basis_cents")
@@ -1090,8 +1160,8 @@ async def engine_status() -> dict[str, Any]:
         "live": _engine_status_block(
             engine_live,
             engine_running=bool(cfg.get("engine_running")),
-            simulate_orders=bool(cfg.get("simulate")),
-            extra={"simulate": bool(cfg.get("simulate"))},
+            simulate_orders=live_paper_trading_enabled(cfg),
+            extra={"simulate": live_paper_trading_enabled(cfg)},
         ),
         "lab_a": _engine_status_block(
             engine_lab_a,
@@ -1354,10 +1424,13 @@ def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: st
     return n
 
 
-@app.get("/api/dashboard")
-async def dashboard() -> dict[str, Any]:
+async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
+    """
+    Assemble the full dashboard JSON. When ``with_marks`` is False, skip the parallel
+    ``_refresh_paper_mtm_from_marks`` Kalshi calls (faster; use ``GET /api/dashboard/equity`` for polling).
+    """
     cfg = await store.load_config()
-    mode_live = "simulate" if cfg.get("simulate") else "live"
+    mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
     # Pull enough rows for the dashboard to filter by branch in the UI (recent slice was mostly one branch).
     trades = await store.recent_trades(limit=500)
     signals = await store.recent_signals(limit=500)
@@ -1411,7 +1484,7 @@ async def dashboard() -> dict[str, Any]:
         portfolio_notes = str(portfolio["error"])
 
     creds = kalshi_credentials_report()
-    simulate_live = bool(cfg.get("simulate"))
+    simulate_live = live_paper_trading_enabled(cfg)
     order_writes_live = portfolio_read_ok and not simulate_live
 
     _enrich_strategy_metrics(
@@ -1503,7 +1576,7 @@ async def dashboard() -> dict[str, Any]:
             ),
         ]
     )
-    if mtm_tasks:
+    if mtm_tasks and with_marks:
         try:
             await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=55.0)
         except asyncio.TimeoutError:
@@ -1579,6 +1652,17 @@ async def dashboard() -> dict[str, Any]:
                 "n_recommendations": nrec,
             }
         )
+
+    if with_marks:
+        _DASHBOARD_ORDERBOOK_CACHE["t_mono"] = time.monotonic()
+        _DASHBOARD_ORDERBOOK_CACHE["payload"] = {
+            "as_of_utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+            "metrics": {"mode": mode_live, **metrics_live},
+            "metrics_lab_a": metrics_lab_a,
+            "metrics_lab_b": metrics_lab_b,
+            "metrics_lab_c": metrics_lab_c,
+            "metrics_lab_d": metrics_lab_d,
+        }
 
     return {
         "config": cfg,
@@ -1715,10 +1799,86 @@ async def dashboard() -> dict[str, Any]:
     }
 
 
+@app.get("/api/dashboard")
+async def dashboard() -> dict[str, Any]:
+    return await _compose_dashboard_base(with_marks=True)
+
+
+@app.get("/api/dashboard/equity")
+async def dashboard_equity() -> dict[str, Any]:
+    """
+    Same structure as ``/api/dashboard`` but skips the slow Kalshi mark-refresh pass; intended for
+    more frequent client polling. Live MTM in ``metrics*`` may be stale between full refreshes.
+    """
+    return await _compose_dashboard_base(with_marks=False)
+
+
+@app.get("/api/dashboard/recent_trades")
+async def dashboard_recent_trades() -> dict[str, Any]:
+    """Recent ``signals`` / ``trades`` slices (lighter than a full dashboard round-trip)."""
+    trades = await store.recent_trades(limit=500)
+    signals = await store.recent_signals(limit=500)
+    not_traded = [s for s in signals if not int(s.get("executed") or 0)]
+    return {
+        "recent_trades": trades[:500],
+        "recent_signals": signals[:500],
+        "not_traded_signals": not_traded[:200],
+    }
+
+
+@app.get("/api/dashboard/open_positions")
+async def dashboard_open_positions() -> dict[str, Any]:
+    """
+    Account snapshot, Kalshi private positions, and per-branch sim opens used for the Holdings grid.
+    """
+    cfg = await store.load_config()
+    client = KalshiClient()
+    portfolio = await fetch_portfolio_snapshot(client)
+    kalshi_pos_list = [p for p in (portfolio.get("positions") or []) if isinstance(p, dict)]
+    sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c, sim_open_lab_d = await asyncio.gather(
+        store.open_sim_trades_for_branch(BRANCH_LIVE),
+        store.open_sim_trades_for_branch(BRANCH_LAB_A),
+        store.open_sim_trades_for_branch(BRANCH_LAB_B),
+        store.open_sim_trades_for_branch(BRANCH_LAB_C),
+        store.open_sim_trades_for_branch(BRANCH_LAB_D),
+    )
+    assets_cfg = cfg.get("assets") if isinstance(cfg.get("assets"), dict) else {}
+    position_by_asset = _position_by_asset(
+        assets_cfg, kalshi_pos_list, sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c, sim_open_lab_d
+    )
+    return {
+        "account_snapshot": {
+            "position_count": int(portfolio.get("position_count") or 0),
+            "resting_order_count": int(portfolio.get("resting_order_count") or 0),
+            "portfolio_error": portfolio.get("error"),
+            "position_by_asset": position_by_asset,
+        },
+        "remote_balance": portfolio.get("balance"),
+    }
+
+
+@app.get("/api/dashboard/orderbooks")
+async def dashboard_orderbooks() -> dict[str, Any]:
+    """
+    Last refreshed paper MTM / mark-derived metrics (cached ~5s from the most recent full dashboard run
+    with ``with_marks=True``). Triggers a full mark pass when the cache is stale.
+    """
+    now = time.monotonic()
+    pl = _DASHBOARD_ORDERBOOK_CACHE.get("payload")
+    t0 = float(_DASHBOARD_ORDERBOOK_CACHE.get("t_mono") or 0.0)
+    if pl and (now - t0) < DASHBOARD_ORDERBOOK_CACHE_TTL_S:
+        return {"cached": True, "cache_age_s": round(now - t0, 3), **pl}
+    full = await _compose_dashboard_base(with_marks=True)
+    p2 = _DASHBOARD_ORDERBOOK_CACHE.get("payload") or {}
+    return {"cached": False, **p2, "order_writes_live": (full.get("kalshi") or {}).get("order_writes_live")}
+
+
 @app.post("/api/engine/toggle")
 async def engine_toggle(
+    request: Request,
     running: bool | None = Query(None),
     simulate: bool | None = Query(None),
+    confirm: str = Query("", description="Required YES when simulate=False (disable Live paper)"),
     sim_lab_running: bool | None = Query(None),
     lab_a_running: bool | None = Query(None),
     lab_b_running: bool | None = Query(None),
@@ -1726,10 +1886,13 @@ async def engine_toggle(
     lab_d_running: bool | None = Query(None),
 ) -> dict[str, Any]:
     cfg = await store.load_config()
+    was_paper = _config_live_paper_flag(cfg)
     if running is not None:
         cfg["engine_running"] = bool(running)
     if simulate is not None:
-        cfg["simulate"] = bool(simulate)
+        v = bool(simulate)
+        cfg["live_paper_trading"] = v
+        cfg["simulate"] = v
     if sim_lab_running is not None:
         lab = dict(cfg.get("lab_a") or {})
         lab["engine_running"] = bool(sim_lab_running)
@@ -1750,7 +1913,24 @@ async def engine_toggle(
         lab = dict(cfg.get("lab_d") or {})
         lab["engine_running"] = bool(lab_d_running)
         cfg["lab_d"] = lab
-    await store.save_config(cfg)
+    sync_live_paper_trading_keys(cfg)
+    if was_paper and not _config_live_paper_flag(cfg):
+        if str(confirm).strip().upper() != "YES":
+            logger.warning(
+                "blocked POST /api/engine/toggle: disabling Live paper without confirm=YES from %s",
+                getattr(getattr(request, "client", None), "host", "unknown"),
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="Disabling paper trading (simulate=False) requires query confirm=YES.",
+            )
+        logger.info("POST /api/engine/toggle: Live paper disabled (simulate=False) with confirm=YES")
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:engine_toggle",
+        history_reason=None,
+    )
     return {"ok": True, "config": cfg}
 
 
@@ -1917,7 +2097,12 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                 nxt[k] = v
     nxt.pop("max_bet_fraction", None)
     cfg["optimizer"] = nxt
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:put_optimizer",
+        history_reason="optimizer_settings_patch",
+    )
     return {"ok": True, "optimizer": nxt}
 
 

@@ -10,6 +10,36 @@ BRANCH_LAB_C = "lab_c"
 BRANCH_LAB_D = "lab_d"
 BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
 
+# Protected flag: when True, the Live engine uses paper / simulated order flow. Canonical JSON key;
+# `simulate` is still written for backward compatibility and mirrors this value.
+LIVE_PAPER_TRADING_KEY = "live_paper_trading"
+
+
+def live_paper_trading_enabled(full_cfg: dict[str, Any]) -> bool:
+    """
+    Return whether Live is in paper (sim) mode. Prefer ``live_paper_trading``; fall back to legacy ``simulate``.
+    """
+    if LIVE_PAPER_TRADING_KEY in full_cfg:
+        return bool(full_cfg.get(LIVE_PAPER_TRADING_KEY))
+    return bool(full_cfg.get("simulate", True))
+
+
+def sync_live_paper_trading_keys(cfg: dict[str, Any]) -> None:
+    """
+    Keep ``live_paper_trading`` and legacy ``simulate`` in lockstep whenever either is read or about to be persisted.
+    If only one is present, it defines the value; if neither, default to paper (True).
+    If both are present, ``live_paper_trading`` wins.
+    """
+    if LIVE_PAPER_TRADING_KEY in cfg:
+        v = bool(cfg[LIVE_PAPER_TRADING_KEY])
+    elif "simulate" in cfg:
+        v = bool(cfg["simulate"])
+    else:
+        v = True
+    cfg[LIVE_PAPER_TRADING_KEY] = v
+    cfg["simulate"] = v
+
+
 # Same bounds as ``BotConfigPayload.balance_fraction_per_window`` (API / dashboard).
 MIN_BALANCE_FRACTION_PER_WINDOW = 0.0001
 MAX_BALANCE_FRACTION_PER_WINDOW = 1.0
@@ -118,7 +148,7 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
             return None
         out = dict(full_cfg)
         out["_branch"] = BRANCH_LIVE
-        sim = bool(full_cfg.get("simulate"))
+        sim = live_paper_trading_enabled(full_cfg)
         out["_simulate_orders"] = sim
         out["_trade_mode"] = "simulate" if sim else "live"
         apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg, branch, out)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .branch_config import _lab_key_for_branch, pulse_effective_config
+from .branch_config import _lab_key_for_branch, live_paper_trading_enabled, pulse_effective_config
 from .engine import (
     asset_cfg_enabled,
     build_effective_rules,
@@ -66,7 +66,7 @@ async def fetch_market_pulse(
         lab_blk = full.get(lk) if isinstance(full.get(lk), dict) else {}
         paper_cents = int(lab_blk.get("paper_balance_cents") or full.get("paper_balance_cents") or 500_000)
     else:
-        trade_mode = "simulate" if bool(full.get("simulate")) else "live"
+        trade_mode = "simulate" if live_paper_trading_enabled(full) else "live"
         paper_cents = int(full.get("paper_balance_cents") or 500_000)
 
     spent = await spent_in_window(store, wid, trade_mode, window_minutes, branch)

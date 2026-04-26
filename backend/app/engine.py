@@ -23,6 +23,7 @@ from .branch_config import (
     effective_paper_fee_bps,
     effective_swing_exit_implied_drop_pct,
     kalshi_fee_multiplier_from_cfg,
+    live_paper_trading_enabled,
     merge_branch_config,
     min_hold_minutes_before_stop_from_cfg,
     paper_fee_bps_from_cfg,
@@ -1878,7 +1879,7 @@ async def _handle_patient_stop_loss_exits(
     is at or below ``stop_loss_trigger_pct`` (negative threshold vs entry debit).
     """
     branch = str(cfg.get("_branch") or engine.branch)
-    if branch == BRANCH_LIVE and not bool(full_cfg.get("simulate")):
+    if branch == BRANCH_LIVE and not live_paper_trading_enabled(full_cfg):
         return 0
     if not bool(cfg.get("enable_patient_stop_loss", True)):
         _trace_append(trace, f"patient_stop_loss {branch}: disabled in config, skip")
@@ -2030,7 +2031,7 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
     fee_bps_now = effective_paper_fee_bps(full_cfg, branch)
     if thr <= 0:
         return 0
-    if branch == BRANCH_LIVE and not bool(full_cfg.get("simulate")):
+    if branch == BRANCH_LIVE and not live_paper_trading_enabled(full_cfg):
         return 0
 
     open_rows = await engine.store.open_sim_trades_for_branch(branch)
@@ -2397,7 +2398,7 @@ async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | N
     branch = engine.branch
 
     if branch == BRANCH_LIVE:
-        trade_mode_filter = "simulate" if full_cfg.get("simulate") else "live"
+        trade_mode_filter = "simulate" if live_paper_trading_enabled(full_cfg) else "live"
     else:
         trade_mode_filter = "simulate"
 
@@ -2406,7 +2407,7 @@ async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | N
     open_committed = int(roll.get("open_committed_cents") or 0)
 
     mtm_equity: int
-    if _is_lab_branch(branch) or (branch == BRANCH_LIVE and full_cfg.get("simulate")):
+    if _is_lab_branch(branch) or (branch == BRANCH_LIVE and live_paper_trading_enabled(full_cfg)):
         if _is_lab_branch(branch):
             paper = lab_paper_equity_start_cents(full_cfg, branch)
         else:
@@ -2540,7 +2541,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
 
             tick += 1
             snap_period = tick % 5 == 0
-            simulate_live = bool(cfg.get("simulate"))
+            simulate_live = live_paper_trading_enabled(cfg)
             # Paper equity is derived from SQLite only — snapshot often so the chart matches settled/open counts.
             # Live real mode still snapshots only every 5 ticks while the engine runs (balance API).
             if simulate_live:

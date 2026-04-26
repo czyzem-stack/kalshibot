@@ -1692,7 +1692,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         oc["last_status"] = "ok_internal_pulse" if changes else "ok_noop"
         oc["last_error"] = ""
         cfg["optimizer"] = oc
-        await store.save_config(cfg)
+        await store.save_config(
+            cfg,
+            history_branch="global",
+            history_changed_by="optimizer_claude",
+            history_reason="ok_internal_pulse" if changes else "ok_noop",
+        )
         return {
             "ok": True,
             "adaptive_only": True,
@@ -1704,7 +1709,9 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         }
 
     cfg["optimizer"] = oc
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg, history_branch="global", history_changed_by="optimizer_claude", history_reason="pre_claude_checkpoint"
+    )
     cfg = await store.load_config()
     oc = _norm_opt_cfg(_opt_cfg(cfg))
 
@@ -1886,7 +1893,9 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     oc["last_status"] = "ok"
     oc["last_error"] = ""
     cfg["optimizer"] = oc
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg, history_branch="global", history_changed_by="optimizer_claude", history_reason="claude_run_complete"
+    )
     return {
         "ok": True,
         "id": rid,

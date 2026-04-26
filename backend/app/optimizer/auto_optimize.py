@@ -71,4 +71,6 @@ async def maybe_auto_optimize(store: Store, branch: str) -> None:
     lab["optimizer_note"] = f"mean_pnl_cents={pnl:.1f} -> fraction={frac}"
     cfg = dict(cfg)
     cfg[lk] = lab
-    await store.save_config(cfg)
+    await store.save_config(
+        cfg, history_branch="global", history_changed_by="auto_optimize", history_reason="lab_auto_tune"
+    )

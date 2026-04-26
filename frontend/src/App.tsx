@@ -34,7 +34,13 @@ async function apiGet<T>(path: string): Promise<T> {
 }
 
 async function apiPut(path: string, body: AnyObj) {
-  const r = await fetch(path, {
+  let url = path;
+  if (body && "simulate" in body && (body as AnyObj).simulate === false) {
+    const u = new URL(path, window.location.origin);
+    u.searchParams.set("confirm", "YES");
+    url = u.pathname + u.search;
+  }
+  const r = await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2196,16 +2202,36 @@ export default function App() {
     });
   }, []);
 
+  const refreshEquityLight = useCallback((): void => {
+    void (async () => {
+      try {
+        const r = await fetch("/api/dashboard/equity");
+        if (!r.ok) return;
+        const d = (await r.json()) as AnyObj;
+        if (!d || typeof d !== "object") return;
+        setDash((prev) =>
+          prev == null
+            ? d
+            : { ...d, config: d.config && typeof d.config === "object" ? d.config : prev.config },
+        );
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     void refresh();
-    // Slower than before so a slow dashboard (MTM for Live + 3 labs) can finish before the next poll stacks up.
-    const id = window.setInterval(() => void refresh(), 8000);
+    // Full dashboard: MTM + order books — poll less often; use ``/api/dashboard/equity`` for the fast path.
+    const idFull = window.setInterval(() => void refresh(), 12000);
+    const idEq = window.setInterval(() => void refreshEquityLight(), 4000);
     return () => {
-      window.clearInterval(id);
+      window.clearInterval(idFull);
+      window.clearInterval(idEq);
       dashboardFetchEpoch.current += 1;
       dashboardAbortRef.current?.abort();
     };
-  }, [refresh]);
+  }, [refresh, refreshEquityLight]);
 
   const loadOptimizer = useCallback(async () => {
     try {
@@ -2722,7 +2748,9 @@ export default function App() {
     if (prevDash) applyDashboardConfig({ ...cfg, simulate });
     setBusy(true);
     try {
-      const out = (await apiPost(`/api/engine/toggle?simulate=${simulate ? "true" : "false"}`)) as AnyObj;
+      const out = (await apiPost(
+        `/api/engine/toggle?simulate=${simulate ? "true" : "false"}${!simulate ? "&confirm=YES" : ""}`,
+      )) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
       void refresh();

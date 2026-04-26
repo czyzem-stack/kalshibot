@@ -8,13 +8,40 @@ It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys),
 
 ---
 
+## Patient Stop-Loss (Loss-Recoup Exit)
+
+**Patient stop-loss** is a **paper** (simulated) safety valve that can automatically close a losing open position after a **minimum hold** and when **fee-aware unrealized P&L%** (mark-to-exit after modeled sell fees vs total cash debited at entry) is at or below a **negative threshold**. It is designed to cut depth-of-loss without reacting to the first wiggle: you set **on/off**, **min_hold_minutes_before_stop**, and **stop_loss_trigger_pct** in **Settings** (and per **lab** overlay where applicable). Live in **non-paper** (real) mode does not run this path; Labs are always sim.
+
+| Lab / branch | Role (A/B testing) | Typical patient stop defaults (illustrative) |
+|-------------|--------------------|-----------------------------------------------|
+| **Live** | Production account; paper when `live_paper_trading` / `simulate` is on | Tuned in Settings; conservative vs labs depends on your saved JSON |
+| **Lab A** | Primary experiment; promote-to-Live and optimizer focus | Slightly **tighter** stop / shorter hold in seeded defaults (staging) |
+| **Lab B** | Conservative reference arm | **Moderate** threshold & hold (reference) |
+| **Lab C** | Moderate–aggressive reference | Between B and D |
+| **Lab D** | Aggressive paper reference | **Wider** threshold / different hold in seeded defaults |
+
+Exact numbers live in `default_bot_config()` and your SQLite config; the table reflects the **5-way** **Live + A + B + C + D** layout for comparing how patient exits interact with rules and fees.
+
+---
+
+## Recent Architectural Improvements
+
+| Topic | What changed |
+|--------|----------------|
+| **Config history** | Every save appends a row to the **`config_history`** table (branch tag, timestamp, full JSON, who/why). The legacy **`bot_config`** single row remains the active config. **GET `/api/config/history`** returns the latest entries for audit; use `include_config=true` for full snapshots. |
+| **Money-path tests** | `backend/tests/test_engine_money_path.py` covers non-negative sizing, patient stop gating, promotion fitness helpers, and **confirm-gated** disable of paper mode on Live. |
+| **Simulate / paper flag** | Canonical key **`live_paper_trading`** (mirrors legacy **`simulate`**). Disabling paper on Live via **`PUT /api/config`** or **`POST /api/engine/toggle`** requires `confirm=YES`; attempts are logged. |
+| **Dashboard API** | Heavier work is split: **`GET /api/dashboard/equity`** (frequent poll, skips slow mark refresh), plus **`/open_positions`**, **`/orderbooks`** (short TTL cache off full runs), **`/recent_trades`**. The UI polls the light equity route more often than the full **`GET /api/dashboard`**. |
+
+---
+
 ## What it does
 
 - **Live branch** — Uses your Kalshi account when credentials are configured. With **simulate** mode on, Live behaves as **paper** (no real orders). With simulate off and the engine on, the bot can **place real limit orders** according to your rules (you are responsible for risk and compliance).
 - **Lab A through D** — Separate **simulated** branches with their own paper bankrolls, rules and sizing knobs, and metrics so you can compare strategies without touching Live.
 - **Engines** — Background loops scan markets, evaluate rules, and manage positions per branch (see `backend/app/engine.py`).
 - **Dashboard** — Single-page UI: branch performance, equity charts, holdings, signals and trades, Kalshi connection status, settings (rules, filters, sizing, engines, optimizer), historical export, and more. The dev server proxies `/api` to the backend.
-- **Persistence** — Config, trades, signals, and snapshots are stored under `data/` (default SQLite: `data/bot.sqlite3`). Optional **JSONL** logs for signals and trades (and optional equity logging) under `data/logs/` when enabled in `.env`.
+- **Persistence** — Config (active row + **`config_history`** audit table), trades, signals, and snapshots are stored under `data/` (default SQLite: `data/bot.sqlite3`). Optional **JSONL** logs for signals and trades (and optional equity logging) under `data/logs/` when enabled in `.env`.
 - **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard **does not** currently expose a "mutate rules with Claude" panel—**Settings** is the natural home if that returns, so operators keep one serious surface for config.
 
 ---
@@ -93,7 +120,7 @@ flowchart LR
   REST --> LOGS
 ```
 
-- **Single SQLite row** stores the merged bot JSON (`persistence.py`). Engines read config through `merge_branch_config` so each branch sees **global defaults** plus **lab overlays** where set.
+- **Active config** is one merged JSON row in **`bot_config`**, with **append-only** **`config_history`** for audit. Engines read through `merge_branch_config` so each branch sees **global defaults** plus **lab overlays** where set.
 - **Five trading engines** share one event loop task group pattern (`dual_engine_loop`): Live plus Lab A through D, each with its own `TradingEngine` instance.
 
 ---
@@ -104,7 +131,7 @@ Understanding this removes a lot of “why did my lab pick up X?” confusion:
 
 | Layer | Where it lives | Used by |
 |--------|----------------|---------|
-| **Top-level config** | Keys on the root JSON (same document as labs) | **Live** branch: `simulate`, `engine_running`, `rules`, `assets`, global paper balance when not overridden, filters, fees, etc. |
+| **Top-level config** | Keys on the root JSON (same document as labs) | **Live** branch: `live_paper_trading` (canonical; mirrored to `simulate`), `engine_running`, `rules`, `assets`, global paper balance when not overridden, filters, **patient stop-loss** fields, fees, etc. |
 | **Per-lab overlays** | `lab_a` … `lab_d` objects | When a lab’s `engine_running` is true, `merge_branch_config` builds effective config by copying globals, then for each key in `LAB_BRANCH_OVERLAY_KEYS` (see `backend/app/branch_config.py`) replacing from that lab if present. Keys include `rules`, `assets`, `balance_fraction_per_window`, `window_minutes`, `poll_seconds`, subtitle filters, fee fields, `paper_balance_cents`, and more. Empty lab `assets` is ignored so you cannot accidentally scan zero markets. |
 | **Optimizer blob** | `cfg["optimizer"]` | Scheduler gates, adaptive tuning state, `change_history`, Claude model id, lab style presets, etc. Does not replace the whole config; it patches **`lab_a`** (and optimizer metadata) under controlled conditions. |
 
@@ -224,7 +251,7 @@ If the scheduler is off and there is no API key, the optimizer still records **i
 - `dual_engine_loop_running` — whether the background dual-engine asyncio task is still running.
 - `optimizer_loop_running` — whether the optimizer loop task is still running.
 
-Heavier metrics (DB size, last Kalshi error, equity) live in **`GET /api/dashboard`** and related routes; keep `/api/health` cheap.
+Heavier metrics (DB size, last Kalshi error, equity) live in **`GET /api/dashboard`**, **`GET /api/dashboard/equity`**, and related split routes; keep `/api/health` cheap.
 
 ---
 
@@ -380,6 +407,16 @@ All backend env vars are documented in **`.env.example`**. Highlights:
 | `ALERT_WEBHOOK_URL` | Optional Discord or Slack incoming webhook for new/changed engine errors (see [Health, alerts, and Docker](#health-alerts-and-docker)). |
 | `ALERT_WEBHOOK_MIN_SECONDS` | Minimum seconds between similar webhook posts (default **120**). |
 
+### Bot config (SQLite JSON) — paper mode and patient stop-loss
+
+| Key | Scope | Purpose |
+|-----|--------|---------|
+| `live_paper_trading` | **Live** (root) | Canonical boolean: when **true**, Live uses paper / simulated order flow. Kept in sync with legacy **`simulate`**. |
+| `simulate` | **Live** (root) | Legacy mirror of `live_paper_trading` for clients and history. **Disabling** paper (switching to real limit orders) requires **`?confirm=YES`** on `PUT /api/config` or `POST /api/engine/toggle?simulate=false`. |
+| `enable_patient_stop_loss` | **Live** or per **`lab_*`** | Turn patient stop-loss on or off. |
+| `stop_loss_trigger_pct` | same | Fee-aware unrealized P&L% (negative) at or below which an exit is allowed after min hold. |
+| `min_hold_minutes_before_stop` | same | Minimum minutes **held** before the stop can fire. |
+
 ### Frontend dev proxy
 
 Vite proxies **`/api`** to **`http://127.0.0.1:8765`** by default (`frontend/vite.config.ts`). If you change the API port:
@@ -412,10 +449,12 @@ Interactive docs: **http://127.0.0.1:8765/docs** (when the server is running).
 
 Representative routes:
 
-- `GET /api/dashboard` — Large JSON payload used by the UI (metrics, engines, recent trades and signals, equity snapshots, and more).
-- `GET /api/config`, `PUT /api/config` — Bot configuration.
+- `GET /api/dashboard` — Full dashboard (metrics, engines, recent trades and signals, equity snapshots, order-book refresh where applicable).
+- `GET /api/dashboard/equity` — Same shape as the full dashboard but **skips the slow per-position mark-refresh** pass; use for **frequent** polling. **`GET /api/dashboard/open_positions`**, **`/orderbooks`**, **`/recent_trades`** return focused slices; **`orderbooks`** may serve a **cached** payload for a few seconds.
+- `GET /api/config`, `PUT /api/config` — Bot configuration (see `confirm=YES` when disabling **paper** on Live).
+- `GET /api/config/history` — Last **N** **config** snapshots (default 20) from **`config_history`**.
 - `GET /api/account`, `GET /api/engine/status` — Account and engine summaries.
-- `POST /api/engine/toggle` — Start or stop engines per branch (payload detailed in OpenAPI).
+- `POST /api/engine/toggle` — Start or stop engines / paper mode (OpenAPI: **`confirm=YES`** when `simulate=false`).
 - `GET /api/trades`, `GET /api/signals` — Recent activity.
 - `GET /api/history/{table}`, `GET /api/history/export.csv` — Historical tables and CSV export.
 - `POST /api/data/reset` — Reset trading data (protect with `DATA_RESET_TOKEN` in production contexts).
