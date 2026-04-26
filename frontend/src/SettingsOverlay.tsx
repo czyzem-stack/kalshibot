@@ -740,9 +740,10 @@ export type SettingsOverlayProps = {
   onRefresh: () => void | Promise<void>;
   onOpenHistory: () => void | Promise<void>;
   kalshi: AnyObj;
-  /** Browser-only: bottom-right cards for new trade opens and settlements. */
-  tradePopupToastsEnabled: boolean;
-  onTradePopupToastsEnabledChange: (enabled: boolean) => void;
+  heroMarqueeSpeedMult: number;
+  onHeroMarqueeSpeedMultChange: (mult: number) => void;
+  heroMarqueeRotateSec: number;
+  onHeroMarqueeRotateSecChange: (sec: number) => void;
 };
 
 export default function SettingsOverlay({
@@ -790,8 +791,10 @@ export default function SettingsOverlay({
   onRefresh,
   onOpenHistory,
   kalshi,
-  tradePopupToastsEnabled,
-  onTradePopupToastsEnabledChange,
+  heroMarqueeSpeedMult,
+  onHeroMarqueeSpeedMultChange,
+  heroMarqueeRotateSec,
+  onHeroMarqueeRotateSecChange,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   const [labSizingTab, setLabSizingTab] = useState<LabBranchKey>("a");
@@ -984,18 +987,44 @@ export default function SettingsOverlay({
             </a>
           </div>
           <div
-            className="settings-dashboard-ui-row section-tip"
-            style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(36, 48, 86, 0.65)" }}
-            title="Stored in this browser only (localStorage). Does not affect the optimizer snapshot button."
+            className="panel settings-nested-panel section-tip"
+            style={{ marginTop: 12, marginBottom: 0, padding: "12px 14px" }}
+            title="Stored in this browser only (localStorage). Controls the header ticker and the Live / Lab balance tile."
           >
-            <label className="settings-trade-toasts-label">
+            <h3 style={{ margin: 0, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)" }}>
+              Hero ticker & balance tile
+            </h3>
+            <p className="sub" style={{ marginTop: 6, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
+              Horizontal marquee speed, how fast the Live / Lab A–D column cycles, and legibility of the balance readout — all live here; nothing on the hero bar itself.
+            </p>
+            <div className="field" style={{ marginBottom: 0 }} title="Multiplier for how fast the combined branch line scrolls (drag / throw still works).">
+              <label htmlFor="hero_marquee_speed_mult">
+                Marquee scroll speed: <strong>{heroMarqueeSpeedMult.toFixed(2)}×</strong>
+              </label>
               <input
-                type="checkbox"
-                checked={tradePopupToastsEnabled}
-                onChange={(e) => onTradePopupToastsEnabledChange(e.target.checked)}
+                id="hero_marquee_speed_mult"
+                type="range"
+                min="0.35"
+                max="4"
+                step="0.05"
+                value={heroMarqueeSpeedMult}
+                onChange={(e) => onHeroMarqueeSpeedMultChange(Number(e.target.value))}
               />
-              <span>Trade pop-up toasts (opens &amp; settlements)</span>
-            </label>
+            </div>
+            <div className="field" style={{ marginTop: 12, marginBottom: 0 }} title="Time each Live / Lab balance slide stays visible before auto-advancing (click still advances immediately).">
+              <label htmlFor="hero_marquee_rotate_sec">
+                Balance tile rotate: <strong>{heroMarqueeRotateSec.toFixed(1)}s</strong> per branch
+              </label>
+              <input
+                id="hero_marquee_rotate_sec"
+                type="range"
+                min="0.8"
+                max="6"
+                step="0.1"
+                value={heroMarqueeRotateSec}
+                onChange={(e) => onHeroMarqueeRotateSecChange(Number(e.target.value))}
+              />
+            </div>
           </div>
         </div>
         {showLive ? (

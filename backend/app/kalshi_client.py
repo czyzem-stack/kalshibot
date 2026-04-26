@@ -54,12 +54,12 @@ def _sign(private_key: Any, timestamp_ms: str, method: str, sign_path: str) -> s
 
 
 class KalshiClient:
-    """Shared short TTL cache so Live + Sim lab ticks do not double-hit /markets per series."""
+    """Class-level caches: all ``TradingEngine`` instances + dashboard share one /markets + orderbook view per key."""
 
     _open_markets_cache: dict[str, tuple[float, Any]] = {}
     _orderbook_cache: dict[str, tuple[float, Any]] = {}
-    OPEN_MARKETS_CACHE_TTL = 8.0
-    ORDERBOOK_CACHE_TTL = 8.0
+    OPEN_MARKETS_CACHE_TTL = 10.0
+    ORDERBOOK_CACHE_TTL = 10.0
     # Limit concurrent signed (private) calls across all engine instances + dashboard.
     _private_call_sem = asyncio.Semaphore(3)
 

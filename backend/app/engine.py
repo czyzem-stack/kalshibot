@@ -641,12 +641,13 @@ def _is_lab_branch(branch: str) -> bool:
     return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
 
 
-async def tick_once(engine: TradingEngine) -> None:
+async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> None:
     now = utc_now()
     engine.state.last_tick_at = iso(now)
     engine.state.last_error = None
 
-    full_cfg = await engine.store.load_config()
+    if full_cfg is None:
+        full_cfg = await engine.store.load_config()
     cfg = merge_branch_config(full_cfg, engine.branch)
     if not cfg:
         return
@@ -832,7 +833,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         await engine.store.reset_trading_data(backup=False, branch=rb)
         await engine.store.bump_lab_paper_lifetime_basis(rb)
         try:
-            await snapshot_equity(engine)
+            await snapshot_equity(engine, full_cfg=full_cfg)
         except Exception:
             pass
         engine._paper_auto_reset_streak_handled = True
@@ -1925,14 +1926,15 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
     return closed_n
 
 
-async def settle_simulated_trades(engine: TradingEngine) -> int:
+async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> int:
     """Mark simulated open rows settled when Kalshi market is finalized. Returns count updated this pass."""
     open_trades = await engine.store.open_sim_trades_for_branch(engine.branch)
     if not open_trades:
         return 0
     now = utc_now()
     settled_n = 0
-    full_cfg = await engine.store.load_config()
+    if full_cfg is None:
+        full_cfg = await engine.store.load_config()
     fee_bps_now = effective_paper_fee_bps(full_cfg, engine.branch)
     for t in open_trades:
         try:
@@ -2037,8 +2039,9 @@ async def settle_simulated_trades(engine: TradingEngine) -> int:
     return settled_n
 
 
-async def snapshot_equity(engine: TradingEngine) -> None:
-    full_cfg = await engine.store.load_config()
+async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> None:
+    if full_cfg is None:
+        full_cfg = await engine.store.load_config()
     branch = engine.branch
 
     if branch == BRANCH_LIVE:
@@ -2088,9 +2091,10 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
 
     tick = 0
     while not stop_event.is_set():
+        eng_live = engines[BRANCH_LIVE]
+        full_cfg = await eng_live.store.load_config()
+        cfg = full_cfg
         try:
-            eng_live = engines[BRANCH_LIVE]
-            cfg = await eng_live.store.load_config()
             poll_candidates: list[float] = [float(cfg.get("poll_seconds") or 8)]
             branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D]
             lab_conf = {
@@ -2111,7 +2115,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                 if not eng:
                     continue
                 try:
-                    n_settled[br] = await settle_simulated_trades(eng)
+                    n_settled[br] = await settle_simulated_trades(eng, full_cfg=full_cfg)
                     n_swing[br] = await maybe_swing_exit_open_sim_trades(eng, cfg)
                 except Exception as e:
                     err = str(e)
@@ -2124,7 +2128,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             if cfg.get("engine_running"):
                 el = engines[BRANCH_LIVE]
                 try:
-                    await tick_once(el)
+                    await tick_once(el, full_cfg=full_cfg)
                 except Exception as e:
                     err = str(e)
                     _data_log(
@@ -2162,7 +2166,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                     eng_tick = engines.get(br)
                     if eng_tick:
                         try:
-                            await tick_once(eng_tick)
+                            await tick_once(eng_tick, full_cfg=full_cfg)
                         except Exception as e:
                             err = str(e)
                             _data_log(
@@ -2185,7 +2189,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             if simulate_live:
                 if snap_period or n_settled.get(BRANCH_LIVE, 0) > 0 or n_swing.get(BRANCH_LIVE, 0) > 0:
                     try:
-                        await snapshot_equity(eng_live)
+                        await snapshot_equity(eng_live, full_cfg=full_cfg)
                     except Exception as e:
                         err = str(e)
                         _data_log(
@@ -2200,7 +2204,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                         eng_live.state.last_error = err[:500]
             elif snap_period and cfg.get("engine_running"):
                 try:
-                    await snapshot_equity(eng_live)
+                    await snapshot_equity(eng_live, full_cfg=full_cfg)
                 except Exception as e:
                     err = str(e)
                     _data_log(
@@ -2223,7 +2227,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                 if lc.get("engine_running"):
                     eng = engines.get(br)
                     if eng:
-                        lab_snap_items.append((br, snapshot_equity(eng)))
+                        lab_snap_items.append((br, snapshot_equity(eng, full_cfg=full_cfg)))
             if lab_snap_items:
                 results = await asyncio.gather(*[t for _, t in lab_snap_items], return_exceptions=True)
                 for (br, _), res in zip(lab_snap_items, results):
@@ -2251,12 +2255,12 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             if el:
                 el.state.last_error = err[:500]
 
-        cfg = await engines[BRANCH_LIVE].store.load_config()
-        poll_live = float(cfg.get("poll_seconds") or 8)
-        poll_lab_a = float(((cfg.get("lab_a") or {}) if isinstance(cfg.get("lab_a"), dict) else {}).get("poll_seconds") or poll_live)
-        poll_lab_b = float(((cfg.get("lab_b") or {}) if isinstance(cfg.get("lab_b"), dict) else {}).get("poll_seconds") or poll_live)
-        poll_lab_c = float(((cfg.get("lab_c") or {}) if isinstance(cfg.get("lab_c"), dict) else {}).get("poll_seconds") or poll_live)
-        poll_lab_d = float(((cfg.get("lab_d") or {}) if isinstance(cfg.get("lab_d"), dict) else {}).get("poll_seconds") or poll_live)
+        # Reuse config loaded at loop start — avoids a second SQLite read every poll interval.
+        poll_live = float(full_cfg.get("poll_seconds") or 8)
+        poll_lab_a = float(((full_cfg.get("lab_a") or {}) if isinstance(full_cfg.get("lab_a"), dict) else {}).get("poll_seconds") or poll_live)
+        poll_lab_b = float(((full_cfg.get("lab_b") or {}) if isinstance(full_cfg.get("lab_b"), dict) else {}).get("poll_seconds") or poll_live)
+        poll_lab_c = float(((full_cfg.get("lab_c") or {}) if isinstance(full_cfg.get("lab_c"), dict) else {}).get("poll_seconds") or poll_live)
+        poll_lab_d = float(((full_cfg.get("lab_d") or {}) if isinstance(full_cfg.get("lab_d"), dict) else {}).get("poll_seconds") or poll_live)
         poll = max(poll_live, poll_lab_a, poll_lab_b, poll_lab_c, poll_lab_d)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=poll)

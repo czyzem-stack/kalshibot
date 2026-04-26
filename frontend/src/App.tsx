@@ -10,7 +10,7 @@ import {
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import SettingsOverlay from "./SettingsOverlay";
 import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
-import { BranchMarketTickers } from "./BranchMarketTickers";
+import { BranchHeroMarquee } from "./BranchMarketTickers";
 
 type AnyObj = Record<string, any>;
 
@@ -202,31 +202,53 @@ function stableOptimizerChangeId(h: AnyObj): string {
   return `ch-${tag}`;
 }
 
-/** Browser-only: show bottom-right cards for new trade opens and settlements (not the optimizer report popup). */
-const TRADE_POPUP_TOASTS_KEY = "kalshibot_trade_popup_toasts_v1";
+function fmtMoney(n: number) {
+  const sign = n < 0 ? "-" : "";
+  const v = Math.abs(n);
+  return `${sign}$${v.toFixed(2)}`;
+}
 
-function readTradePopupToastsEnabled(): boolean {
+const HERO_MARQUEE_SPEED_KEY = "kalshibot_hero_marquee_speed_mult_v1";
+const HERO_MARQUEE_ROTATE_SEC_KEY = "kalshibot_hero_marquee_rotate_sec_v1";
+
+function readHeroMarqueeSpeedMult(): number {
   try {
-    const v = window.localStorage.getItem(TRADE_POPUP_TOASTS_KEY);
-    if (v === null || v === "") return true;
-    return v !== "0" && v !== "false";
+    const raw = window.localStorage.getItem(HERO_MARQUEE_SPEED_KEY);
+    if (!raw) return 2;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 2;
+    return Math.min(4, Math.max(0.35, n));
   } catch {
-    return true;
+    return 2;
   }
 }
 
-function persistTradePopupToastsEnabled(on: boolean) {
+function persistHeroMarqueeSpeedMult(mult: number) {
   try {
-    window.localStorage.setItem(TRADE_POPUP_TOASTS_KEY, on ? "1" : "0");
+    window.localStorage.setItem(HERO_MARQUEE_SPEED_KEY, String(Math.min(4, Math.max(0.35, mult))));
   } catch {
     // ignore
   }
 }
 
-function fmtMoney(n: number) {
-  const sign = n < 0 ? "-" : "";
-  const v = Math.abs(n);
-  return `${sign}$${v.toFixed(2)}`;
+function readHeroMarqueeRotateSec(): number {
+  try {
+    const raw = window.localStorage.getItem(HERO_MARQUEE_ROTATE_SEC_KEY);
+    if (!raw) return 1.8;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 1.8;
+    return Math.min(6, Math.max(0.8, n));
+  } catch {
+    return 1.8;
+  }
+}
+
+function persistHeroMarqueeRotateSec(sec: number) {
+  try {
+    window.localStorage.setItem(HERO_MARQUEE_ROTATE_SEC_KEY, String(Math.min(6, Math.max(0.8, sec))));
+  } catch {
+    // ignore
+  }
 }
 
 function fmtPct(n: unknown, digits = 2): string {
@@ -1628,19 +1650,16 @@ function EngineAssetSnapBlock({
 export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
-  const tradeToastsBootstrappedRef = useRef(false);
-  const seenTradeInitRef = useRef<Set<string>>(new Set());
-  const seenTradeSettleRef = useRef<Set<string>>(new Set());
   const [dash, setDash] = useState<AnyObj | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [heroMarqueeSpeedMult, setHeroMarqueeSpeedMult] = useState(readHeroMarqueeSpeedMult);
+  const [heroMarqueeRotateSec, setHeroMarqueeRotateSec] = useState(readHeroMarqueeRotateSec);
   const [optimizerRows, setOptimizerRows] = useState<AnyObj[]>([]);
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
-  const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
-  const [tradePopupToastsEnabled, setTradePopupToastsEnabled] = useState(readTradePopupToastsEnabled);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
@@ -1812,132 +1831,21 @@ export default function App() {
   }, [optimizerOpen, loadOptimizer]);
 
   const cfg = dash?.config || {};
+  const setHeroMarqueeSpeedMultPersist = useCallback((mult: number) => {
+    const clamped = Math.min(4, Math.max(0.35, mult));
+    persistHeroMarqueeSpeedMult(clamped);
+    setHeroMarqueeSpeedMult(clamped);
+  }, []);
+
+  const setHeroMarqueeRotateSecPersist = useCallback((sec: number) => {
+    const clamped = Math.min(6, Math.max(0.8, sec));
+    persistHeroMarqueeRotateSec(clamped);
+    setHeroMarqueeRotateSec(clamped);
+  }, []);
 
   useEffect(() => {
     if (dash) dashSnapshotRef.current = dash as AnyObj;
   }, [dash]);
-
-  useEffect(() => {
-    if (tradePopupToastsEnabled) return;
-    setOptimizerNotifs((prev) =>
-      prev.filter((n) => {
-        const id = String(n.id || "");
-        return !id.startsWith("trade-initiated-") && !id.startsWith("trade-resolved-");
-      }),
-    );
-  }, [tradePopupToastsEnabled]);
-
-  const setTradePopupToastsEnabledPersist = useCallback((on: boolean) => {
-    persistTradePopupToastsEnabled(on);
-    setTradePopupToastsEnabled(on);
-  }, []);
-
-  const visibleOptimizerNotifs = useMemo(() => {
-    return optimizerNotifs.filter((n) => {
-      const id = String(n.id || "");
-      if (id.startsWith("trade-initiated-") || id.startsWith("trade-resolved-")) return tradePopupToastsEnabled;
-      return true;
-    });
-  }, [optimizerNotifs, tradePopupToastsEnabled]);
-
-  /**
-   * Toast when a sim/live trade row first appears (opened/resting) or when it settles. Bootstraps from
-   * current ``recent_trades`` on first run so a page load does not flash old rows.
-   */
-  useEffect(() => {
-    const rows = (dash?.recent_trades || []) as AnyObj[];
-    if (!dash) return;
-    if (!tradeToastsBootstrappedRef.current) {
-      for (const t of rows) {
-        const id = Number(t.id);
-        if (!Number.isFinite(id)) continue;
-        const idStr = String(id);
-        const st = String(t.status || "").toLowerCase();
-        if (st === "settled") {
-          seenTradeSettleRef.current.add(idStr);
-          seenTradeInitRef.current.add(idStr);
-        } else if (st === "open" || st === "resting") {
-          seenTradeInitRef.current.add(idStr);
-        }
-      }
-      tradeToastsBootstrappedRef.current = true;
-      return;
-    }
-    if (!tradePopupToastsEnabled) return;
-    const toAdd: AnyObj[] = [];
-    for (const t of rows) {
-      const id = Number(t.id);
-      if (!Number.isFinite(id)) continue;
-      const idStr = String(id);
-      const st = String(t.status || "").toLowerCase();
-      const branch = branchLabelForTradeToast(t.branch);
-      const tick = String(t.ticker || "").slice(0, 48);
-      const side = String(t.side || "").toUpperCase() || "—";
-      const sim = Boolean(Number(t.simulated));
-      if (st === "settled") {
-        if (seenTradeSettleRef.current.has(idStr)) continue;
-        seenTradeSettleRef.current.add(idStr);
-        if (!seenTradeInitRef.current.has(idStr)) {
-          seenTradeInitRef.current.add(idStr);
-        }
-        const rawP = t.pnl_cents;
-        const pnl =
-          rawP == null || rawP === ""
-            ? null
-            : (() => {
-                const n = Number(rawP);
-                return Number.isFinite(n) ? n / 100.0 : null;
-              })();
-        let lineTier: "green" | "red" | "yellow" | "neutral" = "neutral";
-        if (pnl != null) {
-          if (pnl > 0) lineTier = "green";
-          else if (pnl < 0) lineTier = "red";
-          else lineTier = "yellow";
-        }
-        const cardTone = pnl != null && pnl < 0 ? "red" : pnl != null && pnl > 0 ? "green" : "yellow";
-        const pnlText =
-          pnl == null ? "Settled" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
-        toAdd.push({
-          id: `trade-resolved-${idStr}`,
-          title: sim ? "Sim trade resolved" : "Trade resolved",
-          body: "",
-          tone: cardTone,
-          segments: [
-            { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-            { tier: lineTier, text: pnlText },
-            ...(t.result ? [{ tier: "neutral" as const, text: `Result: ${String(t.result)}` }] : []),
-          ],
-          created_at: new Date().toISOString(),
-        });
-        continue;
-      }
-      if (st === "open" || st === "resting") {
-        if (seenTradeInitRef.current.has(idStr)) continue;
-        seenTradeInitRef.current.add(idStr);
-        const cost = Number(t.amount_cents || 0) / 100.0;
-        toAdd.push({
-          id: `trade-initiated-${idStr}`,
-          title: sim ? "Sim trade opened" : "Trade opened",
-          body: "",
-          tone: "green",
-          segments: [
-            { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-            { tier: "green", text: `≈ $${cost.toFixed(2)} at entry · ${st}` },
-          ],
-          created_at: new Date().toISOString(),
-        });
-      }
-    }
-    if (!toAdd.length) return;
-    setOptimizerNotifs((prev) => {
-      const byId = new Map<string, AnyObj>();
-      for (const n of prev) byId.set(String(n.id), n);
-      for (const n of toAdd) byId.set(String(n.id), n);
-      const merged = Array.from(byId.values());
-      merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-      return merged.slice(0, 20);
-    });
-  }, [dash, tradePopupToastsEnabled]);
 
   const optimizerChangeHistoryMerged = useMemo(() => {
     const oc = (cfg as AnyObj)?.optimizer;
@@ -2554,63 +2462,9 @@ export default function App() {
 
   return (
     <div
-      className={`page${dash ? " page--branch-ticker-dock" : ""}`}
+      className="page"
       title="Kalshi 15m bot — main dashboard. Hover controls for details."
     >
-      {visibleOptimizerNotifs.length ? (
-        <div className="optimizer-toast-stack" aria-live="polite" aria-label="Notifications">
-          {visibleOptimizerNotifs.map((n) => {
-            const tier =
-              String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
-            const cardTone = tier ? ` optimizer-toast--${tier}` : "";
-            const segs = Array.isArray(n.segments) ? (n.segments as { tier?: string; text?: string }[]) : null;
-            return (
-              <div key={String(n.id)} className={`panel optimizer-toast${cardTone}`} style={{ padding: "10px 12px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <strong style={{ fontSize: 12 }}>{String(n.title)}</strong>
-                    {n.created_at ? (
-                      <div className="sub" style={{ fontSize: 10, opacity: 0.88, marginTop: 3 }} title="Toast time (local)">
-                        {fmtIsoLocal(String(n.created_at))}
-                      </div>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    style={{ padding: "2px 8px", fontSize: 11 }}
-                    onClick={() => {
-                      const id = String(n.id || "");
-                      setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== id));
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-                {segs && segs.length ? (
-                  <div style={{ marginTop: 6 }}>
-                    {segs.map((s, i) => {
-                      const lt = String(s.tier || "neutral");
-                      const lineClass =
-                        lt === "green" || lt === "yellow" || lt === "red" || lt === "neutral"
-                          ? `optimizer-toast__line optimizer-toast__line--${lt}`
-                          : "optimizer-toast__line optimizer-toast__line--neutral";
-                      return (
-                        <div key={i} className={lineClass}>
-                          {String(s.text || "")}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="sub optimizer-toast__line optimizer-toast__line--neutral" style={{ marginTop: 4 }}>
-                    {String(n.body)}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
       <div className="top">
         <div className="hero">
           <div className="hero-head">
@@ -2620,6 +2474,16 @@ export default function App() {
             >
               Chomp's Diner
             </h1>
+            {dash ? (
+              <BranchHeroMarquee
+                dash={dash}
+                cfg={{
+                  ...(cfg as AnyObj),
+                  hero_marquee_speed_mult: heroMarqueeSpeedMult,
+                  hero_marquee_rotate_sec: heroMarqueeRotateSec,
+                }}
+              />
+            ) : null}
             {dash ? <KalshiSetupOrbRow dash={dash} cfg={cfg} /> : null}
             <button
               type="button"
@@ -3727,8 +3591,10 @@ export default function App() {
         onRefresh={() => void refresh({ force: true })}
         onOpenHistory={() => setHistoryOpen(true)}
         kalshi={kalshi as AnyObj}
-        tradePopupToastsEnabled={tradePopupToastsEnabled}
-        onTradePopupToastsEnabledChange={setTradePopupToastsEnabledPersist}
+        heroMarqueeSpeedMult={heroMarqueeSpeedMult}
+        onHeroMarqueeSpeedMultChange={setHeroMarqueeSpeedMultPersist}
+        heroMarqueeRotateSec={heroMarqueeRotateSec}
+        onHeroMarqueeRotateSecChange={setHeroMarqueeRotateSecPersist}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
       {equityCompareOpen ? (
@@ -3840,11 +3706,6 @@ export default function App() {
         </div>
       ) : null}
         </>
-      ) : null}
-      {dash ? (
-        <div className="branch-ticker-dock" role="region" aria-label="Live and lab market tickers">
-          <BranchMarketTickers dash={dash} cfg={cfg} />
-        </div>
       ) : null}
     </div>
   );
