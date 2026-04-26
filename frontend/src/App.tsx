@@ -519,7 +519,7 @@ function BranchOptimizerVisualizer({
       >
         <ChartDblClickExpand
             className="branch-brain-optimizer-radar__zoom"
-            title="Optimizer thinking — Live + Lab A–D (12 dimensions)"
+            title="Optimizer Thinking (Lab A)"
             expandedPanelMaxWidth="min(1280px, 99.5vw)"
             expandedTitleFontSize={22}
             expandedDetailFontSize={17}
@@ -530,7 +530,7 @@ function BranchOptimizerVisualizer({
                 <p style={{ margin: "8px 0 0" }}>{radar.caption}</p>
               </div>
             }
-            hint="Double-click the radar to enlarge. 0–100 on 12 axes."
+            hint="Double-click the radar to enlarge. 0–100 on six core axes. Spoke sub-labels: Lab A snapshot (all branches in tooltip)."
             defaultHeight={440}
             expandedHeight={800}
             render={({ h }) => (
@@ -552,6 +552,21 @@ function BranchOptimizerVisualizer({
               </div>
             )}
           />
+        <p
+          className="sub"
+          style={{
+            margin: "4px 8px 0",
+            maxWidth: 640,
+            marginLeft: "auto",
+            marginRight: "auto",
+            fontSize: 13.5,
+            lineHeight: 1.5,
+            color: "var(--muted)",
+            opacity: 0.95,
+          }}
+        >
+          Key internal metrics the optimizer uses to make decisions
+        </p>
       </div>
       <div
         className="branch-brain-optimizer-pulse-bottom"
@@ -848,11 +863,11 @@ function equitySlopeDollarsPerHourFromRows(rows: AnyObj[] | null | undefined): n
 
 /** Same family as `BRANCH_SWATCH` (radar is defined before that token). */
 const OPTIMIZER_RADAR_SWATCH: Record<"live" | "a" | "b" | "c" | "d", string> = {
-  live: "#6ee7ff",
-  a: "#c4b5fd",
-  b: "#fdba74",
-  c: "#f9a8d4",
-  d: "#fca5a5",
+  live: "#5ed8ff",
+  a: "#b4a3ff",
+  b: "#fbbf5c",
+  c: "#f9a3d2",
+  d: "#f8837a",
 };
 
 type OptimizerMultiRadarTraceBranch = {
@@ -868,28 +883,18 @@ type OptimizerMultiRadarSeries = { dataKey: string; name: string; color: string;
 
 /** Native SVG + chart tooltips: angle label → full description. Keys must match `subject` in radar rows. */
 const RADAR_AXIS_TOOLTIPS: Record<string, string> = {
-  Fitness:
-    "Blended “health” 0–100. Lab A: best_fitness_7d (optimizer) plus decisive win rate. Other branches: decisive win %, or return vs start when win rate is thin.",
-  Acceptance:
-    "Lab A: share of internal optimizer decisions accepted. Other branches: decisive win % (or total win %), as a proxy for “success rate” of closed trades.",
-  "Mut. aggr.":
-    "How “active” sizing looks: server mutation aggressiveness (0–1) plus open committed % and settled activity for that branch — higher = more pressure on the profile.",
-  "SL safety":
-    "Lab A: 100% minus replay stop-loss hit rate. Other branches: 100% minus loss rate (decisive or total) — higher is fewer loss-side closes.",
-  "Equity $/h":
-    "Equity path momentum: 50 + 9× estimated $/h from the last ~30 equity snapshots for that branch (book equity cents).",
-  "Pnl vs st":
-    "Realized PnL vs paper bank (realized_pnl_pct_of_start) when available; else total PnL or return heuristics — all scaled to 0–100 around 50.",
-  "Avg $/T":
-    "Average realized dollars per settled trade; mapped to 0–100. Flat ≈ 50 when missing.",
-  "Mtm–book":
-    "100 minus the gap between MTM% and book% return — higher means marks and ledger agree more (less mark/ledger divergence).",
-  "Dec. depth":
-    "How many decisive outcomes (wins+losses) the branch has — more depth = a fuller read on win% (capped via sqrt).",
-  "Red (inv)":
-    "Lab A: 100 minus red-streak stress from consecutive low-acceptance cycles. Other branches: a neutral ~82 (not tied to that gate).",
-  Cycle: "Log-scaled display of the global optimizer cycle counter (same for every branch on this chart).",
-  Scratch: "100 × (1 − scratch / (settled+scratch)) — higher means fewer scratch exits relative to all settled+scratch activity.",
+  "Fitness score":
+    "0–100 blend. Lab A: 7d best fitness (optimizer) plus decisive win rate. Other branches: decisive win %, or return vs start when win rate is thin — all normalized to this scale.",
+  "Acceptance rate (%)":
+    "Lab A: % of internal optimizer decisions accepted. Other branches: decisive (or total) win % as a stand-in for “trades that went the right way.”",
+  "Mutation aggressiveness":
+    "0–100 “how hard” the optimizer is pushing: mutation dial (0–1), open committed %, and recent settled activity — higher = more aggressive profile pressure.",
+  "Stop-loss safety":
+    "0–100 where higher = fewer loss-side events. Lab A: 100 − stop-loss hit rate from replay. Others: 100 − loss % (decisive or total).",
+  "Equity momentum ($/h)":
+    "0–100 from recent equity path: 50 + 9× estimated $/h from the last ~30 snapshots (book) for that branch. Flat ≈ 50 if slope is missing.",
+  "Red streak (inverted)":
+    "Global optimizer red-streak stress, inverted: higher is better. Same underlying streak for every branch: 0–100, lower streak → higher score.",
 };
 
 function radarAxisTooltip(label: string): string {
@@ -921,18 +926,12 @@ function buildMultiBranchOptimizerRadar(
     { dataKey: "d", name: "Lab D", m: mD, snaps: sD, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.d },
   ];
   const subj: { k: string; label: string }[] = [
-    { k: "fit", label: "Fitness" },
-    { k: "acc", label: "Acceptance" },
-    { k: "mut", label: "Mut. aggr." },
-    { k: "sl", label: "SL safety" },
-    { k: "eq", label: "Equity $/h" },
-    { k: "pStart", label: "Pnl vs st" },
-    { k: "eEdge", label: "Avg $/T" },
-    { k: "bmk", label: "Mtm–book" },
-    { k: "dec", label: "Dec. depth" },
-    { k: "redI", label: "Red (inv)" },
-    { k: "cLog", label: "Cycle" },
-    { k: "sScr", label: "Scratch" },
+    { k: "fit", label: "Fitness score" },
+    { k: "acc", label: "Acceptance rate (%)" },
+    { k: "mut", label: "Mutation aggressiveness" },
+    { k: "sl", label: "Stop-loss safety" },
+    { k: "eq", label: "Equity momentum ($/h)" },
+    { k: "redI", label: "Red streak (inverted)" },
   ];
   const vCell = (sk: string, b: OptimizerMultiRadarTraceBranch) => {
     const m = b.m;
@@ -972,46 +971,9 @@ function buildMultiBranchOptimizerRadar(
       const mSlope = equitySlopeDollarsPerHourFromRows(b.snaps);
       return Math.min(100, Math.max(0, 50 + mSlope * 9));
     }
-    if (sk === "pStart") {
-      const rp = Number(m.realized_pnl_pct_of_start);
-      if (Number.isFinite(rp)) return Math.min(100, Math.max(0, 50 + rp * 0.42));
-      const tpnl = Number(m.total_pnl_dollars);
-      if (Number.isFinite(tpnl)) return Math.min(100, Math.max(0, 50 + tpnl * 0.35));
-      if (Number.isFinite(ret)) return Math.min(100, Math.max(0, 50 + ret * 0.4));
-      return 50;
-    }
-    if (sk === "eEdge") {
-      const a = Number(m.avg_realized_per_settled_dollars);
-      if (Number.isFinite(a) && a !== 0) return Math.min(100, Math.max(0, 50 + a * 12));
-      return 50;
-    }
-    if (sk === "bmk") {
-      const t = Number(m.return_mtm_vs_start_pct);
-      const bk = Number(m.return_vs_start_pct);
-      if (Number.isFinite(t) && Number.isFinite(bk)) {
-        const d = Math.abs(t - bk);
-        return Math.max(0, 100 - Math.min(100, d * 2.4));
-      }
-      return 50;
-    }
-    if (sk === "dec") {
-      const w = Math.max(0, Number(m.wins ?? 0) + Number(m.losses ?? 0));
-      return Math.min(100, Math.max(0, 8 * Math.sqrt(w)));
-    }
     if (sk === "redI") {
-      if (b.isLabA) return Math.max(0, 100 - Math.min(100, (Number(base.redStreak) || 0) * 5.5));
-      return 82;
-    }
-    if (sk === "cLog") {
-      const c = Math.max(0, Number(base.cycles) || 0);
-      return Math.min(100, Math.max(0, 10 + Math.log10(2 + c) * 22));
-    }
-    if (sk === "sScr") {
-      const st = Number(m.settled_trades) || 0;
-      const sc = Number(m.scratch_trades) || 0;
-      const t = st + sc;
-      if (t < 0.5) return 50;
-      return 100 * (1 - Math.min(1, sc / t));
+      const rs = Math.max(0, Number(base.redStreak) || 0);
+      return Math.max(0, 100 - Math.min(100, rs * 5.5));
     }
     return 50;
   };
@@ -1076,6 +1038,8 @@ function OptimizerMultiBranchRadar({
             ? 9
             : 11;
   const rTick = big ? 10 : height < 300 ? 8 : 9;
+  const labelTickFs = n > 0 && n <= 8 && big ? Math.max(tickFs, 12) : tickFs;
+  const valueTickFs = n > 0 && n <= 8 && big ? 10.5 : big ? 9.5 : 8.5;
   const overlayRead = height >= 500;
   const toolFs = overlayRead ? 14 : big ? 12 : 10;
   const toolHead = overlayRead ? 16 : big ? 12 : 11;
@@ -1085,29 +1049,39 @@ function OptimizerMultiBranchRadar({
     <ResponsiveContainer width="100%" height={height > 0 ? height : 200}>
       <RadarChart
         data={data}
-        margin={big ? { top: 6, right: 18, bottom: 6, left: 18 } : { top: 6, right: 14, bottom: 6, left: 14 }}
+        margin={big ? { top: 6, right: 20, bottom: 6, left: 20 } : { top: 6, right: 14, bottom: 6, left: 14 }}
         outerRadius={outerR}
       >
-        <PolarGrid stroke="#2d3b63" />
+        <PolarGrid stroke="rgba(42, 58, 102, 0.4)" />
         <PolarAngleAxis
           dataKey="subject"
           tickLine={false}
           tick={(props) => {
             const { x, y, textAnchor, payload } = props as { x: number; y: number; textAnchor: string; payload: { value: string } };
             const label = String(payload?.value ?? "");
+            const row = (data as AnyObj[]).find((r) => String(r?.subject) === label);
+            const aLab = row?.a;
+            const showA = aLab != null && !Number.isNaN(Number(aLab));
+            const ta = textAnchor as "start" | "middle" | "end" | "inherit" | undefined;
             return (
               <g className="recharts-layer recharts-polar-angle-axis-tick">
                 <title>{radarAxisTooltip(label)}</title>
                 <text
                   x={x}
                   y={y}
-                  textAnchor={textAnchor as "start" | "middle" | "end" | "inherit" | undefined}
+                  textAnchor={ta}
                   fill="#b8c8e8"
-                  fontSize={tickFs}
                   fontWeight={500}
-                  dy="0.3em"
+                  dy="0.15em"
                 >
-                  {label}
+                  <tspan x={x} dy="0" fontSize={labelTickFs}>
+                    {label}
+                  </tspan>
+                  {showA ? (
+                    <tspan x={x} dy="1.12em" fontSize={valueTickFs} fill="#8a9ac4" fontWeight={400}>
+                      Lab A {Number(aLab).toFixed(0)} / 100
+                    </tspan>
+                  ) : null}
                 </text>
               </g>
             );
@@ -1119,15 +1093,15 @@ function OptimizerMultiBranchRadar({
           tickCount={5}
           tick={({ x, y, payload }: AnyObj) => (
             <g>
-              <title>Distance from center: 0 = worst/minimum on this 0–100 scale for the spoke, 100 = best/outer. Same scale for every branch.</title>
-              <text x={x} y={y} fill="#5c6b8a" fontSize={rTick} textAnchor="middle" dy="0.3em">
+              <title>Distance from center: 0 = worst, 100 = best on this normalized 0–100 scale for the spoke. Same for every branch.</title>
+              <text x={x} y={y} fill="rgba(135, 152, 186, 0.95)" fontSize={rTick} textAnchor="middle" dy="0.3em">
                 {payload?.value ?? ""}
               </text>
             </g>
           )}
         />
         <Tooltip
-          cursor={{ strokeWidth: 1, stroke: "rgba(99, 102, 241, 0.45)" }}
+          cursor={{ strokeWidth: 1, stroke: "rgba(99, 102, 241, 0.35)" }}
           content={({ active, label, payload }) => {
             if (!active || !payload?.length) return null;
             const hint = radarAxisTooltip(String(label));
@@ -3577,7 +3551,7 @@ export default function App() {
       series,
       tableDetail: <OptimizerRadarTableDetail data={data} series={series} />,
       caption:
-        "0–100 on 12 axes. Prior nine: fitness; accept; mut. (dial+exposure); SL safety; equity $/h; pnl vs start; avg $/T; mtm–book; decisive depth. Also: Red (inv) = Lab A: 100 minus red-streak stress (others ≈ constant); Cycle = log-scaled total optimizer cycle count; Scratch = share of non-scratch among settled+scratch. Lab A / replay for fitness, accept, SL as before. Inline chart is larger; open overlay for the biggest type + chart.",
+        "Six 0–100 spokes: fitness score, acceptance %, mutation aggressiveness, stop-loss safety (100 − loss-side hit rate; Lab A from replay), equity momentum from last snapshots, and red streak (inverted, global, higher is better). Live + all labs; Lab A in spoke sub-labels; hover for all branches. Updates with optimizer and trading metrics.",
     };
   }, [
     optimizerStatus,
