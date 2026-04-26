@@ -822,7 +822,7 @@ function pulseTraceLines(dash: AnyObj): string {
   );
 }
 
-/** Manual toast from Optimizer radar: rollups, optimizer lens on trades, activity + previews. */
+/** Dashboard helper for building rich “Trades by lab” snapshot text (used in report paths); not the same as bottom-right stack toasts. */
 function buildTradesByLabSnapshotToast(dash: AnyObj): {
   title: string;
   tone: "green" | "yellow" | "red";
@@ -1193,62 +1193,54 @@ function optimizerBriefInfoBody(): ReactNode {
   return (
     <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <p>
-        <strong>What this panel is for.</strong> The Optimizer block is your at-a-glance view of <em>adaptive paper tuning</em> and
-        experiment comparison. The large chart (Experiments) does not place trades by itself; it visualizes how each branch’s
-        mark-to-market path evolved from a common reference window. Use it to see whether Lab A (staging) is diverging from B/C/D
-        reference arms before you promote anything to Live.
+        <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. The{" "}
+        <strong>Optimizer Status</strong> card below the title is short-horizon: cycles, last run, acceptance, fitness, red streak, mutation
+        tier, slope, and a <strong>small Lab A equity</strong> sparkline. The <strong>Experiments</strong> multi-line chart (further down in
+        this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–D from a shared
+        window. <strong>Lab pulse</strong> (ticker under Experiments) is a digest of the last engine tick.
       </p>
       <p>
-        <strong>Optimizer Status (top card).</strong> The compact status card is your short-horizon health view: cycle count, last run,
-        acceptance rate, best fitness (7d), pulse status, and a <strong>trailing Lab A equity curve</strong> (last 20 points from
-        Lab A equity snapshots). The slope label is dollars per hour between the first/last points in that mini-window. Read it as
-        momentum, not absolute performance.
+        <strong>Health dot (title row).</strong> A small <strong>green / yellow / red</strong> circle reflects internal-mutation
+        <em>acceptance rate</em>: over 60% → green, 30–60% → yellow, under 30% → red. Hover the dot for the full band explanation. There is
+        no duplicate health readout in the top page header; settings (⚙) in the header only open Settings.
       </p>
       <p>
-        <strong>Health badge.</strong> Badge color is acceptance-rate based: <strong>green</strong> when rate &gt; 60,{" "}
-        <strong>yellow</strong> for 30-60, and <strong>red</strong> below 30. A pill in the <strong>header</strong> (next to the ⚙
-        settings control) shows the same status; hover the pill for a short explanation. The Optimizer block’s status card shows a
-        matching health pill as well.
+        <strong>Suggested action (toasts, not the card).</strong> Long-form <code>optimizer_suggested_action</code> text is{" "}
+        <strong>not</strong> pinned in this card anymore. When the server provides it, the UI may show a{" "}
+        <strong>yellow warning-style toast</strong> in the <strong>bottom-right stack</strong> next to (and styled like) trade toasts. To
+        reduce noise, those toasts are <strong>throttled</strong>: at most about <strong>once per hour</strong>, or{" "}
+        <strong>immediately</strong> when the situation worsens in a material way (e.g. health downgrades along green→yellow→red, red
+        streak up, acceptance
+        drops more than 10 points, or a new auto-revert timestamp). Throttling is independent of the{" "}
+        <strong>Trade open / settle toasts</strong> toggle in Settings (that toggle only silences <em>trade</em> rows). All stack cards{" "}
+        <strong>auto-dismiss after 10–15 seconds</strong> and share a <strong>consistent card size</strong>; long text scrolls inside the
+        card.
       </p>
       <p>
-        <strong>Experiments (mini chart).</strong> Each colored line is indexed MTM (or a blended MTM / cost-basis readout, depending
-        on backend rollups) for Live vs Lab A–D, starting from the same time bucket so the curves are comparable. Flatter or smoother
-        lines are not “better” by default: high volatility can mean the book is open and marked often. Crossovers mean branches took
-        different fills or risk because rules, sizing, or paper bankrolls differ. Zoom mentally with the time-scale tabs in Equity
-        curves for longer history; this block is a short window.
+        <strong>Action buttons in the title row.</strong> <strong>force</strong> runs the same “internal mutation + replay gate” as
+        <code>POST /api/optimizer/force-internal-mutation</code> and bypasses the normal scheduler; it does not by itself post exchange
+        orders. The same action exists in <strong>Settings → Optimizer</strong> for convenience. <strong>report</strong> opens the full
+        overlay (schedule, next movement, change history, rollups, pulse, etc.). This <strong>Info</strong> button is the long-form
+        explainer.
       </p>
       <p>
-        <strong>Lab pulse (scrolling line below the chart).</strong> This is a dense, tick-by-tick-style digest of the last engine
-        poll: implied probabilities, which rules matched, minutes to close, skip reasons, and small KPI snippets the backend
-        attached. It scrolls for legibility, not because time is “moving” faster. If pulse shows many{" "}
-        <code>series_has_open_sim</code> skips, you still have an open sim blocking new entries in that series—resolve or
-        time-out close stale rows (see auto-close behavior on the server) before expecting new paper fills.
+        <strong>Experiments chart.</strong> Each line is a branch path from a common window start. Crossovers usually mean different fills,
+        rules, or bankrolls—not that one line is “winning” in absolute dollars. Use <strong>Equity curves</strong> (right column) for
+        book-vs-MTM history; Experiments is a shorter, comparison-oriented view.
       </p>
       <p>
-        <strong>Adaptive / scheduled optimizer (backend).</strong> When enabled, the server can adjust thresholds, bet fraction,
-        and related knobs using recent <em>settled</em> paper history, with guardrails (minimum trades, no wild jumps during drawdowns,
-        etc.). By design, <strong>only Lab A</strong> receives auto-applied fraction/threshold writes unless you explicitly use other
-        APIs; B/C/D stay reference paths. Use Settings → Internal Optimizer Trace for cycle-by-cycle acceptance/rejection and the
-        <strong> Force Internal Mutation Now</strong> control when you want a gated mutant-cycle evaluation immediately.
+        <strong>Lab pulse.</strong> If you see many <code>series_has_open_sim</code> skips, an open sim is blocking new entries for that
+        series until it resolves or the server prunes it—see Activity and rule hints, not just pulse.
       </p>
       <p>
-        <strong>“report” (button next to this Info).</strong> Opens the full-page optimizer report overlay: last persisted change
-        records, next-movement heuristics, schedule windows, paper settlement rollups, and raw pulse traces pulled from the same
-        dashboard object. Use that overlay when you need to copy IDs, verify timestamps, or read the unabbreviated log lines that
-        do not fit in the small chart.
+        <strong>Adaptive / scheduled optimizer (server).</strong> When enabled, the server can nudge Lab A (staging) from settled paper
+        with guardrails; B/C/D stay reference unless you use other tools. For cycle-by-cycle acceptance, use <strong>Settings → Internal
+        Optimizer Trace</strong>.
       </p>
       <p>
-        <strong>What to ignore / misread.</strong> (1) A spike in one branch line while another is flat often means a fill or
-        exit happened in that branch only. (2) If Live is in real-cash mode, only Live is tied to the exchange; labs remain paper.
-        (3) Empty or stale pulse lines usually mean engines are off, Kalshi 429/timeout, or the tick did not run—check the Engine
-        strip under Account, not this panel alone. (4) PnL on the main tiles is rollups; this chart is experimental visualization—
-        reconcile against Branch performance and Activity log.
-      </p>
-      <p>
-        <strong>Operational workflow.</strong> (1) Confirm engines and rules in Settings. (2) Watch Experiments for divergence.
-        (3) Read Lab pulse for concrete skip reasons. (4) If satisfied with Lab A, use promote-to-Live (separate action, gated) not
-        this Info dialog. (5) If numbers look wrong, export SQLite or open “report” before changing rules, so you have a before/
-        after snapshot in the overlay.
+        <strong>What to double-check.</strong> (1) Live Real $ vs paper labs. (2) Stale data → Engine strip under <strong>Account</strong> and{" "}
+        <code>last_tick_at</code>. (3) Reconcile headlined PnL in <strong>Branch performance</strong> with this panel’s experiment
+        chart—they measure different things.
       </p>
     </div>
   );
@@ -2295,7 +2287,18 @@ export default function App() {
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
-  const [headerForceInternalMutation, setHeaderForceInternalMutation] = useState(false);
+  const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
+  /** Epoch ms: last time we enqueued an Optimizer suggested-action toast (hourly cap vs. ``optimizerStatus`` effect). */
+  const lastSuggestedToastTimeRef = useRef(0);
+  /** Prior snapshot to detect health / acceptance / streak / revert step-changes before mutating refs for the next tick. */
+  const prevSuggestedToastSigRef = useRef<{
+    health: string;
+    acceptanceRatePct: number;
+    redStreak: number;
+    lastAutoRevertAt: string;
+  } | null>(null);
+  /** Per-toast id → timeout for bottom-right stack auto-dismiss (10–15s). */
+  const toastAutoDismissTimeoutsRef = useRef<Map<string, number>>(new Map());
   const [toastTradeRows, setToastTradeRows] = useState<AnyObj[] | null>(null);
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
@@ -2564,6 +2567,41 @@ export default function App() {
     });
   }, [optimizerNotifs, tradePopupToastsEnabled]);
 
+  const TOAST_AUTOCLOSE_MIN_MS = 10_000;
+  const TOAST_AUTOCLOSE_MAX_MS = 15_000;
+
+  useEffect(() => {
+    const activeIds = new Set<string>();
+    for (const n of optimizerNotifs) {
+      const id = String(n.id || "").trim();
+      if (!id) continue;
+      activeIds.add(id);
+      if (toastAutoDismissTimeoutsRef.current.has(id)) continue;
+      const span = Math.max(0, TOAST_AUTOCLOSE_MAX_MS - TOAST_AUTOCLOSE_MIN_MS);
+      const delayMs = TOAST_AUTOCLOSE_MIN_MS + Math.floor(Math.random() * (span + 1));
+      const tid = window.setTimeout(() => {
+        toastAutoDismissTimeoutsRef.current.delete(id);
+        setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== id));
+      }, delayMs);
+      toastAutoDismissTimeoutsRef.current.set(id, tid);
+    }
+    for (const [id, tid] of [...toastAutoDismissTimeoutsRef.current.entries()]) {
+      if (!activeIds.has(id)) {
+        window.clearTimeout(tid);
+        toastAutoDismissTimeoutsRef.current.delete(id);
+      }
+    }
+  }, [optimizerNotifs]);
+
+  useEffect(() => {
+    return () => {
+      for (const tid of toastAutoDismissTimeoutsRef.current.values()) {
+        window.clearTimeout(tid);
+      }
+      toastAutoDismissTimeoutsRef.current.clear();
+    };
+  }, []);
+
   /**
    * Bottom-right cards when a sim/live trade row first appears or settles.
    * Bootstrap runs only after **both** the dashboard snapshot and at least one ``/api/trades`` response
@@ -2823,6 +2861,14 @@ export default function App() {
     const health = acceptanceRatePct > 60 ? "green" : acceptanceRatePct >= 30 ? "yellow" : "red";
     const stopLossHitRate = Number(oc.replay_stop_loss_trigger_rate_pct ?? 0);
     const stopsPnlDollars = Number(oc.replay_total_pnl_from_stops_dollars ?? 0);
+    const mutationDial = Math.max(0, Math.min(1, Number(oc.mutation_aggressiveness ?? 0.75)));
+    const effectiveMutationScale = Number(oc.effective_mutation_scale ?? 0);
+    const tierRaw = String(oc.mutation_tier || "").toLowerCase();
+    const mutationTierLabel =
+      tierRaw === "light" ? "Light" : tierRaw === "strong" ? "Strong" : tierRaw === "medium" ? "Medium" : "—";
+    const suggestedAction = String(oc.optimizer_suggested_action || "").trim();
+    const redStreak = Math.max(0, Math.floor(Number(oc.optimizer_red_streak_cycles ?? 0)));
+    const lastAutoRevertAt = String(oc.optimizer_auto_revert_last_at || "").trim();
     return {
       cycles,
       lastRunAt: String(oc.last_run_at || activity.last_pulse_eval_at || ""),
@@ -2835,8 +2881,73 @@ export default function App() {
       health,
       stopLossHitRate,
       stopsPnlDollars,
+      mutationDial,
+      effectiveMutationScale,
+      mutationTierLabel,
+      suggestedAction,
+      redStreak,
+      lastAutoRevertAt,
     };
   }, [cfg?.optimizer, dash]);
+
+  useEffect(() => {
+    const HOUR_MS = 60 * 60 * 1000;
+    const suggestedAction = String(optimizerStatus.suggestedAction || "").trim();
+    const snapshot = {
+      health: String(optimizerStatus.health || "red"),
+      acceptanceRatePct: Number(optimizerStatus.acceptanceRatePct) || 0,
+      redStreak: Math.max(0, Math.floor(Number(optimizerStatus.redStreak) || 0)),
+      lastAutoRevertAt: String(optimizerStatus.lastAutoRevertAt || "").trim(),
+    };
+    const prev = prevSuggestedToastSigRef.current;
+    prevSuggestedToastSigRef.current = snapshot;
+
+    if (!suggestedAction) {
+      return;
+    }
+
+    const healthRank = (h: string) => (h === "green" ? 0 : h === "yellow" ? 1 : 2);
+    let significantChangeDetected = false;
+    if (prev) {
+      if (healthRank(snapshot.health) > healthRank(prev.health)) significantChangeDetected = true;
+      if (snapshot.redStreak > prev.redStreak) significantChangeDetected = true;
+      if (prev.acceptanceRatePct - snapshot.acceptanceRatePct > 10) significantChangeDetected = true;
+      if (snapshot.lastAutoRevertAt && snapshot.lastAutoRevertAt !== prev.lastAutoRevertAt) {
+        significantChangeDetected = true;
+      }
+    }
+
+    const now = Date.now();
+    const cooldownElapsed = now - lastSuggestedToastTimeRef.current >= HOUR_MS;
+    // At most one suggested-action toast per rolling hour, unless the optimizer materially worsens (then show immediately).
+    const shouldToast = cooldownElapsed || significantChangeDetected;
+    if (!shouldToast) {
+      return;
+    }
+
+    lastSuggestedToastTimeRef.current = now;
+    const toastId = `optimizer-suggested-${now}`;
+
+    setOptimizerNotifs((prevN) => {
+      const byId = new Map<string, AnyObj>();
+      for (const n of prevN) {
+        const pid = String(n.id || "");
+        if (dismissedTradeToastIdsRef.current.has(pid)) continue;
+        byId.set(pid, n);
+      }
+      byId.set(toastId, {
+        id: toastId,
+        title: "Optimizer",
+        body: "",
+        tone: "yellow",
+        segments: [{ tier: "yellow" as const, text: suggestedAction }],
+        created_at: new Date().toISOString(),
+      });
+      const merged = Array.from(byId.values());
+      merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+      return merged.slice(0, 28);
+    });
+  }, [optimizerStatus]);
 
   const promoteLabAToLive = async () => {
     const pnlA = Number(metricsLabA.total_pnl_dollars ?? 0);
@@ -3417,7 +3528,7 @@ export default function App() {
   return (
     <div className={dash ? "page page--bottom-marquee" : "page"}>
       {visibleOptimizerNotifs.length ? (
-        <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade notifications">
+        <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade and optimizer notifications">
           {visibleOptimizerNotifs.map((n) => {
             const tier =
               String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
@@ -3426,16 +3537,18 @@ export default function App() {
             const swatch = typeof n.branch_swatch === "string" ? String(n.branch_swatch) : "";
             const branchTip = typeof n.branch_tip === "string" ? String(n.branch_tip) : "";
             return (
-              <div key={String(n.id)} className={`panel optimizer-toast${cardTone}`} style={{ padding: "10px 12px" }}>
+              <div key={String(n.id)} className={`panel optimizer-toast${cardTone}`}>
                 <div className="optimizer-toast__body">
-                  {swatch ? (
-                    <span
-                      className="optimizer-toast__branch-dot"
-                      style={{ backgroundColor: swatch }}
-                      title={branchTip || "Branch"}
-                      aria-label={branchTip ? `${branchTip} branch` : "Branch color"}
-                    />
-                  ) : null}
+                  <div className="optimizer-toast__branch-slot" aria-hidden>
+                    {swatch ? (
+                      <span
+                        className="optimizer-toast__branch-dot"
+                        style={{ backgroundColor: swatch }}
+                        title={branchTip || "Branch"}
+                        aria-label={branchTip ? `${branchTip} branch` : "Branch color"}
+                      />
+                    ) : null}
+                  </div>
                   <div className="optimizer-toast__main">
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                       <div style={{ minWidth: 0 }}>
@@ -3458,26 +3571,28 @@ export default function App() {
                         ×
                       </button>
                     </div>
-                    {segs && segs.length ? (
-                      <div style={{ marginTop: 6 }}>
-                        {segs.map((s, i) => {
-                          const lt = String(s.tier || "neutral");
-                          const lineClass =
-                            lt === "green" || lt === "yellow" || lt === "red" || lt === "neutral"
-                              ? `optimizer-toast__line optimizer-toast__line--${lt}`
-                              : "optimizer-toast__line optimizer-toast__line--neutral";
-                          return (
-                            <div key={i} className={lineClass}>
-                              {String(s.text || "")}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="sub optimizer-toast__line optimizer-toast__line--neutral" style={{ marginTop: 4 }}>
-                        {String(n.body)}
-                      </div>
-                    )}
+                    <div className="optimizer-toast__details">
+                      {segs && segs.length ? (
+                        <>
+                          {segs.map((s, i) => {
+                            const lt = String(s.tier || "neutral");
+                            const lineClass =
+                              lt === "green" || lt === "yellow" || lt === "red" || lt === "neutral"
+                                ? `optimizer-toast__line optimizer-toast__line--${lt}`
+                                : "optimizer-toast__line optimizer-toast__line--neutral";
+                            return (
+                              <div key={i} className={lineClass}>
+                                {String(s.text || "")}
+                              </div>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <div className="sub optimizer-toast__line optimizer-toast__line--neutral">
+                          {String(n.body)}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3496,7 +3611,7 @@ export default function App() {
                   return [];
                 })
               }
-              title="Dismiss every notification in this stack"
+              title="Dismiss all cards in the bottom-right stack. Individual cards also auto-fade after about 10–15 seconds."
             >
               Clear all
             </button>
@@ -3515,36 +3630,7 @@ export default function App() {
                   Chomp's Diner
                 </h1>
               </div>
-              {dash ? (
-                <span
-                  className="sub"
-                  style={{
-                    flexShrink: 0,
-                    padding: "3px 10px",
-                    borderRadius: 999,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: "0.02em",
-                    border: "1px solid var(--border)",
-                    background:
-                      optimizerStatus.health === "green"
-                        ? "rgba(61,220,151,.18)"
-                        : optimizerStatus.health === "yellow"
-                          ? "rgba(255,214,102,.18)"
-                          : "rgba(255,122,122,.18)",
-                    color:
-                      optimizerStatus.health === "green"
-                        ? "#7af0ba"
-                        : optimizerStatus.health === "yellow"
-                          ? "#ffd666"
-                          : "#ff9a9a",
-                  }}
-                  title="Internal optimizer health from acceptance rate in the last trace window: green if >60% of decisions were accepted, yellow for 30–60%, red below 30%. Also shown on the Optimizer card in the main grid. Open Settings → Lab & optimizer for trace and controls."
-                >
-                  Optimizer {optimizerStatus.health.toUpperCase()}
-                </span>
-              ) : null}
-              <div className="hero-header-settings-stack" style={{ flexShrink: 0 }}>
+              <div style={{ flexShrink: 0 }}>
                 <button
                   type="button"
                   className="primary hero-settings-icon-btn"
@@ -3553,35 +3639,6 @@ export default function App() {
                   onClick={() => setSettingsOpen(true)}
                 >
                   ⚙
-                </button>
-                <button
-                  type="button"
-                  className="primary hero-settings-icon-btn hero-settings-mutation-btn"
-                  aria-label="Force internal mutation now"
-                  disabled={!dash || busy || headerForceInternalMutation}
-                  title="Force internal mutation now — internal rule/parameter change + replay fitness gate (bypasses scheduler). POST /api/optimizer/force-internal-mutation"
-                  onClick={() =>
-                    void (async () => {
-                      if (!dash) return;
-                      setHeaderForceInternalMutation(true);
-                      try {
-                        await forceInternalMutationNow();
-                      } finally {
-                        setHeaderForceInternalMutation(false);
-                      }
-                    })()
-                  }
-                >
-                  {headerForceInternalMutation ? (
-                    <span className="hero-settings-mutation-btn__inner" aria-hidden>
-                      …
-                    </span>
-                  ) : (
-                    <span className="hero-settings-mutation-btn__inner">
-                      <span className="hero-settings-mutation-btn__l1">Force</span>
-                      <span className="hero-settings-mutation-btn__l2">internal</span>
-                    </span>
-                  )}
                 </button>
               </div>
             </div>
@@ -3623,21 +3680,12 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
             <button
               type="button"
-              className="chart-tab"
-              style={{ padding: "4px 10px" }}
+              className="primary dash-panel-btn"
               title={
-                "Branch performance is five independent per-branch rollups in SQLite, not one shared wallet. " +
-                "The Live, Lab A, Lab B, Lab C, and Lab D tabs each show metrics for that branch only—switching tabs does not re-run " +
-                "trades, it just changes which paper bankroll, fees, and open rows are displayed. " +
-                "Settled PnL is realized only: it increments when a position is closed in SQLite with a final PnL after Kalshi (or the sim) " +
-                "has settled the market; it does not move when MTM swings on an open sim. " +
-                "Open / mark P&amp;L (est.) and MTM (est.) describe unrealized exposure from marks on still-open sim rows, using the " +
-                "server’s last snapshot. " +
-                "In Real $ on Live, Cash and portfolio tiles come from signed Kalshi balance APIs; labs always show paper bankrolls. " +
-                "The bottom marquee shows active trades for the branch tab you selected; Apply Lab A to Live still uses settled PnL from the tiles (Lab A must beat B/C/D " +
-                "on settled, not on MTM). " +
-                "If two tiles seem contradictory, read settled vs open vs bankroll: book steps on fills, MTM wiggles on every poll, settled only " +
-                "steps on final resolution."
+                "Branch performance: five per-branch rollups in SQLite (not one wallet). Tabs switch the branch view; they do not re-run trades. " +
+                "Settled PnL = realized on closed rows only. Open/marks = unrealized. Live Real $: cash from Kalshi when linked; labs = paper. " +
+                "Marquee = active trades for the selected tab; promote uses settled PnL. Bottom-right: optional trade toasts (Settings toggle) plus Optimizer toasts—shared stack, auto-dismiss 10–15s. " +
+                "Reconcile: settled vs open vs bankroll."
               }
               onClick={() =>
                 setInfoPopup({
@@ -3682,12 +3730,18 @@ export default function App() {
                         open rows span configured assets and how much premium is locked in the book; high committed% means less
                         headroom for new entries. Cross-check with Holdings under Account and with “Assets to watch” snapshots.
                       </p>
-                      <p>
+                        <p>
                         <strong>Active trades marquee and Apply Lab A to Live.</strong> The scrolling strip lists open / in-flight
                         trades from the recent feed for whichever branch tab is selected (Live, Lab A–D). Promote gating still uses
                         settled PnL sums from the tiles above, not this strip. “Apply Lab A to Live” copies Lab A’s trading overlays
                         into the Live config only when Lab A’s settled PnL strictly exceeds B, C, and D, plus extra confirmation when
                         not in sim mode. It does <em>not</em> merge bankrolls; it is a config promotion, not a money transfer.
+                      </p>
+                      <p>
+                        <strong>Bottom-right notifications.</strong> The same fixed corner stack shows (1) <strong>trade</strong> open/close
+                        toasts when enabled under Settings → <em>All</em>, and (2) separate <strong>Optimizer</strong> messages such as
+                        throttled <code>optimizer_suggested_action</code> toasts. Cards share a uniform size and auto-dismiss after about
+                        10–15 seconds unless you dismiss them first.
                       </p>
                       <p>
                         <strong>When numbers look “wrong.”</strong> (1) Refresh: metrics come from the last dashboard payload; after
@@ -3853,34 +3907,45 @@ export default function App() {
                 Optimizer
               </h2>
               <span
-                className="sub"
-                style={{
-                  marginLeft: 8,
-                  fontSize: 11,
-                  padding: "3px 8px",
-                  borderRadius: 999,
-                  background:
-                    optimizerStatus.health === "green"
-                      ? "rgba(61,220,151,.18)"
-                      : optimizerStatus.health === "yellow"
-                        ? "rgba(255,214,102,.18)"
-                        : "rgba(255,122,122,.18)",
-                  color:
-                    optimizerStatus.health === "green"
-                      ? "#7af0ba"
-                      : optimizerStatus.health === "yellow"
-                        ? "#ffd666"
-                        : "#ff9a9a",
-                  border: "1px solid var(--border)",
-                }}
-                title="Optimizer health from acceptance rate (green > 60, yellow 30–60, red < 30)."
-              >
-                Health: {optimizerStatus.health.toUpperCase()}
-              </span>
+                className={`dash-optimizer-health-dot dash-optimizer-health-dot--${optimizerStatus.health}`}
+                role="img"
+                aria-label={`Optimizer health ${optimizerStatus.health}`}
+                title={
+                  `Optimizer health (${optimizerStatus.health}): from internal mutation acceptance rate — green if >60% accepted, yellow if 30–60%, red if <30%. ` +
+                  "Red usually means most proposed mutants failed replay or statistical gates. Check Internal Optimizer Trace in Settings, replay PnL vs gates, and any " +
+                  "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
+                }
+              />
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
                 <button
                   type="button"
-                  className="primary"
+                  className="primary dash-panel-btn"
+                  aria-label={
+                    "Force internal mutation: applies an internal rule or parameter change, runs replay fitness checks, and bypasses the normal optimizer scheduler. " +
+                    "POST /api/optimizer/force-internal-mutation. Does not submit exchange orders; it updates paper-side optimizer and config paths your rules consume."
+                  }
+                  disabled={!dash || busy || forceInternalMutationBusy}
+                  title={
+                    "Force: run an internal mutation now — internal rule/parameter change plus replay fitness checks, bypassing the scheduler (POST /api/optimizer/force-internal-mutation). " +
+                    "Does not place Kalshi orders by itself; it changes what the bot simulates and gates on the next ticks."
+                  }
+                  onClick={() =>
+                    void (async () => {
+                      if (!dash) return;
+                      setForceInternalMutationBusy(true);
+                      try {
+                        await forceInternalMutationNow();
+                      } finally {
+                        setForceInternalMutationBusy(false);
+                      }
+                    })()
+                  }
+                >
+                  {forceInternalMutationBusy ? "…" : "force"}
+                </button>
+                <button
+                  type="button"
+                  className="primary dash-panel-btn"
                   disabled={busy}
                   title="Open optimizer report: next movement vs gates, schedule, pulse, rollups, and settlements."
                   onClick={openOptimizerReportOverlay}
@@ -3889,14 +3954,11 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className="chart-tab"
-                  style={{ padding: "4px 10px" }}
+                  className="primary dash-panel-btn"
                   title={
-                    "Optimizer: Experiments multi-line chart = indexed MTM (or similar) for Live + Lab A–D from a shared window, for comparing paths; " +
-                    "it does not submit orders. Lab pulse = scrolling digest of the last engine tick (fills, skips, minutes-to-close, rule hints). " +
-                    "The report button opens a full overlay (schedule, next movement, rollups, raw pulse). Adaptive tuning on the server may adjust " +
-                    "Lab A parameters from settled paper history with guardrails; B/C/D stay reference. If pulse is empty, check engine on/off and " +
-                    "API health in Account, not just this card."
+                    "This dialog: full Optimizer help. The column has Optimizer Status (slope, tier, health dot, sparkline), Experiments chart (indexed MTM, Live+Labs), and Lab pulse. " +
+                    "Suggested-action text is not inline here—it may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
+                    "force / report: same row as this button. Pulse empty → check engine toggles and Account, not just this card."
                   }
                   onClick={() => setInfoPopup({ title: "Optimizer", body: optimizerBriefInfoBody() })}
                 >
@@ -3954,6 +4016,61 @@ export default function App() {
                 </span>
               </div>
               <div
+                className="sub"
+                style={{
+                  fontSize: 10,
+                  marginBottom: 8,
+                  padding: "6px 8px",
+                  borderRadius: 6,
+                  border: "1px solid rgba(55,65,100,0.65)",
+                  background: "rgba(12,18,38,0.45)",
+                }}
+                title="Tier follows acceptance rate (light / medium / strong). Dial is config mutation_aggressiveness (0–1); effective scale also blends the tier."
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700 }}>
+                    Mutation: <strong style={{ color: "var(--text)" }}>{optimizerStatus.mutationTierLabel}</strong>
+                    {optimizerStatus.effectiveMutationScale > 0 ? (
+                      <span style={{ opacity: 0.85, fontWeight: 500 }}>
+                        {" "}
+                        · scale {optimizerStatus.effectiveMutationScale.toFixed(2)}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span style={{ opacity: 0.8 }}>Dial (0–1)</span>
+                </div>
+                <div
+                  style={{
+                    marginTop: 4,
+                    height: 6,
+                    borderRadius: 4,
+                    background: "rgba(30,41,72,0.9)",
+                    overflow: "hidden",
+                    border: "1px solid rgba(55,65,100,0.8)",
+                  }}
+                  aria-hidden
+                >
+                  <div
+                    style={{
+                      width: `${Math.round(optimizerStatus.mutationDial * 100)}%`,
+                      height: "100%",
+                      borderRadius: 3,
+                      background: "linear-gradient(90deg,#6366f1,#a5b4fc)",
+                    }}
+                  />
+                </div>
+              </div>
+              {optimizerStatus.health === "red" && optimizerStatus.redStreak > 0 ? (
+                <div className="sub" style={{ fontSize: 10, marginBottom: 6, opacity: 0.9 }} title="Consecutive optimizer cycles with red acceptance (health &lt;30%).">
+                  Red streak: <strong>{optimizerStatus.redStreak}</strong> cycles
+                </div>
+              ) : null}
+              {optimizerStatus.lastAutoRevertAt ? (
+                <div className="sub" style={{ fontSize: 10, marginBottom: 6, opacity: 0.85 }} title="Last time Lab A was auto-restored from config_history due to stuck detection.">
+                  Last revert: <strong>{fmtIsoLocalCompact(optimizerStatus.lastAutoRevertAt)}</strong>
+                </div>
+              ) : null}
+              <div
                 style={{ width: "100%", height: 96, marginBottom: 8 }}
                 title="Last 20 Lab A equity points (dollars) from stored snapshots. Hover points for value."
               >
@@ -4002,7 +4119,7 @@ export default function App() {
                       k: "accpt",
                       label: "Accpt",
                       labelTitle:
-                        "Acceptance rate: accepted decisions ÷ decisions in the internal trace (or server acceptance_rate_pct). Health badge uses the same %.",
+                        "Acceptance rate: accepted ÷ total in the internal trace (or server acceptance_rate_pct). Drives the title-row health dot and throttled suggested-action toasts.",
                       value: `${optimizerStatus.acceptanceRatePct.toFixed(1)}%`,
                       valueTitle: `Acceptance rate ${optimizerStatus.acceptanceRatePct.toFixed(1)}% (trace-based where available)`,
                     },
@@ -4065,7 +4182,7 @@ export default function App() {
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
               <button
                 type="button"
-                className="chart-tab"
+                className="primary dash-panel-btn"
                 title="Open combined comparison popup with branch toggles."
                 onClick={() => setEquityCompareOpen(true)}
               >
@@ -4073,8 +4190,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="chart-tab"
-                style={{ padding: "4px 10px" }}
+                className="primary dash-panel-btn"
                 title={
                   "Equity: five small-multiple charts (Live + Lab A–D), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
@@ -4227,8 +4343,7 @@ export default function App() {
               </h2>
               <button
                 type="button"
-                className="chart-tab"
-                style={{ padding: "4px 10px" }}
+                className="primary dash-panel-btn"
                 title={
                   "Per-asset engine snapshot cards: Live vs Lab A–D select which branch’s last tick view you read; config is unchanged. " +
                   "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
@@ -4535,14 +4650,12 @@ export default function App() {
               </span>
               <button
                 type="button"
-                className="chart-tab"
-                style={{ padding: "4px 10px" }}
+                className="primary dash-panel-btn"
                 title={
-                  "Account: optional signed Kalshi balance/positions when API keys are set; otherwise public market data only. " +
-                  "Holdings table merges per-asset rows: exchange-open columns vs per-branch sim-open columns. Paper and live can diverge " +
-                  "by design. Engine status below is polled from the dashboard, not the exchange. " +
-                  "Set KALSHI_API_KEY_ID and private key in .env, restart the API, reload. " +
-                  "Glossary: market lines = distinct tickers in a cell; contracts = summed YES/NO size on those tickers."
+                  "Account: signed balance/positions when API keys are set; otherwise public market data only. Holdings: Kalshi open vs " +
+                  "per-branch sim columns. Engine strip = dashboard poll, not the exchange. Credentials: KALSHI_API_KEY_ID + private key in " +
+                  "backend .env, restart API. Glossary: market lines = tickers; contracts = YES/NO size. " +
+                  "Throttled Optimizer toasts and optional trade toasts use the same bottom-right stack (see All tab in Settings for trade toggle)."
                 }
                 onClick={() =>
                   setInfoPopup({
@@ -4556,6 +4669,10 @@ export default function App() {
                           open positions and resting orders, and a <strong>per-asset</strong> table that lines up your configured
                           assets (BTC, ETH, …) with (a) what Kalshi says you hold and (b) what each branch’s sim engine thinks is open
                           in SQLite.
+                        </p>
+                        <p>
+                          <strong>Notifications (not in this block).</strong> The bottom-right stack shows trade cards (optional, Settings) and
+                          separate Optimizer messages; they are independent of the holdings grid and auto-dismiss after about 10–15 seconds.
                         </p>
                         <p>
                           <strong>“Kalshi linked” vs “Public data only”.</strong> The badge is an integration summary, not a strategy
@@ -4751,18 +4868,19 @@ export default function App() {
 
           <div className="account-section-box account-section-box--activity" style={{ marginTop: 16 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <h3 className="section-tip" style={{ margin: 0, fontSize: 16 }} title="Recent signal/trade rows from SQLite logs.">
+              <h3
+                className="section-tip"
+                style={{ margin: 0, fontSize: 16 }}
+                title="Structured signal and trade rows from SQLite (capped). Long Optimizer suggested-action text is not stored here—use bottom-right toasts and Settings → trace."
+              >
                 Activity log
               </h3>
               <button
                 type="button"
-                className="chart-tab"
-                style={{ padding: "4px 10px" }}
+                className="primary dash-panel-btn"
                 title={
-                  "Activity log: server sends capped recent signal + trade history (e.g. up to 500 each); the Live/Lab tabs filter " +
-                  "by branch (legacy sim_lab = Lab A). “Recent trade/signal” tables share one filter; the “Bets not traded” block below " +
-                  "has its own independent branch pickers. Timestamps are log order; for forensics, pair with JSONL on disk. " +
-                  "Skips, fills, and rule names appear as returned by the API—if a row is missing, it may have been truncated by the cap."
+                  "Capped signal + trade history; Live/Lab tabs filter rows (legacy sim_lab → Lab A). “Bets not traded” uses separate branch pickers. " +
+                  "Not shown: optimizer suggested_action as toasts (bottom-right, throttled). Timestamps = log order; pair with JSONL for forensics."
                 }
                 onClick={() =>
                   setInfoPopup({
@@ -4775,6 +4893,12 @@ export default function App() {
                           created or the exchange returned, depending on mode). The backend reads SQLite (and sometimes hydrates
                           with Kalshi) and returns a bounded list so the UI stays snappy. It is the first place to look after “why
                           did / didn’t a trade land?”
+                        </p>
+                        <p>
+                          <strong>Optimizer suggested text is different.</strong> When the server sets{" "}
+                          <code>optimizer_suggested_action</code>, the dashboard surfaces it as <strong>throttled toasts</strong> in the
+                          bottom-right stack (not as rows in this table). Use the Optimizer card, toasts, and{" "}
+                          <strong>Settings → Internal Optimizer Trace</strong> for that workflow.
                         </p>
                         <p>
                           <strong>Limits and truncation.</strong> The API typically caps each stream (for example, the last 500
@@ -5103,7 +5227,9 @@ export default function App() {
           <div className="panel" style={{ width: "min(1200px, 97vw)", maxHeight: "92vh", overflow: "auto", padding: "14px 16px" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8 }}>
               <h2 style={{ margin: 0, fontSize: 18 }}>Compare equity (one graph)</h2>
-              <button type="button" className="chart-tab" onClick={() => setEquityCompareOpen(false)}>Close</button>
+              <button type="button" className="primary dash-panel-btn" onClick={() => setEquityCompareOpen(false)}>
+                Close
+              </button>
             </div>
             <div className="dash-equity-view-toggle" role="group" aria-label="Compare chart mode">
               <button
@@ -5192,7 +5318,7 @@ export default function App() {
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
               <h3 style={{ margin: 0 }}>{infoPopup.title}</h3>
-              <button type="button" className="chart-tab" style={{ padding: "4px 10px" }} onClick={() => setInfoPopup(null)}>
+              <button type="button" className="primary dash-panel-btn" onClick={() => setInfoPopup(null)}>
                 Close
               </button>
             </div>

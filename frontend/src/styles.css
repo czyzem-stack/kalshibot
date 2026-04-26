@@ -38,6 +38,10 @@ body {
     transform: none;
   }
 
+  .chart-tab:active:not(:disabled) {
+    transform: none;
+  }
+
   .kalshi-setup-orb:hover {
     transform: none;
   }
@@ -164,9 +168,27 @@ button.primary {
   background: linear-gradient(180deg, #1c2f63, #121a33);
 }
 
+button.primary:hover:not(:disabled) {
+  border-color: rgba(110, 231, 255, 0.38);
+  background: linear-gradient(180deg, #22356e, #141b36);
+}
+
+button.primary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
 button.danger {
   border-color: #6b2a33;
   background: linear-gradient(180deg, #3a1420, #121a33);
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: rgba(255, 107, 122, 0.5);
+  background: linear-gradient(180deg, #4a1a28, #141a33);
+}
+
+button.danger:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 button:disabled {
@@ -174,6 +196,50 @@ button:disabled {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+/* Filled actions: avoid washed-out disabled look next to enabled siblings (still clearly inactive). */
+button.primary:disabled,
+button.danger:disabled {
+  opacity: 1;
+  color: rgba(200, 208, 230, 0.38);
+  border-color: #1c2742;
+  background: linear-gradient(180deg, #131a30, #0c1124);
+}
+
+/* Compact header-row actions (dashboard section titles): same fill as other primary CTAs. */
+button.primary.dash-panel-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+/* Optimizer card: acceptance health as a color dot (details in title tooltip). */
+.dash-optimizer-health-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: 8px;
+  align-self: center;
+  box-shadow: 0 0 0 2px rgba(8, 12, 24, 0.88);
+  cursor: help;
+}
+
+.dash-optimizer-health-dot--green {
+  background: #3ddc8a;
+}
+
+.dash-optimizer-health-dot--yellow {
+  background: #f5d442;
+}
+
+.dash-optimizer-health-dot--red {
+  background: #ff6b7a;
 }
 
 .grid {
@@ -1220,6 +1286,7 @@ input[type="number"] {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  width: min(360px, calc(100vw - 24px));
   max-width: min(360px, calc(100vw - 24px));
   pointer-events: auto;
 }
@@ -1252,10 +1319,17 @@ input[type="number"] {
 }
 
 .optimizer-toast {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   max-width: 100%;
+  min-height: 120px;
+  max-height: 260px;
+  padding: 10px 12px;
   box-sizing: border-box;
   border-width: 1px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
 }
 
 .optimizer-toast--green {
@@ -1272,15 +1346,26 @@ input[type="number"] {
 
 .optimizer-toast__body {
   display: flex;
+  flex: 1;
+  min-height: 0;
   align-items: flex-start;
   gap: 10px;
+}
+
+/* Fixed column so cards with/without branch swatch share the same width and header alignment. */
+.optimizer-toast__branch-slot {
+  flex-shrink: 0;
+  width: 14px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 4px;
 }
 
 .optimizer-toast__branch-dot {
   flex-shrink: 0;
   width: 10px;
   height: 10px;
-  margin-top: 4px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
@@ -1288,6 +1373,17 @@ input[type="number"] {
 .optimizer-toast__main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.optimizer-toast__details {
+  margin-top: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .optimizer-toast__line {
@@ -2552,15 +2648,30 @@ input[type="number"] {
     box-shadow var(--tap-fast);
 }
 
-.chart-tab:hover {
+.chart-tab:hover:not(:disabled) {
   color: var(--text);
   border-color: #355091;
+}
+
+.chart-tab:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.chart-tab:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .chart-tab--active {
   color: var(--text);
   border-color: #2b4c86;
   background: linear-gradient(180deg, #1c2f63, #121a33);
+}
+
+.chart-tab--active:hover:not(:disabled) {
+  border-color: rgba(110, 231, 255, 0.35);
+  background: linear-gradient(180deg, #22356e, #141b36);
 }
 
 .section-tip[title],

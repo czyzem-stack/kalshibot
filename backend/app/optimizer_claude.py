@@ -86,6 +86,11 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("pulse_eval_count", 0)
     out.setdefault("last_pulse_eval_at", "")
     out.setdefault("optimize_internal_mutations", True)
+    out.setdefault("mutation_aggressiveness", 0.75)
+    out.setdefault("enable_auto_revert", True)
+    out.setdefault("optimizer_auto_revert_last_at", "")
+    out.setdefault("optimizer_last_auto_revert_fitness", 0.0)
+    out.setdefault("optimizer_last_auto_revert_history_id", 0)
     out.setdefault("optimizer_cycle_count", 0)
     out.setdefault("internal_optimizer_trace", [])
     out.setdefault("last_mutation_at", "")
@@ -483,6 +488,271 @@ def _append_internal_trace(oc: dict[str, Any], entry: dict[str, Any]) -> None:
     prev = rows if isinstance(rows, list) else []
     out = [entry, *prev][:20]
     oc["internal_optimizer_trace"] = out
+
+
+def _trace_positive_equity_slope_streak(oc: dict[str, Any]) -> int:
+    """Count consecutive trace rows (newest first) with equity_slope_dph > 0."""
+    rows = oc.get("internal_optimizer_trace")
+    lst = rows if isinstance(rows, list) else []
+    n = 0
+    for row in lst:
+        raw = row.get("equity_slope_dph")
+        if raw is None:
+            break
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            break
+        if v > 0:
+            n += 1
+        else:
+            break
+    return n
+
+
+def _trace_negative_equity_slope_streak(oc: dict[str, Any]) -> int:
+    """Count consecutive trace rows (newest first) with equity_slope_dph < 0 (missing breaks the run)."""
+    rows = oc.get("internal_optimizer_trace")
+    lst = rows if isinstance(rows, list) else []
+    n = 0
+    for row in lst:
+        raw = row.get("equity_slope_dph")
+        if raw is None:
+            break
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            break
+        if v < 0:
+            n += 1
+        else:
+            break
+    return n
+
+
+def _auto_revert_cooldown_ok(oc: dict[str, Any], *, now: dt.datetime) -> bool:
+    """At most one auto-revert every 4 hours (wall clock from ``optimizer_auto_revert_last_at``)."""
+    prev = _parse_iso_dt(str(oc.get("optimizer_auto_revert_last_at") or "").strip())
+    if prev is None:
+        return True
+    return (now - prev) >= dt.timedelta(hours=4)
+
+
+def _recalculate_acceptance_rate(oc: dict[str, Any]) -> None:
+    tr_rows = oc.get("internal_optimizer_trace")
+    tr_list = tr_rows if isinstance(tr_rows, list) else []
+    accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
+    total_n = len(tr_list)
+    oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+
+
+async def _maybe_auto_revert_if_stuck(
+    store: Store,
+    *,
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    tr_a: list[dict[str, Any]],
+    sg_a: list[dict[str, Any]],
+    at_iso: str,
+    red_streak: int,
+    acceptance_pct: float,
+) -> dict[str, Any]:
+    """
+    When the internal optimizer is stuck, restore ``lab_a`` from the best ``config_history`` snapshot.
+
+    Eligibility (any):
+      - ``red_streak >= 15`` consecutive red-health cycles, or
+      - ``acceptance_pct < 20`` and equity slope negative for 8+ consecutive trace rows.
+
+    Picks the snapshot in the last 30 days whose ``lab_a`` yields the highest replay
+    ``score_dollars`` on recent settled trades (same replay stack as mutation evaluation).
+    Respects ``enable_auto_revert`` and a 4-hour cooldown between reverts.
+    """
+    meta: dict[str, Any] = {"reverted": False, "best_score": None, "reason": ""}
+    now = _parse_iso_dt(at_iso) or _utc_now()
+    if not bool(oc.get("enable_auto_revert", True)):
+        meta["reason"] = "disabled"
+        return meta
+    if not _auto_revert_cooldown_ok(oc, now=now):
+        meta["reason"] = "cooldown"
+        return meta
+
+    neg_streak = _trace_negative_equity_slope_streak(oc)
+    stuck_red = red_streak >= 15
+    stuck_slope = acceptance_pct < 20.0 and neg_streak >= 8
+    if not (stuck_red or stuck_slope):
+        meta["reason"] = "thresholds_not_met"
+        return meta
+
+    hist = await store.list_config_history(100, include_config=True)
+    cutoff = now - dt.timedelta(days=30)
+    st_settled = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    tail_n = min(200, max(8, len(st_settled)))
+    window = st_settled[:tail_n]
+    if len(window) < 8:
+        meta["reason"] = "insufficient_settled_for_replay_scoring"
+        return meta
+
+    sig_desc = _signals_sorted_desc(sg_a)
+    fee_flag = bool(oc.get("include_fees_in_score", True))
+    best_lab: dict[str, Any] | None = None
+    best_score = float("-inf")
+    best_hid: int | None = None
+
+    for row in hist:
+        ts = _parse_iso_dt(row.get("timestamp"))
+        if ts is None or ts < cutoff:
+            continue
+        cand = row.get("config")
+        if not isinstance(cand, dict):
+            continue
+        lab_snap = cand.get("lab_a")
+        if not isinstance(lab_snap, dict):
+            continue
+        rules_try = lab_snap.get("rules")
+        if not isinstance(rules_try, list) or len(rules_try) == 0:
+            continue
+        cfg_try = dict(cfg)
+        cfg_try["lab_a"] = json.loads(json.dumps(lab_snap))
+        lab_x, rules_x = _ensure_lab_rules(cfg_try, BRANCH_LAB_A)
+        try:
+            rk = _replay_open_kw(cfg_try, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a)
+            fb = _replay_fitness_bundle(
+                window,
+                rules_x,
+                sig_desc,
+                include_fees_in_score=fee_flag,
+                max_rows=tail_n,
+                branch_trading_cfg=lab_x,
+                **rk,
+            )
+            sc = float(fb.get("score_dollars") or 0.0)
+        except Exception as ex:
+            logger.debug("auto_revert_skip_history_row: %s", ex)
+            continue
+        if sc > best_score:
+            best_score = sc
+            best_lab = json.loads(json.dumps(lab_snap))
+            try:
+                best_hid = int(row.get("id") or 0)
+            except (TypeError, ValueError):
+                best_hid = None
+
+    if best_lab is None or best_score == float("-inf"):
+        meta["reason"] = "no_eligible_history"
+        logger.info("auto_revert: stuck criteria met but no eligible config_history row with replayable Lab A.")
+        return meta
+
+    cfg["lab_a"] = best_lab
+    oc["optimizer_red_streak_cycles"] = 0
+    oc["optimizer_auto_revert_last_at"] = at_iso
+    oc["optimizer_last_auto_revert_fitness"] = round(float(best_score), 6)
+    oc["optimizer_last_auto_revert_history_id"] = int(best_hid or 0)
+    oc["optimizer_suggested_action"] = (
+        "Auto-revert triggered — Lab A restored from best config_history snapshot (replay fitness on recent settles)."
+    )
+    oc["last_status"] = "ok_auto_revert_stuck"
+    reason_tag = "stuck_red_15" if stuck_red else "stuck_low_acceptance_slope"
+
+    if stuck_red:
+        logger.warning(
+            "Optimizer stuck for 15+ cycles — auto-reverted Lab A to best historical config (fitness: %.4f, history_id=%s)",
+            float(best_score),
+            str(best_hid),
+        )
+    else:
+        logger.warning(
+            "Optimizer stuck (acceptance<20 and equity slope negative for 8+ cycles) — auto-reverted Lab A to best historical config (fitness: %.4f, history_id=%s)",
+            float(best_score),
+            str(best_hid),
+        )
+
+    _append_internal_trace(
+        oc,
+        {
+            "at": at_iso,
+            "cycle": int(oc.get("optimizer_cycle_count") or 0),
+            "score": round(float(best_score), 6),
+            "score_before": None,
+            "score_after": round(float(best_score), 6),
+            "accepted": False,
+            "reject_reason": "auto-revert-stuck",
+            "mutant": False,
+            "changes_n": 0,
+            "auto_revert": True,
+            "auto_revert_reason": reason_tag,
+            "history_id": best_hid,
+            "total_pnl_from_stops_cents": 0,
+            "total_pnl_from_stops_dollars": 0.0,
+            "stop_loss_trigger_rate_pct": 0.0,
+            "stop_loss_exits_n": 0,
+            "open_simulated_stop_exits_n": 0,
+            "equity_slope_dph": None,
+        },
+    )
+    _recalculate_acceptance_rate(oc)
+    eff_sc, mtier = _compute_mutation_scale(oc)
+    oc["mutation_tier"] = mtier
+    oc["effective_mutation_scale"] = round(eff_sc, 4)
+    health2 = _check_optimizer_health(oc)
+    oc["optimizer_health_color"] = str(health2["health_color"])
+    meta["reverted"] = True
+    meta["best_score"] = float(best_score)
+    meta["reason"] = reason_tag
+    return meta
+
+
+def _compute_mutation_scale(oc: dict[str, Any]) -> tuple[float, str]:
+    """
+    Effective internal-mutation scale (0.06–1.75) from acceptance tier × user mutation_aggressiveness (0–1).
+
+    Returns (effective_scale, tier_label) where tier_label is light | medium | strong.
+    """
+    acc = _safe_float(oc.get("acceptance_rate_pct"), 50.0)
+    user_mag = max(0.0, min(1.0, _safe_float(oc.get("mutation_aggressiveness"), 0.75)))
+    if acc > 60.0:
+        tier = "light"
+        tier_mult = 0.68
+    elif acc >= 30.0:
+        tier = "medium"
+        tier_mult = 1.0
+    else:
+        tier = "strong"
+        tier_mult = 1.38
+    eff = max(0.06, min(1.75, tier_mult * (0.45 + 0.55 * user_mag)))
+    return eff, tier
+
+
+def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
+    """
+    Lightweight self-check for dashboards and logging.
+
+    ``mutation_aggressiveness`` is the configured 0–1 dial; acceptance tiers still modulate
+    effective perturbation size inside ``_compute_mutation_scale``.
+    """
+    acc = round(_safe_float(oc.get("acceptance_rate_pct"), 0.0), 2)
+    user_mag = round(max(0.0, min(1.0, _safe_float(oc.get("mutation_aggressiveness"), 0.75))), 4)
+    if acc > 60.0:
+        color = "green"
+        action = "Continue; acceptance is healthy — keep monitoring trace and replay PnL."
+    elif acc >= 30.0:
+        color = "yellow"
+        action = (
+            "Mixed acceptance — watch the internal trace; you may raise mutation_aggressiveness slightly "
+            "or review min-trade gates if progress stalls."
+        )
+    else:
+        color = "red"
+        action = (
+            "Low acceptance — replay/stat gates are rejecting most mutants. Review Lab A paper context, "
+            "threshold gates, or consider a manual config reset."
+        )
+    return {
+        "health_color": color,
+        "acceptance_rate_pct": acc,
+        "mutation_aggressiveness": user_mag,
+        "suggested_action": action,
+    }
 
 
 def _regime_volatility(signals: list[dict[str, Any]], *, hours: float, end: dt.datetime) -> dict[str, Any]:
@@ -1184,6 +1454,7 @@ def _internal_lab_a_bet_pulse(
     )
     matched_n = int(fb.get("matched_n") or 0)
     fitness_score = float(fb.get("score_dollars") or 0.0)
+    sl_rate = float(fb.get("stop_loss_trigger_rate") or 0.0)
     regime_h = max(1.0, float(oc.get("regime_lookback_hours") or 4))
     regime = _regime_volatility(sg_a, hours=regime_h, end=_parse_iso_dt(at_iso) or _utc_now())
     regime_bucket = str(regime.get("bucket") or "unknown")
@@ -1193,11 +1464,20 @@ def _internal_lab_a_bet_pulse(
     trace_rows = oc.get("internal_optimizer_trace")
     trace_list = trace_rows if isinstance(trace_rows, list) else []
     fitness_slope = _fitness_score_trend_from_trace(trace_list, max_rows=20) or 0.0
+    eq_slope_streak = _trace_positive_equity_slope_streak(oc)
+    momentum_ok = eq_slope_streak >= 3
     base_drive = fitness_score if matched_n >= 2 else (pnl / 100.0)
     drive = base_drive + (eq_slope * 0.05) + (fitness_slope * 3.0)
     # Dynamic pulse size grows with trend confidence but stays capped by global min/max fractions.
     mag = min(1.6, max(0.35, abs(drive) / 6.0))
     step = 0.0022 * regime_mult * mag
+    if sl_rate > 40.0:
+        if drive < 0:
+            step *= 1.55
+        elif drive > 0:
+            step *= 0.55
+    elif momentum_ok and drive > 0:
+        step *= 1.08
     if drive > 0:
         new_f = min(MAX_BALANCE_FRACTION_PER_WINDOW, old_f + step)
     elif drive < 0:
@@ -1214,13 +1494,27 @@ def _internal_lab_a_bet_pulse(
         f"internal_pulse score={fitness_score:.3f} matched={matched_n} mean_pnl_cents={pnl:.1f} -> fraction={new_f}"
     )
     cfg["lab_a"] = lab
+    mom_note = f"momentum_streak={eq_slope_streak} (need≥3 for +8% step on increases)" if not momentum_ok else "momentum_ok≥3 +8% step on increases"
+    sl_note = f"stop_loss_rate={sl_rate:.1f}% (>40% tightens shrink / damps adds)" if sl_rate > 40.0 else f"stop_loss_rate={sl_rate:.1f}%"
     reason = (
         f"internal pulse: fitness={fitness_score:.3f}, trend={fitness_slope:+.3f}/cycle, "
-        f"equity_slope={eq_slope:+.2f}$/h, regime={regime_bucket}, mean={pnl:.0f}¢, matched={matched_n}"
+        f"equity_slope={eq_slope:+.2f}$/h, {mom_note}, {sl_note}, regime={regime_bucket}, mean={pnl:.0f}¢, matched={matched_n}"
+    )
+    logger.info(
+        "internal_lab_a_bet_pulse regime: drive=%.4f step=%.5f old_f=%.4f new_f=%.4f regime=%s sl_rate=%.1f%% eq_slope_streak=%s momentum=%s",
+        drive,
+        step,
+        old_f,
+        new_f,
+        regime_bucket,
+        sl_rate,
+        eq_slope_streak,
+        momentum_ok,
     )
     hint = (
         f"Next tick uses bet fraction ~{new_f:.2%} of Lab A paper per window (was ~{old_f:.2%}). "
-        f"Pulse scales with replay fitness trend and equity slope; high-vol regime reduces step size."
+        f"Pulse scales with replay fitness, equity slope, and trace momentum; stop-loss-heavy replay (>40%) "
+        f"shrinks increases and deepens decreases; high-vol regime reduces base step."
     )
     bc = _optimizer_pulse_bc_enrichment(cfg, oc)
     item = _history_bet_item(
@@ -1313,9 +1607,14 @@ def _internal_mutate_rules_and_params(
         **rk_a,
     )
     meta["score_before"] = float(base_fb["score_dollars"])
+    eff, tier_label = _compute_mutation_scale(oc)
+    meta["mutation_tier"] = tier_label
+    meta["effective_mutation_scale"] = round(eff, 4)
     cyc = max(1, _safe_int(oc.get("optimizer_cycle_count"), 1))
     rng = random.Random(cyc * 997 + len(st_a) * 17 + len(sg_a))
-    drift = max(-0.03, min(0.03, float(base_fb["sharpe_approx"]) * 0.01))
+    drift = max(-0.03, min(0.03, float(base_fb["sharpe_approx"]) * 0.01 * min(1.25, eff)))
+    span = max(1, min(4, int(round(eff))))
+    prob_span = 0.015 * eff
     mutated_rules: list[dict[str, Any]] = []
     for i, r in enumerate(rules_base):
         nr = dict(r)
@@ -1323,8 +1622,8 @@ def _internal_mutate_rules_and_params(
         if side == "no":
             mutated_rules.append(nr)
             continue
-        jitter_prob = rng.uniform(-0.015, 0.015) + drift
-        jitter_mins = rng.randint(-1, 1)
+        jitter_prob = rng.uniform(-prob_span, prob_span) + drift
+        jitter_mins = rng.randint(-span, span)
         lo = max(0.01, min(0.99, _safe_float(nr.get("min_prob"), 0.0) + jitter_prob))
         hi = max(lo + 0.005, min(0.995, _safe_float(nr.get("max_prob"), 1.0) + jitter_prob))
         minm = max(0, min(60, _safe_int(nr.get("min_minutes_left"), 0) + jitter_mins))
@@ -1344,7 +1643,8 @@ def _internal_mutate_rules_and_params(
     old_f = clamp_balance_fraction_per_window(
         _safe_float(lab_a.get("balance_fraction_per_window"), _safe_float(cfg.get("balance_fraction_per_window"), 0.03))
     )
-    frac_step = rng.uniform(-0.0035, 0.0035) + drift * 0.35
+    frac_span = 0.0035 * eff
+    frac_step = rng.uniform(-frac_span, frac_span) + drift * 0.35 * min(1.2, eff)
     new_f = clamp_balance_fraction_per_window(old_f + frac_step)
     mut_lab = dict(lab_a)
     mut_lab["balance_fraction_per_window"] = round(new_f, 4)
@@ -1398,6 +1698,14 @@ def _internal_mutate_rules_and_params(
     cfg["lab_a"] = mut_lab
     oc["last_mutation_at"] = at_iso
     meta["accepted"] = True
+    logger.info(
+        "internal_mutation accepted: tier=%s effective_scale=%.4f score %.4f->%.4f rules=%s",
+        tier_label,
+        eff,
+        float(meta["score_before"]),
+        float(meta["score_after"]),
+        len(mutated_rules),
+    )
     meta["reject_reason"] = ""
     row = {
         "id": uuid4().hex,
@@ -2014,6 +2322,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
     oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
     oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
+    eq_dph = _equity_slope_dollars_per_hour(eq_a)
     trace_entry: dict[str, Any] = {
         "at": end_iso,
         "cycle": int(oc.get("optimizer_cycle_count") or 0),
@@ -2031,6 +2340,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "stop_loss_trigger_rate_pct": sl_rate,
         "stop_loss_exits_n": sl_n,
         "open_simulated_stop_exits_n": int(rb_lab.get("open_simulated_stop_exits_n") or 0),
+        "equity_slope_dph": (round(float(eq_dph), 6) if eq_dph is not None else None),
     }
     _append_internal_trace(oc, trace_entry)
     tr_rows = oc.get("internal_optimizer_trace")
@@ -2038,8 +2348,35 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
     total_n = len(tr_list)
     oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    eff_sc, mtier = _compute_mutation_scale(oc)
+    oc["mutation_tier"] = mtier
+    oc["effective_mutation_scale"] = round(eff_sc, 4)
+    health = _check_optimizer_health(oc)
+    oc["optimizer_health_color"] = str(health["health_color"])
+    oc["optimizer_suggested_action"] = str(health["suggested_action"])
+    stk = _safe_int(oc.get("optimizer_red_streak_cycles"), 0)
+    if str(health["health_color"]) == "red":
+        stk += 1
+    else:
+        stk = 0
+    oc["optimizer_red_streak_cycles"] = stk
+    if stk == 13:
+        logger.warning(
+            "Optimizer stuck — consider manual reset (red acceptance health for 13+ consecutive optimizer cycles)."
+        )
+    revert_meta = await _maybe_auto_revert_if_stuck(
+        store,
+        cfg=cfg,
+        oc=oc,
+        tr_a=tr_a,
+        sg_a=sg_a,
+        at_iso=end_iso,
+        red_streak=stk,
+        acceptance_pct=float(oc.get("acceptance_rate_pct") or 0.0),
+    )
     oc["last_run_at"] = end_iso
-    oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else ("ok_internal_pulse" if changes else "ok_noop")
+    if not bool(revert_meta.get("reverted")):
+        oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else ("ok_internal_pulse" if changes else "ok_noop")
     oc["last_error"] = ""
     if mutation_meta.get("score_after") is not None:
         try:
@@ -2065,6 +2402,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "bet_fraction_changes": bet_frac_n,
         "mutant_run": mutant_run,
         "mutation_accepted": bool(mutation_meta.get("accepted")),
+        "auto_reverted": bool(revert_meta.get("reverted")),
     }
 
 
@@ -2126,6 +2464,7 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         oc["last_change_at"] = end_iso
         _merge_pulse_trace(oc, [row])
 
+    eq_a_force = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
     lab_tr, rules_tr = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     rb_lab = _replay_fitness_bundle(
         st_a[:200],
@@ -2141,6 +2480,7 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
     oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
     oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
+    eq_dph_f = _equity_slope_dollars_per_hour(eq_a_force)
     trace_entry = {
         "at": end_iso,
         "cycle": int(oc.get("optimizer_cycle_count") or 0),
@@ -2157,12 +2497,29 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         "stop_loss_trigger_rate_pct": sl_rate,
         "stop_loss_exits_n": sl_n,
         "open_simulated_stop_exits_n": int(rb_lab.get("open_simulated_stop_exits_n") or 0),
+        "equity_slope_dph": (round(float(eq_dph_f), 6) if eq_dph_f is not None else None),
     }
     _append_internal_trace(oc, trace_entry)
     tr_rows = oc.get("internal_optimizer_trace")
     tr_list = tr_rows if isinstance(tr_rows, list) else []
     accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
     oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / len(tr_list)), 2) if tr_list else 0.0
+    eff_sc_f, mtier_f = _compute_mutation_scale(oc)
+    oc["mutation_tier"] = mtier_f
+    oc["effective_mutation_scale"] = round(eff_sc_f, 4)
+    health_f = _check_optimizer_health(oc)
+    oc["optimizer_health_color"] = str(health_f["health_color"])
+    oc["optimizer_suggested_action"] = str(health_f["suggested_action"])
+    stk_f = _safe_int(oc.get("optimizer_red_streak_cycles"), 0)
+    if str(health_f["health_color"]) == "red":
+        stk_f += 1
+    else:
+        stk_f = 0
+    oc["optimizer_red_streak_cycles"] = stk_f
+    if stk_f == 13:
+        logger.warning(
+            "Optimizer stuck — consider manual reset (red acceptance health for 13+ consecutive optimizer cycles)."
+        )
     oc["last_run_at"] = end_iso
     oc["last_pulse_eval_at"] = end_iso
     oc["last_status"] = "forced_internal_mutation_accepted" if meta.get("accepted") else "forced_internal_mutation_rejected"

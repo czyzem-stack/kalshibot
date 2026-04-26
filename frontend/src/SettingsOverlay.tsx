@@ -715,8 +715,10 @@ function SettingsHelpSection({
           <li>Compare <strong>Live + Lab A–D</strong> over matching windows, not one-off spike periods — include <strong>Lab D</strong> when judging tail-risk and wild-style churn.</li>
           <li>Track drawdown depth and recovery speed alongside total PnL.</li>
           <li>
-            Open the dashboard <strong>Optimizer report</strong> overlay for a trades-by-lab snapshot; use bottom-right <strong>trade toasts</strong> (if enabled) for
-            recent open/settle notifications.
+            Open the dashboard <strong>Optimizer report</strong> overlay for schedule, rollups, and traces. Bottom-right:{" "}
+            <strong>trade</strong> open/close cards when the <em>Trade open / settle toasts</em> toggle is on, plus separate{" "}
+            <strong>Optimizer</strong> toasts (e.g. throttled <code>optimizer_suggested_action</code>) in the same stack—cards
+            auto-dismiss after 10–15s.
           </li>
           <li>
             Compare how <strong>patient stop-loss</strong> defaults differ across <strong>Live and Labs A–D</strong> in Settings — stricter stops change replay fitness and realized paper paths;{" "}
@@ -1197,7 +1199,11 @@ export default function SettingsOverlay({
                 onChange={(e) => onHeroMarqueeSpeedMultChange(Number(e.target.value))}
               />
             </div>
-            <div className="field" style={{ marginTop: 14, marginBottom: 0 }} title="Bottom-right cards when a trade opens or settles (Live or sim). Stored in this browser only.">
+            <div
+              className="field"
+              style={{ marginTop: 14, marginBottom: 0 }}
+              title="When enabled: show trade open/close cards in the bottom-right stack (Live or sim). When off: only trade rows are hidden—Optimizer and other non-trade toasts can still appear. All stack cards auto-dismiss after ~10–15s. Stored in this browser only (localStorage)."
+            >
               <label className="section-tip" style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                 <input
                   type="checkbox"
@@ -1205,7 +1211,7 @@ export default function SettingsOverlay({
                   onChange={(e) => onTradePopupToastsEnabledChange(e.target.checked)}
                 />
                 <span>
-                  Trade open / settle toasts <span className="sub">(bottom-right)</span>
+                  Trade open / settle toasts <span className="sub">(bottom-right; Optimizer uses the same area)</span>
                 </span>
               </label>
             </div>
@@ -1896,7 +1902,7 @@ export default function SettingsOverlay({
                 type="button"
                 className="primary"
                 disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
-                title="POST /api/optimizer/force-internal-mutation — one internal mutant cycle; replay + fitness gate."
+                title="POST /api/optimizer/force-internal-mutation — one internal mutant cycle; replay + fitness gate; bypasses scheduler. Same as the “force” button on the dashboard Optimizer card. Does not post exchange orders by itself."
                 onClick={() =>
                   void (async () => {
                     if (!onForceInternalMutationNow) return;
