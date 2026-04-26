@@ -1888,43 +1888,35 @@ export default function SettingsOverlay({
             >
               Save optimizer settings
             </button>
-            <div style={{ marginTop: 14 }} className="field">
+            <div style={{ marginTop: 18 }} className="field">
+              <h3 className="section-tip" style={{ margin: "0 0 10px 0", fontSize: 14 }}>
+                Internal Optimizer Controls
+              </h3>
               <button
                 type="button"
                 className="primary"
-                disabled={busy || optimizerSaving || !onRunOptimizerNow}
-                title="POST /api/optimizer/run — runs internal pulse and mutant-cycle checks immediately."
-                onClick={() => void onRunOptimizerNow?.()}
+                disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
+                title="POST /api/optimizer/force-internal-mutation — one internal mutant cycle; replay + fitness gate."
+                onClick={() =>
+                  void (async () => {
+                    if (!onForceInternalMutationNow) return;
+                    setForcingMutation(true);
+                    try {
+                      await onForceInternalMutationNow();
+                    } finally {
+                      setForcingMutation(false);
+                    }
+                  })()
+                }
               >
-                Force optimizer cycle now
+                {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
               </button>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
-                Uses <code>force=true</code> to run the internal pulse immediately even if scheduled mode is off.
+                Runs internal rule/parameter mutation + replay fitness gate (bypasses scheduler)
               </p>
             </div>
-            <div style={{ marginTop: 16 }}>
-              <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Internal Optimizer Trace (last 20 cycles)</h3>
-              <div style={{ marginBottom: 10 }}>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
-                  title="Force one internal mutant cycle now; applies only if replay+stat gates pass."
-                  onClick={() =>
-                    void (async () => {
-                      if (!onForceInternalMutationNow) return;
-                      setForcingMutation(true);
-                      try {
-                        await onForceInternalMutationNow();
-                      } finally {
-                        setForcingMutation(false);
-                      }
-                    })()
-                  }
-                >
-                  {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
-                </button>
-              </div>
+            <div style={{ marginTop: 20 }}>
+              <h3 style={{ margin: "0 0 8px 0", fontSize: 13, color: "var(--text)" }}>Internal Optimizer Trace (last 20 cycles)</h3>
               <div
                 className="sub"
                 style={{

@@ -716,7 +716,34 @@ function recentSettledResolutionLinesWithLens(rows: AnyObj[], max = 10): string 
     .join("\n\n");
 }
 
-function optimizerTradesContextExplainer(dash: AnyObj): string {
+function recentSettledTradesForReport(dash: AnyObj, max = 8): AnyObj[] {
+  const recent = (dash?.recent_trades || []) as AnyObj[];
+  const settled = recent.filter((t) => String(t.status || "").toLowerCase() === "settled");
+  settled.sort((a, b) => Number(b.id) - Number(a.id));
+  return settled.slice(0, max);
+}
+
+function branchRollupCardsFromDash(dash: AnyObj): { key: string; label: string; hint: string; m: AnyObj }[] {
+  return [
+    { key: "live", label: "Live", hint: "Your real or paper book — not fed into optimizer lookback.", m: (dash?.metrics || {}) as AnyObj },
+    {
+      key: "lab_a",
+      label: "Lab A",
+      hint: "Staging lab: gates, adaptive floor, and bet pulse read these settles.",
+      m: (dash?.metrics_lab_a || dash?.metrics_sim_lab || {}) as AnyObj,
+    },
+    { key: "lab_b", label: "Lab B", hint: "Reference arm — context for gates; thresholds not auto-written.", m: (dash?.metrics_lab_b || {}) as AnyObj },
+    { key: "lab_c", label: "Lab C", hint: "Aggressive reference — same role as Lab B.", m: (dash?.metrics_lab_c || {}) as AnyObj },
+    {
+      key: "lab_d",
+      label: "Lab D",
+      hint: "Reference + can widen/narrow bet-pulse step from B/C momentum.",
+      m: (dash?.metrics_lab_d || {}) as AnyObj,
+    },
+  ];
+}
+
+function optimizerTuningLines(dash: AnyObj): string[] {
   const cfg = (dash?.config || {}) as AnyObj;
   const oc = (cfg?.optimizer || {}) as AnyObj;
   const minTr = Number(oc.min_trades_for_optimize ?? 8) || 8;
@@ -727,15 +754,20 @@ function optimizerTradesContextExplainer(dash: AnyObj): string {
   const sched = Boolean(oc.enabled);
   const betOpt = oc.optimize_bet_size !== false;
   return [
-    "What the optimizer does with trades (paper labs in its lookback):",
-    `• Gates: needs enough settled paper trades (≥${minTr} total with PnL, ≥${minProf} winners across the check) before nudging Lab A.`,
-    `• Adaptive (Lab A): stacks losing settles whose entry matched the YES implied floor (~${floor}%). At ${trig} such losses it may tighten YES floor / min minutes left if a rule replay shows better PnL; can ease after a clean win path.`,
-    `• Bet pulse (Lab A): last ~40 Lab A settled mean PnL moves balance_fraction_per_window; B/C/D help pass the same gates; Lab D “wild” can change step size from B/C tails.`,
-    `• Scheduled optimizer ${sched ? "on" : "off"} · adaptive ${adapt ? "on" : "off"} · optimize bet ${betOpt ? "on" : "off"} — context uses all labs; persisted auto-tuning targets Lab A only.`,
-  ].join("\n");
+    `Gates: need ≥${minTr} settled paper trades with PnL and ≥${minProf} decisive winners before Lab A settings can move.`,
+    `Adaptive (Lab A): stacks losses that entered near the YES floor (~${floor}% implied). At ${trig} such losses the server may tighten floor or min minutes left after a replay check; can ease after wins.`,
+    `Bet pulse (Lab A): last ~40 Lab A settled mean PnL nudges balance_fraction_per_window. Labs B–D supply comparison context; Lab D can widen or narrow the step.`,
+    `Scheduled optimizer ${sched ? "on" : "off"} · adaptive ${adapt ? "on" : "off"} · optimize bet ${betOpt ? "on" : "off"}. Auto-writes target Lab A only.`,
+  ];
 }
 
-function recentOptimizerActionsText(dash: AnyObj, maxItems = 3): string {
+function optimizerTradesContextExplainer(dash: AnyObj): string {
+  return ["What the optimizer does with trades (paper labs in its lookback):", ...optimizerTuningLines(dash).map((s) => `• ${s}`)].join(
+    "\n",
+  );
+}
+
+function collectRecentOptimizerChanges(dash: AnyObj, maxItems: number): AnyObj[] {
   const oa = (dash?.optimizer_activity || {}) as AnyObj;
   const cfg = (dash?.config || {}) as AnyObj;
   const oc = (cfg?.optimizer || {}) as AnyObj;
@@ -754,6 +786,11 @@ function recentOptimizerActionsText(dash: AnyObj, maxItems = 3): string {
     items.push(h as AnyObj);
     if (items.length >= maxItems) break;
   }
+  return items;
+}
+
+function recentOptimizerActionsText(dash: AnyObj, maxItems = 3): string {
+  const items = collectRecentOptimizerChanges(dash, maxItems);
   if (!items.length) {
     return "Recent persisted changes: none in change_history yet (scheduler/adaptive may still be evaluating).";
   }
@@ -879,24 +916,62 @@ function optimizerNextMovementHero(dash: AnyObj): { title: string; sub: string }
 
 /** Single overlay: movement hero + condensed rollups, schedule, pulse, settlements, UI hints. */
 function optimizerReportOverlayBody(dash: AnyObj): ReactNode {
-  const snap = buildTradesByLabSnapshotToast(dash);
-  const segs = snap.segments;
-  const roll = String(segs[1]?.text || "");
-  const tuning = String(segs[2]?.text || "");
-  const nextTickBlock = String(segs[3]?.text || "");
-  const recentCh = String(segs[4]?.text || "");
-  const pulseBlock = String(segs[5]?.text || "");
-  const settledBlock = String(segs[6]?.text || "");
   const movement = optimizerNextMovementHero(dash);
   const g = optimizerGateProgress(dash);
   const oa = (dash?.optimizer_activity || {}) as AnyObj;
   const lastEval = String(oa.last_pulse_eval_at || "");
+  const previewRaw = String(oa.next_tick_preview || "").trim();
+  const plainPreview = nextTickBodyPlain(previewRaw);
+  const previewLines = plainPreview
+    ? plainPreview
+        .split(/\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  const tuningLines = optimizerTuningLines(dash);
+  const changes = collectRecentOptimizerChanges(dash, 3);
+  const pulseRows = Array.isArray(oa.pulse_trace) ? (oa.pulse_trace as AnyObj[]).slice(0, 6) : [];
+  const settledSlice = recentSettledTradesForReport(dash, 8);
+  const branchCards = branchRollupCardsFromDash(dash);
+  const settledPct = g.minTr > 0 ? Math.min(100, (g.settled / g.minTr) * 100) : 0;
+  const winsPct = g.minProf > 0 ? Math.min(100, (g.wins / g.minProf) * 100) : 0;
 
   return (
-    <div className="optimizer-report">
+    <div className="optimizer-report optimizer-report--structured">
       <div className="optimizer-report-hero">
         <div className="optimizer-report-hero__title">{movement.title}</div>
         <p className="optimizer-report-hero__sub">{movement.sub}</p>
+      </div>
+
+      <div className="optimizer-report-section">
+        <h3 className="optimizer-report-section__h">Progress toward auto-tune</h3>
+        <p className="optimizer-report-line optimizer-report-line--muted">
+          Lab A must pass both bars before bet pulse / adaptive moves persist settings.
+        </p>
+        <div className="optimizer-report-gates">
+          <div className="optimizer-report-gate">
+            <div className="optimizer-report-gate__top">
+              <span>Settled with PnL</span>
+              <span className="optimizer-report-gate__nums">
+                {g.settled} / {g.minTr}
+              </span>
+            </div>
+            <div className="optimizer-report-gate__bar" role="progressbar" aria-valuenow={g.settled} aria-valuemin={0} aria-valuemax={g.minTr}>
+              <div className="optimizer-report-gate__fill" style={{ width: `${settledPct}%` }} />
+            </div>
+          </div>
+          <div className="optimizer-report-gate">
+            <div className="optimizer-report-gate__top">
+              <span>Decisive wins</span>
+              <span className="optimizer-report-gate__nums">
+                {g.wins} / {g.minProf}
+              </span>
+            </div>
+            <div className="optimizer-report-gate__bar" role="progressbar" aria-valuenow={g.wins} aria-valuemin={0} aria-valuemax={g.minProf}>
+              <div className="optimizer-report-gate__fill optimizer-report-gate__fill--wins" style={{ width: `${winsPct}%` }} />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="optimizer-report-section">
@@ -921,33 +996,187 @@ function optimizerReportOverlayBody(dash: AnyObj): ReactNode {
       </div>
 
       <div className="optimizer-report-section">
-        <h3 className="optimizer-report-section__h">Next tick (server)</h3>
-        <pre className="optimizer-report-pre optimizer-report-pre--tight">{nextTickBlock}</pre>
+        <h3 className="optimizer-report-section__h">What the server is watching next</h3>
+        {previewLines.length ? (
+          <div className="optimizer-report-callout" role="status">
+            {previewLines.map((line, i) => (
+              <p key={i} className="optimizer-report-callout__line">
+                {line}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <p className="optimizer-report-line optimizer-report-line--muted">
+            No preview yet — run one scheduled or adaptive pulse, or wait for the next interval.
+          </p>
+        )}
       </div>
 
       <div className="optimizer-report-section">
-        <h3 className="optimizer-report-section__h">Branch rollups</h3>
-        <pre className="optimizer-report-pre">{roll}</pre>
+        <h3 className="optimizer-report-section__h">Branch book (settled vs open)</h3>
+        <div className="optimizer-report-branch-grid">
+          {branchCards.map(({ key, label, hint, m }) => {
+            const settled = Number(m.settled_trades ?? 0) || 0;
+            const w = Number(m.wins ?? 0) || 0;
+            const l = Number(m.losses ?? 0) || 0;
+            const sc = Number(m.scratch_trades ?? 0) || 0;
+            const open = Number(m.open_sim_trades ?? 0) || 0;
+            const pnl = Number(m.total_pnl_dollars ?? 0);
+            const pnlStr = settled ? `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}` : "—";
+            const pnlClass =
+              !settled || !Number.isFinite(pnl) ? "" : pnl > 0 ? "optimizer-report-pnl--pos" : pnl < 0 ? "optimizer-report-pnl--neg" : "";
+            return (
+              <div key={key} className="optimizer-report-branch-card" title={hint}>
+                <div className="optimizer-report-branch-card__head">
+                  <span className="optimizer-report-branch-card__label">{label}</span>
+                  {open > 0 ? (
+                    <span className="optimizer-report-branch-card__open-badge" title="Open sim / resting rows on this branch">
+                      {open} open
+                    </span>
+                  ) : null}
+                </div>
+                <div className="optimizer-report-branch-card__stats">
+                  <div>
+                    <span className="optimizer-report-branch-card__k">Settled</span>
+                    <span className="optimizer-report-branch-card__v">{settled}</span>
+                  </div>
+                  <div>
+                    <span className="optimizer-report-branch-card__k">W / L</span>
+                    <span className="optimizer-report-branch-card__v">
+                      {w} / {l}
+                      {sc ? ` (${sc} flat)` : ""}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="optimizer-report-branch-card__k">Σ PnL</span>
+                    <span className={`optimizer-report-branch-card__v ${pnlClass}`.trim()}>{pnlStr}</span>
+                  </div>
+                </div>
+                <p className="optimizer-report-branch-card__hint">{hint}</p>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div className="optimizer-report-section">
-        <h3 className="optimizer-report-section__h">How tuning uses trades</h3>
-        <pre className="optimizer-report-pre optimizer-report-pre--muted">{tuning}</pre>
+        <h3 className="optimizer-report-section__h">How paper trades drive tuning</h3>
+        <ul className="optimizer-report-bullets">
+          {tuningLines.map((t, i) => (
+            <li key={i}>{t}</li>
+          ))}
+        </ul>
       </div>
 
       <div className="optimizer-report-section">
-        <h3 className="optimizer-report-section__h">Recent persisted change</h3>
-        <pre className="optimizer-report-pre">{recentCh}</pre>
+        <h3 className="optimizer-report-section__h">Recent persisted changes</h3>
+        {!changes.length ? (
+          <p className="optimizer-report-line optimizer-report-line--muted">
+            None yet — scheduler or adaptive has not written to change_history, or history was cleared.
+          </p>
+        ) : (
+          <ul className="optimizer-report-change-list">
+            {changes.map((h) => {
+              const id = stableOptimizerChangeId(h as AnyObj);
+              const lab = String(h.lab_label || h.branch || "lab");
+              const style = String(h.style || "—");
+              const sum = String(h.summary || "").slice(0, 220);
+              const hint = String(h.tick_hint || "").trim().slice(0, 160);
+              const at = h.created_at ? fmtIsoLocal(String(h.created_at)) : "—";
+              return (
+                <li key={id} className="optimizer-report-change-card">
+                  <div className="optimizer-report-change-card__meta">
+                    <span className="optimizer-report-change-card__time">{at}</span>
+                    <span className="optimizer-report-change-card__pill">{lab}</span>
+                    <span className="optimizer-report-change-card__pill optimizer-report-change-card__pill--muted">{style}</span>
+                  </div>
+                  <p className="optimizer-report-change-card__summary">{sum}</p>
+                  {hint ? <p className="optimizer-report-change-card__watch">Watch: {hint}{hint.length >= 160 ? "…" : ""}</p> : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       <div className="optimizer-report-section">
-        <h3 className="optimizer-report-section__h">Pulse trace (log)</h3>
-        <pre className="optimizer-report-pre optimizer-report-pre--muted">{pulseBlock}</pre>
+        <h3 className="optimizer-report-section__h">Last pulse messages</h3>
+        {!pulseRows.length ? (
+          <p className="optimizer-report-line optimizer-report-line--muted">No internal pulse lines stored for this session yet.</p>
+        ) : (
+          <ul className="optimizer-report-pulse-list">
+            {pulseRows.map((p, i) => (
+              <li key={i} className="optimizer-report-pulse-row">
+                <span className="optimizer-report-pulse-kind">{String(p.kind || "pulse")}</span>
+                <span className="optimizer-report-pulse-msg">
+                  {String(p.message || "").slice(0, 200)}
+                  {String(p.message || "").length > 200 ? "…" : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       <div className="optimizer-report-section">
         <h3 className="optimizer-report-section__h">Recent settlements</h3>
-        <pre className="optimizer-report-pre">{settledBlock}</pre>
+        {!settledSlice.length ? (
+          <p className="optimizer-report-line optimizer-report-line--muted">No settled rows in the current recent_trades feed.</p>
+        ) : (
+          <>
+            <ul className="optimizer-report-settle-list">
+              {settledSlice.map((t) => {
+                const br = branchLabelForTradeToast(t.branch);
+                const tick = String(t.ticker || "").slice(0, 44) || "—";
+                const side = String(t.side || "").toUpperCase() || "—";
+                const rawP = t.pnl_cents;
+                let pnlDisp = "—";
+                let pnlClass = "";
+                if (rawP != null && rawP !== "") {
+                  const n = Number(rawP);
+                  if (Number.isFinite(n)) {
+                    const d = n / 100;
+                    pnlDisp = `${d >= 0 ? "+" : ""}$${d.toFixed(2)}`;
+                    pnlClass = d > 0 ? "optimizer-report-pnl--pos" : d < 0 ? "optimizer-report-pnl--neg" : "";
+                  }
+                }
+                const res = t.result ? String(t.result) : "";
+                const rid = Number(t.id);
+                const roleTag =
+                  br === "Lab A" ? (
+                    <span className="optimizer-report-settle-row__tag">Feeds adaptive + bet pulse</span>
+                  ) : br === "Live" ? (
+                    <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Not in optimizer lookback</span>
+                  ) : (
+                    <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Reference context</span>
+                  );
+                return (
+                  <li key={Number.isFinite(rid) ? rid : tick + side} className="optimizer-report-settle-row">
+                    <div className="optimizer-report-settle-row__main">
+                      <span className="optimizer-report-settle-row__branch">{br}</span>
+                      <span className="optimizer-report-settle-row__tick" title={String(t.ticker || "")}>
+                        {tick}
+                      </span>
+                      <span className="optimizer-report-settle-row__side">{side}</span>
+                      <span className={`optimizer-report-settle-row__pnl ${pnlClass}`.trim()}>{pnlDisp}</span>
+                    </div>
+                    <div className="optimizer-report-settle-row__sub">
+                      {res ? <span className="optimizer-report-settle-row__res">{res}</span> : null}
+                      {roleTag}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <details className="optimizer-report-details">
+              <summary>Per-branch optimizer detail (expand)</summary>
+              <p className="optimizer-report-details__body">
+                Full line-by-line lens is unchanged in the Trades by lab toast from the dashboard; here each row shows a short tag
+                instead of repeating long footnotes.
+              </p>
+            </details>
+          </>
+        )}
       </div>
 
       <div className="optimizer-report-section optimizer-report-section--hint">
@@ -2066,6 +2295,7 @@ export default function App() {
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
+  const [headerForceInternalMutation, setHeaderForceInternalMutation] = useState(false);
   const [toastTradeRows, setToastTradeRows] = useState<AnyObj[] | null>(null);
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
@@ -3314,16 +3544,46 @@ export default function App() {
                   Optimizer {optimizerStatus.health.toUpperCase()}
                 </span>
               ) : null}
-              <button
-                type="button"
-                className="primary hero-settings-icon-btn"
-                style={{ flexShrink: 0 }}
-                aria-label="Open settings"
-                title="Settings — rules, engines, lab sizing, Kalshi connection orbs, hero ticker"
-                onClick={() => setSettingsOpen(true)}
-              >
-                ⚙
-              </button>
+              <div className="hero-header-settings-stack" style={{ flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className="primary hero-settings-icon-btn"
+                  aria-label="Open settings"
+                  title="Settings — rules, engines, lab sizing, Kalshi connection orbs, hero ticker"
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  ⚙
+                </button>
+                <button
+                  type="button"
+                  className="primary hero-settings-icon-btn hero-settings-mutation-btn"
+                  aria-label="Force internal mutation now"
+                  disabled={!dash || busy || headerForceInternalMutation}
+                  title="Force internal mutation now — internal rule/parameter change + replay fitness gate (bypasses scheduler). POST /api/optimizer/force-internal-mutation"
+                  onClick={() =>
+                    void (async () => {
+                      if (!dash) return;
+                      setHeaderForceInternalMutation(true);
+                      try {
+                        await forceInternalMutationNow();
+                      } finally {
+                        setHeaderForceInternalMutation(false);
+                      }
+                    })()
+                  }
+                >
+                  {headerForceInternalMutation ? (
+                    <span className="hero-settings-mutation-btn__inner" aria-hidden>
+                      …
+                    </span>
+                  ) : (
+                    <span className="hero-settings-mutation-btn__inner">
+                      <span className="hero-settings-mutation-btn__l1">Force</span>
+                      <span className="hero-settings-mutation-btn__l2">internal</span>
+                    </span>
+                  )}
+                </button>
+              </div>
             </div>
             {dash ? (
               <div className="hero-head__snapshot-center">
