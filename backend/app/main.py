@@ -113,6 +113,11 @@ def _storage_dict() -> dict[str, Any]:
     }
 
 
+# Public aliases (partial refactors / duplicate call sites have used un-prefixed names).
+storage_dict = _storage_dict
+DASHBOARD_ORDERBOOK_CACHE = _DASHBOARD_ORDERBOOK_CACHE
+
+
 def _engine_status_block(engine: TradingEngine, *, engine_running: bool, simulate_orders: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     out = {
         "engine_running": bool(engine_running),
@@ -1524,52 +1529,55 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
     )
     _inject_last_snap_mtm_minus_equity(metrics_lab_d, snaps_lab_d)
 
-    # Paper MTM on tiles + chart tail: refresh from Kalshi order books every dashboard poll (parallel per branch).
-    mtm_tasks: list[Any] = []
-    if simulate_live:
-        mtm_tasks.append(
-            _refresh_paper_mtm_from_marks(
-                engine_live,
-                paper_start_cents=int(cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS),
-                roll=roll_live,
-                out_metrics=metrics_live,
+    # Paper MTM on tiles + chart tail: only when ``with_marks`` (full dashboard). The equity
+    # fast path (``with_marks=False``) must not *construct* coroutines here, or they are never
+    # scheduled and Python warns "coroutine was never awaited".
+    if with_marks:
+        mtm_tasks: list[Any] = []
+        if simulate_live:
+            mtm_tasks.append(
+                _refresh_paper_mtm_from_marks(
+                    engine_live,
+                    paper_start_cents=int(cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS),
+                    roll=roll_live,
+                    out_metrics=metrics_live,
+                )
             )
+        mtm_tasks.extend(
+            [
+                _refresh_paper_mtm_from_marks(
+                    engine_lab_a,
+                    paper_start_cents=lab_paper_basis_a,
+                    roll=roll_lab_a,
+                    out_metrics=metrics_lab_a,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    engine_lab_b,
+                    paper_start_cents=lab_paper_basis_b,
+                    roll=roll_lab_b,
+                    out_metrics=metrics_lab_b,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    engine_lab_c,
+                    paper_start_cents=lab_paper_basis_c,
+                    roll=roll_lab_c,
+                    out_metrics=metrics_lab_c,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    engine_lab_d,
+                    paper_start_cents=lab_paper_basis_d,
+                    roll=roll_lab_d,
+                    out_metrics=metrics_lab_d,
+                ),
+            ]
         )
-    mtm_tasks.extend(
-        [
-            _refresh_paper_mtm_from_marks(
-                engine_lab_a,
-                paper_start_cents=lab_paper_basis_a,
-                roll=roll_lab_a,
-                out_metrics=metrics_lab_a,
-            ),
-            _refresh_paper_mtm_from_marks(
-                engine_lab_b,
-                paper_start_cents=lab_paper_basis_b,
-                roll=roll_lab_b,
-                out_metrics=metrics_lab_b,
-            ),
-            _refresh_paper_mtm_from_marks(
-                engine_lab_c,
-                paper_start_cents=lab_paper_basis_c,
-                roll=roll_lab_c,
-                out_metrics=metrics_lab_c,
-            ),
-            _refresh_paper_mtm_from_marks(
-                engine_lab_d,
-                paper_start_cents=lab_paper_basis_d,
-                roll=roll_lab_d,
-                out_metrics=metrics_lab_d,
-            ),
-        ]
-    )
-    if mtm_tasks and with_marks:
-        try:
-            await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=55.0)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "dashboard MTM refresh hit 55s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
-            )
+        if mtm_tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=55.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "dashboard MTM refresh hit 55s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
+                )
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
