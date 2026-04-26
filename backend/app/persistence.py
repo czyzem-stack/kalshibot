@@ -657,6 +657,101 @@ class Store:
             await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
             await db.commit()
 
+    async def apply_uniform_paper_balance_after_scope_reset(
+        self,
+        cents: int,
+        *,
+        history_branch: str = "global",
+        history_changed_by: str | None = "api:data_reset",
+        history_reason: str | None = "uniform_paper_balance_after_scope_reset",
+    ) -> dict[str, Any]:
+        """
+        Set the same paper seed on Live + every lab and clear per-lab ``paper_lifetime_basis_cents``.
+
+        Uses one ``BEGIN IMMEDIATE`` transaction so a concurrent ``save_config`` (e.g. the optimizer loop)
+        cannot overwrite this write with a stale snapshot, and vice versa — **optimizer** and the rest of
+        ``bot_config`` are read fresh under the write lock then written back unchanged except bankroll keys.
+        """
+        _max_cents = 100_000_000
+        c = max(0, min(_max_cents, int(cents)))
+        ts = datetime.now(timezone.utc).isoformat()
+        br = (history_branch or "global").strip() or "global"
+        async with self._open_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cur = await db.execute("SELECT json FROM bot_config WHERE id=1")
+            row = await cur.fetchone()
+            if not row:
+                merged = default_bot_config()
+                merged["paper_balance_cents"] = c
+                merged.pop("paper_lifetime_basis_cents", None)
+                for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+                    block = dict(merged.get(lk) or {})
+                    block["paper_balance_cents"] = c
+                    block.pop("paper_lifetime_basis_cents", None)
+                    merged[lk] = expand_partial_lab_branch(lk, block)
+                sync_live_paper_trading_keys(merged)
+                payload = json.dumps(merged, default=str)
+                await db.execute(
+                    """
+                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (br, ts, payload, history_changed_by, history_reason),
+                )
+                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
+                await db.commit()
+            else:
+                raw = row["json"]
+                parsed_obj: Any
+                try:
+                    parsed_obj = json.loads(raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    cfg = _normalize_loaded_config(default_bot_config())
+                    _data_log(
+                        "system",
+                        {
+                            "event": "bot_config_json_repaired",
+                            "reason": "invalid_or_unreadable_json_uniform_paper",
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                else:
+                    if not isinstance(parsed_obj, dict):
+                        cfg = _normalize_loaded_config(default_bot_config())
+                        _data_log(
+                            "system",
+                            {
+                                "event": "bot_config_json_repaired",
+                                "reason": "json_not_object_uniform_paper",
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                    else:
+                        cfg = _normalize_loaded_config(parsed_obj)
+                cfg["paper_balance_cents"] = c
+                cfg.pop("paper_lifetime_basis_cents", None)
+                for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+                    block = dict(cfg.get(lk) or {})
+                    block["paper_balance_cents"] = c
+                    block.pop("paper_lifetime_basis_cents", None)
+                    cfg[lk] = expand_partial_lab_branch(lk, block)
+                sync_live_paper_trading_keys(cfg)
+                payload = json.dumps(cfg, default=str)
+                await db.execute(
+                    """
+                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (br, ts, payload, history_changed_by, history_reason),
+                )
+                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
+                await db.commit()
+        return {
+            "paper_balance_cents": c,
+            "applied_to": ["live_paper", "lab_a", "lab_b", "lab_c", "lab_d"],
+            "paper_lifetime_basis_cents_cleared": True,
+        }
+
     async def list_config_history(
         self, limit: int = 20, *, include_config: bool = False
     ) -> list[dict[str, Any]]:

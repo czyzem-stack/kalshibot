@@ -2117,7 +2117,7 @@ export default function SettingsOverlay({
           className="primary"
           style={{ marginTop: 10, borderColor: "#6b2a2a", background: "linear-gradient(180deg,#2a1520,#1a0f18)" }}
           disabled={busy}
-          title="Deletes all signals, trades, and equity snapshots on every branch. Keeps bot settings (rules, assets, etc.)."
+          title="Deletes all signals, trades, and equity snapshots on every branch. Keeps bot_config (rules, assets, optimizer settings, etc.). Optional uniform paper only updates bankroll fields."
           onClick={() => {
             const el = document.getElementById("reset_backup") as HTMLInputElement | null;
             const backup = el ? el.checked : true;
@@ -2135,8 +2135,8 @@ export default function SettingsOverlay({
             if (
               !window.confirm(
                 uniformCents != null
-                  ? `Reset ALL branch trading data? This removes every signal, trade, and equity snapshot row from SQLite (live, lab_a, lab_b, lab_c, lab_d). Then Live + each lab paper balance will be set to ${uniformCents} cents. Bot rules/settings are otherwise kept.`
-                  : "Reset ALL branch trading data? This removes every signal, trade, and equity snapshot row from SQLite (live, lab_a, lab_b, lab_c, lab_d). Paper balance fields in config are unchanged unless you filled the optional cents field above. Prefer per-branch resets on Live / Lab tabs when possible.",
+                  ? `Reset ALL branch trading data? This removes every signal, trade, and equity snapshot row from SQLite (live, lab_a, lab_b, lab_c, lab_d). Then Live + each lab paper balance will be set to ${uniformCents} cents. Optimizer settings and other bot_config are otherwise kept.`
+                  : "Reset ALL branch trading data? This removes every signal, trade, and equity snapshot row from SQLite (live, lab_a, lab_b, lab_c, lab_d). Paper balance fields in config are unchanged unless you filled the optional cents field above; optimizer settings are not cleared. Prefer per-branch resets on Live / Lab tabs when possible.",
               )
             ) {
               return;

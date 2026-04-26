@@ -107,6 +107,32 @@ class BranchResetTest(unittest.IsolatedAsyncioTestCase):
         cfg2 = await self.store.load_config()
         self.assertEqual(int(cfg2["lab_a"]["paper_lifetime_basis_cents"]), 300_000)
 
+    async def test_uniform_paper_balance_keeps_optimizer_settings(self) -> None:
+        cfg = await self.store.load_config()
+        oc = dict(cfg.get("optimizer") or {})
+        oc["optimizer_cycle_count"] = 77
+        oc["_mass_reset_test_marker"] = "preserve"
+        cfg["optimizer"] = oc
+        cfg["paper_balance_cents"] = 50_000
+        for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+            cfg[lk] = {**(cfg.get(lk) or {}), "paper_balance_cents": 50_000, "paper_lifetime_basis_cents": 80_000}
+        await self.store.save_config(cfg)
+
+        out = await self.store.apply_uniform_paper_balance_after_scope_reset(
+            600_000,
+            history_branch="global",
+            history_changed_by="test",
+            history_reason="uniform_paper_balance_after_scope_reset",
+        )
+        self.assertEqual(out["paper_balance_cents"], 600_000)
+
+        cfg2 = await self.store.load_config()
+        oc2 = cfg2.get("optimizer") if isinstance(cfg2.get("optimizer"), dict) else {}
+        self.assertEqual(int(oc2.get("optimizer_cycle_count") or 0), 77)
+        self.assertEqual(str(oc2.get("_mass_reset_test_marker") or ""), "preserve")
+        self.assertEqual(int(cfg2["paper_balance_cents"]), 600_000)
+        self.assertNotIn("paper_lifetime_basis_cents", cfg2.get("lab_a") or {})
+
 
 if __name__ == "__main__":
     unittest.main()

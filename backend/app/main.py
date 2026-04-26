@@ -774,28 +774,14 @@ async def _apply_uniform_paper_balance_after_scope_reset(scope: str, cents: int)
     if s not in ("all", "all_labs"):
         return {}
     c = max(0, min(_MAX_UNIFORM_PAPER_BALANCE_CENTS, int(cents)))
-    cfg = await store.load_config()
-    cfg["paper_balance_cents"] = c
-    # Live has no lab lifetime key; labs can carry ``paper_lifetime_basis_cents`` from auto-reset /
-    # add-bankroll. ``lab_paper_equity_start_cents`` prefers lifetime over ``paper_balance_cents``, so
-    # clearing it keeps dashboard / equity baseline aligned with the new uniform seed.
-    cfg.pop("paper_lifetime_basis_cents", None)
-    for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
-        block = dict(cfg.get(lk) or {})
-        block["paper_balance_cents"] = c
-        block.pop("paper_lifetime_basis_cents", None)
-        cfg[lk] = expand_partial_lab_branch(lk, block)
-    await store.save_config(
-        cfg,
+    # Single locked read-modify-write in ``Store`` so concurrent optimizer saves cannot be stomped by a
+    # stale full-config snapshot (and uniform paper cannot clobber fresh ``optimizer`` JSON).
+    return await store.apply_uniform_paper_balance_after_scope_reset(
+        c,
         history_branch="global",
         history_changed_by="api:data_reset",
         history_reason="uniform_paper_balance_after_scope_reset",
     )
-    return {
-        "paper_balance_cents": c,
-        "applied_to": ["live_paper", "lab_a", "lab_b", "lab_c", "lab_d"],
-        "paper_lifetime_basis_cents_cleared": True,
-    }
 
 
 @app.post("/api/data/reset")
@@ -817,7 +803,8 @@ async def data_reset(
     Optional env ``DATA_RESET_TOKEN``: then require header ``X-Reset-Token`` matching it.
 
     When ``branch`` is ``all`` or ``all_labs`` and ``uniform_paper_balance_cents`` is set, Live paper and each lab's
-    ``paper_balance_cents`` are updated to that value after the wipe (same starting bankroll everywhere).
+    ``paper_balance_cents`` are updated to that value after the wipe (same starting bankroll everywhere), using a
+    single locked read-modify-write so ``optimizer`` and the rest of ``bot_config`` are not clobbered by a stale snapshot.
     """
     if str(confirm).lower() not in ("yes", "true", "1", "y"):
         raise HTTPException(
