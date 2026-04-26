@@ -4,11 +4,15 @@
 
 It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys), runs **rule-based engines** per branch, and ships a **Vite** dashboard for config, charts, and health—**no separate hosted control plane**; your keys and data stay on the machine you run it on.
 
-**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview)
+**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Developer notes](#developer-notes)
+
+**Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
+
+**Security reminder:** the stack is **intended to run on your own host** (localhost or a private server). The FastAPI app has no built-in multi-user auth—anyone who can reach the API port can change config if you bind beyond loopback. Use a firewall, VPN, or reverse auth if you expose it.
 
 ---
 
-## Patient Stop-Loss (Loss-Recoup Exit)
+## Patient stop-loss (loss-recoup exit)
 
 **Patient stop-loss** is a **paper** (simulated) safety valve that can automatically close a losing open position after a **minimum hold** and when **fee-aware unrealized P&L%** (mark-to-exit after modeled sell fees vs total cash debited at entry) is at or below a **negative threshold**. It is designed to cut depth-of-loss without reacting to the first wiggle: you set **on/off**, **min_hold_minutes_before_stop**, and **stop_loss_trigger_pct** in **Settings** (and per **lab** overlay where applicable). Live in **non-paper** (real) mode does not run this path; Labs are always sim.
 
@@ -42,7 +46,24 @@ Exact numbers live in `default_bot_config()` and your SQLite config; the table r
 - **Engines** — Background loops scan markets, evaluate rules, and manage positions per branch (see `backend/app/engine.py`).
 - **Dashboard** — Single-page UI: branch performance, equity charts, holdings, signals and trades, Kalshi connection status, settings (rules, filters, sizing, engines, optimizer), historical export, and more. The dev server proxies `/api` to the backend. A small **optimizer health** pill (green / yellow / red from internal trace acceptance) sits in the **top bar next to the settings (⚙) control** (hover for a tooltip); it is not shown on the bottom ticker strip.
 - **Persistence** — Config (active row + **`config_history`** audit table), trades, signals, and snapshots are stored under `data/` (default SQLite: `data/bot.sqlite3`). Optional **JSONL** logs for signals and trades (and optional equity logging) under `data/logs/` when enabled in `.env`.
-- **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard **does not** currently expose a "mutate rules with Claude" panel—**Settings** is the natural home if that returns, so operators keep one serious surface for config.
+- **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard **does not** currently expose a "mutate rules with Claude" panel—**Settings** is the natural home if that returns, so operators keep one serious surface for config. The main dashboard surfaces a compact **“Optimizer Thinking”** radar: six normalized 0–100 spokes (e.g. fitness, acceptance, mutation, stop‑loss safety, equity momentum, inverted red streak) for **Live + Labs**, with **Lab A** called out; double‑click expands for a tabular readout. That chart is a **readout of internal metrics**, not a second trading engine.
+- **Polling** — The UI leans on **`GET /api/dashboard/equity`** and focused routes for high-frequency updates and **`GET /api/dashboard`** for heavier “full” snapshots, so a slow home Wi‑Fi or large open-book payload does not block the whole page forever.
+
+---
+
+## Dashboard (UI map)
+
+Where the main **React** surface puts things (all optional panels depending on your layout):
+
+| Area | What you get |
+|------|----------------|
+| **Top bar** | Connection / engine at-a-glance, **Settings (⚙)**, **optimizer health** color pill (hovers explain acceptance band), toasts. |
+| **Branch strip / hero** | Per-branch (Live + A–D) PnL and key metrics; clicking usually ties into compare / filters. |
+| **Compare (equity) region** | Multi-line equity / blended or potential view; overplot toggles, granularity tabs; many charts are **double‑click to expand** in a lightbox (Esc to close), matching the pattern used on the **optimizer** radar. |
+| **Branch brain (optimizer block)** | **Optimizer Status** (slopes, mutation dial, last revert) plus the **radar** above a **lab pulse** ticker. Promote **Lab A → Live** and dangerous toggles still require confirms documented in the UI. |
+| **Settings overlay** | Full **JSON** config editor, per-lab overlays, rules, fees, **patient** stop, optimizer tuning—this is the authoritative place for `PUT /api/config` and lab parity with `merge_branch_config`. |
+
+**Resize / mobile:** the compare row and optimizer column use **flex** (`row` on wide, **stack** on small screens); if something looks “missing,” zoom out or widen—the layout does not hard-require two monitors, but the dense dashboard targets **~1280px** width for the full two-column branch experience.
 
 ---
 
@@ -290,6 +311,26 @@ Constructive extensions that fit this codebase:
 | **Python** | **3.11, 3.12, or 3.13** recommended. **3.14** often forces a `pydantic-core` source build (needs Rust or MSVC on Windows); the venv script warns about this. |
 | **Node.js** | **18+** (for Vite 5 and the React app). |
 | **Kalshi** | Optional for UI-only exploration; for real data and trading you need API access and keys from Kalshi (demo vs prod base URL is configured in `.env`). |
+| **SQLite** | The default store is a single file (`data/bot.sqlite3` or `SQLITE_PATH`); you can open it with **DB Browser for SQLite** for read-only forensics, but do not lock the file while the API is writing. |
+| **Git** | Used for source control only; the running bot does not need git on the server if you deploy from CI artifacts. |
+
+**Performance hint:** a low-power NAS or $5 VPS is fine for **read-only** monitoring, but the **engines + optimizer** benefit from a steady **CPU** core and local disk (avoid network-attached `SQLITE_PATH` on Wi‑Fi for production).
+
+---
+
+## Glossary (quick)
+
+Terms that appear in the **dashboard** and in backend logs, without re-explaining the whole `engine.py`:
+
+| Term | Meaning in this project |
+|------|-------------------------|
+| **Book (return)** | Equity / PnL measured from the **ledger** and settled states—what your account *knows* it holds. |
+| **MTM (return)** | Mark-to-market: unrealized marks blended with the book; **Mtm–book** style gaps show when marks diverge from the ledger. |
+| **Decisive** (win/loss) | A closed trade counted as a win/loss in our rolled-up %—see metrics panel for the exact field used per tile. |
+| **Scratch** | A sim exit that closes without a standard settle path; tracked separately from “clean” wins/losses. |
+| **Red streak** | Consecutive “bad” optimizer / acceptance cycles (internal to the **optimizer** loop); the radar **inverts** it so **higher on the chart = better** (less stress). |
+| **Balance fraction** | The fraction of a branch **paper** bankroll **per time window** used as sizing cap input (`balance_fraction_per_window`); not the only sizing knob. |
+| **Promote** | Copy **allowed** `lab_a` keys onto the top-level **Live** config (with PnL and ack gates), not a Git operation. |
 
 ---
 
@@ -458,8 +499,12 @@ Representative routes:
 - `GET /api/trades`, `GET /api/signals` — Recent activity.
 - `GET /api/history/{table}`, `GET /api/history/export.csv` — Historical tables and CSV export.
 - `POST /api/data/reset` — Reset trading data (protect with `DATA_RESET_TOKEN` in production contexts).
-- Optimizer: `GET /api/optimizer/recommendations`, `PUT /api/optimizer/config`, `POST /api/optimizer/run`, and related routes.
+- Optimizer: `GET /api/optimizer/recommendations`, `PUT /api/optimizer/config`, `POST /api/optimizer/run`, and related routes. Status snapshots consumed by the dashboard (mutation dial, best fitness, acceptance) come through the same **`/api/dashboard`** and dedicated optimizer endpoints—if the radar looks **flat/50s**, the API may still be warming up or a branch has no settled trades yet.
 - `POST /api/config/validate-rules` — validate a `rules` array without saving.
+- **`POST /api/config/promote-lab-a-to-live`** — gated PnL compare vs B/C/D, optional `ack_live=APPLY_LIVE` in real mode (see [Promoting Lab A to Live](#promoting-lab-a-to-live)).
+- **OpenAPI** — `GET` parameters like `?confirm=YES` and JSON bodies for toggles are documented in **`/docs`**; when debugging 400s, read the `detail` string in the response body (FastAPI’s error shape).
+
+**Rate and cost:** the backend batches Kalshi I/O; do not point multiple independent bots at the same API key with overlapping markets without understanding Kalshi’s rate policy—`kalshi_client` backs off on **HTTP 429** (see [Health, alerts, and Docker](#health-alerts-and-docker)).
 
 ---
 
@@ -473,7 +518,13 @@ npm install
 npm run build
 ```
 
-Output is under **`frontend/dist/`**. Serving that folder is **not** wired into `main.py` by default; you would add a static file mount or put `dist` behind a reverse proxy and still forward `/api` to the Python process.
+Output is under **`frontend/dist/`**. Serving that folder is **not** wired into `main.py` by default. Pick one of these patterns:
+
+1. **Reverse proxy** (recommended) — e.g. **Caddy** or **nginx** serves `dist` on **:443** and `proxy_pass`es **`/api`**, **`/docs`**, and **`/openapi.json`** to uvicorn on **:8765** (or a unix socket). Same origin avoids CORS headaches.
+2. **FastAPI `StaticFiles`** — In your fork, you can `mount("/", StaticFiles(..., html=True))` *after* registering API routes, so `/` returns `index.html`; keep a backup if you do this, because route order matters.
+3. **Two hosts** — Dev-style `VITE_API_ORIGIN=https://api.example.com` in **`frontend/.env` build args** and host **`dist` on a CDN**; ensure Kalshi and session cookies (if you add any later) are compatible with your CORS list.
+
+**Cache busting:** Vite filenames are content-hashed in **`dist/assets/`**; re-run **`npm run build`** after any UI change—operators should hard-refresh (Ctrl+F5) once after deploy.
 
 ---
 
@@ -494,12 +545,28 @@ Install pytest first if needed: `pip install pytest`.
 ## Repository layout
 
 - **`backend/app/`** — FastAPI app, engines, Kalshi client, persistence, optimizer.
-- **`frontend/src/`** — React dashboard (main app, settings, tickers, charts).
+- **`backend/app/main.py`** — App factory, CORS, lifespan, route registration.
+- **`backend/app/engine.py`** — `dual_engine_loop`, `TradingEngine`, rule match / sim trade ranking, per-branch execution (large file: search `rule_matches`, `pick_trade_rule` for behavior).
+- **`backend/app/branch_config.py`**, **`persistence.py`** — `merge_branch_config`, `default_bot_config`, SQLite row shapes.
+- **`backend/app/optimizer_claude.py`** — `run_optimizer_once` and internal pulse; Claude gating and **Lab A–only** `balance_fraction_per_window` auto-apply.
+- **`backend/tests/`** — Pytest: money-path, engine guards, API contracts where present—run with `cd backend; python -m pytest`.
+- **`frontend/src/`** — React dashboard: **`App.tsx`** holds the main board, large equity/compare blocks, and optimizer **Recharts** radar; **`SettingsOverlay.tsx`** is the full-screen config editor.
 - **`scripts/`** — Windows PowerShell: venv creation, run API, launch API plus UI.
 - **`data/`** — Default SQLite and logs (created at runtime; may be gitignored).
 - **`requirements.txt`** — Python dependencies for the API.
 - **`.env.example`** — Documented environment template.
+- **`kalshibot-api.spec`**, **`scripts/exe_api_entry.py`** — PyInstaller one-file API **.exe** build; UI still Vite or static-serve in production.
 - **`Dockerfile`** — API-only container build (see [Health, alerts, and Docker](#health-alerts-and-docker)).
+
+---
+
+## Developer notes
+
+- **TypeScript** — The frontend uses **Vite 5** + **React**; `npm run build` must be clean before you tag a release; the repo does not commit `frontend/dist/` for every change by default, so your deploy step should `npm run build` and copy **`dist/`** to your static host or add a `StaticFiles` mount in `main.py` if you self-host a single process.
+- **Config shape** — When in doubt, **`GET /api/config` is truth**; `BotConfigPayload` in **`backend/app/api_models.py`** documents safe ranges. Partial lab updates go through dedicated routes; never assume the UI holds every key the server defaults.
+- **Migrations** — Schema lives in `persistence` helpers; the project favors **forward-additive** SQLite `ALTER` patterns—back up `data/bot.sqlite3` before updating from a much older tag.
+- **Recharts / dashboard** — Radar and line charts are standard **Recharts**; avoid adding another charting library for the same tiles unless you refactor. Accessibility: we rely on browser tooltips and ARIA for dialogs where implemented—extra props welcome in small PRs.
+- **Branches in git** — **`develop` → `main`** is the typical integration path described at the top of this README; force-push to `main` only in emergencies and coordinate with anyone running forks.
 
 ---
 
@@ -528,7 +595,9 @@ For a frozen **Windows .exe**, see **`kalshibot-api.spec`** and **`scripts/exe_a
 - **Cannot reach the backend / failed fetch** — Start the API first; use **http://localhost:5173** so the Vite proxy forwards `/api` to uvicorn.
 - **404 on `/api`** — You opened the wrong origin (for example only port 8765 without the Vite app). Use port **5173** for normal UI work, or call **8765** directly only for JSON and `/docs`.
 - **Port 8765 in use** — Set `KALSHI_BOT_PORT` and matching `VITE_API_ORIGIN` in `frontend/.env`, then restart both processes.
-- **Slow `/api/dashboard`** — The payload can be heavy (open positions, order books). The UI may show timeouts; reduce open sim positions, pause engines, or inspect backend logs.
+- **Slow `/api/dashboard`** — The payload can be heavy (open positions, order books). The UI may show timeouts; reduce open sim positions, pause engines, or inspect backend logs. Prefer the split routes (`/dashboard/equity`, `/open_positions`, etc.) in custom scripts for automation.
+- **Optimizer / radar looks wrong after restore** — If you restored a DB or reset `data/`, the optimizer and equity slopes need fresh snapshots: let engines run, confirm **`GET /api/health`** shows both loops, then recheck. Red streak and acceptance read from optimizer state, not the chart alone.
+- **PyInstaller or Docker shows API only** — The Windows `.exe` and **`Dockerfile`** are **API-first**; open the Vite dev app against that API (`VITE_API_ORIGIN`) or build **`frontend/dist`** and serve with nginx—there is no embedded React in the default `Dockerfile` image.
 
 ---
 
