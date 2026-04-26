@@ -7,7 +7,21 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import SettingsOverlay from "./SettingsOverlay";
 import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
 import { BranchHeroMarquee, BranchHeroSnapshotHeader } from "./BranchMarketTickers";
@@ -377,115 +391,180 @@ function fmtPct(n: unknown, digits = 2): string {
   return `${sign}${x.toFixed(digits)}%`;
 }
 
-const BRAIN_MTM_LINES: { dataKey: string; name: string; stroke: string; strokeWidth: number }[] = [
-  { dataKey: "live", name: "Live", stroke: "#22d3ee", strokeWidth: 1.35 },
-  { dataKey: "a", name: "Lab A", stroke: "#a855f7", strokeWidth: 1.2 },
-  { dataKey: "b", name: "Lab B", stroke: "#f97316", strokeWidth: 1.15 },
-  { dataKey: "c", name: "Lab C", stroke: "#ec4899", strokeWidth: 1.1 },
-  { dataKey: "d", name: "Lab D", stroke: "#ef4444", strokeWidth: 1.05 },
-];
-
-function BranchExperimentPathsTooltip(props: AnyObj) {
-  const { active, payload } = props;
-  if (!active || !payload?.length) return null;
-  const p = payload[0]?.payload as AnyObj | undefined;
-  if (!p) return null;
-  return (
-    <div
-      style={{
-        background: "#0b1228",
-        border: "1px solid #243055",
-        borderRadius: 8,
-        padding: "6px 10px",
-        fontSize: 10,
-        maxWidth: 300,
-        color: "#e2e8f0",
-      }}
-    >
-      <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 11 }}>{String(p.t)}</div>
-      {BRAIN_MTM_LINES.map(({ dataKey, name, stroke }) => {
-        const idx = p[dataKey];
-        const raw = p[`${dataKey}$`];
-        if (idx == null || !Number.isFinite(Number(idx))) return null;
-        const rawLine =
-          raw != null && Number.isFinite(Number(raw)) ? <span style={{ opacity: 0.88 }}> · {fmtMoney(Number(raw))}</span> : null;
-        return (
-          <div key={dataKey} style={{ marginTop: 3 }}>
-            <span style={{ color: stroke, fontWeight: 600 }}>{name}:</span> {Number(idx).toFixed(2)} index
-            {rawLine}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function BranchExperimentPathsMini({
-  data,
-  revision,
-  chartHeight = 172,
-}: {
-  data: AnyObj[];
-  revision: string;
-  chartHeight?: number;
-}) {
-  if (!data.length) {
-    return <p className="sub" style={{ margin: "8px 6px", fontSize: 11 }}>No equity history yet for overlaid paths.</p>;
-  }
-  return (
-    <ResponsiveContainer width="100%" height={chartHeight} key={revision || "brain-lines"}>
-      <LineChart data={data} margin={{ left: 2, right: 6, top: 2, bottom: 22 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
-        <XAxis dataKey="idx" tick={false} axisLine={{ stroke: "#223056" }} height={8} />
-        <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9 }} width={34} tickFormatter={(v) => Number(v).toFixed(0)} />
-        <Tooltip content={(tp: AnyObj) => <BranchExperimentPathsTooltip {...tp} />} />
-        <Legend wrapperStyle={{ fontSize: 9, paddingTop: 2 }} iconSize={8} iconType="line" verticalAlign="bottom" height={22} />
-        {BRAIN_MTM_LINES.map((ln) => (
-          <Line
-            key={ln.dataKey}
-            type="monotone"
-            dataKey={ln.dataKey}
-            name={ln.name}
-            stroke={ln.stroke}
-            strokeWidth={ln.strokeWidth}
-            dot={false}
-            connectNulls
-            isAnimationActive={false}
-          />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
-  );
-}
-
 function nextTickBodyPlain(preview: string): string {
   const t = preview.trim();
   if (!t) return "";
   return t.replace(/^\s*next\s*tick\s*:\s*/i, "").trim() || t;
 }
 
-function BranchOptimizerVisualizer({
-  labThoughts,
-  lineRows,
-  lineRevision,
+/** Double-click a chart to open a full-size readout with the same render tree at a larger height. */
+function ChartDblClickExpand({
+  title,
+  detail,
+  hint = "Double-click to enlarge",
+  defaultHeight = 200,
+  expandedHeight = 440,
+  expandedPanelMaxWidth = "min(900px, 98vw)",
+  expandedTitleFontSize = 16,
+  expandedDetailFontSize = 12,
+  expandedTipFontSize = 10,
+  className = "",
+  render,
 }: {
-  labThoughts: AnyObj | undefined;
-  lineRows: AnyObj[];
-  lineRevision: string;
+  title: string;
+  detail: ReactNode;
+  hint?: string;
+  defaultHeight?: number;
+  expandedHeight?: number;
+  /** Max width of the expanded panel (e.g. wide for dense radar). */
+  expandedPanelMaxWidth?: string;
+  /** Larger typography in the expand dialog (e.g. radar drill-down). */
+  expandedTitleFontSize?: number;
+  expandedDetailFontSize?: number;
+  expandedTipFontSize?: number;
+  className?: string;
+  /** Chart area height in px (wrapper provides width: 100%). */
+  render: (o: { h: number }) => ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onK = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onK);
+    return () => window.removeEventListener("keydown", onK);
+  }, [open]);
   return (
-    <div className="branch-brain-optimizer-stack" role="region" aria-label="Optimizer: experiments and lab pulse">
-      <div className="branch-brain-experiments-pulse-row">
-        <div className="branch-brain-experiments-col">
-          <div className="branch-brain-chart-wrap branch-brain-chart-wrap--lines branch-brain-chart-wrap--experiments-tall">
-            <div className="branch-brain-chart__title">Experiments — MTM (indexed to window start)</div>
-            <BranchExperimentPathsMini data={lineRows} revision={lineRevision} chartHeight={268} />
+    <>
+      <div
+        role="presentation"
+        onDoubleClick={() => setOpen(true)}
+        className={className}
+        title={hint}
+        style={{ cursor: "zoom-in" }}
+      >
+        {render({ h: defaultHeight })}
+      </div>
+      {open ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+          onClick={() => setOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1300,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            background: "rgba(3, 8, 24, 0.8)",
+          }}
+        >
+          <div
+            className="panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: expandedPanelMaxWidth,
+              maxWidth: "100%",
+              maxHeight: "min(96vh, 1200px)",
+              overflow: "auto",
+              padding: "14px 16px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+              <h3 style={{ margin: 0, fontSize: expandedTitleFontSize, lineHeight: 1.25 }}>{title}</h3>
+              <button type="button" className="primary dash-panel-btn" onClick={() => setOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div style={{ width: "100%", height: expandedHeight, minHeight: 120, minWidth: 0 }}>{render({ h: expandedHeight })}</div>
+            <div className="sub" style={{ fontSize: expandedDetailFontSize, lineHeight: 1.55, marginTop: 12 }}>
+              {detail}
+            </div>
+            <p className="sub" style={{ fontSize: expandedTipFontSize, marginTop: 8, marginBottom: 0, opacity: 0.85 }}>
+              Tip: double-click the chart on the dashboard for this view. Press Esc or the backdrop to close.
+            </p>
           </div>
         </div>
-        <div className="branch-brain-pulse-col">
-          <div className="branch-brain-chart-wrap branch-brain-chart-wrap--pulse-ticker">
-            <LabPulseWideTicker thoughts={labThoughts} />
-          </div>
+      ) : null}
+    </>
+  );
+}
+
+function BranchOptimizerVisualizer({
+  labThoughts,
+  radar,
+}: {
+  labThoughts: AnyObj | undefined;
+  radar: {
+    data: AnyObj[];
+    series: { dataKey: string; name: string; color: string; strokeWidth: number; fillOpacity: number }[];
+    tableDetail: ReactNode;
+    caption: string;
+  };
+}) {
+  return (
+    <div
+      className="branch-brain-optimizer-stack"
+      style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}
+      role="region"
+      aria-label="Optimizer: thinking radar and lab pulse"
+    >
+      <div
+        className="branch-brain-optimizer-radar-outer"
+        style={{ width: "100%", minWidth: 0, textAlign: "center" as const }}
+      >
+        <ChartDblClickExpand
+            className="branch-brain-optimizer-radar__zoom"
+            title="Optimizer thinking — Live + Lab A–D (12 dimensions)"
+            expandedPanelMaxWidth="min(1280px, 99.5vw)"
+            expandedTitleFontSize={22}
+            expandedDetailFontSize={17}
+            expandedTipFontSize={13}
+            detail={
+              <div>
+                {radar.tableDetail}
+                <p style={{ margin: "8px 0 0" }}>{radar.caption}</p>
+              </div>
+            }
+            hint="Double-click the radar to enlarge. 0–100 on 12 axes."
+            defaultHeight={440}
+            expandedHeight={800}
+            render={({ h }) => (
+              <div
+                style={{
+                  width: "100%",
+                  maxWidth: "100%",
+                  height: h,
+                  minHeight: 120,
+                  margin: "0 auto",
+                }}
+              >
+                <OptimizerMultiBranchRadar
+                  data={radar.data}
+                  series={radar.series}
+                  height={h}
+                  sizeMode={h >= 360 ? "expanded" : "inline"}
+                />
+              </div>
+            )}
+          />
+      </div>
+      <div
+        className="branch-brain-optimizer-pulse-bottom"
+        style={{
+          width: "100%",
+          minWidth: 0,
+          flex: "0 0 auto",
+          borderTop: "1px solid rgba(36, 48, 85, 0.75)",
+          paddingTop: 6,
+        }}
+      >
+        <div className="branch-brain-chart-wrap branch-brain-chart-wrap--pulse-ticker" style={{ width: "100%" }}>
+          <LabPulseWideTicker thoughts={labThoughts} />
         </div>
       </div>
     </div>
@@ -657,6 +736,624 @@ function fmtIsoLocalCompact(iso: string | undefined | null) {
     minute: "2-digit",
     hour12: true,
   });
+}
+
+/** Maps optimizer/activity `last_status` strings to a traffic-light class (good / bad / warn) for the Pulse metric cell. */
+function pulseStatusVisualClass(statusRaw: string): "good" | "bad" | "warn" {
+  const s = String(statusRaw || "idle")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  if (!s) return "warn";
+  if (
+    /rejected|_reject|(^|_)reject($|_)|\berror\b|\bfail|\bblock|\bstuck|\btimeout|\bdenied|\brefus|\babort/.test(s) ||
+    s.endsWith("_rejected")
+  ) {
+    return "bad";
+  }
+  if (s === "ok" || s.startsWith("ok_")) {
+    return "good";
+  }
+  if (s === "idle" || s === "unknown" || s.includes("noop") || s.includes("pending") || s.includes("deferred") || s.includes("skip")) {
+    return "warn";
+  }
+  return "warn";
+}
+
+/** Single source of truth for Optimizer Status rollups (dashboard + report overlay). */
+function buildOptimizerStatus(dash: AnyObj | null, cfg: AnyObj) {
+  const oc = (cfg?.optimizer || {}) as AnyObj;
+  const activity = (dash ? ((dash as AnyObj).optimizer_activity || {}) : {}) as AnyObj;
+  const trace = Array.isArray(oc?.internal_optimizer_trace) ? (oc.internal_optimizer_trace as AnyObj[]) : [];
+  const cycles = Number(oc.optimizer_cycle_count || 0);
+  const accepted = trace.filter((r) => Boolean(r?.accepted)).length;
+  const total = trace.length;
+  const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
+  const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
+  const eqRows = (
+    dash
+      ? ((dash as AnyObj).equity_snapshots_lab_a || (dash as AnyObj).equity_snapshots_sim_lab || [])
+      : []
+  ) as AnyObj[];
+  const chart = eqRows
+    .slice(-20)
+    .map((r, i) => ({
+      idx: i + 1,
+      equity: Number.isFinite(Number(r?.equity_cents)) ? Number(r.equity_cents) / 100.0 : null,
+    }));
+  let equitySlopePerHour = 0.0;
+  const pts = eqRows
+    .slice(-30)
+    .map((r) => {
+      const ts = Date.parse(String(r?.created_at || ""));
+      const eq = Number(r?.equity_cents || 0) / 100.0;
+      return { ts, eq };
+    })
+    .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.eq));
+  if (pts.length >= 2) {
+    const p0 = pts[0];
+    const p1 = pts[pts.length - 1];
+    const hours = Math.max(1e-6, (p1.ts - p0.ts) / 3_600_000);
+    equitySlopePerHour = (p1.eq - p0.eq) / hours;
+  }
+  const health = acceptanceRatePct > 60 ? "green" : acceptanceRatePct >= 30 ? "yellow" : "red";
+  const stopLossHitRate = Number(oc.replay_stop_loss_trigger_rate_pct ?? 0);
+  const stopsPnlDollars = Number(oc.replay_total_pnl_from_stops_dollars ?? 0);
+  const mutationDial = Math.max(0, Math.min(1, Number(oc.mutation_aggressiveness ?? 0.75)));
+  const effectiveMutationScale = Number(oc.effective_mutation_scale ?? 0);
+  const tierRaw = String(oc.mutation_tier || "").toLowerCase();
+  const mutationTierLabel =
+    tierRaw === "light" ? "Light" : tierRaw === "strong" ? "Strong" : tierRaw === "medium" ? "Medium" : "—";
+  const suggestedAction = String(oc.optimizer_suggested_action || "").trim();
+  const redStreak = Math.max(0, Math.floor(Number(oc.optimizer_red_streak_cycles ?? 0)));
+  const lastAutoRevertAt = String(oc.optimizer_auto_revert_last_at || "").trim();
+  return {
+    cycles,
+    lastRunAt: String(oc.last_run_at || activity.last_pulse_eval_at || ""),
+    acceptanceRatePct,
+    bestFitnessWeek,
+    pulseStatus: String(oc.last_status || "idle"),
+    pulseEvalCount: Number(activity.pulse_eval_count || 0),
+    chart,
+    equitySlopePerHour,
+    health,
+    stopLossHitRate,
+    stopsPnlDollars,
+    mutationDial,
+    effectiveMutationScale,
+    mutationTierLabel,
+    suggestedAction,
+    redStreak,
+    lastAutoRevertAt,
+  };
+}
+
+type OptimizerStatusSnapshot = ReturnType<typeof buildOptimizerStatus>;
+
+function equitySlopeDollarsPerHourFromRows(rows: AnyObj[] | null | undefined): number {
+  const pts = (rows || [])
+    .slice(-30)
+    .map((r) => {
+      const ts = Date.parse(String(r?.created_at || ""));
+      const eq = Number(r?.equity_cents || 0) / 100.0;
+      return { ts, eq };
+    })
+    .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.eq));
+  if (pts.length < 2) return 0;
+  const p0 = pts[0]!;
+  const p1 = pts[pts.length - 1]!;
+  const hours = Math.max(1e-6, (p1.ts - p0.ts) / 3_600_000);
+  return (p1.eq - p0.eq) / hours;
+}
+
+/** Same family as `BRANCH_SWATCH` (radar is defined before that token). */
+const OPTIMIZER_RADAR_SWATCH: Record<"live" | "a" | "b" | "c" | "d", string> = {
+  live: "#6ee7ff",
+  a: "#c4b5fd",
+  b: "#fdba74",
+  c: "#f9a8d4",
+  d: "#fca5a5",
+};
+
+type OptimizerMultiRadarTraceBranch = {
+  dataKey: "live" | "a" | "b" | "c" | "d";
+  name: string;
+  m: AnyObj;
+  snaps: AnyObj[];
+  isLabA: boolean;
+  color: string;
+};
+
+type OptimizerMultiRadarSeries = { dataKey: string; name: string; color: string; strokeWidth: number; fillOpacity: number };
+
+/** Native SVG + chart tooltips: angle label → full description. Keys must match `subject` in radar rows. */
+const RADAR_AXIS_TOOLTIPS: Record<string, string> = {
+  Fitness:
+    "Blended “health” 0–100. Lab A: best_fitness_7d (optimizer) plus decisive win rate. Other branches: decisive win %, or return vs start when win rate is thin.",
+  Acceptance:
+    "Lab A: share of internal optimizer decisions accepted. Other branches: decisive win % (or total win %), as a proxy for “success rate” of closed trades.",
+  "Mut. aggr.":
+    "How “active” sizing looks: server mutation aggressiveness (0–1) plus open committed % and settled activity for that branch — higher = more pressure on the profile.",
+  "SL safety":
+    "Lab A: 100% minus replay stop-loss hit rate. Other branches: 100% minus loss rate (decisive or total) — higher is fewer loss-side closes.",
+  "Equity $/h":
+    "Equity path momentum: 50 + 9× estimated $/h from the last ~30 equity snapshots for that branch (book equity cents).",
+  "Pnl vs st":
+    "Realized PnL vs paper bank (realized_pnl_pct_of_start) when available; else total PnL or return heuristics — all scaled to 0–100 around 50.",
+  "Avg $/T":
+    "Average realized dollars per settled trade; mapped to 0–100. Flat ≈ 50 when missing.",
+  "Mtm–book":
+    "100 minus the gap between MTM% and book% return — higher means marks and ledger agree more (less mark/ledger divergence).",
+  "Dec. depth":
+    "How many decisive outcomes (wins+losses) the branch has — more depth = a fuller read on win% (capped via sqrt).",
+  "Red (inv)":
+    "Lab A: 100 minus red-streak stress from consecutive low-acceptance cycles. Other branches: a neutral ~82 (not tied to that gate).",
+  Cycle: "Log-scaled display of the global optimizer cycle counter (same for every branch on this chart).",
+  Scratch: "100 × (1 − scratch / (settled+scratch)) — higher means fewer scratch exits relative to all settled+scratch activity.",
+};
+
+function radarAxisTooltip(label: string): string {
+  return RADAR_AXIS_TOOLTIPS[label] || `0–100 score for this spoke: ${label}.`;
+}
+
+/**
+ * 0–100 spokes per branch. Lab A uses optimizer + replay where applicable; other branches use comparable trading metrics
+ * (returns / win / loss / exposure / local equity momentum).
+ */
+function buildMultiBranchOptimizerRadar(
+  base: OptimizerStatusSnapshot,
+  mLive: AnyObj,
+  mA: AnyObj,
+  mB: AnyObj,
+  mC: AnyObj,
+  mD: AnyObj,
+  snapsLive: AnyObj[],
+  sA: AnyObj[],
+  sB: AnyObj[],
+  sC: AnyObj[],
+  sD: AnyObj[],
+): { data: AnyObj[]; series: OptimizerMultiRadarSeries[] } {
+  const br: OptimizerMultiRadarTraceBranch[] = [
+    { dataKey: "live", name: "Live", m: mLive, snaps: snapsLive, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.live },
+    { dataKey: "a", name: "Lab A", m: mA, snaps: sA, isLabA: true, color: OPTIMIZER_RADAR_SWATCH.a },
+    { dataKey: "b", name: "Lab B", m: mB, snaps: sB, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.b },
+    { dataKey: "c", name: "Lab C", m: mC, snaps: sC, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.c },
+    { dataKey: "d", name: "Lab D", m: mD, snaps: sD, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.d },
+  ];
+  const subj: { k: string; label: string }[] = [
+    { k: "fit", label: "Fitness" },
+    { k: "acc", label: "Acceptance" },
+    { k: "mut", label: "Mut. aggr." },
+    { k: "sl", label: "SL safety" },
+    { k: "eq", label: "Equity $/h" },
+    { k: "pStart", label: "Pnl vs st" },
+    { k: "eEdge", label: "Avg $/T" },
+    { k: "bmk", label: "Mtm–book" },
+    { k: "dec", label: "Dec. depth" },
+    { k: "redI", label: "Red (inv)" },
+    { k: "cLog", label: "Cycle" },
+    { k: "sScr", label: "Scratch" },
+  ];
+  const vCell = (sk: string, b: OptimizerMultiRadarTraceBranch) => {
+    const m = b.m;
+    const wD = Number(m.win_rate_decisive_pct);
+    const wR = Number(m.win_rate_pct);
+    const retN = m.return_mtm_vs_start_pct ?? m.return_vs_start_pct;
+    const ret = Number(retN);
+    if (sk === "fit") {
+      if (b.isLabA) {
+        const opt = Math.min(100, Math.max(0, (Number(base.bestFitnessWeek) / 1.5) * 100));
+        const w = Number.isFinite(wD) && wD >= 0 ? wD : Number.isFinite(wR) && wR >= 0 ? wR : 50;
+        return Math.min(100, Math.max(0, 0.5 * opt + 0.5 * w));
+      }
+      if (Number.isFinite(wD) && wD >= 0) return Math.min(100, Math.max(0, wD));
+      if (Number.isFinite(ret)) return Math.min(100, Math.max(0, 50 + ret * 0.45));
+      return 50;
+    }
+    if (sk === "acc") {
+      if (b.isLabA) return Math.min(100, Math.max(0, base.acceptanceRatePct));
+      if (Number.isFinite(wD) && wD >= 0) return Math.min(100, Math.max(0, wD));
+      if (Number.isFinite(wR) && wR >= 0) return Math.min(100, Math.max(0, wR));
+      return 0;
+    }
+    if (sk === "mut") {
+      const mutBase = 100 * base.mutationDial;
+      const cmt = Number(m.committed_pct_of_start ?? 0) || 0;
+      const st = Number(m.settled_trades ?? 0) || 0;
+      return Math.min(100, Math.max(0, mutBase * 0.5 + cmt * 0.4 + Math.min(25, st * 0.35)));
+    }
+    if (sk === "sl") {
+      if (b.isLabA) return Math.min(100, Math.max(0, 100 - base.stopLossHitRate));
+      const lr = m.loss_rate_decisive_pct ?? m.loss_rate_pct;
+      if (Number(lr) >= 0) return Math.min(100, Math.max(0, 100 - Number(lr)));
+      return 50;
+    }
+    if (sk === "eq") {
+      const mSlope = equitySlopeDollarsPerHourFromRows(b.snaps);
+      return Math.min(100, Math.max(0, 50 + mSlope * 9));
+    }
+    if (sk === "pStart") {
+      const rp = Number(m.realized_pnl_pct_of_start);
+      if (Number.isFinite(rp)) return Math.min(100, Math.max(0, 50 + rp * 0.42));
+      const tpnl = Number(m.total_pnl_dollars);
+      if (Number.isFinite(tpnl)) return Math.min(100, Math.max(0, 50 + tpnl * 0.35));
+      if (Number.isFinite(ret)) return Math.min(100, Math.max(0, 50 + ret * 0.4));
+      return 50;
+    }
+    if (sk === "eEdge") {
+      const a = Number(m.avg_realized_per_settled_dollars);
+      if (Number.isFinite(a) && a !== 0) return Math.min(100, Math.max(0, 50 + a * 12));
+      return 50;
+    }
+    if (sk === "bmk") {
+      const t = Number(m.return_mtm_vs_start_pct);
+      const bk = Number(m.return_vs_start_pct);
+      if (Number.isFinite(t) && Number.isFinite(bk)) {
+        const d = Math.abs(t - bk);
+        return Math.max(0, 100 - Math.min(100, d * 2.4));
+      }
+      return 50;
+    }
+    if (sk === "dec") {
+      const w = Math.max(0, Number(m.wins ?? 0) + Number(m.losses ?? 0));
+      return Math.min(100, Math.max(0, 8 * Math.sqrt(w)));
+    }
+    if (sk === "redI") {
+      if (b.isLabA) return Math.max(0, 100 - Math.min(100, (Number(base.redStreak) || 0) * 5.5));
+      return 82;
+    }
+    if (sk === "cLog") {
+      const c = Math.max(0, Number(base.cycles) || 0);
+      return Math.min(100, Math.max(0, 10 + Math.log10(2 + c) * 22));
+    }
+    if (sk === "sScr") {
+      const st = Number(m.settled_trades) || 0;
+      const sc = Number(m.scratch_trades) || 0;
+      const t = st + sc;
+      if (t < 0.5) return 50;
+      return 100 * (1 - Math.min(1, sc / t));
+    }
+    return 50;
+  };
+  const data: AnyObj[] = subj.map((s) => {
+    const row: AnyObj = { subject: s.label };
+    for (const p of br) {
+      row[p.dataKey] = vCell(s.k, p);
+    }
+    return row;
+  });
+  const series: OptimizerMultiRadarSeries[] = br.map((p) => ({
+    dataKey: p.dataKey,
+    name: p.name,
+    color: p.color,
+    strokeWidth: p.isLabA ? 1.7 : 1.15,
+    fillOpacity: p.isLabA ? 0.16 : 0.09,
+  }));
+  return { data, series };
+}
+
+function OptimizerMultiBranchRadar({
+  data,
+  series,
+  height,
+  sizeMode = "inline",
+}: {
+  data: AnyObj[];
+  series: OptimizerMultiRadarSeries[];
+  height: number;
+  /** Expanded overlay uses larger tick fonts and more interior radius. */
+  sizeMode?: "inline" | "expanded";
+}) {
+  const n = data.length;
+  const big = sizeMode === "expanded" || height >= 420;
+  /** Slightly larger than before (~+12–18% radius) to use the box; labels still need room at the rim. */
+  const outerR =
+    n > 10
+      ? big
+        ? height < 500
+          ? "64%"
+          : "71%"
+        : height < 300
+          ? "60%"
+          : "66%"
+      : n > 8
+        ? (height < 300 ? "60%" : "67%")
+        : n > 6
+          ? (height < 300 ? "62%" : "68%")
+          : height < 220
+            ? "70%"
+            : "74%";
+  const tickFs =
+    n > 10
+      ? big
+        ? 12
+        : 9
+      : n > 8
+        ? (big ? 11 : 9)
+        : n > 5
+          ? 10
+          : height < 220
+            ? 9
+            : 11;
+  const rTick = big ? 10 : height < 300 ? 8 : 9;
+  const overlayRead = height >= 500;
+  const toolFs = overlayRead ? 14 : big ? 12 : 10;
+  const toolHead = overlayRead ? 16 : big ? 12 : 11;
+  const toolHint = overlayRead ? 12.5 : big ? 10 : 9;
+  const toolPad = overlayRead ? "10px 12px" : big ? "8px 11px" : "6px 9px";
+  return (
+    <ResponsiveContainer width="100%" height={height > 0 ? height : 200}>
+      <RadarChart
+        data={data}
+        margin={big ? { top: 6, right: 18, bottom: 6, left: 18 } : { top: 6, right: 14, bottom: 6, left: 14 }}
+        outerRadius={outerR}
+      >
+        <PolarGrid stroke="#2d3b63" />
+        <PolarAngleAxis
+          dataKey="subject"
+          tickLine={false}
+          tick={(props) => {
+            const { x, y, textAnchor, payload } = props as { x: number; y: number; textAnchor: string; payload: { value: string } };
+            const label = String(payload?.value ?? "");
+            return (
+              <g className="recharts-layer recharts-polar-angle-axis-tick">
+                <title>{radarAxisTooltip(label)}</title>
+                <text
+                  x={x}
+                  y={y}
+                  textAnchor={textAnchor as "start" | "middle" | "end" | "inherit" | undefined}
+                  fill="#b8c8e8"
+                  fontSize={tickFs}
+                  fontWeight={500}
+                  dy="0.3em"
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          }}
+        />
+        <PolarRadiusAxis
+          angle={90}
+          domain={[0, 100]}
+          tickCount={5}
+          tick={({ x, y, payload }: AnyObj) => (
+            <g>
+              <title>Distance from center: 0 = worst/minimum on this 0–100 scale for the spoke, 100 = best/outer. Same scale for every branch.</title>
+              <text x={x} y={y} fill="#5c6b8a" fontSize={rTick} textAnchor="middle" dy="0.3em">
+                {payload?.value ?? ""}
+              </text>
+            </g>
+          )}
+        />
+        <Tooltip
+          cursor={{ strokeWidth: 1, stroke: "rgba(99, 102, 241, 0.45)" }}
+          content={({ active, label, payload }) => {
+            if (!active || !payload?.length) return null;
+            const hint = radarAxisTooltip(String(label));
+            return (
+              <div
+                style={{
+                  background: "#0b1228",
+                  border: "1px solid #243055",
+                  borderRadius: 6,
+                  padding: toolPad,
+                  maxWidth: overlayRead ? 380 : 300,
+                  fontSize: toolFs,
+                  color: "var(--text)",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 2, fontSize: toolHead }}>{String(label)}</div>
+                <div className="sub" style={{ fontSize: toolHint, lineHeight: 1.45, color: "var(--muted)", marginBottom: 8, opacity: 0.95 }}>
+                  {hint}
+                </div>
+                {payload
+                  .filter((e) => e && e.dataKey && e.dataKey !== "subject" && (e.dataKey as string) !== "subject")
+                  .map((e) => (
+                    <div
+                      key={String(e.dataKey)}
+                      style={{ lineHeight: 1.45, color: (e as AnyObj).color ?? (e as AnyObj).fill ?? "var(--text)" }}
+                    >
+                      <span style={{ color: (e as AnyObj).color }}>{e.name}:</span>{" "}
+                      {e.value != null && !Number.isNaN(Number(e.value)) ? <strong>{Number(e.value).toFixed(0)}</strong> : "—"}{" "}
+                      <span className="sub" style={{ fontSize: overlayRead ? 11.5 : big ? 10 : 9, opacity: 0.8 }}>
+                        / 100
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            );
+          }}
+        />
+        {series.map((s) => (
+          <Radar
+            key={s.dataKey}
+            name={s.name}
+            dataKey={s.dataKey}
+            stroke={s.color}
+            fill={s.color}
+            fillOpacity={s.fillOpacity}
+            strokeWidth={s.strokeWidth}
+            isAnimationActive={false}
+            dot={false}
+            activeDot={{ r: 4, stroke: "#0a0f1e", strokeWidth: 0.5, fill: s.color, opacity: 0.95 }}
+          />
+        ))}
+      </RadarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function OptimizerRadarTableDetail({ data, series }: { data: AnyObj[]; series: OptimizerMultiRadarSeries[] }) {
+  return (
+    <div style={{ width: "100%", overflowX: "auto" }}>
+    <table style={{ width: "100%", minWidth: 520, borderCollapse: "collapse", fontSize: 16, lineHeight: 1.4, marginTop: 4 }}>
+      <thead>
+        <tr>
+          <th
+            style={{
+              textAlign: "left",
+              borderBottom: "1px solid rgba(55,65,100,0.9)",
+              padding: "4px 6px",
+              color: "var(--muted)",
+              fontSize: 15,
+            }}
+            title="Spoke name; hover a row’s axis for what it measures (same as the radar’s axis tooltips)."
+          >
+            Axis
+          </th>
+          {series.map((s) => (
+            <th
+              key={s.dataKey}
+              style={{
+                textAlign: "right",
+                borderBottom: "1px solid rgba(55,65,100,0.9)",
+                padding: "3px 5px",
+                color: s.color,
+                fontSize: 12.5,
+                fontWeight: 600,
+              }}
+              title={`0–100 score for ${s.name} on each spoke (normalized per axis; same scale as the chart).`}
+            >
+              {s.name}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((row) => {
+          const subj = String(row.subject);
+          return (
+          <tr key={subj}>
+            <td
+              style={{ padding: "3px 6px", color: "var(--text)" }}
+              title={radarAxisTooltip(subj)}
+            >
+              {subj}
+            </td>
+            {series.map((s) => {
+              const v = row[s.dataKey];
+              return (
+                <td
+                  key={s.dataKey}
+                  style={{ textAlign: "right", padding: "3px 5px", color: s.color, fontVariantNumeric: "tabular-nums" }}
+                  title={radarAxisTooltip(subj)}
+                >
+                  {v != null && !Number.isNaN(Number(v)) ? Number(v).toFixed(0) : "—"}
+                </td>
+              );
+            })}
+          </tr>
+          );
+        })}
+      </tbody>
+    </table>
+    </div>
+  );
+}
+
+function EquityDblReadout({ m, name }: { m: AnyObj; name: string }) {
+  const t = Number(m.total_pnl_dollars);
+  const rMtm = m.return_mtm_vs_start_pct;
+  const rBk = m.return_vs_start_pct;
+  const wD = m.win_rate_decisive_pct;
+  return (
+    <ul style={{ margin: 0, paddingLeft: 16, listStyle: "disc", lineHeight: 1.45 }}>
+      <li>
+        <strong>{name}</strong> — settled PnL: {Number.isFinite(t) ? fmtMoney(t) : "—"}
+      </li>
+      <li>
+        Return vs start (MTM%): {rMtm != null && rMtm !== "" && Number.isFinite(Number(rMtm)) ? `${Number(rMtm).toFixed(2)}%` : "—"} · (book%):{" "}
+        {rBk != null && rBk !== "" && Number.isFinite(Number(rBk)) ? `${Number(rBk).toFixed(2)}%` : "—"}
+      </li>
+      <li>Win% (decisive): {wD != null && wD !== "" && Number.isFinite(Number(wD)) ? `${Number(wD).toFixed(1)}%` : "—"}</li>
+      <li>Settled trades: {m.settled_trades != null ? String(m.settled_trades) : "—"}</li>
+    </ul>
+  );
+}
+
+function OptimizerRunMetricsGrid({
+  status: optimizerStatus,
+  className = "dash-optimizer-metric-grid sub",
+  ariaLabel = "Optimizer run metrics",
+}: {
+  status: OptimizerStatusSnapshot;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  return (
+    <div className={className} role="group" aria-label={ariaLabel}>
+      {(
+        [
+          {
+            k: "cycle",
+            label: "Cycle",
+            labelTitle:
+              "Total optimizer cycle counter (increments on each successful tick). Compare with Internal Optimizer Trace in Settings.",
+            value: String(optimizerStatus.cycles),
+            valueTitle: `Cycle count: ${optimizerStatus.cycles}`,
+          },
+          {
+            k: "last",
+            label: "Last run",
+            labelTitle:
+              "Local date/time of the last optimizer or pulse eval (config last_run_at or activity last_pulse_eval_at). Full timestamp on value hover.",
+            value: optimizerStatus.lastRunAt ? fmtIsoLocalCompact(optimizerStatus.lastRunAt) : "—",
+            valueTitle: optimizerStatus.lastRunAt
+              ? `Full: ${fmtIsoLocal(optimizerStatus.lastRunAt, true)}`
+              : "No timestamp from server yet",
+          },
+          {
+            k: "accpt",
+            label: "Accept",
+            labelTitle:
+              "Acceptance rate: accepted ÷ total decisions in the internal trace (or server acceptance_rate_pct). Same signal as the health dot; also gates suggested-action toasts.",
+            value: `${optimizerStatus.acceptanceRatePct.toFixed(1)}%`,
+            valueTitle: `Acceptance ${optimizerStatus.acceptanceRatePct.toFixed(2)}% (trace where available)`,
+          },
+          {
+            k: "fit",
+            label: "Fit 7d",
+            labelTitle:
+              "best_fitness_score_7d — best composite fitness seen in the rolling 7d window (higher is better for this metric).",
+            value: optimizerStatus.bestFitnessWeek.toFixed(3),
+            valueTitle: `best_fitness_score_7d = ${optimizerStatus.bestFitnessWeek.toFixed(4)}`,
+          },
+          {
+            k: "pulse",
+            label: "Pulse",
+            labelTitle:
+              "Last status string from the optimizer/activity payload (e.g. idle, ok_internal_pulse, ok_noop, ok_auto_revert_persisted). Not the Lab pulse ticker — that is on the main dashboard under Experiments.",
+            value: String(optimizerStatus.pulseStatus || "idle"),
+            valueTitle: `Status: ${optimizerStatus.pulseStatus || "idle"} · pulse eval count: ${
+              optimizerStatus.pulseEvalCount
+            } · Color: green = successful ok_* status, red = rejected/error/fail, yellow = idle/noop/unknown.`,
+          },
+        ] as const
+      ).map((row) => (
+        <div key={row.k} className="dash-optimizer-metric-cell">
+          <div className="dash-optimizer-metric-label" title={row.labelTitle}>
+            <span>{row.label}</span>
+            <span className="dash-optimizer-metric-hint" aria-hidden title={row.labelTitle}>
+              i
+            </span>
+          </div>
+          <div
+            className={
+              row.k === "pulse"
+                ? `dash-optimizer-metric-value dash-optimizer-metric-value--mono dash-optimizer-metric-value--pulse-${pulseStatusVisualClass(
+                    String(optimizerStatus.pulseStatus || "idle"),
+                  )}`
+                : "dash-optimizer-metric-value"
+            }
+            title={row.valueTitle}
+          >
+            {row.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function formatBranchRollupLine(label: string, m: AnyObj): string {
@@ -935,12 +1632,27 @@ function optimizerReportOverlayBody(dash: AnyObj): ReactNode {
   const branchCards = branchRollupCardsFromDash(dash);
   const settledPct = g.minTr > 0 ? Math.min(100, (g.settled / g.minTr) * 100) : 0;
   const winsPct = g.minProf > 0 ? Math.min(100, (g.wins / g.minProf) * 100) : 0;
+  const reportStatus = buildOptimizerStatus(dash, (dash?.config || {}) as AnyObj);
 
   return (
     <div className="optimizer-report optimizer-report--structured">
       <div className="optimizer-report-hero">
         <div className="optimizer-report-hero__title">{movement.title}</div>
         <p className="optimizer-report-hero__sub">{movement.sub}</p>
+      </div>
+
+      <div className="optimizer-report-section">
+        <h3 className="optimizer-report-section__h">Run metrics</h3>
+        <p className="optimizer-report-line optimizer-report-line--muted" style={{ marginBottom: 10 }}>
+          Current cycle, last run time, internal <strong>acceptance</strong> % (trace), 7d <strong>fit</strong> score, and <strong>last status
+          </strong> from config/activity (<code>last_status</code>). Pulse color: green = <code>ok_*</code> path, red = reject/error, yellow =
+          idle/noop/unknown. Hover each label (ⓘ) or value for details.
+        </p>
+        <OptimizerRunMetricsGrid
+          status={reportStatus}
+          className="dash-optimizer-metric-grid dash-optimizer-metric-grid--in-report sub"
+          ariaLabel="Run metrics: cycle, last, accept, fit, pulse"
+        />
       </div>
 
       <div className="optimizer-report-section">
@@ -1194,8 +1906,9 @@ function optimizerBriefInfoBody(): ReactNode {
     <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <p>
         <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. The{" "}
-        <strong>Optimizer Status</strong> card below the title is short-horizon: cycles, last run, acceptance, fitness, red streak, mutation
-        tier, slope, and a <strong>small Lab A equity</strong> sparkline. The <strong>Experiments</strong> multi-line chart (further down in
+        <strong>Optimizer Status</strong> card below the title shows slope, red streak, mutation tier, stops, and a <strong>small Lab A
+        equity</strong> sparkline. The <strong>run-metric</strong> row (cycle, last run, accept %, fit 7d, pulse status) is in the{" "}
+        <strong>report</strong> overlay only. The <strong>Experiments</strong> multi-line chart (further down in
         this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–D from a shared
         window. <strong>Lab pulse</strong> (ticker under Experiments) is a digest of the last engine tick.
       </p>
@@ -1220,7 +1933,7 @@ function optimizerBriefInfoBody(): ReactNode {
         <strong>Action buttons in the title row.</strong> <strong>force</strong> runs the same “internal mutation + replay gate” as
         <code>POST /api/optimizer/force-internal-mutation</code> and bypasses the normal scheduler; it does not by itself post exchange
         orders. The same action exists in <strong>Settings → Optimizer</strong> for convenience. <strong>report</strong> opens the full
-        overlay (schedule, next movement, change history, rollups, pulse, etc.). This <strong>Info</strong> button is the long-form
+        overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form
         explainer.
       </p>
       <p>
@@ -1824,27 +2537,6 @@ function equitySeriesWithLiveTail(
   return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
 }
 
-/** Stable fingerprint so Recharts remounts whenever snapshots, tail time, metrics, or values change. */
-function equityChartRevision(snaps: AnyObj[], rows: EquityChartRow[], metrics?: AnyObj): string {
-  const tailSnap =
-    snaps && snaps.length
-      ? `${String((snaps[snaps.length - 1] as AnyObj).id ?? "")}:${String((snaps[snaps.length - 1] as AnyObj).created_at ?? "")}`
-      : "";
-  const m = metrics
-    ? `liveMtm=${String(metrics.current_mtm_dollars ?? "")}:liveEq=${String(metrics.current_equity_dollars ?? "")}`
-    : "";
-  if (!rows.length) return `0|${tailSnap}|${m}`;
-  const L = rows[rows.length - 1];
-  return `${tailSnap}|n=${rows.length}|t=${L.t}|ts=${L.tsMs}|eq=${L.equity}|mtm=${L.mtm ?? ""}|syn=${L.synthetic ? 1 : 0}|${m}`;
-}
-
-function equityRowMtmOrEq(row: EquityChartRow): number | null {
-  const m = row.mtm;
-  if (m != null && Number.isFinite(Number(m))) return Number(m);
-  const e = row.equity;
-  return Number.isFinite(Number(e)) ? Number(e) : null;
-}
-
 type OverlayBranchKey = "live" | "a" | "b" | "c" | "d";
 
 /** Chronological union of branch snapshots with forward-filled values so overlay lines share one true time axis. */
@@ -1907,89 +2599,14 @@ function mergeEquityOverlayRows(
   return out;
 }
 
-/** Align branches on snapshot timestamps; normalize MTM (or book) to index 100 at first in-window point per series. */
-function buildExperimentBrainLineRows(
-  live: EquityChartRow[],
-  labA: EquityChartRow[],
-  labB: EquityChartRow[],
-  labC: EquityChartRow[],
-  labD: EquityChartRow[],
-  maxPoints: number,
-): AnyObj[] {
-  type Col = "live" | "a" | "b" | "c" | "d";
-  type Pt = { tsMs: number; t: string; branch: Col; v: number };
-  const pts: Pt[] = [];
-  const add = (rows: EquityChartRow[], branch: Col) => {
-    for (const row of rows) {
-      const v = equityRowMtmOrEq(row);
-      if (v == null || !Number.isFinite(row.tsMs)) continue;
-      pts.push({ tsMs: row.tsMs, t: row.t, branch, v });
-    }
-  };
-  add(live, "live");
-  add(labA, "a");
-  add(labB, "b");
-  add(labC, "c");
-  add(labD, "d");
-  if (!pts.length) return [];
-  pts.sort((x, y) => x.tsMs - y.tsMs);
-  const byTs = new Map<number, Pt[]>();
-  for (const p of pts) {
-    const g = byTs.get(p.tsMs);
-    if (g) g.push(p);
-    else byTs.set(p.tsMs, [p]);
-  }
-  const uniqTs = [...byTs.keys()].sort((a, b) => a - b);
-  const tailTs = uniqTs.slice(-Math.max(12, Math.min(maxPoints, 200)));
-
-  const last: Record<Col, number | null> = { live: null, a: null, b: null, c: null, d: null };
-  const cols: Col[] = ["live", "a", "b", "c", "d"];
-  const rawRows: AnyObj[] = [];
-  for (const tsMs of tailTs) {
-    const hits = byTs.get(tsMs)!;
-    let tLabel = "";
-    for (const h of hits) {
-      last[h.branch] = h.v;
-      if (h.branch === "live") tLabel = h.t;
-    }
-    if (!tLabel) tLabel = hits[0].t;
-    const row: AnyObj = { t: tLabel, tsMs, idx: rawRows.length };
-    for (const c of cols) row[c] = last[c];
-    rawRows.push(row);
-  }
-  const baseline: Partial<Record<Col, number>> = {};
-  for (const c of cols) {
-    for (const r of rawRows) {
-      const v = r[c] as number | null;
-      if (v != null && Number.isFinite(v) && Math.abs(v) > 1e-9) {
-        baseline[c] = v;
-        break;
-      }
-    }
-  }
-  return rawRows.map((r) => {
-    const out: AnyObj = { t: r.t, idx: r.idx };
-    for (const c of cols) {
-      const v = r[c] as number | null;
-      const b = baseline[c];
-      out[`${c}$`] = v;
-      out[c] = v != null && b != null && b !== 0 ? (100 * v) / b : null;
-    }
-    return out;
-  });
-}
-
 function EquityDualLineChart({
   data,
   equityStroke,
   mtmStroke,
-  revision = "",
 }: {
   data: EquityChartRow[];
   equityStroke: string;
   mtmStroke: string;
-  /** Bumps when the live tail values change so Recharts redraws after each dashboard poll. */
-  revision?: string;
 }) {
   // Recharts ignores null/undefined for Line points — synthesize a numeric series so MTM always draws.
   const plotData = useMemo(
@@ -1998,11 +2615,11 @@ function EquityDualLineChart({
         ...d,
         mtmPlot: d.mtm != null && Number.isFinite(Number(d.mtm)) ? Number(d.mtm) : d.equity,
       })),
-    [data, revision],
+    [data],
   );
   return (
-    <ResponsiveContainer key={revision || "eq"} width="100%" height="100%">
-      <LineChart key={revision || "lc"} data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
         <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
@@ -2016,7 +2633,15 @@ function EquityDualLineChart({
           wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
           formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
         />
-        <Line type="monotone" dataKey="equity" name="Book value (cost basis)" stroke={equityStroke} strokeWidth={2} dot={false} />
+        <Line
+          type="monotone"
+          dataKey="equity"
+          name="Book value (cost basis)"
+          stroke={equityStroke}
+          strokeWidth={2}
+          dot={false}
+          isAnimationActive={false}
+        />
         <Line
           type="monotone"
           dataKey="mtmPlot"
@@ -2025,6 +2650,7 @@ function EquityDualLineChart({
           strokeWidth={2}
           strokeDasharray="6 4"
           dot={false}
+          isAnimationActive={false}
         />
       </LineChart>
     </ResponsiveContainer>
@@ -2827,68 +3453,7 @@ export default function App() {
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
   const metricsLabD = (dash?.metrics_lab_d || {}) as AnyObj;
-  const optimizerStatus = useMemo(() => {
-    const oc = (cfg?.optimizer || {}) as AnyObj;
-    const activity = ((dash as AnyObj | null)?.optimizer_activity || {}) as AnyObj;
-    const trace = Array.isArray(oc?.internal_optimizer_trace) ? (oc.internal_optimizer_trace as AnyObj[]) : [];
-    const cycles = Number(oc.optimizer_cycle_count || 0);
-    const accepted = trace.filter((r) => Boolean(r?.accepted)).length;
-    const total = trace.length;
-    const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
-    const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
-    const eqRows = ((dash as AnyObj | null)?.equity_snapshots_lab_a || (dash as AnyObj | null)?.equity_snapshots_sim_lab || []) as AnyObj[];
-    const chart = eqRows
-      .slice(-20)
-      .map((r, i) => ({
-        idx: i + 1,
-        equity: Number.isFinite(Number(r?.equity_cents)) ? Number(r.equity_cents) / 100.0 : null,
-      }));
-    let equitySlopePerHour = 0.0;
-    const pts = eqRows
-      .slice(-30)
-      .map((r) => {
-        const ts = Date.parse(String(r?.created_at || ""));
-        const eq = Number(r?.equity_cents || 0) / 100.0;
-        return { ts, eq };
-      })
-      .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.eq));
-    if (pts.length >= 2) {
-      const p0 = pts[0];
-      const p1 = pts[pts.length - 1];
-      const hours = Math.max(1e-6, (p1.ts - p0.ts) / 3_600_000);
-      equitySlopePerHour = (p1.eq - p0.eq) / hours;
-    }
-    const health = acceptanceRatePct > 60 ? "green" : acceptanceRatePct >= 30 ? "yellow" : "red";
-    const stopLossHitRate = Number(oc.replay_stop_loss_trigger_rate_pct ?? 0);
-    const stopsPnlDollars = Number(oc.replay_total_pnl_from_stops_dollars ?? 0);
-    const mutationDial = Math.max(0, Math.min(1, Number(oc.mutation_aggressiveness ?? 0.75)));
-    const effectiveMutationScale = Number(oc.effective_mutation_scale ?? 0);
-    const tierRaw = String(oc.mutation_tier || "").toLowerCase();
-    const mutationTierLabel =
-      tierRaw === "light" ? "Light" : tierRaw === "strong" ? "Strong" : tierRaw === "medium" ? "Medium" : "—";
-    const suggestedAction = String(oc.optimizer_suggested_action || "").trim();
-    const redStreak = Math.max(0, Math.floor(Number(oc.optimizer_red_streak_cycles ?? 0)));
-    const lastAutoRevertAt = String(oc.optimizer_auto_revert_last_at || "").trim();
-    return {
-      cycles,
-      lastRunAt: String(oc.last_run_at || activity.last_pulse_eval_at || ""),
-      acceptanceRatePct,
-      bestFitnessWeek,
-      pulseStatus: String(oc.last_status || "idle"),
-      pulseEvalCount: Number(activity.pulse_eval_count || 0),
-      chart,
-      equitySlopePerHour,
-      health,
-      stopLossHitRate,
-      stopsPnlDollars,
-      mutationDial,
-      effectiveMutationScale,
-      mutationTierLabel,
-      suggestedAction,
-      redStreak,
-      lastAutoRevertAt,
-    };
-  }, [cfg?.optimizer, dash]);
+  const optimizerStatus = useMemo(() => buildOptimizerStatus((dash as AnyObj | null) || null, cfg as AnyObj), [cfg?.optimizer, dash]);
 
   useEffect(() => {
     const HOUR_MS = 60 * 60 * 1000;
@@ -2991,6 +3556,43 @@ export default function App() {
   const equitySnapsLabB = (dash?.equity_snapshots_lab_b || []) as AnyObj[];
   const equitySnapsLabC = (dash?.equity_snapshots_lab_c || []) as AnyObj[];
   const equitySnapsLabD = (dash?.equity_snapshots_lab_d || []) as AnyObj[];
+
+  const optimizerThinkingRadarBundle = useMemo(() => {
+    const m0 = (metrics as AnyObj) || {};
+    const { data, series } = buildMultiBranchOptimizerRadar(
+      optimizerStatus,
+      m0,
+      metricsLabA,
+      metricsLabB,
+      metricsLabC,
+      metricsLabD,
+      snaps,
+      equitySnapsLabA,
+      equitySnapsLabB,
+      equitySnapsLabC,
+      equitySnapsLabD,
+    );
+    return {
+      data,
+      series,
+      tableDetail: <OptimizerRadarTableDetail data={data} series={series} />,
+      caption:
+        "0–100 on 12 axes. Prior nine: fitness; accept; mut. (dial+exposure); SL safety; equity $/h; pnl vs start; avg $/T; mtm–book; decisive depth. Also: Red (inv) = Lab A: 100 minus red-streak stress (others ≈ constant); Cycle = log-scaled total optimizer cycle count; Scratch = share of non-scratch among settled+scratch. Lab A / replay for fitness, accept, SL as before. Inline chart is larger; open overlay for the biggest type + chart.",
+    };
+  }, [
+    optimizerStatus,
+    metrics,
+    metricsLabA,
+    metricsLabB,
+    metricsLabC,
+    metricsLabD,
+    snaps,
+    equitySnapsLabA,
+    equitySnapsLabB,
+    equitySnapsLabC,
+    equitySnapsLabD,
+  ]);
+
   const labA = useMemo((): AnyObj => {
     const a = cfg.lab_a;
     if (a && typeof a === "object") return a as AnyObj;
@@ -3071,12 +3673,6 @@ export default function App() {
   );
   const equityOverlayData = useMemo(
     () => mergeEquityOverlayRows(chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD),
-    [chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD],
-  );
-  const equityOverlayRevision = `${equityChartRevision(snaps, chartData, metrics)}|${equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}|${equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}|${equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}|${equityChartRevision(equitySnapsLabD, chartDataLabD, metricsLabD)}`;
-
-  const branchBrainLineRows = useMemo(
-    () => buildExperimentBrainLineRows(chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD, 96),
     [chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD],
   );
 
@@ -3767,7 +4363,7 @@ export default function App() {
             { id: "lab_a", label: "Lab A" },
             { id: "lab_b", label: "Lab B" },
             { id: "lab_c", label: "Lab C" },
-              { id: "lab_d", label: "Lab D (Wild)" },
+              { id: "lab_d", label: "Lab D" },
           ].map((t) => (
             <button
               key={t.id}
@@ -3947,7 +4543,7 @@ export default function App() {
                   type="button"
                   className="primary dash-panel-btn"
                   disabled={busy}
-                  title="Open optimizer report: next movement vs gates, schedule, pulse, rollups, and settlements."
+                  title="Open Optimizer report: run metrics (cycle, last, accept %, fit, pulse), gate progress, schedule, branch rollups, change history, pulse log."
                   onClick={openOptimizerReportOverlay}
                 >
                   report
@@ -3956,7 +4552,7 @@ export default function App() {
                   type="button"
                   className="primary dash-panel-btn"
                   title={
-                    "This dialog: full Optimizer help. The column has Optimizer Status (slope, tier, health dot, sparkline), Experiments chart (indexed MTM, Live+Labs), and Lab pulse. " +
+                    "This card: multi-branch thinking radar and Lab pulse, then Optimizer Status (slope, tier, stops, sparkline). " +
                     "Suggested-action text is not inline here—it may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
                     "force / report: same row as this button. Pulse empty → check engine toggles and Account, not just this card."
                   }
@@ -3966,6 +4562,10 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <BranchOptimizerVisualizer
+              labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
+              radar={optimizerThinkingRadarBundle}
+            />
             <div
               className="panel"
               style={{
@@ -4070,99 +4670,53 @@ export default function App() {
                   Last revert: <strong>{fmtIsoLocalCompact(optimizerStatus.lastAutoRevertAt)}</strong>
                 </div>
               ) : null}
-              <div
-                style={{ width: "100%", height: 96, marginBottom: 8 }}
-                title="Last 20 Lab A equity points (dollars) from stored snapshots. Hover points for value."
-              >
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={optimizerStatus.chart}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
-                    <XAxis dataKey="idx" tick={false} />
-                    <YAxis hide domain={["auto", "auto"]} />
-                    <Tooltip
-                      formatter={(v: unknown) => [(v == null ? "—" : Number(v).toFixed(3)), "Equity (USD)"]}
-                      labelFormatter={(label) => (label != null && label !== "" ? `Lab A · #${String(label)}` : "Lab A equity")}
-                    />
-                    <Line type="monotone" dataKey="equity" stroke="#6ee7ff" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-              <div
-                className="sub"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-                  gap: "6px 8px",
-                  fontSize: 11,
-                  lineHeight: 1.25,
-                }}
-              >
-                {(
-                  [
-                    {
-                      k: "cycle",
-                      label: "Cycle",
-                      labelTitle: "Current optimizer cycle count (total runs; increases on each successful optimizer tick).",
-                      value: String(optimizerStatus.cycles),
-                      valueTitle: `Full value: ${optimizerStatus.cycles}`,
-                    },
-                    {
-                      k: "last",
-                      label: "Last",
-                      labelTitle: "Local date/time of the last optimizer run (from last_run_at or last pulse eval if present).",
-                      value: optimizerStatus.lastRunAt ? fmtIsoLocalCompact(optimizerStatus.lastRunAt) : "—",
-                      valueTitle: optimizerStatus.lastRunAt
-                        ? fmtIsoLocal(optimizerStatus.lastRunAt, true)
-                        : "No timestamp yet",
-                    },
-                    {
-                      k: "accpt",
-                      label: "Accpt",
-                      labelTitle:
-                        "Acceptance rate: accepted ÷ total in the internal trace (or server acceptance_rate_pct). Drives the title-row health dot and throttled suggested-action toasts.",
-                      value: `${optimizerStatus.acceptanceRatePct.toFixed(1)}%`,
-                      valueTitle: `Acceptance rate ${optimizerStatus.acceptanceRatePct.toFixed(1)}% (trace-based where available)`,
-                    },
-                    {
-                      k: "fit",
-                      label: "Fit 7d",
-                      labelTitle: "Best composite fitness score observed in the rolling 7-day window (higher = better in the optimizer’s metric).",
-                      value: optimizerStatus.bestFitnessWeek.toFixed(3),
-                      valueTitle: `best_fitness_score_7d = ${optimizerStatus.bestFitnessWeek.toFixed(4)}`,
-                    },
-                    {
-                      k: "pulse",
-                      label: "Pulse",
-                      labelTitle: "Last internal pulse or mutation result code (e.g. ok_noop, ok_internal_pulse). idle if never run.",
-                      value: String(optimizerStatus.pulseStatus || "idle"),
-                      valueTitle: `Status: ${optimizerStatus.pulseStatus || "idle"} · pulse evals (activity): ${optimizerStatus.pulseEvalCount}`,
-                    },
-                  ] as const
-                ).map((row) => (
-                  <div key={row.k} style={{ minWidth: 0 }} title={row.labelTitle}>
-                    <div style={{ opacity: 0.75, fontSize: 10, letterSpacing: 0.2 }}>{row.label}</div>
-                    <div
-                      style={{
-                        fontWeight: 600,
-                        fontSize: 12,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontFamily: row.k === "pulse" ? "var(--font-mono, ui-monospace, monospace)" : undefined,
-                      }}
-                      title={row.valueTitle}
-                    >
-                      {row.value}
+              <div style={{ marginBottom: 8, width: "100%" }} title="Last 20 Lab A equity points (dollars). Double-click to enlarge.">
+                <ChartDblClickExpand
+                  title="Lab A equity (last 20 stored snapshots)"
+                  defaultHeight={96}
+                  expandedHeight={360}
+                  detail={
+                    <div>
+                      <p style={{ margin: "0 0 6px" }}>
+                        Last <strong>20</strong> stored Lab A snapshot midpoints. Values are in USD from the equity_snapshots / sim path and update as new rows are written. For full book vs
+                        MTM paths, use <strong>Equity curves</strong> below.
+                      </p>
+                      <EquityDblReadout m={metricsLabA} name="Lab A" />
                     </div>
-                  </div>
-                ))}
+                  }
+                  render={({ h }) => (
+                    <div style={{ width: "100%", height: h }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={optimizerStatus.chart}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
+                          <XAxis dataKey="idx" tick={h > 100} stroke="#4b5c85" fontSize={10} />
+                          <YAxis
+                            width={h > 100 ? 44 : 0}
+                            hide={h <= 100}
+                            domain={["auto", "auto"]}
+                            tick={{ fontSize: 9 }}
+                            stroke="#4b5c85"
+                          />
+                          <Tooltip
+                            contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
+                            formatter={(v: unknown) => [(v == null ? "—" : Number(v).toFixed(3)), "Equity (USD)"]}
+                            labelFormatter={(label) => (label != null && label !== "" ? `Lab A · #${String(label)}` : "Lab A equity")}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="equity"
+                            stroke={OPTIMIZER_RADAR_SWATCH.a}
+                            strokeWidth={2}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                />
               </div>
             </div>
-            <BranchOptimizerVisualizer
-              labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
-              lineRows={branchBrainLineRows}
-              lineRevision={equityOverlayRevision}
-            />
           </div>
         </section>
       </div>
@@ -4292,40 +4846,90 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
                 {activityBranchTabLabel("live")}
               </h3>
-              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("live")} equity over time.`}>
-                <EquityDualLineChart data={chartData} equityStroke="#6ee7ff" mtmStroke="#38bdf8" revision={`${equityChartRevision(snaps, chartData, metrics)}|tick=${String(dash?.engine?.live?.last_tick_at || "")}`} />
+              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+                <ChartDblClickExpand
+                  title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  defaultHeight={200}
+                  expandedHeight={420}
+                  detail={<EquityDblReadout m={metrics} name={activityBranchTabLabel("live")} />}
+                  render={({ h }) => (
+                    <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
+                      <EquityDualLineChart data={chartData} equityStroke="#6ee7ff" mtmStroke="#38bdf8" />
+                    </div>
+                  )}
+                />
               </div>
             </div>
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_a")}
               </h3>
-              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_a")} equity over time.`}>
-                <EquityDualLineChart data={chartDataLabA} equityStroke="#a78bfa" mtmStroke="#c4b5fd" revision={`${equityChartRevision(equitySnapsLabA, chartDataLabA, metricsLabA)}|tick=${String(engineLabA?.last_tick_at || "")}`} />
+              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+                <ChartDblClickExpand
+                  title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  defaultHeight={200}
+                  expandedHeight={420}
+                  detail={<EquityDblReadout m={metricsLabA} name={activityBranchTabLabel("lab_a")} />}
+                  render={({ h }) => (
+                    <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
+                      <EquityDualLineChart data={chartDataLabA} equityStroke="#a78bfa" mtmStroke="#c4b5fd" />
+                    </div>
+                  )}
+                />
               </div>
             </div>
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_b")}
               </h3>
-              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_b")} equity over time.`}>
-                <EquityDualLineChart data={chartDataLabB} equityStroke="#f59e0b" mtmStroke="#fcd34d" revision={`${equityChartRevision(equitySnapsLabB, chartDataLabB, metricsLabB)}|tick=${String(engineLabB?.last_tick_at || "")}`} />
+              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+                <ChartDblClickExpand
+                  title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  defaultHeight={200}
+                  expandedHeight={420}
+                  detail={<EquityDblReadout m={metricsLabB} name={activityBranchTabLabel("lab_b")} />}
+                  render={({ h }) => (
+                    <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
+                      <EquityDualLineChart data={chartDataLabB} equityStroke="#f59e0b" mtmStroke="#fcd34d" />
+                    </div>
+                  )}
+                />
               </div>
             </div>
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_c")}
               </h3>
-              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_c")} equity over time.`}>
-                <EquityDualLineChart data={chartDataLabC} equityStroke="#f472b6" mtmStroke="#fbcfe8" revision={`${equityChartRevision(equitySnapsLabC, chartDataLabC, metricsLabC)}|tick=${String(engineLabC?.last_tick_at || "")}`} />
+              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+                <ChartDblClickExpand
+                  title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  defaultHeight={200}
+                  expandedHeight={420}
+                  detail={<EquityDblReadout m={metricsLabC} name={activityBranchTabLabel("lab_c")} />}
+                  render={({ h }) => (
+                    <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
+                      <EquityDualLineChart data={chartDataLabC} equityStroke="#f472b6" mtmStroke="#fbcfe8" />
+                    </div>
+                  )}
+                />
               </div>
             </div>
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_d")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_d")}
               </h3>
-              <div className="chart chart--equity-stack" title={`${activityBranchTabLabel("lab_d")} equity over time.`}>
-                <EquityDualLineChart data={chartDataLabD} equityStroke="#fca5a5" mtmStroke="#fecaca" revision={`${equityChartRevision(equitySnapsLabD, chartDataLabD, metricsLabD)}|tick=${String(engineLabD?.last_tick_at || "")}`} />
+              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+                <ChartDblClickExpand
+                  title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  defaultHeight={200}
+                  expandedHeight={420}
+                  detail={<EquityDblReadout m={metricsLabD} name={activityBranchTabLabel("lab_d")} />}
+                  render={({ h }) => (
+                    <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
+                      <EquityDualLineChart data={chartDataLabD} equityStroke="#fca5a5" mtmStroke="#fecaca" />
+                    </div>
+                  )}
+                />
               </div>
             </div>
           </div>
@@ -4459,7 +5063,7 @@ export default function App() {
                 role="tab"
                 aria-selected={assetWatchLab === "d"}
                 className={`chart-tab ${assetWatchLab === "d" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab D (wild reference)."
+                title="Per-asset engine snapshot for Lab D."
                 onClick={() => setAssetWatchLab("d")}
               >
                 Lab D
@@ -5270,26 +5874,97 @@ export default function App() {
             </div>
             <div
               className="chart chart--equity-overlay"
-              title={
-                equityCompareMode === "blended"
-                  ? "Combined comparison using one blended line per branch (average of book and MTM)."
-                  : "Combined comparison using potential spread per branch (MTM minus book)."
-              }
+              title="Double-click chart to expand. Toggles at top still apply."
             >
-              <ResponsiveContainer key={equityOverlayRevision} width="100%" height="100%">
-                <LineChart data={equityOverlayData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                  <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
-                  <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
-                  <Tooltip contentStyle={{ background: "#0b1228", border: "1px solid #243055" }} formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]} />
-                  <Legend verticalAlign="bottom" height={28} wrapperStyle={{ fontSize: 11, paddingTop: 6 }} formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>} />
-                  {equityVisible.live ? <Line type="monotone" dataKey={equityCompareMode === "blended" ? "liveBlend" : "livePot"} name={equityCompareMode === "blended" ? "Live blended" : "Live potential"} stroke="#38bdf8" strokeWidth={2.4} dot={false} /> : null}
-                  {equityVisible.a ? <Line type="monotone" dataKey={equityCompareMode === "blended" ? "aBlend" : "aPot"} name={equityCompareMode === "blended" ? "Lab A blended" : "Lab A potential"} stroke="#a78bfa" strokeWidth={2.4} dot={false} /> : null}
-                  {equityVisible.b ? <Line type="monotone" dataKey={equityCompareMode === "blended" ? "bBlend" : "bPot"} name={equityCompareMode === "blended" ? "Lab B blended" : "Lab B potential"} stroke="#f59e0b" strokeWidth={2.4} dot={false} /> : null}
-                  {equityVisible.c ? <Line type="monotone" dataKey={equityCompareMode === "blended" ? "cBlend" : "cPot"} name={equityCompareMode === "blended" ? "Lab C blended" : "Lab C potential"} stroke="#f472b6" strokeWidth={2.4} dot={false} /> : null}
-                  {equityVisible.d ? <Line type="monotone" dataKey={equityCompareMode === "blended" ? "dBlend" : "dPot"} name={equityCompareMode === "blended" ? "Lab D blended" : "Lab D potential"} stroke="#fca5a5" strokeWidth={2.4} dot={false} /> : null}
-                </LineChart>
-              </ResponsiveContainer>
+              <ChartDblClickExpand
+                title={
+                  `Compare: ${equityCompareMode === "blended" ? "blended" : "potential spread"} — ${String(equityGranularity).toUpperCase()}`
+                }
+                defaultHeight={460}
+                expandedHeight={560}
+                detail={
+                  <p style={{ margin: 0, lineHeight: 1.45 }}>
+                    Mode <strong>{equityCompareMode === "blended" ? "Blended" : "Potential"}</strong>: {equityCompareMode === "blended"
+                      ? "one line per branch, average of book and MTM at each time step."
+                      : "MTM minus book (open-risk mark) at each time step."}{" "}
+                    Use the checkboxes in this popup to show or hide series; those toggles are shared with the main Compare view. Time scale is the
+                    current tab ({String(equityGranularity)}).
+                  </p>
+                }
+                render={({ h }) => (
+                  <div style={{ width: "100%", height: h }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={equityOverlayData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
+                        <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
+                        <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
+                        <Tooltip contentStyle={{ background: "#0b1228", border: "1px solid #243055" }} formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]} />
+                        <Legend
+                          verticalAlign="bottom"
+                          height={28}
+                          wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
+                          formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
+                        />
+                        {equityVisible.live ? (
+                          <Line
+                            type="monotone"
+                            dataKey={equityCompareMode === "blended" ? "liveBlend" : "livePot"}
+                            name={equityCompareMode === "blended" ? "Live blended" : "Live potential"}
+                            stroke="#38bdf8"
+                            strokeWidth={2.4}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        ) : null}
+                        {equityVisible.a ? (
+                          <Line
+                            type="monotone"
+                            dataKey={equityCompareMode === "blended" ? "aBlend" : "aPot"}
+                            name={equityCompareMode === "blended" ? "Lab A blended" : "Lab A potential"}
+                            stroke="#a78bfa"
+                            strokeWidth={2.4}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        ) : null}
+                        {equityVisible.b ? (
+                          <Line
+                            type="monotone"
+                            dataKey={equityCompareMode === "blended" ? "bBlend" : "bPot"}
+                            name={equityCompareMode === "blended" ? "Lab B blended" : "Lab B potential"}
+                            stroke="#f59e0b"
+                            strokeWidth={2.4}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        ) : null}
+                        {equityVisible.c ? (
+                          <Line
+                            type="monotone"
+                            dataKey={equityCompareMode === "blended" ? "cBlend" : "cPot"}
+                            name={equityCompareMode === "blended" ? "Lab C blended" : "Lab C potential"}
+                            stroke="#f472b6"
+                            strokeWidth={2.4}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        ) : null}
+                        {equityVisible.d ? (
+                          <Line
+                            type="monotone"
+                            dataKey={equityCompareMode === "blended" ? "dBlend" : "dPot"}
+                            name={equityCompareMode === "blended" ? "Lab D blended" : "Lab D potential"}
+                            stroke="#fca5a5"
+                            strokeWidth={2.4}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        ) : null}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              />
             </div>
           </div>
         </div>

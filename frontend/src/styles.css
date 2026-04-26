@@ -242,6 +242,109 @@ button.primary.dash-panel-btn {
   background: #ff6b7a;
 }
 
+/* Optimizer Status: 5-metric row — wrap values (no mid-string ellipsis); label + ⓘ share metric tooltip. */
+.dash-optimizer-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px 12px;
+  font-size: 11px;
+  line-height: 1.35;
+  align-items: start;
+}
+
+/* Wider layout in the Optimizer report dialog — all five columns stay readable. */
+.dash-optimizer-metric-grid--in-report {
+  grid-template-columns: repeat(5, minmax(108px, 1fr));
+  gap: 12px 14px;
+  padding: 2px 0 4px 0;
+}
+
+@media (max-width: 700px) {
+  .dash-optimizer-metric-grid--in-report {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .dash-optimizer-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.dash-optimizer-metric-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dash-optimizer-metric-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8b93b0;
+  cursor: help;
+  line-height: 1.2;
+  user-select: none;
+}
+
+.dash-optimizer-metric-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  color: rgba(200, 210, 255, 0.45);
+  border: 1px solid rgba(120, 140, 190, 0.4);
+  flex-shrink: 0;
+}
+
+.dash-optimizer-metric-label:hover .dash-optimizer-metric-hint,
+.dash-optimizer-metric-hint:hover {
+  color: rgba(180, 210, 255, 0.85);
+  border-color: rgba(110, 231, 255, 0.35);
+}
+
+.dash-optimizer-metric-value {
+  font-weight: 650;
+  font-size: 12px;
+  color: #b8d8ff;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  cursor: default;
+}
+
+.dash-optimizer-metric-value--mono {
+  font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #c5ddff;
+}
+
+.dash-optimizer-metric-value--mono.dash-optimizer-metric-value--pulse-good {
+  color: #5ef3a9;
+  text-shadow: none;
+}
+
+.dash-optimizer-metric-value--mono.dash-optimizer-metric-value--pulse-bad {
+  color: #ff8b9a;
+  text-shadow: none;
+}
+
+.dash-optimizer-metric-value--mono.dash-optimizer-metric-value--pulse-warn {
+  color: #fbbf24;
+  text-shadow: none;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 1fr;

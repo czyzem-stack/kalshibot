@@ -88,7 +88,7 @@ function LabBranchPanel({
 }) {
   const p = `lab_${branch}`;
   const resetKey = branch === "a" ? "lab_a" : branch === "b" ? "lab_b" : branch === "c" ? "lab_c" : "lab_d";
-  const title = branch === "a" ? "Lab A (staging)" : branch === "b" ? "Lab B (conservative)" : branch === "c" ? "Lab C (aggressive)" : "Lab D (wild)";
+  const title = branch === "a" ? "Lab A (staging)" : branch === "b" ? "Lab B (conservative)" : branch === "c" ? "Lab C (aggressive)" : "Lab D";
   const autoResetTitle =
     "When enabled, wipe this lab’s SQLite trades/signals/equity once per bad streak if a tick ends with an error OR derived paper equity (seed + settled PnL − open commit) is ≤ 0—then the next tick starts from Paper balance (cents) in the sizing row above.";
   const note: ReactNode =
