@@ -735,10 +735,13 @@ export function RulesEditor({
   rules,
   disabled,
   onSave,
+  onServerValidate,
 }: {
   rules: AnyObj[];
   disabled: boolean;
   onSave: (r: AnyObj[]) => void;
+  /** Optional: POST parsed rules to ``/api/config/validate-rules`` and show server message. */
+  onServerValidate?: (r: AnyObj[]) => Promise<{ ok?: boolean; count?: number; detail?: string }>;
 }) {
   const [txt, setTxt] = useState(() => JSON.stringify(rules, null, 2));
 
@@ -769,7 +772,7 @@ export function RulesEditor({
           fontSize: 12,
         }}
       />
-      <div style={{ marginTop: 10 }}>
+      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
         <button
           className="primary"
           disabled={disabled}
@@ -786,6 +789,32 @@ export function RulesEditor({
         >
           Save rules
         </button>
+        {onServerValidate ? (
+          <button
+            type="button"
+            className="chart-tab"
+            disabled={disabled}
+            title="Validate with server Pydantic rules (same checks as save) without writing config."
+            onClick={() => {
+              void (async () => {
+                try {
+                  const parsed = JSON.parse(txt);
+                  if (!Array.isArray(parsed)) throw new Error("rules must be an array");
+                  const res = await onServerValidate(parsed);
+                  window.alert(
+                    res.detail
+                      ? String(res.detail)
+                      : `OK — ${res.count ?? parsed.length} rule(s) pass server validation.`,
+                  );
+                } catch (e: any) {
+                  window.alert(String(e?.message || e));
+                }
+              })();
+            }}
+          >
+            Validate on server
+          </button>
+        ) : null}
       </div>
     </div>
   );

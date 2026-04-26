@@ -85,6 +85,8 @@ a {
 }
 
 .top {
+  /* Same value for title↔banner gap and banner↔separator — avoids a tight stack */
+  --hero-stack-rhythm: 14px;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -95,7 +97,7 @@ a {
   margin-top: 0;
   margin-bottom: 0;
   padding-top: max(4px, env(safe-area-inset-top, 0px));
-  padding-bottom: 0;
+  padding-bottom: var(--hero-stack-rhythm);
   border-bottom: 1px solid var(--border);
   background: rgba(11, 16, 32, 0.98);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
@@ -762,14 +764,93 @@ input[type="number"] {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 12px;
   color: var(--muted);
   padding: 7px 10px;
   border-radius: 8px;
   border: 1px solid rgba(127, 138, 181, 0.35);
   background: rgba(15, 23, 42, 0.55);
+}
+
+.branch-perf-active-marquee {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.branch-perf-active-marquee--empty {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.branch-perf-active-marquee__label {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a8b4d9;
+}
+
+.branch-perf-active-marquee__muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.branch-perf-active-marquee__viewport {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  color: #dce3ff;
+  mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+}
+
+.branch-perf-active-marquee__track {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.branch-perf-active-marquee__track--scroll {
+  animation-name: lab-thought-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.branch-perf-active-marquee__track--static .branch-perf-active-marquee__half {
+  padding-right: 0;
+}
+
+.branch-perf-active-marquee__half {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  padding-right: 2.25rem;
+}
+
+.branch-perf-active-marquee__sep {
+  color: #5c678a;
+  font-weight: 500;
+}
+
+.branch-perf-active-marquee__trade {
+  color: #dce3ff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .branch-perf-active-marquee__track--scroll {
+    animation: none;
+  }
+
+  .branch-perf-active-marquee__viewport {
+    overflow-x: auto;
+    mask-image: none;
+  }
 }
 
 .branch-brain-optimizer-stack {
@@ -1066,7 +1147,7 @@ input[type="number"] {
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
-  gap: 0;
+  gap: var(--hero-stack-rhythm, 14px);
 }
 
 .hero-head__main {
@@ -1143,6 +1224,29 @@ input[type="number"] {
 
 .optimizer-toast-stack > * {
   pointer-events: auto;
+}
+
+.optimizer-toast-stack__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.optimizer-toast-stack__clear-all {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 650;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 138, 181, 0.45);
+  background: rgba(10, 16, 34, 0.92);
+  color: #c9d4f0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.optimizer-toast-stack__clear-all:hover:not(:disabled) {
+  border-color: rgba(110, 231, 255, 0.35);
+  color: var(--text);
 }
 
 .optimizer-toast {
@@ -1330,7 +1434,7 @@ input[type="number"] {
 .branch-hero-snapshot--header {
   width: min(980px, 100%);
   max-width: 100%;
-  padding: 6px 8px;
+  padding: 9px 10px;
   border-radius: 10px;
   border: 1px solid rgba(35, 51, 90, 0.8);
   background: linear-gradient(180deg, rgba(10, 18, 40, 0.98) 0%, rgba(8, 14, 30, 0.95) 100%);
@@ -1356,8 +1460,33 @@ input[type="number"] {
 
 .branch-hero-snapshot--header .branch-hero-snapshot__row {
   width: 19%;
-  min-width: 120px;
-  min-height: 32px;
+  min-width: 132px;
+  min-height: 40px;
+  padding: 6px 6px 6px 8px;
+}
+
+.branch-hero-snapshot--header .branch-hero-snapshot__name {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.branch-hero-snapshot--header .branch-hero-snapshot__val {
+  font-size: 14px;
+}
+
+/* Match $ line: same size + monospace (generic .branch-hero-snapshot .branch-ticker-portfolio-ret would override — use chained parent). */
+.branch-hero-snapshot.branch-hero-snapshot--header .branch-ticker-portfolio-ret {
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 800;
+  gap: 4px;
+  letter-spacing: 0.02em;
+}
+
+.branch-hero-snapshot.branch-hero-snapshot--header .branch-ticker-portfolio-ret-arrow {
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .branch-hero-snapshot__row-main {
@@ -1417,18 +1546,19 @@ input[type="number"] {
   margin-right: auto;
 }
 
-.branch-hero-snapshot .branch-ticker-portfolio-ret {
+/* Marquee rotor snapshot only — header bar uses stronger rules above */
+.branch-hero-snapshot:not(.branch-hero-snapshot--header) .branch-ticker-portfolio-ret {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1;
   white-space: nowrap;
 }
 
-.branch-hero-snapshot .branch-ticker-portfolio-ret-arrow {
-  font-size: 9px;
+.branch-hero-snapshot:not(.branch-hero-snapshot--header) .branch-ticker-portfolio-ret-arrow {
+  font-size: 11px;
   line-height: 1;
 }
 

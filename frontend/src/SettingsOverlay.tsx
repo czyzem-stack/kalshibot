@@ -702,6 +702,8 @@ export type SettingsOverlayProps = {
   labD: AnyObj;
   busy: boolean;
   onSaveRules: (rules: AnyObj[]) => void | Promise<void>;
+  /** Server-side ``RuleCfg`` validation for the JSON rules editor (optional). */
+  onValidateRulesJson?: (rules: AnyObj[]) => Promise<{ ok?: boolean; count?: number; detail?: string }>;
   onSaveYesSubtitleFilter: () => void | Promise<void>;
   onSaveExcludeSubtitleFilter: () => void | Promise<void>;
   onSaveSizing: () => void | Promise<void>;
@@ -1212,7 +1214,12 @@ export default function SettingsOverlay({
             <strong>implied NO</strong> (1 − implied YES from the book). The engine buys <strong>NO</strong> at the NO ask
             (or 1 − YES bid). Omit <code>side</code> or use <code>&quot;yes&quot;</code> for YES buys (default).
           </p>
-          <RulesEditor rules={cfg.rules ?? EMPTY_RULES_LIST} disabled={busy} onSave={(r) => void onSaveRules(r)} />
+          <RulesEditor
+            rules={cfg.rules ?? EMPTY_RULES_LIST}
+            disabled={busy}
+            onSave={(r) => void onSaveRules(r)}
+            onServerValidate={onValidateRulesJson}
+          />
         </details>
           </>
         ) : null}

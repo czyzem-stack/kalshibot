@@ -24,6 +24,28 @@ class RuleCfg(BaseModel):
     side: str | None = Field(default=None, description='yes or no')
 
 
+def normalize_rules_list(raw: Any, *, max_rules: int = 48) -> list[dict[str, Any]]:
+    """
+    Coerce and validate each rule with ``RuleCfg`` (same constraints as ``PUT /api/config`` for the ``rules`` field).
+
+    Used for lab-branch saves (which bypass ``BotConfigPayload`` nested validation) and ``POST /api/config/validate-rules``.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("rules must be a JSON array")
+    if len(raw) > max_rules:
+        raise ValueError(f"rules: at most {max_rules} entries")
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"rules[{i}]: each entry must be an object")
+        try:
+            rc = RuleCfg.model_validate(item)
+        except Exception as e:
+            raise ValueError(f"rules[{i}]: {e}") from e
+        out.append(rc.model_dump(exclude_none=True))
+    return out
+
+
 def merge_lab_branch_patch(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     """Merge lab_a / lab_b patch; always coerce ``paper_balance_cents`` to int when provided (non-null)."""
     out = dict(cur)

@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from .api_models import BotConfigPayload, merge_lab_branch_patch
+from .api_models import BotConfigPayload, merge_lab_branch_patch, normalize_rules_list
 from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
@@ -87,6 +87,7 @@ ENGINES: dict[str, TradingEngine] = {
 stop_event = asyncio.Event()
 _bg_task: asyncio.Task[None] | None = None
 _optimizer_task: asyncio.Task[None] | None = None
+_app_started_at_iso: str | None = None
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -579,8 +580,9 @@ def _lab_thought_stream(
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _bg_task, _optimizer_task
+    global _bg_task, _optimizer_task, _app_started_at_iso
     stop_event.clear()
+    _app_started_at_iso = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0).isoformat()
     _bg_task = asyncio.create_task(dual_engine_loop(ENGINES, stop_event))
     _optimizer_task = asyncio.create_task(_optimizer_loop(stop_event))
     try:
@@ -594,6 +596,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             await asyncio.gather(*tasks, return_exceptions=True)
         _bg_task = None
         _optimizer_task = None
+        _app_started_at_iso = None
 
 
 app = FastAPI(title="Kalshi Bot", lifespan=_app_lifespan)
@@ -641,8 +644,54 @@ app.add_middleware(
 
 
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    """Liveness plus cheap runtime flags for monitors (no DB or Kalshi I/O)."""
+    eng = _bg_task is not None and not _bg_task.done()
+    opt = _optimizer_task is not None and not _optimizer_task.done()
+    return {
+        "status": "ok",
+        "started_at": _app_started_at_iso,
+        "dual_engine_loop_running": eng,
+        "optimizer_loop_running": opt,
+    }
+
+
+@app.post("/api/config/validate-rules")
+async def validate_rules_endpoint(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate a proposed ``rules`` array with the same ``RuleCfg`` checks as persisted lab/live saves."""
+    raw = body.get("rules")
+    try:
+        norm = normalize_rules_list(raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "count": len(norm), "rules": norm}
+
+
+@app.get("/api/health/deep")
+async def health_deep() -> dict[str, Any]:
+    """Still read-only: SQLite file size, engine last_error strings, webhook flag. Avoids Kalshi calls."""
+    sp = Path(store.path)
+    sqlite_bytes: int | None = None
+    try:
+        if sp.is_file():
+            sqlite_bytes = int(sp.stat().st_size)
+    except OSError:
+        sqlite_bytes = None
+    eng = _bg_task is not None and not _bg_task.done()
+    opt = _optimizer_task is not None and not _optimizer_task.done()
+    errs: dict[str, str | None] = {}
+    for br, engn in ENGINES.items():
+        errs[br] = getattr(getattr(engn, "state", None), "last_error", None)
+    return {
+        "status": "ok",
+        "started_at": _app_started_at_iso,
+        "sqlite_path": str(sp.resolve()),
+        "sqlite_bytes": sqlite_bytes,
+        "dual_engine_loop_running": eng,
+        "optimizer_loop_running": opt,
+        "engine_last_errors": {k: v for k, v in errs.items() if v},
+        "alert_webhook_configured": bool(env.alert_webhook_url.strip()),
+    }
 
 
 @app.get("/api/data/storage")
@@ -826,21 +875,34 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
         )
 
     cfg = await store.load_config()
+
+    def _coerce_rules_in_lab_patch(merged: dict[str, Any]) -> None:
+        if "rules" not in merged:
+            return
+        try:
+            merged["rules"] = normalize_rules_list(merged["rules"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     la = body.get("lab_a")
     if isinstance(la, dict):
         merged_a = merge_lab_branch_patch(dict(cfg.get("lab_a") or {}), la)
+        _coerce_rules_in_lab_patch(merged_a)
         cfg["lab_a"] = expand_partial_lab_branch("lab_a", merged_a)
     lb = body.get("lab_b")
     if isinstance(lb, dict):
         merged_b = merge_lab_branch_patch(dict(cfg.get("lab_b") or {}), lb)
+        _coerce_rules_in_lab_patch(merged_b)
         cfg["lab_b"] = expand_partial_lab_branch("lab_b", merged_b)
     lc = body.get("lab_c")
     if isinstance(lc, dict):
         merged_c = merge_lab_branch_patch(dict(cfg.get("lab_c") or {}), lc)
+        _coerce_rules_in_lab_patch(merged_c)
         cfg["lab_c"] = expand_partial_lab_branch("lab_c", merged_c)
     ld = body.get("lab_d")
     if isinstance(ld, dict):
         merged_d = merge_lab_branch_patch(dict(cfg.get("lab_d") or {}), ld)
+        _coerce_rules_in_lab_patch(merged_d)
         cfg["lab_d"] = expand_partial_lab_branch("lab_d", merged_d)
     await store.save_config(cfg)
     return {"ok": True, "config": await store.load_config()}

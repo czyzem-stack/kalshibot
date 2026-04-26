@@ -103,6 +103,103 @@ function labThoughtsToSentence(lines: unknown): string {
   return parts.join(" · ").replace(/\s+/g, " ").trim();
 }
 
+function formatActiveTradeMarqueeLine(t: AnyObj): string {
+  const tick = String(t.ticker || "").slice(0, 44) || "—";
+  const side = String(t.side || "").toUpperCase() || "—";
+  const st = String(t.status || "").trim() || "—";
+  const sim = Boolean(Number(t.simulated));
+  const tag = sim ? "sim" : "real";
+  const cost = Number(t.amount_cents || 0) / 100;
+  const costStr = Number.isFinite(cost) && cost > 0 ? ` ~${fmtMoney(cost)}` : "";
+  return `${tick} ${side} · ${st}${costStr} (${tag})`;
+}
+
+/** Branch performance footer: scrolling list of non-settled trades for the selected branch tab. */
+function BranchPerfActiveTradesMarquee({ branchLabel, activeRows }: { branchLabel: string; activeRows: AnyObj[] }) {
+  const segments = useMemo(
+    () =>
+      activeRows.map((t, i) => ({
+        key: tradeToastRowKey(t) || `row-${i}`,
+        text: formatActiveTradeMarqueeLine(t),
+      })),
+    [activeRows],
+  );
+
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const firstHalfRef = useRef<HTMLDivElement>(null);
+  const [needsScroll, setNeedsScroll] = useState(false);
+
+  const fullTitle = segments.length
+    ? `${branchLabel} active: ` + segments.map((s) => s.text).join(" · ")
+    : `${branchLabel}: no active trades in the current feed.`;
+
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    const half = firstHalfRef.current;
+    if (!vp || !half) return;
+    const measure = () => {
+      setNeedsScroll(segments.length > 0 && half.scrollWidth > vp.clientWidth + 2);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(vp);
+    ro.observe(half);
+    return () => ro.disconnect();
+  }, [segments]);
+
+  const charCount = segments.reduce((n, s) => n + s.text.length, 0);
+  const durSec = Math.max(18, Math.min(120, Math.round(charCount * 0.07)));
+
+  const renderHalf = (suffix: string) => (
+    <>
+      {segments.map((s, i) => (
+        <span key={`${s.key}-${suffix}`} className="branch-perf-active-marquee__item">
+          <span className="branch-perf-active-marquee__trade">{s.text}</span>
+          {i < segments.length - 1 ? <span className="branch-perf-active-marquee__sep"> · </span> : null}
+        </span>
+      ))}
+    </>
+  );
+
+  if (!segments.length) {
+    return (
+      <div
+        className="branch-performance-bottom__ticker branch-perf-active-marquee branch-perf-active-marquee--empty"
+        title={fullTitle}
+      >
+        <span className="branch-perf-active-marquee__label">{branchLabel}</span>
+        <span className="branch-perf-active-marquee__muted"> — no active trades in feed</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="branch-performance-bottom__ticker branch-perf-active-marquee section-tip"
+      role="region"
+      aria-label={`${branchLabel} active trades`}
+      title={fullTitle}
+    >
+      <span className="branch-perf-active-marquee__label">{branchLabel}</span>
+      <div ref={viewportRef} className="branch-perf-active-marquee__viewport">
+        <div
+          className={`branch-perf-active-marquee__track${needsScroll ? " branch-perf-active-marquee__track--scroll" : " branch-perf-active-marquee__track--static"}`}
+          style={needsScroll ? { animationDuration: `${durSec}s` } : undefined}
+        >
+          <div ref={firstHalfRef} className="branch-perf-active-marquee__half">
+            {renderHalf("a")}
+          </div>
+          {needsScroll ? (
+            <div className="branch-perf-active-marquee__half" aria-hidden>
+              {renderHalf("b")}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Optimizer footer: all labs in one horizontal strip (marquee when wide, scroll on reduced motion). */
 function LabPulseWideTicker({ thoughts }: { thoughts: AnyObj | undefined }) {
   const segments = useMemo(() => {
@@ -1209,6 +1306,22 @@ function tradeToastRowKey(t: AnyObj): string {
   return `row:${ca}|${tk}|${side}|${amt}|${mode}`;
 }
 
+/** Union dashboard + poll rows by stable key so new trades on ``recent_trades`` are not dropped when /api/trades is non-empty but stale. */
+function mergeTradeRowsForToastEffect(dashRows: unknown, pollRows: AnyObj[] | null): AnyObj[] {
+  const byKey = new Map<string, AnyObj>();
+  const fromDash = Array.isArray(dashRows) ? (dashRows as AnyObj[]) : [];
+  const fromPoll = Array.isArray(pollRows) ? pollRows : [];
+  for (const t of fromDash) {
+    const k = tradeToastRowKey(t);
+    if (k) byKey.set(k, t);
+  }
+  for (const t of fromPoll) {
+    const k = tradeToastRowKey(t);
+    if (k) byKey.set(k, t);
+  }
+  return Array.from(byKey.values());
+}
+
 function tradeRowLooksResolved(t: AnyObj): boolean {
   const st = String(t?.status || "").trim().toLowerCase();
   if (
@@ -1845,7 +1958,7 @@ export default function App() {
   const seenTradeInitRef = useRef<Set<string>>(new Set());
   const seenTradeSettleRef = useRef<Set<string>>(new Set());
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
-  const [tradePopupToastsEnabled, setTradePopupToastsEnabled] = useState(true);
+  const [tradePopupToastsEnabled, setTradePopupToastsEnabled] = useState(() => readTradePopupToastsEnabled());
   const [optimizerRows, setOptimizerRows] = useState<AnyObj[]>([]);
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
@@ -2097,7 +2210,7 @@ export default function App() {
    * ``recent_trades`` on first run so a reload does not replay history as toasts.
    */
   useEffect(() => {
-    const rows = ((toastTradeRows && toastTradeRows.length ? toastTradeRows : dash?.recent_trades) || []) as AnyObj[];
+    const rows = mergeTradeRowsForToastEffect(dash?.recent_trades, toastTradeRows);
     if (!rows.length) return;
     if (!tradeToastsBootstrappedRef.current) {
       const bootToAdd: AnyObj[] = [];
@@ -2442,6 +2555,21 @@ export default function App() {
     };
     return map[perfBranch];
   }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC, metricsLabD]);
+
+  const activeTradesForPerfBranch = useMemo(() => {
+    const rows = mergeTradeRowsForToastEffect(dash?.recent_trades, toastTradeRows);
+    const list: AnyObj[] = [];
+    for (const r of rows) {
+      if (normalizeSignalTradeBranch(r.branch) !== perfBranch) continue;
+      if (tradeRowLooksResolved(r)) continue;
+      const st = String(r.status || "").toLowerCase();
+      if (!tradeStatusIsActiveBid(st)) continue;
+      list.push(r);
+    }
+    list.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+    return list;
+  }, [dash?.recent_trades, toastTradeRows, perfBranch]);
+
   const canPromoteLabAToLive =
     Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabB.total_pnl_dollars ?? 0) &&
     Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabC.total_pnl_dollars ?? 0) &&
@@ -2533,6 +2661,11 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const validateRulesOnServer = async (rules: AnyObj[]) => {
+    const out = (await apiPostJson("/api/config/validate-rules", { rules })) as AnyObj;
+    return { ok: Boolean(out?.ok), count: Number(out?.count ?? rules.length) };
   };
 
   const saveNoBetWhenYesBelow = async (pct: number | null) => {
@@ -2923,6 +3056,16 @@ export default function App() {
               </div>
             );
           })}
+          <div className="optimizer-toast-stack__toolbar">
+            <button
+              type="button"
+              className="optimizer-toast-stack__clear-all"
+              onClick={() => setOptimizerNotifs([])}
+              title="Dismiss every notification in this stack"
+            >
+              Clear all
+            </button>
+          </div>
         </div>
       ) : null}
       <div className="top">
@@ -2997,7 +3140,7 @@ export default function App() {
                 "Open / mark P&amp;L (est.) and MTM (est.) describe unrealized exposure from marks on still-open sim rows, using the " +
                 "server’s last snapshot. " +
                 "In Real $ on Live, Cash and portfolio tiles come from signed Kalshi balance APIs; labs always show paper bankrolls. " +
-                "The bottom ticker shows settled PnL for Labs A–D on the same basis used to gate “Apply Lab A to Live” (Lab A must beat B/C/D " +
+                "The bottom marquee shows active trades for the branch tab you selected; Apply Lab A to Live still uses settled PnL from the tiles (Lab A must beat B/C/D " +
                 "on settled, not on MTM). " +
                 "If two tiles seem contradictory, read settled vs open vs bankroll: book steps on fills, MTM wiggles on every poll, settled only " +
                 "steps on final resolution."
@@ -3046,11 +3189,11 @@ export default function App() {
                         headroom for new entries. Cross-check with Holdings under Account and with “Assets to watch” snapshots.
                       </p>
                       <p>
-                        <strong>Settled PnL ticker and Apply Lab A to Live.</strong> The one-line strip lists settled PnL for
-                        Labs A–D only (not Live) using the same sums as promote gating. “Apply Lab A to Live” copies Lab
-                        A’s trading overlays into the Live config only when Lab A’s settled PnL strictly exceeds B, C, and D, plus
-                        extra confirmation when not in sim mode. It does <em>not</em> merge bankrolls; it is a config promotion, not
-                        a money transfer.
+                        <strong>Active trades marquee and Apply Lab A to Live.</strong> The scrolling strip lists open / in-flight
+                        trades from the recent feed for whichever branch tab is selected (Live, Lab A–D). Promote gating still uses
+                        settled PnL sums from the tiles above, not this strip. “Apply Lab A to Live” copies Lab A’s trading overlays
+                        into the Live config only when Lab A’s settled PnL strictly exceeds B, C, and D, plus extra confirmation when
+                        not in sim mode. It does <em>not</em> merge bankrolls; it is a config promotion, not a money transfer.
                       </p>
                       <p>
                         <strong>When numbers look “wrong.”</strong> (1) Refresh: metrics come from the last dashboard payload; after
@@ -3194,11 +3337,7 @@ export default function App() {
           />
         </div>
         <div className="branch-performance-bottom">
-          <div className="branch-performance-bottom__ticker" title="Settled PnL by lab (same basis used by promote-to-live gating).">
-            Settled PnL ticker · <strong>Lab A</strong> {fmtMoney(Number(metricsLabA.total_pnl_dollars ?? 0))} · <strong>Lab B</strong>{" "}
-            {fmtMoney(Number(metricsLabB.total_pnl_dollars ?? 0))} · <strong>Lab C</strong> {fmtMoney(Number(metricsLabC.total_pnl_dollars ?? 0))} ·{" "}
-            <strong>Lab D</strong> {fmtMoney(Number(metricsLabD.total_pnl_dollars ?? 0))}
-          </div>
+          <BranchPerfActiveTradesMarquee branchLabel={perfBranchMeta.label} activeRows={activeTradesForPerfBranch} />
           <button
             type="button"
             className="primary"
@@ -4252,6 +4391,7 @@ export default function App() {
         labD={labD}
         busy={busy}
         onSaveRules={saveRules}
+        onValidateRulesJson={validateRulesOnServer}
         onSaveYesSubtitleFilter={saveYesSubtitleFilter}
         onSaveExcludeSubtitleFilter={saveExcludeSubtitleFilter}
         onSaveSizing={saveSizing}

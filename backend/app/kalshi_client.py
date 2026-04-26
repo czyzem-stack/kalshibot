@@ -16,15 +16,59 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from .settings_env import env
 
 
-async def _backoff_sleep_after_429(r: httpx.Response, attempt: int) -> None:
-    """Same formula as public GET retries (Retry-After header, else exponential + jitter)."""
-    ra = r.headers.get("retry-after") or r.headers.get("Retry-After")
+def _retry_after_seconds(headers: httpx.Headers) -> float | None:
+    """Parse ``Retry-After`` as seconds (Kalshi may send this on 429)."""
+    ra = headers.get("retry-after") or headers.get("Retry-After")
+    if ra is None:
+        return None
     try:
-        wait = float(ra) if ra is not None else 0.0
+        v = float(str(ra).strip())
+        return v if v > 0 else None
     except (TypeError, ValueError):
-        wait = 0.0
+        return None
+
+
+def _rate_limit_reset_sleep(headers: httpx.Headers) -> float | None:
+    """
+    Best-effort sleep from vendor rate-limit headers (unix seconds or ms until reset).
+
+    Checks common names; ignores parse errors.
+    """
+    now = dt.datetime.now(tz=dt.timezone.utc).timestamp()
+    for key in (
+        "x-ratelimit-reset",
+        "x-ratelimit-reset-requests",
+        "ratelimit-reset",
+        "RateLimit-Reset",
+    ):
+        raw = headers.get(key)
+        if not raw:
+            continue
+        s = str(raw).strip()
+        try:
+            ts = float(s)
+        except (TypeError, ValueError):
+            continue
+        if ts > 1e12:
+            ts = ts / 1000.0
+        if ts > now + 3600 * 24 * 365:
+            continue
+        if ts > 1e9:
+            delta = max(0.0, ts - now)
+            return min(120.0, max(0.5, delta))
+        if 0 < ts <= 600:
+            return min(120.0, max(0.5, ts))
+    return None
+
+
+async def _backoff_sleep_after_429(r: httpx.Response, attempt: int) -> None:
+    """429 backoff: Retry-After, then common rate-limit reset headers, else exponential + jitter."""
+    wait = _retry_after_seconds(r.headers) or 0.0
+    if wait <= 0:
+        wait = _rate_limit_reset_sleep(r.headers) or 0.0
     if wait <= 0:
         wait = min(55.0, 1.8 * (2**attempt) + random.uniform(0, 0.6))
+    wait = min(120.0, max(0.5, wait))
     await asyncio.sleep(wait)
 
 

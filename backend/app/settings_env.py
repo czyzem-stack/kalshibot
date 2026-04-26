@@ -78,6 +78,10 @@ class EnvSettings:
     # If set, POST /api/data/reset must send header ``X-Reset-Token: <value>`` in addition to confirm=yes.
     data_reset_token: str = _get("DATA_RESET_TOKEN", "")
     anthropic_api_key: str = _get("ANTHROPIC_API_KEY", "")
+    # Optional: POST JSON on new/changed engine ``last_error`` per branch (Discord incoming webhook works with {"content": "..."}).
+    alert_webhook_url: str = _get("ALERT_WEBHOOK_URL", "")
+    # Minimum seconds between two webhook posts for the same (branch, error prefix) to avoid spam.
+    alert_webhook_min_seconds: float = float(_get("ALERT_WEBHOOK_MIN_SECONDS", "120") or 120)
 
     @property
     def base_rest_url(self) -> str:

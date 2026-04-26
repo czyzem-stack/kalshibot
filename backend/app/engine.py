@@ -2217,7 +2217,10 @@ async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | N
 async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -> None:
     import asyncio
 
+    from .alert_webhook import post_branch_error_alerts
+
     tick = 0
+    prev_engine_alert: dict[str, str | None] = {}
     while not stop_event.is_set():
         eng_live = engines[BRANCH_LIVE]
         full_cfg = await eng_live.store.load_config()
@@ -2380,6 +2383,10 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                         eng_snap = engines.get(br)
                         if eng_snap:
                             eng_snap.state.last_error = err[:500]
+            try:
+                await post_branch_error_alerts(engines, prev_errors=prev_engine_alert)
+            except Exception:
+                pass
         except Exception as e:
             err = str(e)
             _data_log(
@@ -2389,6 +2396,10 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             el = engines.get(BRANCH_LIVE)
             if el:
                 el.state.last_error = err[:500]
+            try:
+                await post_branch_error_alerts(engines, prev_errors=prev_engine_alert)
+            except Exception:
+                pass
 
         # Reuse config loaded at loop start — avoids a second SQLite read every poll interval.
         poll_live = float(full_cfg.get("poll_seconds") or 8)
