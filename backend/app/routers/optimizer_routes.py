@@ -1,0 +1,122 @@
+"""Optimizer read/write endpoints (internal pulse / mutations run in the backend)."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Query
+
+from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
+from .. import state
+
+router = APIRouter(prefix="/api/optimizer", tags=["optimizer"])
+logger = logging.getLogger("kalshibot.api")
+
+
+@router.get("/recommendations")
+async def optimizer_recommendations(limit: int = Query(30, ge=1, le=200)) -> dict[str, Any]:
+    cfg = await state.store.load_config()
+    rows = await state.store.recent_optimizer_recommendations(limit=limit)
+    return {"config": cfg.get("optimizer") or {}, "rows": rows}
+
+
+@router.put("/config")
+async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
+    cfg = await state.store.load_config()
+    cur = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    nxt = dict(cur)
+    for k in (
+        "enabled",
+        "interval_minutes",
+        "lookback_hours",
+        "max_rows_per_table",
+        "model",
+        "adaptive_enabled",
+        "mode",
+        "lab_a_enabled",
+        "lab_b_enabled",
+        "lab_c_enabled",
+        "lab_d_enabled",
+        "lab_a_style",
+        "lab_b_style",
+        "lab_c_style",
+        "lab_d_style",
+        "loss_streak_trigger",
+        "threshold_step_pct",
+        "minute_step",
+        "max_history",
+        "lab_a_yes_floor_pct",
+        "lab_b_yes_floor_pct",
+        "lab_a_min_minutes_left",
+        "lab_b_min_minutes_left",
+        "lab_c_yes_floor_pct",
+        "lab_c_min_minutes_left",
+        "lab_d_yes_floor_pct",
+        "lab_d_min_minutes_left",
+        "min_trades_for_optimize",
+        "min_profitable_trades",
+        "regime_lookback_hours",
+        "optimize_bet_size",
+        "include_fees_in_score",
+        "backtest_proposals",
+        "adaptive_skip_backtest_gate",
+        "optimize_internal_mutations",
+    ):
+        if k in body:
+            v = body[k]
+            if k in (
+                "max_rows_per_table",
+                "max_history",
+                "min_trades_for_optimize",
+                "min_profitable_trades",
+            ) and v is not None:
+                try:
+                    nxt[k] = int(v)
+                except (TypeError, ValueError):
+                    nxt[k] = v
+            elif k == "lookback_hours" and v is not None:
+                try:
+                    nxt[k] = max(1, min(24 * 30, int(float(v))))
+                except (TypeError, ValueError):
+                    nxt[k] = v
+            elif k == "regime_lookback_hours" and v is not None:
+                try:
+                    nxt[k] = max(1, min(168, int(float(v))))
+                except (TypeError, ValueError):
+                    nxt[k] = v
+            elif k == "interval_minutes" and v is not None:
+                try:
+                    nxt[k] = max(5, min(24 * 60, int(float(v))))
+                except (TypeError, ValueError):
+                    nxt[k] = v
+            elif k in (
+                "optimize_bet_size",
+                "include_fees_in_score",
+                "backtest_proposals",
+                "adaptive_skip_backtest_gate",
+                "optimize_internal_mutations",
+            ):
+                nxt[k] = bool(v)
+            else:
+                nxt[k] = v
+    nxt.pop("max_bet_fraction", None)
+    cfg["optimizer"] = nxt
+    await state.store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:put_optimizer",
+        history_reason="optimizer_settings_patch",
+    )
+    return {"ok": True, "optimizer": nxt}
+
+
+@router.post("/run")
+async def optimizer_run() -> dict[str, Any]:
+    return await run_optimizer_once(state.store, force=True)
+
+
+@router.post("/force-internal-mutation")
+async def optimizer_force_internal_mutation() -> dict[str, Any]:
+    """Force one internal mutant cycle (bypasses scheduler cadence)."""
+    logger.info("forced internal mutation requested via API")
+    return await force_internal_mutation_once(state.store)

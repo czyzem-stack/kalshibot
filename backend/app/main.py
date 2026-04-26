@@ -11,13 +11,13 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
+from . import state
 from .api_models import BotConfigPayload, merge_lab_branch_patch, normalize_rules_list
 from .branch_config import (
     BRANCH_LAB_A,
@@ -42,10 +42,26 @@ from .kalshi_client import KalshiClient
 from .kalshi_portfolio import fetch_portfolio_snapshot
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
-from .persistence import Store, expand_partial_lab_branch
+from .persistence import expand_partial_lab_branch
 from .optimizer.promotion import lab_a_promotion_report
-from .optimizer_claude import force_internal_mutation_once, pulse_chart_baseline, run_optimizer_once
+from .optimizer_claude import pulse_chart_baseline
+from .routers import health as health_routes
+from .routers import optimizer_routes, public_root
 from .settings_env import env, kalshi_credentials_report
+from .state import (
+    DASHBOARD_ORDERBOOK_CACHE,
+    DASHBOARD_ORDERBOOK_CACHE_TTL_S,
+    ENGINES,
+    REPO_ROOT,
+    engine_lab_a,
+    engine_lab_b,
+    engine_lab_c,
+    engine_lab_d,
+    engine_live,
+    storage_dict,
+    store,
+    stop_event,
+)
 
 
 logger = logging.getLogger("kalshibot.api")
@@ -53,11 +69,6 @@ logger = logging.getLogger("kalshibot.api")
 # Must match ``default_bot_config`` / snapshot_equity Live paper fallback so tiles and chart tail
 # never disagree when ``paper_balance_cents`` is unset.
 _DEFAULT_PAPER_BALANCE_CENTS = 500_000
-
-# Filled on each full dashboard run with Kalshi mark refresh; read by ``GET /api/dashboard/orderbooks``.
-_DASHBOARD_ORDERBOOK_CACHE: dict[str, Any] = {"t_mono": 0.0, "payload": None}
-DASHBOARD_ORDERBOOK_CACHE_TTL_S = 5.0
-
 
 def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
     """Stable id for slimmed change_history rows so clients do not regenerate different legacy-* ids per poll."""
@@ -77,40 +88,6 @@ def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
     )
     h = hashlib.sha256(parts.encode("utf-8", errors="replace")).hexdigest()[:20]
     return f"ch-{h}"
-
-
-store = Store()
-engine_live = TradingEngine(store, BRANCH_LIVE)
-engine_lab_a = TradingEngine(store, BRANCH_LAB_A)
-engine_lab_b = TradingEngine(store, BRANCH_LAB_B)
-engine_lab_c = TradingEngine(store, BRANCH_LAB_C)
-engine_lab_d = TradingEngine(store, BRANCH_LAB_D)
-ENGINES: dict[str, TradingEngine] = {
-    BRANCH_LIVE: engine_live,
-    BRANCH_LAB_A: engine_lab_a,
-    BRANCH_LAB_B: engine_lab_b,
-    BRANCH_LAB_C: engine_lab_c,
-    BRANCH_LAB_D: engine_lab_d,
-}
-stop_event = asyncio.Event()
-_bg_task: asyncio.Task[None] | None = None
-_optimizer_task: asyncio.Task[None] | None = None
-_app_started_at_iso: str | None = None
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-def _storage_dict() -> dict[str, Any]:
-    logd = Path(env.data_log_dir)
-    if not logd.is_absolute():
-        logd = _REPO_ROOT / logd
-    return {
-        "sqlite_path": str(Path(store.path).resolve()),
-        "data_log_dir": str(logd.resolve()),
-        "data_logging_enabled": bool(env.data_logging_enabled),
-        "data_log_equity": bool(env.data_log_equity),
-        "data_reset_token_configured": bool(getattr(env, "data_reset_token", "") or ""),
-    }
 
 
 def _engine_status_block(engine: TradingEngine, *, engine_running: bool, simulate_orders: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -590,59 +567,25 @@ def _lab_thought_stream(
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _bg_task, _optimizer_task, _app_started_at_iso
-    stop_event.clear()
-    _app_started_at_iso = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0).isoformat()
-    _bg_task = asyncio.create_task(dual_engine_loop(ENGINES, stop_event))
-    _optimizer_task = asyncio.create_task(_optimizer_loop(stop_event))
+    state.stop_event.clear()
+    state.app_started_at_iso = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0).isoformat()
+    state.bg_task = asyncio.create_task(dual_engine_loop(state.ENGINES, state.stop_event))
+    state.optimizer_task = asyncio.create_task(_optimizer_loop(state.stop_event))
     try:
         yield
     finally:
-        stop_event.set()
-        tasks = [t for t in (_bg_task, _optimizer_task) if t is not None]
+        state.stop_event.set()
+        tasks = [t for t in (state.bg_task, state.optimizer_task) if t is not None]
         for t in tasks:
             t.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        _bg_task = None
-        _optimizer_task = None
-        _app_started_at_iso = None
+        state.bg_task = None
+        state.optimizer_task = None
+        state.app_started_at_iso = None
 
 
 app = FastAPI(title="Kalshi Bot", lifespan=_app_lifespan)
-
-
-@app.get("/", response_class=HTMLResponse)
-async def root_page() -> str:
-    """8765 is the JSON API only; the dashboard runs on the Vite dev server (5173)."""
-    return """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Kalshi Bot API</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem;
-           background: #0b1020; color: #e8ecff; line-height: 1.5; }
-    a { color: #6ee7ff; }
-    code { background: #121a33; padding: 0.1rem 0.35rem; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  <h1>Kalshi Bot API</h1>
-  <p>This port serves the <strong>backend API</strong> (JSON), not the React dashboard.</p>
-  <ul>
-    <li><a href="/docs">Swagger UI (/docs)</a></li>
-    <li><a href="/api/health">Health (/api/health)</a></li>
-    <li><a href="/api/dashboard">Dashboard JSON (/api/dashboard)</a></li>
-  </ul>
-  <p><strong>Dashboard UI:</strong> in another terminal run<br />
-  <code>cd frontend &amp;&amp; npm run dev</code><br />
-  then open <a href="http://localhost:5173">http://localhost:5173</a> (proxies <code>/api</code> here).</p>
-</body>
-</html>
-"""
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -652,18 +595,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.get("/api/health")
-async def health() -> dict[str, Any]:
-    """Liveness plus cheap runtime flags for monitors (no DB or Kalshi I/O)."""
-    eng = _bg_task is not None and not _bg_task.done()
-    opt = _optimizer_task is not None and not _optimizer_task.done()
-    return {
-        "status": "ok",
-        "started_at": _app_started_at_iso,
-        "dual_engine_loop_running": eng,
-        "optimizer_loop_running": opt,
-    }
+app.include_router(public_root.router)
+app.include_router(health_routes.router)
+app.include_router(optimizer_routes.router)
 
 
 @app.post("/api/config/validate-rules")
@@ -675,39 +609,6 @@ async def validate_rules_endpoint(body: dict[str, Any]) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True, "count": len(norm), "rules": norm}
-
-
-@app.get("/api/health/deep")
-async def health_deep() -> dict[str, Any]:
-    """Still read-only: SQLite file size, engine last_error strings, webhook flag. Avoids Kalshi calls."""
-    sp = Path(store.path)
-    sqlite_bytes: int | None = None
-    try:
-        if sp.is_file():
-            sqlite_bytes = int(sp.stat().st_size)
-    except OSError:
-        sqlite_bytes = None
-    eng = _bg_task is not None and not _bg_task.done()
-    opt = _optimizer_task is not None and not _optimizer_task.done()
-    errs: dict[str, str | None] = {}
-    for br, engn in ENGINES.items():
-        errs[br] = getattr(getattr(engn, "state", None), "last_error", None)
-    return {
-        "status": "ok",
-        "started_at": _app_started_at_iso,
-        "sqlite_path": str(sp.resolve()),
-        "sqlite_bytes": sqlite_bytes,
-        "dual_engine_loop_running": eng,
-        "optimizer_loop_running": opt,
-        "engine_last_errors": {k: v for k, v in errs.items() if v},
-        "alert_webhook_configured": bool(env.alert_webhook_url.strip()),
-    }
-
-
-@app.get("/api/data/storage")
-async def data_storage() -> dict[str, Any]:
-    """SQLite path, JSONL log directory, and logging flags (for backups / disk records)."""
-    return _storage_dict()
 
 
 async def _seed_equity_snapshots_after_reset(scope: str) -> None:
@@ -1641,8 +1542,8 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
         )
 
     if with_marks:
-        _DASHBOARD_ORDERBOOK_CACHE["t_mono"] = time.monotonic()
-        _DASHBOARD_ORDERBOOK_CACHE["payload"] = {
+        DASHBOARD_ORDERBOOK_CACHE["t_mono"] = time.monotonic()
+        DASHBOARD_ORDERBOOK_CACHE["payload"] = {
             "as_of_utc": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
             "metrics": {"mode": mode_live, **metrics_live},
             "metrics_lab_a": metrics_lab_a,
@@ -1653,7 +1554,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
 
     return {
         "config": cfg,
-        "storage": _storage_dict(),
+        "storage": storage_dict(),
         "kalshi": {
             "api_base": client.base,
             "env": env.kalshi_env,
@@ -1851,12 +1752,12 @@ async def dashboard_orderbooks() -> dict[str, Any]:
     with ``with_marks=True``). Triggers a full mark pass when the cache is stale.
     """
     now = time.monotonic()
-    pl = _DASHBOARD_ORDERBOOK_CACHE.get("payload")
-    t0 = float(_DASHBOARD_ORDERBOOK_CACHE.get("t_mono") or 0.0)
+    pl = DASHBOARD_ORDERBOOK_CACHE.get("payload")
+    t0 = float(DASHBOARD_ORDERBOOK_CACHE.get("t_mono") or 0.0)
     if pl and (now - t0) < DASHBOARD_ORDERBOOK_CACHE_TTL_S:
         return {"cached": True, "cache_age_s": round(now - t0, 3), **pl}
     full = await _compose_dashboard_base(with_marks=True)
-    p2 = _DASHBOARD_ORDERBOOK_CACHE.get("payload") or {}
+    p2 = DASHBOARD_ORDERBOOK_CACHE.get("payload") or {}
     return {"cached": False, **p2, "order_writes_live": (full.get("kalshi") or {}).get("order_writes_live")}
 
 
@@ -1994,112 +1895,3 @@ async def history_export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
-
-
-@app.get("/api/optimizer/recommendations")
-async def optimizer_recommendations(limit: int = Query(30, ge=1, le=200)) -> dict[str, Any]:
-    cfg = await store.load_config()
-    rows = await store.recent_optimizer_recommendations(limit=limit)
-    return {"config": cfg.get("optimizer") or {}, "rows": rows}
-
-
-@app.put("/api/optimizer/config")
-async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
-    cfg = await store.load_config()
-    cur = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
-    nxt = dict(cur)
-    for k in (
-        "enabled",
-        "interval_minutes",
-        "lookback_hours",
-        "max_rows_per_table",
-        "model",
-        "adaptive_enabled",
-        "mode",
-        "lab_a_enabled",
-        "lab_b_enabled",
-        "lab_c_enabled",
-        "lab_d_enabled",
-        "lab_a_style",
-        "lab_b_style",
-        "lab_c_style",
-        "lab_d_style",
-        "loss_streak_trigger",
-        "threshold_step_pct",
-        "minute_step",
-        "max_history",
-        "lab_a_yes_floor_pct",
-        "lab_b_yes_floor_pct",
-        "lab_a_min_minutes_left",
-        "lab_b_min_minutes_left",
-        "lab_c_yes_floor_pct",
-        "lab_c_min_minutes_left",
-        "lab_d_yes_floor_pct",
-        "lab_d_min_minutes_left",
-        "min_trades_for_optimize",
-        "min_profitable_trades",
-        "regime_lookback_hours",
-        "optimize_bet_size",
-        "include_fees_in_score",
-        "backtest_proposals",
-        "adaptive_skip_backtest_gate",
-        "optimize_internal_mutations",
-    ):
-        if k in body:
-            v = body[k]
-            if k in (
-                "max_rows_per_table",
-                "max_history",
-                "min_trades_for_optimize",
-                "min_profitable_trades",
-            ) and v is not None:
-                try:
-                    nxt[k] = int(v)
-                except (TypeError, ValueError):
-                    nxt[k] = v
-            elif k == "lookback_hours" and v is not None:
-                try:
-                    nxt[k] = max(1, min(24 * 30, int(float(v))))
-                except (TypeError, ValueError):
-                    nxt[k] = v
-            elif k == "regime_lookback_hours" and v is not None:
-                try:
-                    nxt[k] = max(1, min(168, int(float(v))))
-                except (TypeError, ValueError):
-                    nxt[k] = v
-            elif k == "interval_minutes" and v is not None:
-                try:
-                    nxt[k] = max(5, min(24 * 60, int(float(v))))
-                except (TypeError, ValueError):
-                    nxt[k] = v
-            elif k in (
-                "optimize_bet_size",
-                "include_fees_in_score",
-                "backtest_proposals",
-                "adaptive_skip_backtest_gate",
-                "optimize_internal_mutations",
-            ):
-                nxt[k] = bool(v)
-            else:
-                nxt[k] = v
-    nxt.pop("max_bet_fraction", None)
-    cfg["optimizer"] = nxt
-    await store.save_config(
-        cfg,
-        history_branch="global",
-        history_changed_by="api:put_optimizer",
-        history_reason="optimizer_settings_patch",
-    )
-    return {"ok": True, "optimizer": nxt}
-
-
-@app.post("/api/optimizer/run")
-async def optimizer_run() -> dict[str, Any]:
-    return await run_optimizer_once(store, force=True)
-
-
-@app.post("/api/optimizer/force-internal-mutation")
-async def optimizer_force_internal_mutation() -> dict[str, Any]:
-    """Force one internal mutant cycle immediately (bypasses scheduler cadence)."""
-    logger.info("forced internal mutation requested via API")
-    return await force_internal_mutation_once(store)
