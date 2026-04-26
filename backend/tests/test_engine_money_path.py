@@ -680,6 +680,102 @@ class PaperLoserDetectionTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("paper_loser_risk_last", h)
 
 
+class AutoRelaxTest(unittest.TestCase):
+    def test_is_lab_a_under_trading_fewer_than_threshold_in_window(self) -> None:
+        from app import optimizer_claude as ocm
+
+        end = dt.datetime(2026, 4, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
+        tr_a = [
+            {"created_at": "2026-04-01T08:00:00+00:00", "status": "settled", "ticker": "A"},
+            {"created_at": "2026-04-01T09:30:00+00:00", "status": "settled", "ticker": "B"},
+        ]
+        oc = ocm._norm_opt_cfg({"auto_relax_trade_threshold": 3, "auto_relax_hours_window": 6, "interval_minutes": 20})
+        self.assertTrue(ocm._is_lab_a_under_trading(tr_a, oc, end))
+
+    def test_is_lab_a_under_trading_zero_trades_in_last_four_optimizer_intervals(self) -> None:
+        from app import optimizer_claude as ocm
+
+        end = dt.datetime(2026, 4, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
+        # 3+ trades in 6h, but all older than 4×20m (second branch: no fills in the last 4 sched cycles)
+        t_old = (end - dt.timedelta(hours=2, minutes=5)).replace(tzinfo=dt.timezone.utc).isoformat()
+        tr_a = [
+            {"created_at": t_old, "status": "settled", "ticker": "A1"},
+            {"created_at": t_old, "status": "settled", "ticker": "A2"},
+            {"created_at": t_old, "status": "settled", "ticker": "A3"},
+        ]
+        oc = ocm._norm_opt_cfg({"auto_relax_trade_threshold": 3, "auto_relax_hours_window": 6, "interval_minutes": 20})
+        self.assertTrue(ocm._is_lab_a_under_trading(tr_a, oc, end))
+
+    def test_auto_relax_conservative_params_tighten_and_larger_size(self) -> None:
+        from app import optimizer_claude as ocm
+        from app.branch_config import MIN_BALANCE_FRACTION_PER_WINDOW
+
+        r = {
+            "name": "a",
+            "side": "yes",
+            "min_prob": 0.55,
+            "max_prob": 0.95,
+            "min_minutes_left": 12.0,
+            "max_minutes_left": 60.0,
+        }
+        cfg: dict = {
+            "balance_fraction_per_window": 0.04,
+            "lab_a": {"rules": [dict(r)], "balance_fraction_per_window": 0.04},
+        }
+        oc = ocm._norm_opt_cfg(
+            {
+                "lab_a_yes_floor_pct": 60,
+                "lab_a_min_minutes_left": 14,
+                "loss_streak_trigger": 2,
+            }
+        )
+        out = ocm._auto_relax_conservative_params(cfg, oc, at_iso="2026-04-01T12:00:00+00:00")
+        self.assertIsNotNone(out)
+        self.assertEqual(out.get("style"), "auto_relax")
+        self.assertEqual(oc.get("lab_a_yes_floor_pct"), 58)
+        self.assertEqual(oc.get("lab_a_min_minutes_left"), 12)
+        self.assertEqual(int(oc.get("loss_streak_trigger") or 0), 3)
+        bf = float((cfg.get("lab_a") or {}).get("balance_fraction_per_window") or 0)
+        self.assertGreater(bf, 0.04)
+        self.assertLessEqual(bf, 0.12)
+        self.assertGreaterEqual(bf, float(MIN_BALANCE_FRACTION_PER_WINDOW))
+
+    def test_auto_relax_cooldown_prevents_rapid_repeats(self) -> None:
+        from app import optimizer_claude as ocm
+
+        end = dt.datetime(2026, 4, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
+        oc = ocm._norm_opt_cfg(
+            {
+                "optimizer_last_auto_relax_at": (end - dt.timedelta(hours=1))
+                .replace(tzinfo=dt.timezone.utc)
+                .isoformat(),
+                "auto_relax_cooldown_hours": 4,
+            }
+        )
+        self.assertTrue(ocm._auto_relax_cooldown_active(oc, end))
+        self.assertTrue(ocm._auto_relax_cooldown_active(dict(oc, optimizer_last_auto_relax_at=end.isoformat(), auto_relax_cooldown_hours=4), end))
+        self.assertFalse(
+            ocm._auto_relax_cooldown_active(
+                {
+                    "optimizer_last_auto_relax_at": (end - dt.timedelta(hours=5))
+                    .replace(tzinfo=dt.timezone.utc)
+                    .isoformat(),
+                    "auto_relax_cooldown_hours": 4,
+                },
+                end,
+            )
+        )
+
+    def test_norm_opt_cfg_has_auto_relax_flags(self) -> None:
+        from app import optimizer_claude as ocm
+
+        o = ocm._norm_opt_cfg({})
+        self.assertTrue("enable_auto_relax" in o and o["enable_auto_relax"] is True)
+        self.assertEqual(int(o.get("auto_relax_trade_threshold", 0)), 3)
+        self.assertEqual(float(o.get("auto_relax_hours_window", 0)), 6.0)
+        self.assertEqual(float(o.get("auto_relax_cooldown_hours", 0)), 4.0)
+
+
 class AutonomousOptimizerMetaAndTuningTest(unittest.TestCase):
     def test_regime_meta_ewma_decay_and_update(self) -> None:
         from app import optimizer_claude as ocm

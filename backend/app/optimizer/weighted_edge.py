@@ -19,7 +19,7 @@ def calculate_weighted_edge(market: dict[str, Any], rule: dict[str, Any]) -> flo
     ``market["spread_width"]`` (0–1) or a small default of 0.02 so replay still works with only
     implied probability stored on the trade.
     """
-    from app.engine import (
+    from ..engine import (
         dollars_to_float,
         effective_no_ask,
         implied_no_probability,

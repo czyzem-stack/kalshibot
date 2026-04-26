@@ -129,6 +129,11 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("autotune_window_paper_loser_swaps", 0)
     out.setdefault("autotune_window_paper_loser_risk_events", 0)
     out.setdefault("mutation_aggressiveness_autotune_baseline", None)  # if None, use mutation_aggressiveness
+    out.setdefault("enable_auto_relax", True)
+    out.setdefault("auto_relax_trade_threshold", 3)  # under-activity if fewer than this many trades in the window
+    out.setdefault("auto_relax_hours_window", 6)
+    out.setdefault("auto_relax_cooldown_hours", 4)
+    out.setdefault("optimizer_last_auto_relax_at", "")
     # Patient stop-loss is modeled on each ``lab_*`` / Live trading dict (``enable_patient_stop_loss``,
     # ``stop_loss_trigger_pct``, ``min_hold_minutes_before_stop``). ``replay_under_rules_detail`` accepts
     # ``branch_trading_cfg`` to clamp replay PnL vs. those stops when evaluating fitness.
@@ -1246,6 +1251,121 @@ def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
         "paper_loser_pinned_regime": pin,
         "paper_loser_pinned_until": pin_ex,
     }
+
+
+# --- Auto-relax (low trade activity) — internal only; see ``enable_auto_relax`` in ``_norm_opt_cfg``. ---
+# Hard caps: balance fraction ≤ 0.12, yes_floor ≥ 45, loss_streak_trigger ≤ 12, min_minutes ≥ 1.
+
+
+def _count_trades_created_between(
+    tr_a: list[dict[str, Any]], start: dt.datetime, end: dt.datetime
+) -> int:
+    n = 0
+    for t in tr_a:
+        ca = _parse_iso_dt(t.get("created_at"))
+        if ca is not None and start <= ca <= end:
+            n += 1
+    return n
+
+
+def _is_lab_a_under_trading(tr_a: list[dict[str, Any]], oc: dict[str, Any], end: dt.datetime) -> bool:
+    """True when Lab A is placing too few sim trades: sparse window and/or nothing in the last 4 sched cycles."""
+    th = max(0, int(oc.get("auto_relax_trade_threshold", 3) or 3))
+    hw = max(0.5, float(oc.get("auto_relax_hours_window", 6) or 6))
+    start6 = end - dt.timedelta(hours=hw)
+    n6 = _count_trades_created_between(tr_a, start6, end)
+    if n6 < th:
+        return True
+    int_m = max(5, int(oc.get("interval_minutes", 20) or 20))
+    start4 = end - dt.timedelta(minutes=4 * int_m)
+    n4 = _count_trades_created_between(tr_a, start4, end)
+    if n4 == 0:
+        return True
+    return False
+
+
+def _paper_loser_swap_recently(oc: dict[str, Any], end: dt.datetime, hours: float) -> bool:
+    t = _parse_iso_dt(str(oc.get("last_paper_loser_swap_at") or ""))
+    if t is None:
+        return False
+    h = max(0.1, float(hours))
+    return t >= (end - dt.timedelta(hours=h)) and t <= end
+
+
+def _auto_relax_cooldown_active(oc: dict[str, Any], end: dt.datetime) -> bool:
+    t = _parse_iso_dt(str(oc.get("optimizer_last_auto_relax_at") or ""))
+    if t is None:
+        return False
+    cd = max(0.5, float(oc.get("auto_relax_cooldown_hours", 4) or 4))
+    return t >= (end - dt.timedelta(hours=cd)) and t <= end
+
+
+def _auto_relax_conservative_params(
+    cfg: dict[str, Any], oc: dict[str, Any], *, at_iso: str
+) -> dict[str, Any] | None:
+    """
+    Gradually relax strict Lab A / optimizer parameters when auto-relax is allowed.
+    Returns a change_history row, or None if no safe adjustment remains.
+    """
+    lab0, rules0 = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    if not rules0:
+        return None
+    before_floor = max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57)))
+    before_mins = max(0, _safe_int(oc.get("lab_a_min_minutes_left"), 5))
+    before_loss = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 1)))
+    try:
+        before_bf = float(
+            lab0.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
+    except (TypeError, ValueError):
+        before_bf = 0.03
+    before_bf = max(MIN_BALANCE_FRACTION_PER_WINDOW, min(0.12, before_bf))
+
+    after_floor = max(45, min(99, before_floor - 2))
+    after_mins = before_mins
+    if before_mins >= 14:
+        after_mins = max(1, int(before_mins) - 2)
+    elif before_mins >= 10:
+        after_mins = max(1, int(before_mins) - 1)
+    # Loss streak trigger: *less* sensitive ⇒ higher number (require more high-floor losses to tighten)
+    after_loss = min(12, max(1, before_loss + 1))
+    # Size: small step toward 0.12 cap
+    step_bf = 0.004
+    after_bf = min(0.12, max(MIN_BALANCE_FRACTION_PER_WINDOW, before_bf + step_bf))
+
+    # Nothing to do
+    if (
+        after_floor == before_floor
+        and after_mins == before_mins
+        and after_loss == before_loss
+        and abs(after_bf - before_bf) < 1e-8
+    ):
+        return None
+
+    style = _branch_style(oc, BRANCH_LAB_A)
+    proposed_rules = _apply_rule_thresholds(rules0, yes_floor_pct=after_floor, min_minutes_left=after_mins, style=style)
+    lab1 = json.loads(json.dumps(lab0))
+    lab1["rules"] = proposed_rules
+    lab1["balance_fraction_per_window"] = after_bf
+    cfg["lab_a"] = lab1
+
+    oc["lab_a_yes_floor_pct"] = after_floor
+    oc["lab_a_min_minutes_left"] = after_mins
+    oc["loss_streak_trigger"] = after_loss
+    return _history_item(
+        at_iso=at_iso,
+        branch=BRANCH_LAB_A,
+        style="auto_relax",
+        reason="low_trade_activity",
+        before_floor=before_floor,
+        after_floor=after_floor,
+        before_minm=before_mins,
+        after_minm=after_mins,
+        before_extra={"loss_streak_trigger": before_loss, "balance_fraction_per_window": before_bf},
+        after_extra={"loss_streak_trigger": after_loss, "balance_fraction_per_window": after_bf},
+    )
 
 
 def _regime_volatility(signals: list[dict[str, Any]], *, hours: float, end: dt.datetime) -> dict[str, Any]:
@@ -2903,6 +3023,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     )
     if bi:
         changes.append(bi)
+    auto_relax_applied = False
     mutation_meta: dict[str, Any] = {"accepted": False, "mutant_run": mutant_run, "reject_reason": ""}
     if mutant_run:
         st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
@@ -3037,6 +3158,31 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         ) + 1
     if bool(swap_pl.get("swapped")):
         oc["autotune_window_paper_loser_swaps"] = int(oc.get("autotune_window_paper_loser_swaps", 0) or 0) + 1
+
+    if (
+        bool(oc.get("enable_auto_relax", True))
+        and bool(oc.get("adaptive_enabled", True))
+        and bool(oc.get("lab_a_enabled", True))
+        and not bool(swap_pl.get("swapped"))
+        and not _auto_relax_cooldown_active(oc, end)
+        and not _paper_loser_swap_recently(oc, end, float(oc.get("auto_relax_cooldown_hours", 4) or 4))
+    ):
+        health_pre = _check_optimizer_health(oc)
+        if str(health_pre.get("health_color") or "") != "red" and _is_lab_a_under_trading(tr_a, oc, end):
+            ar_row = _auto_relax_conservative_params(cfg, oc, at_iso=end_iso)
+            if ar_row is not None:
+                logger.info(
+                    "Auto-relax triggered — low trade activity. Increasing size and lowering yes_floor_pct"
+                )
+                auto_relax_applied = True
+                oc["optimizer_last_auto_relax_at"] = end_iso
+                hist_ar = oc.get("change_history")
+                old_ar = hist_ar if isinstance(hist_ar, list) else []
+                hlim_ar = max(20, min(500, _safe_int(oc.get("max_history"), 120)))
+                oc["change_history"] = [ar_row, *old_ar][:hlim_ar]
+                oc["last_change_at"] = end_iso
+                _merge_pulse_trace(oc, [ar_row])
+
     eff_sc, mtier = _compute_mutation_scale(oc)
     oc["mutation_tier"] = mtier
     oc["effective_mutation_scale"] = round(eff_sc, 4)
@@ -3067,6 +3213,8 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     if not bool(revert_meta.get("reverted")):
         if bool(swap_pl.get("swapped")):
             oc["last_status"] = "ok_paper_loser_full_swap"
+        elif auto_relax_applied:
+            oc["last_status"] = "ok_internal_auto_relax"
         else:
             oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else (
                 "ok_internal_pulse" if changes else "ok_noop"

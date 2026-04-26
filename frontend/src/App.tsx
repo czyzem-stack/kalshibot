@@ -6030,7 +6030,7 @@ function ApiOfflineCallout({ message }: { message: string }) {
   );
 }
 
-/** First dashboard fetch: spinner + honest copy. Elapsed time is the only “progress” the UI can know. */
+/** First dashboard fetch: minimal full-screen state until `/api/dashboard` returns. */
 function DashboardLoadingScreen() {
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
@@ -6049,25 +6049,14 @@ function DashboardLoadingScreen() {
       role="status"
       aria-live="polite"
       aria-busy="true"
-      aria-label="Loading dashboard, waiting for the API"
+      aria-label="Loading dashboard"
     >
       <div className="app-loading-screen__panel">
         <div className="app-loading-screen__spinner" aria-hidden />
         <h1 className="app-loading-screen__title">Chomp's Diner</h1>
-        <p className="app-loading-screen__line">Loading dashboard</p>
-        <p
-          className="app-loading-screen__sub"
-          title="The browser has no way to know how long the server will take. Only the clock below is real."
-        >
-          Waiting on the first <code className="app-loading-screen__code">/api/dashboard</code> response. There is no real
-          percent-complete—if this runs long, the slow work is on the server or network, not a stuck animation.
-        </p>
+        <p className="app-loading-screen__line">Loading…</p>
         <p className="app-loading-screen__elapsed" aria-live="off">
-          Elapsed: {elapsedSec}s
-        </p>
-        <p className="app-loading-screen__hint">
-          Use <code className="app-loading-screen__code">http://localhost:5173</code> so <code className="app-loading-screen__code">/api</code> proxies
-          to the Python app. The browser times out the request after 90s with an error if it never returns.
+          {elapsedSec}s
         </p>
       </div>
     </div>
