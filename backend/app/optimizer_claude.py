@@ -538,6 +538,30 @@ def _auto_revert_cooldown_ok(oc: dict[str, Any], *, now: dt.datetime) -> bool:
     return (now - prev) >= dt.timedelta(hours=4)
 
 
+def _auto_revert_stuck_triggers(
+    *,
+    red_streak: int,
+    acceptance_pct: float,
+    oc: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Stuck heuristics for auto-revert (no side effects). Used from ``_maybe_auto_revert_if_stuck`` only
+    *after* this cycle's internal trace row (with ``equity_slope_dph``) is appended and acceptance is
+    recalculated — same policy is summarized in the docstring for ``_check_optimizer_health``:
+
+    - ``red_streak >= 15`` — consecutive *red* health cycles (low acceptance on internal mutants), or
+    - ``acceptance_rate_pct < 20`` and ``_trace_negative_equity_slope_streak`` ≥ 8 (chronic Lab A equity decay).
+    """
+    neg = _trace_negative_equity_slope_streak(oc)
+    stuck_red = red_streak >= 15
+    stuck_acc_slope = float(acceptance_pct) < 20.0 and neg >= 8
+    return {
+        "stuck_red_15": stuck_red,
+        "stuck_low_acceptance_neg_slope": stuck_acc_slope,
+        "negative_equity_slope_streak": neg,
+    }
+
+
 def _recalculate_acceptance_rate(oc: dict[str, Any]) -> None:
     tr_rows = oc.get("internal_optimizer_trace")
     tr_list = tr_rows if isinstance(tr_rows, list) else []
@@ -560,13 +584,14 @@ async def _maybe_auto_revert_if_stuck(
     """
     When the internal optimizer is stuck, restore ``lab_a`` from the best ``config_history`` snapshot.
 
-    Eligibility (any):
+    Eligibility (any) — see ``_auto_revert_stuck_triggers`` (must stay in sync):
       - ``red_streak >= 15`` consecutive red-health cycles, or
-      - ``acceptance_pct < 20`` and equity slope negative for 8+ consecutive trace rows.
+      - ``acceptance_pct < 20`` and Lab A ``equity_slope_dph < 0`` for 8+ consecutive trace rows.
 
-    Picks the snapshot in the last 30 days whose ``lab_a`` yields the highest replay
-    ``score_dollars`` on recent settled trades (same replay stack as mutation evaluation).
-    Respects ``enable_auto_revert`` and a 4-hour cooldown between reverts.
+    Picks the snapshot in the last 30 days whose ``lab_a`` yields the highest
+    **composite** replay score (``_replay_fitness_bundle`` / ``score_dollars`` ===
+    ``composite_fitness_score`` output) on recent settled trades. Respects ``enable_auto_revert``
+    (default True) and a **4-hour** cooldown between reverts.
     """
     meta: dict[str, Any] = {"reverted": False, "best_score": None, "reason": ""}
     now = _parse_iso_dt(at_iso) or _utc_now()
@@ -577,14 +602,15 @@ async def _maybe_auto_revert_if_stuck(
         meta["reason"] = "cooldown"
         return meta
 
-    neg_streak = _trace_negative_equity_slope_streak(oc)
-    stuck_red = red_streak >= 15
-    stuck_slope = acceptance_pct < 20.0 and neg_streak >= 8
+    trig = _auto_revert_stuck_triggers(red_streak=red_streak, acceptance_pct=acceptance_pct, oc=oc)
+    stuck_red = bool(trig["stuck_red_15"])
+    stuck_slope = bool(trig["stuck_low_acceptance_neg_slope"])
+    neg_streak = int(trig.get("negative_equity_slope_streak") or 0)
     if not (stuck_red or stuck_slope):
         meta["reason"] = "thresholds_not_met"
         return meta
 
-    hist = await store.list_config_history(100, include_config=True)
+    hist = await store.list_config_history(500, include_config=True)
     cutoff = now - dt.timedelta(days=30)
     st_settled = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     tail_n = min(200, max(8, len(st_settled)))
@@ -626,6 +652,7 @@ async def _maybe_auto_revert_if_stuck(
                 branch_trading_cfg=lab_x,
                 **rk,
             )
+            # score_dollars is composite_fitness_score() blended PnL / drawdown / vol / Sharpe (see optimizer.fitness)
             sc = float(fb.get("score_dollars") or 0.0)
         except Exception as ex:
             logger.debug("auto_revert_skip_history_row: %s", ex)
@@ -656,13 +683,15 @@ async def _maybe_auto_revert_if_stuck(
 
     if stuck_red:
         logger.warning(
-            "Optimizer stuck for 15+ cycles — auto-reverted Lab A to best historical config (fitness: %.4f, history_id=%s)",
+            "Optimizer stuck for %d cycles — auto-reverted Lab A to best historical config (fitness: %.4f, history_id=%s)",
+            int(red_streak),
             float(best_score),
             str(best_hid),
         )
     else:
         logger.warning(
-            "Optimizer stuck (acceptance<20 and equity slope negative for 8+ cycles) — auto-reverted Lab A to best historical config (fitness: %.4f, history_id=%s)",
+            "Optimizer stuck (acceptance<20% and %d negative Lab A $/h slope rows) — auto-reverted Lab A to best historical config (fitness: %.4f, history_id=%s)",
+            neg_streak,
             float(best_score),
             str(best_hid),
         )
@@ -729,6 +758,14 @@ def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
 
     ``mutation_aggressiveness`` is the configured 0–1 dial; acceptance tiers still modulate
     effective perturbation size inside ``_compute_mutation_scale``.
+
+    **Auto-revert (stuck) policy** is *not* evaluated in this function (ordering: red-streak and
+    acceptance for this tick are applied after the trace write). It runs in
+    ``_maybe_auto_revert_if_stuck`` via ``_auto_revert_stuck_triggers``: auto-revert may trigger when
+    ``red_streak_cycles >= 15`` OR (``acceptance < 20`` and 8+ consecutive negative Lab A equity slopes
+    in ``internal_optimizer_trace``), subject to ``enable_auto_revert`` and a 4h cooldown. Best config
+    is selected from ``config_history`` in the last 30 days by highest replay ``score_dollars`` (i.e.
+    ``composite_fitness_score``'s main score) on recent settles.
     """
     acc = round(_safe_float(oc.get("acceptance_rate_pct"), 0.0), 2)
     user_mag = round(max(0.0, min(1.0, _safe_float(oc.get("mutation_aggressiveness"), 0.75))), 4)

@@ -3169,6 +3169,8 @@ export default function App() {
 
   const TOAST_AUTOCLOSE_MIN_MS = 10_000;
   const TOAST_AUTOCLOSE_MAX_MS = 15_000;
+  /** ``optimizer_suggested_action`` toasts: always 10s (separate from trade toasts' random 10–15s). */
+  const OPTIMIZER_SUGGESTED_TOAST_MS = 10_000;
 
   useEffect(() => {
     const activeIds = new Set<string>();
@@ -3177,8 +3179,10 @@ export default function App() {
       if (!id) continue;
       activeIds.add(id);
       if (toastAutoDismissTimeoutsRef.current.has(id)) continue;
-      const span = Math.max(0, TOAST_AUTOCLOSE_MAX_MS - TOAST_AUTOCLOSE_MIN_MS);
-      const delayMs = TOAST_AUTOCLOSE_MIN_MS + Math.floor(Math.random() * (span + 1));
+      const isSuggested = id.startsWith("optimizer-suggested-");
+      const delayMs = isSuggested
+        ? OPTIMIZER_SUGGESTED_TOAST_MS
+        : TOAST_AUTOCLOSE_MIN_MS + Math.floor(Math.random() * Math.max(0, TOAST_AUTOCLOSE_MAX_MS - TOAST_AUTOCLOSE_MIN_MS + 1));
       const tid = window.setTimeout(() => {
         toastAutoDismissTimeoutsRef.current.delete(id);
         setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== id));
@@ -3450,7 +3454,6 @@ export default function App() {
     if (prev) {
       if (healthRank(snapshot.health) > healthRank(prev.health)) significantChangeDetected = true;
       if (snapshot.redStreak > prev.redStreak) significantChangeDetected = true;
-      if (prev.acceptanceRatePct - snapshot.acceptanceRatePct > 10) significantChangeDetected = true;
       if (snapshot.lastAutoRevertAt && snapshot.lastAutoRevertAt !== prev.lastAutoRevertAt) {
         significantChangeDetected = true;
       }
@@ -3458,7 +3461,7 @@ export default function App() {
 
     const now = Date.now();
     const cooldownElapsed = now - lastSuggestedToastTimeRef.current >= HOUR_MS;
-    // At most one suggested-action toast per rolling hour, unless the optimizer materially worsens (then show immediately).
+    // At most one suggested-action toast per hour, unless health worsens, red streak rises, or auto-revert just fired.
     const shouldToast = cooldownElapsed || significantChangeDetected;
     if (!shouldToast) {
       return;

@@ -7,7 +7,7 @@ import statistics
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +17,7 @@ from app.engine import (
     _handle_patient_stop_loss_exits,
     consecutive_stake_cents,
     pick_trade_rule,
+    rule_matches,
 )
 from app.optimizer.fitness import composite_fitness_score, is_statistically_better
 from app.persistence import Store
@@ -58,6 +59,28 @@ class RuleMatchTest(unittest.TestCase):
         )
         self.assertIsNotNone(picked)
         self.assertEqual(picked.get("name"), "b")
+
+    def test_rule_matches_false_when_outside_yes_band(self) -> None:
+        rule = {
+            "name": "mid",
+            "min_prob": 0.4,
+            "max_prob": 0.6,
+            "min_minutes_left": 1.0,
+            "max_minutes_left": 20.0,
+        }
+        self.assertFalse(rule_matches(0.15, 10.0, rule))
+
+    def test_rule_matches_picks_narrow_edge_implied_versus_bounds(self) -> None:
+        """Tight band: only mid-range implied YES + time in window counts as a match (edge = tradeable slice)."""
+        rule = {
+            "name": "tight",
+            "min_prob": 0.48,
+            "max_prob": 0.52,
+            "min_minutes_left": 5.0,
+            "max_minutes_left": 15.0,
+        }
+        self.assertTrue(rule_matches(0.5, 10.0, rule))
+        self.assertFalse(rule_matches(0.5, 3.0, rule))
 
 
 class PatientStopLossGatingTest(unittest.IsolatedAsyncioTestCase):
@@ -426,6 +449,106 @@ class OptimizerReplayStopLossTest(unittest.TestCase):
         self.assertLess(float(b["total_pnl_cents"]), 0.0)
         self.assertIn("score_dollars", b)
         self.assertNotEqual(int(b.get("total_pnl_from_stops_cents") or 0), 0)
+
+
+class AutoRevertStuckTest(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _eight_settled() -> list[dict]:
+        out: list[dict] = []
+        for i in range(8):
+            out.append(
+                {
+                    "status": "settled",
+                    "pnl_cents": 1,
+                    "ticker": f"KX-T{i}",
+                    "created_at": f"2026-01-15T10:0{i}:00+00:00",
+                    "extra_json": '{"rule": "a", "entry_implied_yes": 0.5}',
+                }
+            )
+        return out
+
+    async def test_auto_revert_skips_when_flag_off(self) -> None:
+        from app import optimizer_claude as ocm
+
+        rules = [{"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}]
+        cfg: dict = {"lab_a": {"rules": rules}}
+        oc = ocm._norm_opt_cfg({**ocm._opt_cfg({"optimizer": {}}), "enable_auto_revert": False})
+        store = MagicMock()
+        meta = await ocm._maybe_auto_revert_if_stuck(
+            store,
+            cfg=cfg,
+            oc=oc,
+            tr_a=self._eight_settled(),
+            sg_a=[],
+            at_iso="2026-01-15T12:00:00+00:00",
+            red_streak=20,
+            acceptance_pct=10.0,
+        )
+        self.assertEqual(meta.get("reason"), "disabled")
+        store.list_config_history.assert_not_called()
+
+    async def test_auto_revert_respects_4h_cooldown(self) -> None:
+        from app import optimizer_claude as ocm
+
+        rules = [{"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}]
+        cfg: dict = {"lab_a": {"rules": rules}}
+        base = ocm._norm_opt_cfg(ocm._opt_cfg({"optimizer": {}}))
+        base["optimizer_auto_revert_last_at"] = "2026-01-15T10:00:00+00:00"
+        store = MagicMock()
+        meta = await ocm._maybe_auto_revert_if_stuck(
+            store,
+            cfg=cfg,
+            oc=base,
+            tr_a=self._eight_settled(),
+            sg_a=[],
+            at_iso="2026-01-15T12:00:00+00:00",
+            red_streak=20,
+            acceptance_pct=10.0,
+        )
+        self.assertEqual(meta.get("reason"), "cooldown")
+        store.list_config_history.assert_not_called()
+
+    @patch("app.optimizer_claude._replay_fitness_bundle", return_value={"score_dollars": 9.5})
+    @patch("app.optimizer_claude._replay_open_kw", return_value={})
+    async def test_auto_revert_red_15_loads_best_history_lab_a(self, _m_open: object, _m_fb: object) -> None:
+        from app import optimizer_claude as ocm
+
+        rules = [{"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}]
+        cfg: dict = {"lab_a": {"rules": list(rules)}}
+        oc = ocm._norm_opt_cfg(ocm._opt_cfg({"optimizer": {}}))
+        store = MagicMock()
+        store.list_config_history = AsyncMock(
+            return_value=[
+                {
+                    "id": 7,
+                    "timestamp": "2026-01-10T00:00:00+00:00",
+                    "config": {
+                        "lab_a": {
+                            "rules": list(rules),
+                            "balance_fraction_per_window": 0.033,
+                        }
+                    },
+                }
+            ]
+        )
+        tr_a = self._eight_settled()
+        meta = await ocm._maybe_auto_revert_if_stuck(
+            store,
+            cfg=cfg,
+            oc=oc,
+            tr_a=tr_a,
+            sg_a=[],
+            at_iso="2026-01-15T12:00:00+00:00",
+            red_streak=15,
+            acceptance_pct=50.0,
+        )
+        self.assertTrue(bool(meta.get("reverted")))
+        self.assertEqual(float(cfg["lab_a"].get("balance_fraction_per_window") or 0), 0.033)
+        self.assertEqual(oc.get("optimizer_red_streak_cycles"), 0)
+        tr = oc.get("internal_optimizer_trace")
+        self.assertIsInstance(tr, list)
+        self.assertEqual(str((tr[0] if tr else {}).get("reject_reason")), "auto-revert-stuck")
+        self.assertTrue(bool((tr[0] if tr else {}).get("auto_revert")))
 
 
 if __name__ == "__main__":
