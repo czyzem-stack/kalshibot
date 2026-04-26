@@ -242,7 +242,7 @@ button.primary.dash-panel-btn {
   background: #ff6b7a;
 }
 
-/* Optimizer Status: 5-metric row — wrap values (no mid-string ellipsis); label + ⓘ share metric tooltip. */
+/* Optimizer (report / overlays): 5-metric row — wrap values; label + ⓘ share metric tooltip. */
 .dash-optimizer-metric-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

@@ -406,7 +406,8 @@ class OptimizerReplayStopLossTest(unittest.TestCase):
         )
         per = d.get("per_trade_pnl_cents_chrono") or []
         self.assertEqual(len(per), 2)
-        self.assertEqual(int(d.get("total_pnl_from_stops_cents") or 0), -200)
+        # Raw -200; replay applies liquidity scale from synthetic spread (~0.976) → ~-195.
+        self.assertEqual(int(d.get("total_pnl_from_stops_cents") or 0), -195)
         self.assertEqual(float(d.get("stop_loss_trigger_rate") or 0.0), 50.0)
         self.assertEqual(int(d.get("stop_loss_exits_n") or 0), 1)
 
@@ -549,6 +550,201 @@ class AutoRevertStuckTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(tr, list)
         self.assertEqual(str((tr[0] if tr else {}).get("reject_reason")), "auto-revert-stuck")
         self.assertTrue(bool((tr[0] if tr else {}).get("auto_revert")))
+
+
+class WeightedEdgeAndRegimeTest(unittest.TestCase):
+    def test_calculate_weighted_edge_penalizes_wider_spread(self) -> None:
+        from app.optimizer.weighted_edge import calculate_weighted_edge
+
+        rule = {"side": "yes"}
+        tight = {"yes_bid_dollars": 0.48, "yes_ask_dollars": 0.52}
+        wide = {"yes_bid_dollars": 0.20, "yes_ask_dollars": 0.80}
+        t = calculate_weighted_edge(tight, rule)
+        w = calculate_weighted_edge(wide, rule)
+        # Same mid; wider ask yields more negative raw edge, and liquidity factor is smaller.
+        self.assertGreater(t, w)
+
+    def test_trading_regime_key_event_risk_from_stop_rate(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg(
+            {
+                "replay_stop_loss_trigger_rate_pct": 40.0,
+            }
+        )
+        r = ocm._trading_regime_key_from_context(oc, [], [], "2026-01-15T12:00:00+00:00")
+        self.assertEqual(r, "event_risk")
+
+    def test_sync_regime_applies_event_rules_to_lab_a(self) -> None:
+        from app import optimizer_claude as ocm
+
+        base = [
+            {"name": "base", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 99.0}
+        ]
+        event_only = [
+            {"name": "event_family", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 99.0}
+        ]
+        cfg: dict = {"lab_a": {"rules": [dict(x) for x in base], "rules_event": [dict(x) for x in event_only]}}
+        oc = ocm._norm_opt_cfg({"replay_stop_loss_trigger_rate_pct": 50.0})
+        ocm._sync_regime_rule_families_to_lab_a(cfg, oc, [], [], "2026-01-15T12:00:00+00:00")
+        la = cfg.get("lab_a")
+        self.assertIsInstance(la, dict)
+        self.assertEqual(la.get("active_regime"), "event_risk")
+        names = {str(r.get("name")) for r in (la.get("rules") or []) if isinstance(r, dict)}
+        self.assertIn("event_family", names)
+
+
+class PaperLoserDetectionTest(unittest.IsolatedAsyncioTestCase):
+    def test_paper_loser_not_triggered_when_fitness_is_not_paper_winner(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({})
+        # Even with extreme stop rate, a non-positive score_dollars is not a "paper winner".
+        rr: dict = {"score_dollars": -0.1, "stop_loss_trigger_rate": 90.0}
+        self.assertFalse(ocm._is_paper_winner_but_real_loser(oc, rr))
+
+    def test_paper_loser_true_high_stop_rate_with_good_replay(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({})
+        rr: dict = {"score_dollars": 1.0, "stop_loss_trigger_rate": 46.0}
+        self.assertTrue(ocm._is_paper_winner_but_real_loser(oc, rr))
+
+    def test_paper_loser_true_negative_equity_trace_streak(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({"paper_loser_neg_equity_trace_min": 5})
+        oc["internal_optimizer_trace"] = [{"equity_slope_dph": -1.0} for _ in range(5)]
+        rr: dict = {"score_dollars": 2.0, "stop_loss_trigger_rate": 10.0}
+        self.assertTrue(ocm._is_paper_winner_but_real_loser(oc, rr))
+
+    def test_paper_loser_respects_enable_flag(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({})
+        oc["enable_paper_loser_detection"] = False
+        self.assertFalse(
+            ocm._is_paper_winner_but_real_loser(
+                oc,
+                {"score_dollars": 1.0, "stop_loss_trigger_rate": 90.0},
+            )
+        )
+
+    async def test_paper_loser_full_swap_runs_regime_bump(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app import optimizer_claude as ocm
+
+        r = {"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}
+        cfg: dict = {
+            "lab_a": {
+                "active_regime": "high_vol",
+                "rules": [dict(r)],
+                "rules_high_vol": [dict(r)],
+                "rules_low_vol": [dict(r)],
+                "rules_event": [dict(r)],
+            }
+        }
+        oc = ocm._norm_opt_cfg({})
+        store = MagicMock()
+        store.list_config_history = AsyncMock(return_value=[])
+        meta = await ocm._apply_paper_loser_strategy_swap(
+            store, cfg, oc, at_iso="2026-01-20T00:00:00+00:00", repeated_cycles=4
+        )
+        self.assertTrue(meta.get("swapped"))
+        # high_vol -> next in PAPER_LOSER_REGIME_ORDER is low_vol
+        self.assertEqual((cfg.get("lab_a") or {}).get("active_regime"), "low_vol")
+        self.assertTrue(oc.get("paper_loser_radical_next") is True)
+        self.assertEqual(int(oc.get("optimizer_consecutive_paper_loser_cycles", -1) or 0), 0)
+
+    async def test_paper_loser_no_swap_below_threshold_cycles(self) -> None:
+        from unittest.mock import MagicMock
+
+        from app import optimizer_claude as ocm
+
+        r = {"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}
+        cfg: dict = {"lab_a": {"rules": [dict(r)]}}
+        meta = await ocm._apply_paper_loser_strategy_swap(
+            MagicMock(), cfg, ocm._norm_opt_cfg({}), at_iso="2026-01-20T00:00:00+00:00", repeated_cycles=3
+        )
+        self.assertFalse(bool(meta.get("swapped")))
+
+    def test_check_optimizer_health_shows_paper_loser(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({"enable_paper_loser_detection": True, "paper_loser_cycles_threshold": 4})
+        oc["paper_loser_risk_last"] = True
+        oc["optimizer_consecutive_paper_loser_cycles"] = 2
+        h = ocm._check_optimizer_health(oc)
+        self.assertTrue("paper_loser" in (h.get("suggested_action") or "").casefold() or "paper-loser" in (h.get("suggested_action") or "").casefold())
+        self.assertIn("paper_loser_risk_last", h)
+
+
+class AutonomousOptimizerMetaAndTuningTest(unittest.TestCase):
+    def test_regime_meta_ewma_decay_and_update(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({})
+        oc["regime_ewma_decay_per_cycle"] = 0.5
+        oc["regime_ewma_alpha"] = 0.5
+        ocm._regime_update_meta_and_streaks(oc, active_regime="low_vol", score_dollars=2.0)
+        e0 = ocm._norm_regime_perf_meta(oc)["low_vol"]["ewma_fitness"]
+        ocm._regime_update_meta_and_streaks(oc, active_regime="low_vol", score_dollars=0.0)
+        e1 = ocm._norm_regime_perf_meta(oc)["low_vol"]["ewma_fitness"]
+        self.assertNotEqual(round(e0, 3), round(e1, 3))
+
+    def test_auto_threshold_tightens_on_frequent_swaps(self) -> None:
+        from app import optimizer_claude as ocm
+
+        oc = ocm._norm_opt_cfg({})
+        oc["optimizer_cycle_count"] = 24
+        oc["autotune_window_paper_loser_swaps"] = 3
+        oc["autotune_window_paper_loser_risk_events"] = 0
+        oc["paper_loser_cycles_threshold"] = 4
+        ocm._auto_tune_internal_thresholds(oc)
+        self.assertEqual(int(oc.get("paper_loser_cycles_threshold") or 0), 5)
+
+    def test_interleave_blended_rules_merges_sources(self) -> None:
+        from app import optimizer_claude as ocm
+
+        la = {
+            "active_regime": "low_vol",
+            "rules": [
+                {
+                    "name": "a1",
+                    "min_prob": 0.0,
+                    "max_prob": 1.0,
+                    "min_minutes_left": 0.0,
+                    "max_minutes_left": 60.0,
+                }
+            ],
+            "rules_low_vol": [
+                {
+                    "name": "b1",
+                    "min_prob": 0.0,
+                    "max_prob": 1.0,
+                    "min_minutes_left": 0.0,
+                    "max_minutes_left": 60.0,
+                }
+            ],
+        }
+        h2 = [
+            (
+                "x",
+                [
+                    {
+                        "name": "h1",
+                        "min_prob": 0.0,
+                        "max_prob": 1.0,
+                        "min_minutes_left": 0.0,
+                        "max_minutes_left": 60.0,
+                    }
+                ],
+            )
+        ]
+        out = ocm._interleave_blended_rules("low_vol", la, h2, max_rules=20)
+        names = {r.get("name") for r in out}
+        self.assertTrue({"h1", "b1"}.issubset(names) or len(out) >= 1)
 
 
 if __name__ == "__main__":

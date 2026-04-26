@@ -23,6 +23,7 @@ from .branch_config import (
 )
 from .engine import _calculate_net_unrealized_pct_after_fees, rule_matches
 from .optimizer.fitness import composite_fitness_score, is_statistically_better
+from .optimizer.weighted_edge import calculate_weighted_edge, synthetic_orderbook_for_replay
 from .optimizer.schemas import ClaudeOptimizerResponse, parse_claude_optimizer_json
 from .settings_env import env
 
@@ -95,6 +96,39 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("internal_optimizer_trace", [])
     out.setdefault("last_mutation_at", "")
     out.setdefault("best_fitness_score_7d", 0.0)
+    out.setdefault("enable_regime_rules", True)
+    out.setdefault("radical_exploration_enabled", True)
+    out.setdefault("optimizer_consecutive_low_acceptance_cycles", 0)
+    out.setdefault("enable_paper_loser_detection", True)
+    out.setdefault("paper_loser_cycles_threshold", 4)
+    out.setdefault("paper_winner_fitness_min", 0.0)  # replay score_dollars must exceed this
+    out.setdefault("paper_loser_neg_equity_trace_min", 5)  # consecutive neg $/h rows in internal trace
+    out.setdefault("paper_loser_stop_rate_pct", 45.0)
+    out.setdefault("regime_paper_loser_pin_hours", 4.0)
+    out.setdefault("optimizer_consecutive_paper_loser_cycles", 0)
+    out.setdefault("regime_paper_loser_pinned", "")
+    out.setdefault("regime_paper_loser_pinned_until", "")
+    out.setdefault("paper_loser_radical_next", False)
+    out.setdefault("last_paper_loser_swap_at", "")
+    # Regime-level EWMA of composite ``score_dollars`` and observation counts; decayed every optimizer tick
+    # so older telemetry fades (meta-learning, no user tuning).
+    out.setdefault(
+        "regime_performance_meta",
+        {
+            "high_vol": {"ewma_fitness": 0.0, "observations": 0},
+            "low_vol": {"ewma_fitness": 0.0, "observations": 0},
+            "event_risk": {"ewma_fitness": 0.0, "observations": 0},
+        },
+    )
+    out.setdefault("regime_ewma_decay_per_cycle", 0.996)
+    out.setdefault("regime_ewma_alpha", 0.12)
+    out.setdefault("regime_negative_fitness_streaks", {"high_vol": 0, "low_vol": 0, "event_risk": 0})
+    out.setdefault("prune_streak_regime_min_cycles", 30)
+    # Counters for the 24-optimizer-cycle automatic threshold tuner (all backend-only; no API/UI)
+    out.setdefault("last_autotune_at_optimizer_cycle", 0)
+    out.setdefault("autotune_window_paper_loser_swaps", 0)
+    out.setdefault("autotune_window_paper_loser_risk_events", 0)
+    out.setdefault("mutation_aggressiveness_autotune_baseline", None)  # if None, use mutation_aggressiveness
     # Patient stop-loss is modeled on each ``lab_*`` / Live trading dict (``enable_patient_stop_loss``,
     # ``stop_loss_trigger_pct``, ``min_hold_minutes_before_stop``). ``replay_under_rules_detail`` accepts
     # ``branch_trading_cfg`` to clamp replay PnL vs. those stops when evaluating fitness.
@@ -249,7 +283,29 @@ def replay_under_rules_detail(
     Replay over the first ``max_considered`` rows of ``settled`` (caller passes query order: typically
     newest-first), then **sorted oldest-first** for cumulative PnL / drawdown. Matched-trade totals are
     order-independent; ordering only affects the equity path inside this window.
+
+    When a row matches, realized PnL (after optional fee deduction, patient stop clamp) is rescaled
+    with the same **liquidity-aware** idea as the live sim ranker: ``calculate_weighted_edge`` plus
+    spread width, so wide books don’t get full credit in fitness.
     """
+    from .engine import dollars_to_float
+
+    def _scale_pnl_cents(m_rule: dict[str, Any] | None, trow: dict[str, Any], prob0: float, pnl0: int) -> int:
+        if m_rule is None:
+            return pnl0
+        synth = synthetic_orderbook_for_replay(prob0, trow)
+        we = float(calculate_weighted_edge(synth, m_rule))
+        yb = dollars_to_float(synth.get("yes_bid_dollars"))
+        ya = dollars_to_float(synth.get("yes_ask_dollars"))
+        if yb is not None and ya is not None and float(ya) >= float(yb):
+            sw = min(0.5, max(0.0, float(ya) - float(yb)))
+        else:
+            sw = 0.02
+        liq = max(0.15, 1.0 - sw * 0.8)
+        wboost = 1.0 + 0.12 * (we if we > 0.0 else 0.0)
+        wboost = max(0.45, min(1.4, wboost))
+        return int(round(float(pnl0) * liq * wboost))
+
     clean_rules = [dict(r) for r in rules if isinstance(r, dict)]
     pool = sorted(settled[:max_considered], key=_trade_sort_key)
     total = 0
@@ -266,7 +322,8 @@ def replay_under_rules_detail(
         prob, mins = _entry_prob_mins_for_trade(t, signals_desc)
         if prob is None or mins is None:
             continue
-        if not any(rule_matches(prob, mins, r) for r in clean_rules):
+        m_first = next((r for r in clean_rules if rule_matches(prob, mins, r)), None)
+        if m_first is None:
             continue
         pnl = int(t.get("pnl_cents") or 0)
         ex: dict[str, Any] = {}
@@ -293,6 +350,7 @@ def replay_under_rules_detail(
                     if pnl < stop_cents:
                         pnl = max(pnl, stop_cents)
         is_stop_exit = bool(ex.get("patient_stop_loss")) or str(t.get("result") or "").lower() == "patient_stop_loss"
+        pnl = _scale_pnl_cents(m_first, t, float(prob), pnl)
         if is_stop_exit:
             n_stop_hits += 1
             total_pnl_from_stops_cents += pnl
@@ -317,7 +375,8 @@ def replay_under_rules_detail(
             prob_o, mins_o = _entry_prob_mins_for_trade(pos, signals_desc)
             if prob_o is None or mins_o is None:
                 continue
-            if not any(rule_matches(prob_o, mins_o, r) for r in clean_rules):
+            m_op = next((r for r in clean_rules if rule_matches(prob_o, mins_o, r)), None)
+            if m_op is None:
                 continue
             ca0 = _parse_iso_dt(pos.get("created_at"))
             if ca0 is None:
@@ -334,6 +393,7 @@ def replay_under_rules_detail(
             if cost <= 0:
                 continue
             pnl = int(round(float(cost) * (float(net_pct) / 100.0)))
+            pnl = _scale_pnl_cents(m_op, pos, float(prob_o), pnl)
             total += pnl
             n_stop_hits += 1
             n_open_sim_stops += 1
@@ -528,6 +588,382 @@ def _trace_negative_equity_slope_streak(oc: dict[str, Any]) -> int:
         else:
             break
     return n
+
+
+# Order for a forced "full strategy swap" when paper replay looks good but real outcomes are poor.
+PAPER_LOSER_REGIME_ORDER = ("high_vol", "low_vol", "event_risk")
+
+
+def _is_paper_winner_but_real_loser(oc: dict[str, Any], replay_result: dict[str, Any]) -> bool:
+    """
+    Detect divergence: composite replay / paper fitness (``score_dollars``) looks good, but Lab A
+    is suffering — either a long run of **negative** equity $/h in the internal trace (paper
+    "live" path), or an excessive patient stop-loss rate in the replay window.
+
+    Must be called *after* the current ``internal_optimizer_trace`` row (with ``equity_slope_dph``)
+    is appended so the negative-slope streak reflects the latest tick.
+    """
+    if not bool(oc.get("enable_paper_loser_detection", True)):
+        return False
+    th = _safe_float(oc.get("paper_winner_fitness_min", 0.0), 0.0)
+    try:
+        score = float(replay_result.get("score_dollars", 0.0))
+    except (TypeError, ValueError):
+        return False
+    if not (float(score) > th):
+        return False
+    neg_n = max(1, int(oc.get("paper_loser_neg_equity_trace_min", 5) or 5))
+    try:
+        slr = float(replay_result.get("stop_loss_trigger_rate", 0.0))
+    except (TypeError, ValueError):
+        slr = 0.0
+    if slr > _safe_float(oc.get("paper_loser_stop_rate_pct", 45.0), 45.0):
+        return True
+    if _trace_negative_equity_slope_streak(oc) >= neg_n:
+        return True
+    return False
+
+
+def _rules_json_fingerprint(rules: list[dict[str, Any]] | None) -> str:
+    if not isinstance(rules, list):
+        return ""
+    try:
+        return json.dumps([dict(x) for x in rules if isinstance(x, dict)], sort_keys=True)[:3000]
+    except Exception:
+        return ""
+
+
+def _norm_regime_perf_meta(oc: dict[str, Any]) -> dict[str, Any]:
+    m = oc.get("regime_performance_meta")
+    if not isinstance(m, dict):
+        m = {}
+    out: dict[str, Any] = {}
+    for k in PAPER_LOSER_REGIME_ORDER:
+        sub = m.get(k) if isinstance(m.get(k), dict) else {}
+        out[k] = {
+            "ewma_fitness": _safe_float(sub.get("ewma_fitness"), 0.0),
+            "observations": max(0, int(sub.get("observations", 0) or 0)),
+        }
+    return out
+
+
+def _norm_streaks(oc: dict[str, Any]) -> dict[str, int]:
+    st = oc.get("regime_negative_fitness_streaks")
+    if not isinstance(st, dict):
+        st = {}
+    return {k: max(0, int(st.get(k) or 0) if k in st else 0) for k in PAPER_LOSER_REGIME_ORDER}
+
+
+def _regime_update_meta_and_streaks(
+    oc: dict[str, Any], *, active_regime: str, score_dollars: float
+) -> None:
+    """
+    Exponential meta-learning: decay every tick (older beliefs fade), then nudge the active
+    regime's EWMA with the current replay composite. Negative-score streaks drive self-cleanup.
+    """
+    dcy = max(0.5, min(0.9999, _safe_float(oc.get("regime_ewma_decay_per_cycle", 0.996), 0.996)))
+    a = max(0.02, min(0.4, _safe_float(oc.get("regime_ewma_alpha", 0.12), 0.12)))
+    m = _norm_regime_perf_meta(oc)
+    for k in PAPER_LOSER_REGIME_ORDER:
+        m[k]["ewma_fitness"] = float(m[k].get("ewma_fitness", 0.0) or 0.0) * dcy
+    ar = (active_regime or "low_vol").strip().lower()
+    if ar not in PAPER_LOSER_REGIME_ORDER:
+        ar = "low_vol"
+    e0 = _safe_float(m[ar].get("ewma_fitness"), 0.0)
+    s = _safe_float(score_dollars, 0.0)
+    m[ar]["ewma_fitness"] = (1.0 - a) * e0 + a * s
+    m[ar]["observations"] = int(m[ar].get("observations", 0) or 0) + 1
+    oc["regime_performance_meta"] = m
+    st2 = _norm_streaks(oc)
+    if s < 0.0:
+        st2[ar] = st2.get(ar, 0) + 1
+    else:
+        st2[ar] = 0
+    oc["regime_negative_fitness_streaks"] = st2
+
+
+def _regime_preferred_from_meta(oc: dict[str, Any], cycled: str) -> str:
+    """
+    Combine stepped rotation (``cycled``) with EMA+volume-weighted preference. Strong meta signal can
+    override a weak cycled hand-off.
+    """
+    m = _norm_regime_perf_meta(oc)
+    cycled = cycled if cycled in PAPER_LOSER_REGIME_ORDER else "low_vol"
+
+    def w(k: str) -> float:
+        return float(m[k].get("ewma_fitness", 0.0) or 0.0) * (1.0 + 0.01 * min(200, int(m[k].get("observations", 0) or 0)))
+
+    by = {k: w(k) for k in PAPER_LOSER_REGIME_ORDER}
+    best = max(PAPER_LOSER_REGIME_ORDER, key=lambda k: by.get(k, -1e9))
+    if by.get(best, 0) > by.get(cycled, 0) + 0.2:
+        return str(best)
+    return str(cycled)
+
+
+async def _load_top_distinct_history_rules(
+    store: "Store | None", *, limit: int, current_fingerprint: str, take: int = 2
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    if store is None:
+        return []
+    out: list[tuple[str, list[dict[str, Any]]]] = []
+    try:
+        rows = await store.list_config_history(max(8, int(limit) or 24), include_config=True)
+    except (TypeError, OSError):
+        return []
+    for row in rows:
+        conf = row.get("config")
+        if not isinstance(conf, dict):
+            continue
+        la = conf.get("lab_a")
+        if not isinstance(la, dict):
+            continue
+        hr = la.get("rules")
+        if not isinstance(hr, list) or not hr:
+            continue
+        dlist = [dict(x) for x in hr if isinstance(x, dict)]
+        if not dlist:
+            continue
+        fp = _rules_json_fingerprint(dlist)
+        if not fp or (current_fingerprint and fp == current_fingerprint):
+            continue
+        if not any(s == fp for s, _ in out):
+            out.append((fp, dlist))
+        if len(out) >= take:
+            break
+    return out
+
+
+def _interleave_blended_rules(
+    nxt: str, la0: dict[str, Any], hist: list[tuple[str, list[dict[str, Any]]]], max_rules: int = 22
+) -> list[dict[str, Any]]:
+    """
+    Merge the target regime's family with up to two historical configs' ``lab_a.rules`` in round-robin
+    order (keeps the head of each, dedupes by name); caps list size for the API.
+    """
+    nxtk = _regime_to_rules_list_key(nxt)
+    base = [dict(x) for x in (la0.get(nxtk) or la0.get("rules") or []) if isinstance(x, dict)]
+    if not base:
+        base = [dict(x) for x in (la0.get("rules") or []) if isinstance(x, dict)]
+    per_hist = [[dict(x) for x in lst if isinstance(x, dict)][:8] for _fp, lst in hist]
+    if not per_hist and not base:
+        return []
+    parts: list[list[dict[str, Any]]] = [*(per_hist or []), base[:8]]
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    max_tries = 40
+    t = 0
+    i = 0
+    while len(merged) < max_rules and t < max_tries:
+        t += 1
+        any_added = False
+        for p in parts:
+            if not p:
+                continue
+            r = p[i] if i < len(p) else None
+            if r is None:
+                continue
+            nm = str(r.get("name") or f"rule-{len(merged)}")
+            if nm in seen:
+                continue
+            seen.add(nm)
+            merged.append(dict(r))
+            any_added = True
+        if not any_added:
+            break
+        i += 1
+    if not merged and base:
+        return [json.loads(json.dumps(x)) for x in base[: max_rules]]
+    for b in base:
+        if len(merged) >= max_rules:
+            break
+        nmb = str(b.get("name") or f"b{len(merged)}")
+        if nmb in seen:
+            continue
+        seen.add(nmb)
+        merged.append(dict(b))
+    return merged[:max_rules]
+
+
+def _auto_tune_internal_thresholds(oc: dict[str, Any]) -> None:
+    """
+    Every ``auto_tune_interval_cycles`` (24), nudge heuristics: many paper-loser *swaps* in the window
+    => tighten; strong risk with no action => loosen; low acceptance nudges up mutation base.
+    """
+    sw = int(oc.get("autotune_window_paper_loser_swaps", 0) or 0)
+    rsk = int(oc.get("autotune_window_paper_loser_risk_events", 0) or 0)
+    cyc = int(oc.get("optimizer_cycle_count", 0) or 0)
+    pthr = int(oc.get("paper_loser_cycles_threshold", 4) or 4)
+    pls = _safe_float(oc.get("paper_loser_stop_rate_pct", 45.0), 45.0)
+    if oc.get("mutation_aggressiveness_autotune_baseline") is None:
+        oc["mutation_aggressiveness_autotune_baseline"] = _safe_float(
+            oc.get("mutation_aggressiveness", 0.75), 0.75
+        )
+    base = _safe_float(oc.get("mutation_aggressiveness_autotune_baseline"), 0.75)
+    acc = _safe_float(oc.get("acceptance_rate_pct", 50.0), 50.0)
+    ch: list[str] = []
+    pthr0 = pthr
+    if sw >= 2:
+        pthr = min(8, pthr + 1)
+    elif rsk >= 14 and sw == 0:
+        pthr = max(2, pthr - 1)
+    if pthr != pthr0:
+        ch.append(f"paper_loser_cycles_threshold {pthr0}→{pthr} (swaps_24c={sw} risk_24c={rsk})")
+    pls0 = pls
+    if sw >= 3:
+        pls = min(60.0, pls + 1.0)
+    elif sw == 0 and cyc > 0:
+        pls = max(32.0, pls - 0.4)
+    if pls != pls0:
+        ch.append(f"paper_loser_stop_rate_pct {pls0:.1f}→{pls:.1f} (swap_window={sw})")
+    nb = base
+    if acc < 28.0:
+        nb = min(0.95, base + 0.04)
+    elif acc > 72.0:
+        nb = max(0.4, base - 0.02)
+    if abs(nb - base) > 0.0005:
+        ch.append(f"mutation_aggressiveness {base:.3f}→{nb:.3f} (acceptance={acc:.0f}%)")
+        oc["mutation_aggressiveness_autotune_baseline"] = round(nb, 4)
+        oc["mutation_aggressiveness"] = round(nb, 4)
+    if pthr != pthr0:
+        oc["paper_loser_cycles_threshold"] = pthr
+    if pls != pls0:
+        oc["paper_loser_stop_rate_pct"] = round(float(pls), 2)
+    if ch:
+        logger.info("AUTO-THRESHOLD (cycle=%d): %s", cyc, " | ".join(ch))
+    else:
+        logger.info(
+            "AUTO-THRESHOLD (cycle=%d): no change (swaps_24c=%d risk_24c=%s acc=%.0f%%)",
+            cyc,
+            sw,
+            rsk,
+            acc,
+        )
+
+
+def _prune_failing_regime_families(cfg: dict[str, Any], oc: dict[str, Any]) -> list[str]:
+    """
+    If a family accrues ``prune_streak_regime_min_cycles`` consecutive *negative* composite
+    replays while active, drop that regime's stored ruleset and re-seed from the active ``rules``.
+    """
+    la0 = dict(cfg.get("lab_a") or {}) if isinstance(cfg.get("lab_a"), dict) else {}
+    mnc = max(3, int(oc.get("prune_streak_regime_min_cycles", 30) or 30))
+    st2 = _norm_streaks(oc)
+    pruned: list[str] = []
+    base = [json.loads(json.dumps(x)) for x in (la0.get("rules") or []) if isinstance(x, dict)]
+    for k in PAPER_LOSER_REGIME_ORDER:
+        if st2.get(k, 0) < mnc:
+            continue
+        rkk = _regime_to_rules_list_key(k)
+        if base:
+            la0[rkk] = [json.loads(json.dumps(x)) for x in base[:8]]
+        pruned.append(f"{k}:{mnc}neg")
+        st2[k] = 0
+    if pruned:
+        oc["regime_negative_fitness_streaks"] = st2
+        cfg["lab_a"] = la0
+        logger.info("regime self-cleanup (prune stored families): %s", ", ".join(pruned))
+    return pruned
+
+
+def _append_radical_fresh_rules(
+    rules_base: list[dict[str, Any]], rng: random.Random, *, cyc: int, deep: bool, max_rules: int
+) -> None:
+    """1–2 lightweight exploratory YES rules in deep-stuck (radical) mode only."""
+    if not deep or not rules_base or len(rules_base) >= max_rules:
+        return
+    nadd = 2 if rng.random() < 0.2 else 1
+    nadd = min(nadd, max(0, max_rules - len(rules_base) - 1))
+    for j in range(nadd):
+        seed0 = next((r for r in rules_base if str(r.get("side") or "yes").lower() != "no"), None) or rules_base[0]
+        nbr = dict(seed0) if isinstance(seed0, dict) else {}
+        nbr["name"] = f"auto-radical-{rng.randint(1000, 9999)}-c{cyc}"[:58]
+        nbr["min_prob"] = round(max(0.02, min(0.5, 0.35 + rng.uniform(-0.1, 0.1))), 4)
+        nbr["max_prob"] = round(max(0.51, min(0.98, 0.62 + rng.uniform(-0.1, 0.1))), 4)
+        nbr["min_minutes_left"] = int(max(0, 3 + rng.randint(0, 4)))
+        nbr["max_minutes_left"] = int(max(12, 40 + rng.randint(0, 20)))
+        rules_base.append(nbr)
+
+
+async def _apply_paper_loser_strategy_swap(
+    store: "Store | None",
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    *,
+    at_iso: str,
+    repeated_cycles: int,
+) -> dict[str, Any]:
+    """
+    After ``paper_loser_cycles_threshold`` consecutive *paper-winner but real-loser* ticks, force a
+    new direction: (1) blend the stepped regime, meta-learned best regime, and the top 2 *distinct*
+    history ``lab_a`` rules, (2) one-shot radical mutation, (3) short regime pin. Fully autonomous
+    (no user toggles in frontends).
+    """
+    base_meta: dict[str, Any] = {"swapped": False, "repeated_cycles": int(repeated_cycles)}
+    pthr = max(1, int(oc.get("paper_loser_cycles_threshold", 4) or 4))
+    if repeated_cycles < pthr:
+        return base_meta
+    _lab, base_rules = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    if not base_rules:
+        return {**base_meta, "reject_reason": "no_rules"}
+    la_raw = cfg.get("lab_a")
+    if isinstance(la_raw, dict):
+        la0 = {**_lab, **la_raw}
+    else:
+        la0 = {**_lab}
+    for fld in ("rules_high_vol", "rules_low_vol", "rules_event"):
+        cr = la0.get(fld)
+        if not isinstance(cr, list) or len(cr) == 0:
+            la0[fld] = [json.loads(json.dumps(x)) for x in base_rules]
+    cur = str(la0.get("active_regime") or "low_vol").strip().lower()
+    if cur not in PAPER_LOSER_REGIME_ORDER:
+        cur = "low_vol"
+    cycled = PAPER_LOSER_REGIME_ORDER[(PAPER_LOSER_REGIME_ORDER.index(cur) + 1) % len(PAPER_LOSER_REGIME_ORDER)]
+    nxt = _regime_preferred_from_meta(oc, cycled)
+    cur_rules_sig = _rules_json_fingerprint(
+        [dict(x) for x in (la0.get("rules") if isinstance(la0.get("rules"), list) else []) if isinstance(x, dict)]
+    )
+    h_two = await _load_top_distinct_history_rules(
+        store, limit=32, current_fingerprint=cur_rules_sig, take=2
+    )
+    blended = _interleave_blended_rules(nxt, la0, h_two, max_rules=22)
+    if not blended:
+        rk0 = _regime_to_rules_list_key(nxt)
+        blended = [json.loads(json.dumps(x)) for x in (la0.get(rk0) or base_rules) if isinstance(x, dict)]
+    try:
+        blended = normalize_rules_list(blended)[: int(MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS) - 2]
+    except Exception as ex:
+        logger.info("paper_loser: normalize_rules_list for blend: %s", ex)
+    nlist2 = [json.loads(json.dumps(x)) for x in blended if isinstance(x, dict)]
+    rkf = _regime_to_rules_list_key(nxt)
+    la0["active_regime"] = nxt
+    la0["rules"] = nlist2
+    la0[rkf] = nlist2
+    at_dt = _parse_iso_dt(at_iso) or _utc_now()
+    pin_h = max(0.5, _safe_float(oc.get("regime_paper_loser_pin_hours", 4.0), 4.0))
+    oc["regime_paper_loser_pinned"] = nxt
+    oc["regime_paper_loser_pinned_until"] = _iso(at_dt + dt.timedelta(hours=pin_h))
+    oc["paper_loser_radical_next"] = True
+    oc["optimizer_consecutive_paper_loser_cycles"] = 0
+    oc["last_paper_loser_swap_at"] = at_iso
+    cfg["lab_a"] = la0
+    oc["last_paper_loser_meta_nudge_regime"] = nxt
+    logger.warning(
+        "Paper-winner but real-loser detected for %d cycles — forcing full strategy swap to new regime: %s "
+        "(cycled=%s, blended_historical=%d)",
+        int(repeated_cycles),
+        nxt,
+        cycled,
+        len(h_two),
+    )
+    return {
+        "swapped": True,
+        "repeated_cycles": int(repeated_cycles),
+        "new_regime": nxt,
+        "cycled_regime": cycled,
+        "history_dists": len(h_two),
+        "blended_rules": len(nlist2),
+        "history_applied": bool(len(h_two) > 0),
+    }
 
 
 def _auto_revert_cooldown_ok(oc: dict[str, Any], *, now: dt.datetime) -> bool:
@@ -766,9 +1202,18 @@ def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
     in ``internal_optimizer_trace``), subject to ``enable_auto_revert`` and a 4h cooldown. Best config
     is selected from ``config_history`` in the last 30 days by highest replay ``score_dollars`` (i.e.
     ``composite_fitness_score``'s main score) on recent settles.
+
+    **Paper-winner / real-loser** (when ``enable_paper_loser_detection``) can elevate concern when replay
+    fitness is strong but the Lab A equity path or stop-loss rate disagrees; ``paper_loser_risk_last`` and
+    ``optimizer_consecutive_paper_loser_cycles`` reflect the latest tick (swap clears the counter).
     """
     acc = round(_safe_float(oc.get("acceptance_rate_pct"), 0.0), 2)
     user_mag = round(max(0.0, min(1.0, _safe_float(oc.get("mutation_aggressiveness"), 0.75))), 4)
+    pthr = max(1, int(oc.get("paper_loser_cycles_threshold", 4) or 4))
+    pwc = int(oc.get("optimizer_consecutive_paper_loser_cycles", 0) or 0)
+    pwl = bool(oc.get("paper_loser_risk_last"))
+    pin = str(oc.get("regime_paper_loser_pinned") or "").strip().lower()
+    pin_ex = str(oc.get("regime_paper_loser_pinned_until") or "")
     if acc > 60.0:
         color = "green"
         action = "Continue; acceptance is healthy — keep monitoring trace and replay PnL."
@@ -784,11 +1229,22 @@ def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
             "Low acceptance — replay/stat gates are rejecting most mutants. Review Lab A paper context, "
             "threshold gates, or consider a manual config reset."
         )
+    if pwl and bool(oc.get("enable_paper_loser_detection", True)):
+        if pwc >= 1 and pwc < pthr:
+            action = f"{action} (paper-loser watch: {pwc}/{pthr} consecutive divergent cycles)"
+        if color == "green" and pwc > 0:
+            color = "yellow"
+    if pin in ("high_vol", "low_vol", "event_risk") and pin_ex:
+        action = f"{action} (post paper-loser swap: regime pin active until {pin_ex})"
     return {
         "health_color": color,
         "acceptance_rate_pct": acc,
         "mutation_aggressiveness": user_mag,
         "suggested_action": action,
+        "paper_loser_risk_last": pwl,
+        "paper_loser_consecutive_cycles": pwc,
+        "paper_loser_pinned_regime": pin,
+        "paper_loser_pinned_until": pin_ex,
     }
 
 
@@ -813,6 +1269,111 @@ def _regime_volatility(signals: list[dict[str, Any]], *, hours: float, end: dt.d
     elif stdev <= 0.06:
         bucket = "low_vol"
     return {"n": len(vals), "stdev_implied_yes": stdev, "bucket": bucket}
+
+
+def _trading_regime_key_from_context(
+    oc: dict[str, Any], sg_a: list[dict[str, Any]], st_a: list[dict[str, Any]], at_iso: str
+) -> str:
+    """``high_vol`` | ``low_vol`` | ``event_risk`` — which Lab A family should be active (internal optimizer)."""
+    end = _parse_iso_dt(at_iso) or _utc_now()
+    slr = _safe_float(oc.get("replay_stop_loss_trigger_rate_pct", 0.0), 0.0)
+    if slr >= 35.0:
+        return "event_risk"
+    mins: list[float] = []
+    for s in _signals_sorted_desc(sg_a)[:60]:
+        ml = s.get("minutes_left")
+        if ml is not None:
+            try:
+                mins.append(float(ml))
+            except (TypeError, ValueError):
+                pass
+    if mins and min(mins) < 60.0:
+        return "event_risk"
+    h = max(0.5, float(oc.get("regime_lookback_hours", 4) or 4.0))
+    rvol = _regime_volatility(sg_a, hours=h, end=end)
+    b = str(rvol.get("bucket") or "unknown")
+    if b == "high_vol":
+        return "high_vol"
+    if b == "low_vol":
+        return "low_vol"
+    return "low_vol"
+
+
+def _regime_to_rules_list_key(reg: str) -> str:
+    r = (reg or "low_vol").strip().lower()
+    if r == "high_vol":
+        return "rules_high_vol"
+    if r == "event_risk":
+        return "rules_event"
+    return "rules_low_vol"
+
+
+def _sync_regime_rule_families_to_lab_a(
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    sg_a: list[dict[str, Any]],
+    st_a: list[dict[str, Any]],
+    at_iso: str,
+) -> bool:
+    """
+    Maintain ``rules_high_vol`` / ``rules_low_vol`` / ``rules_event`` on Lab A and set ``rules`` to the
+    list for the current regime. First run seed those families from the merged ``rules`` list.
+    """
+    if not bool(oc.get("enable_regime_rules", True)):
+        return False
+    at_dt = _parse_iso_dt(at_iso) or _utc_now()
+    pin_raw = str(oc.get("regime_paper_loser_pinned") or "").strip().lower()
+    pin_until = _parse_iso_dt(str(oc.get("regime_paper_loser_pinned_until") or "").strip())
+    if (
+        pin_raw in ("high_vol", "low_vol", "event_risk")
+        and pin_until is not None
+        and at_dt < pin_until
+    ):
+        new_reg = pin_raw
+    else:
+        if pin_until is not None and at_dt >= pin_until:
+            oc["regime_paper_loser_pinned"] = ""
+            oc["regime_paper_loser_pinned_until"] = ""
+        new_reg = _trading_regime_key_from_context(oc, sg_a, st_a, at_iso)
+    _lab, base_rules = _ensure_lab_rules(cfg, BRANCH_LAB_A)
+    if not base_rules:
+        return False
+    la_raw = cfg.get("lab_a")
+    if isinstance(la_raw, dict):
+        la0 = {**_lab, **la_raw}
+    else:
+        la0 = {**_lab}
+    for fld in ("rules_high_vol", "rules_low_vol", "rules_event"):
+        cr = la0.get(fld)
+        if not isinstance(cr, list) or len(cr) == 0:
+            la0[fld] = [json.loads(json.dumps(x)) for x in base_rules]
+    rk = _regime_to_rules_list_key(new_reg)
+    nlist: list[dict[str, Any]] = la0.get(rk) if isinstance(la0.get(rk), list) else []
+    if not nlist:
+        nlist = [json.loads(json.dumps(x)) for x in base_rules]
+    nlist = [dict(r) for r in nlist if isinstance(r, dict)]
+    if not nlist:
+        nlist = [json.loads(json.dumps(x)) for x in base_rules]
+    prev = str(la0.get("active_regime") or "")
+    la0["active_regime"] = new_reg
+    la0["rules"] = nlist
+    cfg["lab_a"] = la0
+    if prev and prev != new_reg:
+        logger.info("Lab A regime: %s -> %s; active ruleset %s (%d rules)", prev, new_reg, rk, len(nlist))
+    return bool(prev) and prev != new_reg
+
+
+def _radical_exploration_active(oc: dict[str, Any]) -> bool:
+    if not bool(oc.get("radical_exploration_enabled", True)):
+        return False
+    rs = int(oc.get("optimizer_red_streak_cycles", 0) or 0)
+    lo = int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0)
+    acc = _safe_float(oc.get("acceptance_rate_pct", 100.0), 100.0)
+    if rs >= 20:
+        return True
+    if lo >= 4 and acc < 15.0:
+        return True
+    return False
 
 
 def _build_metrics_context(
@@ -843,6 +1404,10 @@ def _build_metrics_context(
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
+    lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
+    lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
+    lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     _, rules_a = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     _, rules_b = _ensure_lab_rules(cfg, BRANCH_LAB_B)
     _, rules_c = _ensure_lab_rules(cfg, BRANCH_LAB_C)
@@ -859,10 +1424,6 @@ def _build_metrics_context(
     rep_d = _replay_pnl_under_rules(
         st_d, rules_d, sd, include_fees_in_score=include_fees, branch_trading_cfg=lab_d
     )
-    lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
-    lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
-    lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
-    lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     def _pf_var(rows: list[dict[str, Any]]) -> dict[str, Any]:
         gross_win = sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) > 0)
         gross_loss = abs(sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) < 0))
@@ -1467,6 +2028,7 @@ def _internal_lab_a_bet_pulse(
     if prof < min_prof:
         return None
 
+    _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a, at_iso)
     lab_base, rules_a = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     try:
         old_f = float(lab_base.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
@@ -1626,6 +2188,7 @@ def _internal_mutate_rules_and_params(
     if len(st_a) < max(8, int(oc.get("min_trades_for_optimize") or 8)):
         meta["reject_reason"] = "insufficient_lab_a_settled"
         return None, meta
+    _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a, at_iso)
     lab_a, rules_base = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     if not rules_base:
         meta["reject_reason"] = "no_rules"
@@ -1645,12 +2208,27 @@ def _internal_mutate_rules_and_params(
     )
     meta["score_before"] = float(base_fb["score_dollars"])
     eff, tier_label = _compute_mutation_scale(oc)
+    was_plr = bool(oc.get("paper_loser_radical_next", False))
+    rad0 = _radical_exploration_active(oc) or was_plr
+    if rad0:
+        eff = min(1.75, eff * 2.0)
+    if was_plr:
+        oc["paper_loser_radical_next"] = False
+        logger.warning("Paper-loser strategy swap: one-shot radical exploration scale (forced).")
+    elif rad0:
+        logger.warning(
+            "RADICAL EXPLORATION triggered — deep stuck state (red_streak=%d, low_acc_cycles=%d, acc=%.1f%%)",
+            int(oc.get("optimizer_red_streak_cycles", 0) or 0),
+            int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0),
+            _safe_float(oc.get("acceptance_rate_pct", 0.0), 0.0),
+        )
     meta["mutation_tier"] = tier_label
+    meta["radical"] = bool(rad0)
     meta["effective_mutation_scale"] = round(eff, 4)
     cyc = max(1, _safe_int(oc.get("optimizer_cycle_count"), 1))
     rng = random.Random(cyc * 997 + len(st_a) * 17 + len(sg_a))
     drift = max(-0.03, min(0.03, float(base_fb["sharpe_approx"]) * 0.01 * min(1.25, eff)))
-    span = max(1, min(4, int(round(eff))))
+    span = max(1, min(4, int(round(eff * (1.4 if rad0 else 1.0)))))
     prob_span = 0.015 * eff
     mutated_rules: list[dict[str, Any]] = []
     for i, r in enumerate(rules_base):
@@ -1672,6 +2250,24 @@ def _internal_mutate_rules_and_params(
         if i == 0:
             nr["name"] = f"{str(nr.get('name') or 'rule')[:48]} · m{cyc}"
         mutated_rules.append(nr)
+    if rad0 and len(mutated_rules) < 24 and rng.random() < 0.3:
+        seed0 = next((r for r in rules_base if str(r.get("side") or "yes").lower() != "no"), None) or (rules_base[0] if rules_base else None)
+        if seed0 and isinstance(seed0, dict):
+            nbr = dict(seed0)
+            nbr["name"] = f"radical-explore-{rng.randint(0, 9999)}-m{cyc}"[:56]
+            lo0 = _safe_float(nbr.get("min_prob"), 0.5) - 0.04
+            hi0 = _safe_float(nbr.get("max_prob"), 0.6) + 0.04
+            nbr["min_prob"] = round(max(0.01, min(0.99, lo0)), 4)
+            nbr["max_prob"] = round(max(nbr["min_prob"] + 0.01, min(0.99, hi0)), 4)
+            mutated_rules.append(nbr)
+    deepx = (int(oc.get("optimizer_red_streak_cycles", 0) or 0) >= 20) or (
+        int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0) >= 4
+        and _safe_float(oc.get("acceptance_rate_pct", 100.0), 100.0) < 15.0
+    )
+    if rad0 and not was_plr and deepx and len(mutated_rules) < (MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS - 1):
+        _append_radical_fresh_rules(
+            mutated_rules, rng, cyc=cyc, deep=True, max_rules=MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS
+        )
     try:
         mutated_rules = normalize_rules_list(mutated_rules)
     except Exception as e:
@@ -1680,7 +2276,7 @@ def _internal_mutate_rules_and_params(
     old_f = clamp_balance_fraction_per_window(
         _safe_float(lab_a.get("balance_fraction_per_window"), _safe_float(cfg.get("balance_fraction_per_window"), 0.03))
     )
-    frac_span = 0.0035 * eff
+    frac_span = 0.0035 * eff * (1.6 if rad0 else 1.0)
     frac_step = rng.uniform(-frac_span, frac_span) + drift * 0.35 * min(1.2, eff)
     new_f = clamp_balance_fraction_per_window(old_f + frac_step)
     mut_lab = dict(lab_a)
@@ -1731,6 +2327,12 @@ def _internal_mutate_rules_and_params(
         meta["reject_reason"] = "statistical_gate_failed"
         return None, meta
     mut_lab["rules"] = mutated_rules
+    rlk2 = _regime_to_rules_list_key(
+        str(
+            (mut_lab.get("active_regime") or (cfg.get("lab_a") or {}).get("active_regime") or "low_vol")
+        )
+    )
+    mut_lab[rlk2] = mutated_rules
     mut_lab["optimizer_note"] = f"internal_mutation cycle={cyc} score={meta['score_before']:.3f}->{meta['score_after']:.3f}"
     cfg["lab_a"] = mut_lab
     oc["last_mutation_at"] = at_iso
@@ -2280,9 +2882,10 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
     st_a_prev = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a_prev, end_iso)
     prof_n = sum(1 for t in st_a_prev if int(t.get("pnl_cents") or 0) > 0)
 
-    # Internal pulse (no Claude): loss-streak threshold tuning, optional win-path easing, Lab A bet fraction nudge.
+    # Internal pulse (loss-streak threshold tuning, optional win-path easing, Lab A bet fraction nudge).
     changes: list[dict[str, Any]] = []
     if adaptive_on:
         ca = _apply_adaptive_lab_tuning(
@@ -2359,6 +2962,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
     oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
     oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
+    ar_now = str(lab_tr.get("active_regime") or "low_vol")
+    # Meta-learning: decay + EWMA of composite score per (logical) Lab A regime; also streaks for cleanup.
+    _regime_update_meta_and_streaks(
+        oc, active_regime=ar_now, score_dollars=_safe_float(rb_lab.get("score_dollars"), 0.0)
+    )
+    _prune_failing_regime_families(cfg, oc)
     eq_dph = _equity_slope_dollars_per_hour(eq_a)
     trace_entry: dict[str, Any] = {
         "at": end_iso,
@@ -2385,6 +2994,49 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
     total_n = len(tr_list)
     oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    _ap0 = _safe_float(oc.get("acceptance_rate_pct", 0.0), 0.0)
+    if _ap0 < 15.0:
+        oc["optimizer_consecutive_low_acceptance_cycles"] = int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0) + 1
+    else:
+        oc["optimizer_consecutive_low_acceptance_cycles"] = 0
+    plr_t = bool(oc.get("enable_paper_loser_detection", True))
+    pl = _is_paper_winner_but_real_loser(oc, rb_lab) if plr_t else False
+    oc["paper_loser_risk_last"] = bool(pl)
+    pwc = int(oc.get("optimizer_consecutive_paper_loser_cycles", 0) or 0)
+    pthr0 = max(1, int(oc.get("paper_loser_cycles_threshold", 4) or 4))
+    if pl:
+        pwc += 1
+    else:
+        pwc = 0
+    oc["optimizer_consecutive_paper_loser_cycles"] = pwc
+    swap_pl: dict[str, Any] = {"swapped": False}
+    if plr_t and pwc >= pthr0:
+        swap_pl = await _apply_paper_loser_strategy_swap(
+            store, cfg, oc, at_iso=end_iso, repeated_cycles=pwc
+        )
+        if swap_pl.get("swapped"):
+            ph = oc.get("change_history")
+            ph0 = ph if isinstance(ph, list) else []
+            hlim = max(20, min(500, _safe_int(oc.get("max_history"), 120)))
+            ch_row: dict[str, Any] = {
+                "id": uuid4().hex,
+                "created_at": end_iso,
+                "branch": BRANCH_LAB_A,
+                "lab_label": "Lab A",
+                "style": "paper_loser_full_swap",
+                "reason": "paper_winner_real_loser",
+                "summary": (
+                    f"regime -> {swap_pl.get('new_regime')} history={bool(swap_pl.get('history_applied'))} "
+                    f"after {pthr0} consecutive paper/replay–live divergent cycles"
+                ),
+            }
+            oc["change_history"] = [ch_row, *ph0][:hlim]
+    if plr_t and pl:
+        oc["autotune_window_paper_loser_risk_events"] = int(
+            oc.get("autotune_window_paper_loser_risk_events", 0) or 0
+        ) + 1
+    if bool(swap_pl.get("swapped")):
+        oc["autotune_window_paper_loser_swaps"] = int(oc.get("autotune_window_paper_loser_swaps", 0) or 0) + 1
     eff_sc, mtier = _compute_mutation_scale(oc)
     oc["mutation_tier"] = mtier
     oc["effective_mutation_scale"] = round(eff_sc, 4)
@@ -2413,7 +3065,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     )
     oc["last_run_at"] = end_iso
     if not bool(revert_meta.get("reverted")):
-        oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else ("ok_internal_pulse" if changes else "ok_noop")
+        if bool(swap_pl.get("swapped")):
+            oc["last_status"] = "ok_paper_loser_full_swap"
+        else:
+            oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else (
+                "ok_internal_pulse" if changes else "ok_noop"
+            )
     oc["last_error"] = ""
     if mutation_meta.get("score_after") is not None:
         try:
@@ -2422,6 +3079,13 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             oc["best_fitness_score_7d"] = round(new_best, 6)
         except (TypeError, ValueError):
             pass
+    cyc_end = int(oc.get("optimizer_cycle_count", 0) or 0)
+    lastat = int(oc.get("last_autotune_at_optimizer_cycle", 0) or 0)
+    if cyc_end >= 24 and cyc_end % 24 == 0 and cyc_end != lastat:
+        _auto_tune_internal_thresholds(oc)
+        oc["autotune_window_paper_loser_risk_events"] = 0
+        oc["autotune_window_paper_loser_swaps"] = 0
+        oc["last_autotune_at_optimizer_cycle"] = cyc_end
     cfg["optimizer"] = oc
     await store.save_config(
         cfg,
@@ -2440,6 +3104,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "mutant_run": mutant_run,
         "mutation_accepted": bool(mutation_meta.get("accepted")),
         "auto_reverted": bool(revert_meta.get("reverted")),
+        "paper_loser_swap": swap_pl,
     }
 
 

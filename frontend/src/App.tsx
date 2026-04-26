@@ -497,6 +497,7 @@ function ChartDblClickExpand({
 function BranchOptimizerVisualizer({
   labThoughts,
   radar,
+  mutationStatus,
 }: {
   labThoughts: AnyObj | undefined;
   radar: {
@@ -505,13 +506,18 @@ function BranchOptimizerVisualizer({
     tableDetail: ReactNode;
     caption: string;
   };
+  mutationStatus: {
+    tierLabel: string;
+    effectiveMutationScale: number;
+    mutationDial: number;
+  };
 }) {
   return (
     <div
       className="branch-brain-optimizer-stack"
       style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}
       role="region"
-      aria-label="Optimizer: thinking radar and lab pulse"
+      aria-label="Optimizer: thinking radar, mutation dial, and lab pulse"
     >
       <div
         className="branch-brain-optimizer-radar-outer"
@@ -552,21 +558,54 @@ function BranchOptimizerVisualizer({
               </div>
             )}
           />
-        <p
+        <div
           className="sub"
           style={{
-            margin: "4px 8px 0",
+            margin: "6px auto 0",
             maxWidth: 640,
-            marginLeft: "auto",
-            marginRight: "auto",
-            fontSize: 13.5,
-            lineHeight: 1.5,
-            color: "var(--muted)",
-            opacity: 0.95,
+            width: "100%",
+            fontSize: 10,
+            padding: "6px 8px",
+            borderRadius: 6,
+            border: "1px solid rgba(55,65,100,0.65)",
+            background: "rgba(12,18,38,0.45)",
+            boxSizing: "border-box" as const,
           }}
+          title="Tier follows acceptance rate (light / medium / strong). Dial is config mutation_aggressiveness (0–1); effective scale also blends the tier."
         >
-          Key internal metrics the optimizer uses to make decisions
-        </p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700 }}>
+              Mutation: <strong style={{ color: "var(--text)" }}>{mutationStatus.tierLabel}</strong>
+              {mutationStatus.effectiveMutationScale > 0 ? (
+                <span style={{ opacity: 0.85, fontWeight: 500 }}>
+                  {" "}
+                  · scale {mutationStatus.effectiveMutationScale.toFixed(2)}
+                </span>
+              ) : null}
+            </span>
+            <span style={{ opacity: 0.8 }}>Dial (0–1)</span>
+          </div>
+          <div
+            style={{
+              marginTop: 4,
+              height: 6,
+              borderRadius: 4,
+              background: "rgba(30,41,72,0.9)",
+              overflow: "hidden",
+              border: "1px solid rgba(55,65,100,0.8)",
+            }}
+            aria-hidden
+          >
+            <div
+              style={{
+                width: `${Math.round(mutationStatus.mutationDial * 100)}%`,
+                height: "100%",
+                borderRadius: 3,
+                background: "linear-gradient(90deg,#6366f1,#a5b4fc)",
+              }}
+            />
+          </div>
+        </div>
       </div>
       <div
         className="branch-brain-optimizer-pulse-bottom"
@@ -1879,10 +1918,10 @@ function optimizerBriefInfoBody(): ReactNode {
   return (
     <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <p>
-        <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. The{" "}
-        <strong>Optimizer Status</strong> card below the title shows slope, red streak, mutation tier, stops, and a <strong>small Lab A
-        equity</strong> sparkline. The <strong>run-metric</strong> row (cycle, last run, accept %, fit 7d, pulse status) is in the{" "}
-        <strong>report</strong> overlay only. The <strong>Experiments</strong> multi-line chart (further down in
+        <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. Under
+        the radar, the <strong>mutation</strong> row (tier, effective scale, dial) summarizes internal perturbed exploration; full{" "}
+        <strong>run-metric</strong> detail (cycle, last run, accept %, fit 7d, pulse) is in the <strong>report</strong> overlay. The{" "}
+        <strong>Experiments</strong> multi-line chart (further down in
         this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–D from a shared
         window. <strong>Lab pulse</strong> (ticker under Experiments) is a digest of the last engine tick.
       </p>
@@ -4529,7 +4568,7 @@ export default function App() {
                   type="button"
                   className="primary dash-panel-btn"
                   title={
-                    "This card: multi-branch thinking radar and Lab pulse, then Optimizer Status (slope, tier, stops, sparkline). " +
+                    "This card: multi-branch thinking radar, mutation bar under the chart, then Lab pulse ticker. " +
                     "Suggested-action text is not inline here—it may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
                     "force / report: same row as this button. Pulse empty → check engine toggles and Account, not just this card."
                   }
@@ -4542,158 +4581,12 @@ export default function App() {
             <BranchOptimizerVisualizer
               labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
               radar={optimizerThinkingRadarBundle}
-            />
-            <div
-              className="panel"
-              style={{
-                margin: "8px 0 12px 0",
-                padding: "10px 12px",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                background: "linear-gradient(180deg,rgba(24,30,48,.65),rgba(14,18,30,.78))",
+              mutationStatus={{
+                tierLabel: optimizerStatus.mutationTierLabel,
+                effectiveMutationScale: optimizerStatus.effectiveMutationScale,
+                mutationDial: optimizerStatus.mutationDial,
               }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                <div style={{ fontWeight: 700 }}>Optimizer Status</div>
-                <div
-                  className="sub"
-                  style={{ fontSize: 11, whiteSpace: "nowrap" }}
-                  title="Lab A book-equity change per hour, estimated from the last ~30 equity snapshots (slope of first→last in that window). Positive = account trending up in sim."
-                >
-                  Slope:{" "}
-                  <strong>
-                    {optimizerStatus.equitySlopePerHour >= 0 ? "+" : ""}
-                    {optimizerStatus.equitySlopePerHour.toFixed(2)} $/h
-                  </strong>
-                </div>
-              </div>
-              <div
-                className="sub"
-                style={{
-                  fontSize: 10,
-                  display: "flex",
-                  gap: 12,
-                  flexWrap: "wrap",
-                  marginBottom: 8,
-                  opacity: 0.9,
-                }}
-              >
-                <span
-                  title="Share of Lab A replay closes (settled + simulated patient exits) that were stop-loss—related, from the last optimizer replay snapshot."
-                >
-                  Stop hit:{" "}
-                  <strong>{optimizerStatus.stopLossHitRate.toFixed(1)}%</strong>
-                </span>
-                <span title="Dollar PnL attributed to patient stop-loss: historical `patient_stop_loss` exits plus simulated exits on open positions that would trigger at replay time.">
-                  PnL from stops:{" "}
-                  <strong>
-                    {optimizerStatus.stopsPnlDollars >= 0 ? "+" : ""}
-                    {optimizerStatus.stopsPnlDollars.toFixed(2)} $
-                  </strong>
-                </span>
-              </div>
-              <div
-                className="sub"
-                style={{
-                  fontSize: 10,
-                  marginBottom: 8,
-                  padding: "6px 8px",
-                  borderRadius: 6,
-                  border: "1px solid rgba(55,65,100,0.65)",
-                  background: "rgba(12,18,38,0.45)",
-                }}
-                title="Tier follows acceptance rate (light / medium / strong). Dial is config mutation_aggressiveness (0–1); effective scale also blends the tier."
-              >
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontWeight: 700 }}>
-                    Mutation: <strong style={{ color: "var(--text)" }}>{optimizerStatus.mutationTierLabel}</strong>
-                    {optimizerStatus.effectiveMutationScale > 0 ? (
-                      <span style={{ opacity: 0.85, fontWeight: 500 }}>
-                        {" "}
-                        · scale {optimizerStatus.effectiveMutationScale.toFixed(2)}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span style={{ opacity: 0.8 }}>Dial (0–1)</span>
-                </div>
-                <div
-                  style={{
-                    marginTop: 4,
-                    height: 6,
-                    borderRadius: 4,
-                    background: "rgba(30,41,72,0.9)",
-                    overflow: "hidden",
-                    border: "1px solid rgba(55,65,100,0.8)",
-                  }}
-                  aria-hidden
-                >
-                  <div
-                    style={{
-                      width: `${Math.round(optimizerStatus.mutationDial * 100)}%`,
-                      height: "100%",
-                      borderRadius: 3,
-                      background: "linear-gradient(90deg,#6366f1,#a5b4fc)",
-                    }}
-                  />
-                </div>
-              </div>
-              {optimizerStatus.health === "red" && optimizerStatus.redStreak > 0 ? (
-                <div className="sub" style={{ fontSize: 10, marginBottom: 6, opacity: 0.9 }} title="Consecutive optimizer cycles with red acceptance (health &lt;30%).">
-                  Red streak: <strong>{optimizerStatus.redStreak}</strong> cycles
-                </div>
-              ) : null}
-              {optimizerStatus.lastAutoRevertAt ? (
-                <div className="sub" style={{ fontSize: 10, marginBottom: 6, opacity: 0.85 }} title="Last time Lab A was auto-restored from config_history due to stuck detection.">
-                  Last revert: <strong>{fmtIsoLocalCompact(optimizerStatus.lastAutoRevertAt)}</strong>
-                </div>
-              ) : null}
-              <div style={{ marginBottom: 8, width: "100%" }} title="Last 20 Lab A equity points (dollars). Double-click to enlarge.">
-                <ChartDblClickExpand
-                  title="Lab A equity (last 20 stored snapshots)"
-                  defaultHeight={96}
-                  expandedHeight={360}
-                  detail={
-                    <div>
-                      <p style={{ margin: "0 0 6px" }}>
-                        Last <strong>20</strong> stored Lab A snapshot midpoints. Values are in USD from the equity_snapshots / sim path and update as new rows are written. For full book vs
-                        MTM paths, use <strong>Equity curves</strong> below.
-                      </p>
-                      <EquityDblReadout m={metricsLabA} name="Lab A" />
-                    </div>
-                  }
-                  render={({ h }) => (
-                    <div style={{ width: "100%", height: h }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={optimizerStatus.chart}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
-                          <XAxis dataKey="idx" tick={h > 100} stroke="#4b5c85" fontSize={10} />
-                          <YAxis
-                            width={h > 100 ? 44 : 0}
-                            hide={h <= 100}
-                            domain={["auto", "auto"]}
-                            tick={{ fontSize: 9 }}
-                            stroke="#4b5c85"
-                          />
-                          <Tooltip
-                            contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
-                            formatter={(v: unknown) => [(v == null ? "—" : Number(v).toFixed(3)), "Equity (USD)"]}
-                            labelFormatter={(label) => (label != null && label !== "" ? `Lab A · #${String(label)}` : "Lab A equity")}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="equity"
-                            stroke={OPTIMIZER_RADAR_SWATCH.a}
-                            strokeWidth={2}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
-                />
-              </div>
-            </div>
+            />
           </div>
         </section>
       </div>

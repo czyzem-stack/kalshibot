@@ -555,14 +555,15 @@ def _market_sim_trade_rank(
             return (0, -1e18, float(mins))
         if ya is None:
             return (1, -1e18, float(mins))
-        edge = float(prob) - float(ya)
     else:
         if na is None or not (0 < na < 1):
             return (0, -1e18, float(mins))
         p_no = implied_no_probability(yb, ya)
         if p_no is None:
             return (1, -1e18, float(mins))
-        edge = float(p_no) - float(na)
+    from .optimizer.weighted_edge import calculate_weighted_edge
+
+    edge = float(calculate_weighted_edge(market, matched_rule))
     return (1, edge, float(mins))
 
 
