@@ -644,6 +644,21 @@ function fmtIsoLocal(iso: string | undefined | null, withSeconds = true) {
   });
 }
 
+/** Short local timestamp for dense dashboard tiles; hover `title` should carry the full `fmtIsoLocal` string. */
+function fmtIsoLocalCompact(iso: string | undefined | null) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso).replace("T", " ").slice(0, 16);
+  return d.toLocaleString(undefined, {
+    month: "numeric",
+    day: "numeric",
+    year: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
 function formatBranchRollupLine(label: string, m: AnyObj): string {
   const settled = Number(m.settled_trades ?? 0) || 0;
   const w = Number(m.wins ?? 0) || 0;
@@ -955,6 +970,17 @@ function optimizerBriefInfoBody(): ReactNode {
         reference arms before you promote anything to Live.
       </p>
       <p>
+        <strong>Optimizer Status (top card).</strong> The compact status card is your short-horizon health view: cycle count, last run,
+        acceptance rate, best fitness (7d), pulse status, and a <strong>trailing Lab A equity curve</strong> (last 20 points from
+        Lab A equity snapshots). The slope label is dollars per hour between the first/last points in that mini-window. Read it as
+        momentum, not absolute performance.
+      </p>
+      <p>
+        <strong>Health badge.</strong> Badge color is acceptance-rate based: <strong>green</strong> when rate &gt; 60,{" "}
+        <strong>yellow</strong> for 30-60, and <strong>red</strong> below 30. The same badge appears in the bottom marquee for quick
+        visibility when you are focused on other sections.
+      </p>
+      <p>
         <strong>Experiments (mini chart).</strong> Each colored line is indexed MTM (or a blended MTM / cost-basis readout, depending
         on backend rollups) for Live vs Lab A–D, starting from the same time bucket so the curves are comparable. Flatter or smoother
         lines are not “better” by default: high volatility can mean the book is open and marked often. Crossovers mean branches took
@@ -972,8 +998,8 @@ function optimizerBriefInfoBody(): ReactNode {
         <strong>Adaptive / scheduled optimizer (backend).</strong> When enabled, the server can adjust thresholds, bet fraction,
         and related knobs using recent <em>settled</em> paper history, with guardrails (minimum trades, no wild jumps during drawdowns,
         etc.). By design, <strong>only Lab A</strong> receives auto-applied fraction/threshold writes unless you explicitly use other
-        APIs; B/C/D stay reference paths. The dashboard shows recommendations and pulse traces, but the source of truth is the API
-        response and SQLite change log.
+        APIs; B/C/D stay reference paths. Use Settings → Internal Optimizer Trace for cycle-by-cycle acceptance/rejection and the
+        <strong> Force Internal Mutation Now</strong> control when you want a gated mutant-cycle evaluation immediately.
       </p>
       <p>
         <strong>“report” (button next to this Info).</strong> Opens the full-page optimizer report overlay: last persisted change
@@ -2541,6 +2567,29 @@ export default function App() {
     const total = trace.length;
     const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
     const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
+    const eqRows = ((dash as AnyObj | null)?.equity_snapshots_lab_a || (dash as AnyObj | null)?.equity_snapshots_sim_lab || []) as AnyObj[];
+    const chart = eqRows
+      .slice(-20)
+      .map((r, i) => ({
+        idx: i + 1,
+        equity: Number.isFinite(Number(r?.equity_cents)) ? Number(r.equity_cents) / 100.0 : null,
+      }));
+    let equitySlopePerHour = 0.0;
+    const pts = eqRows
+      .slice(-30)
+      .map((r) => {
+        const ts = Date.parse(String(r?.created_at || ""));
+        const eq = Number(r?.equity_cents || 0) / 100.0;
+        return { ts, eq };
+      })
+      .filter((p) => Number.isFinite(p.ts) && Number.isFinite(p.eq));
+    if (pts.length >= 2) {
+      const p0 = pts[0];
+      const p1 = pts[pts.length - 1];
+      const hours = Math.max(1e-6, (p1.ts - p0.ts) / 3_600_000);
+      equitySlopePerHour = (p1.eq - p0.eq) / hours;
+    }
+    const health = acceptanceRatePct > 60 ? "green" : acceptanceRatePct >= 30 ? "yellow" : "red";
     return {
       cycles,
       lastRunAt: String(oc.last_run_at || activity.last_pulse_eval_at || ""),
@@ -2548,6 +2597,9 @@ export default function App() {
       bestFitnessWeek,
       pulseStatus: String(oc.last_status || "idle"),
       pulseEvalCount: Number(activity.pulse_eval_count || 0),
+      chart,
+      equitySlopePerHour,
+      health,
     };
   }, [cfg?.optimizer, dash]);
 
@@ -3039,6 +3091,19 @@ export default function App() {
     }
   }, [loadOptimizer, refresh]);
 
+  const forceInternalMutationNow = useCallback(async () => {
+    setOptimizerSaving(true);
+    try {
+      await apiPostJson("/api/optimizer/force-internal-mutation", {});
+      await loadOptimizer();
+      await refresh({ force: true });
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setOptimizerSaving(false);
+    }
+  }, [loadOptimizer, refresh]);
+
   const applyLabBranchesBulk = async (body: AnyObj) => {
     setBusy(true);
     try {
@@ -3493,6 +3558,31 @@ export default function App() {
               <h2 id="dash-heading-optimizer" className="dash-section__title" style={{ margin: 0 }}>
                 Optimizer
               </h2>
+              <span
+                className="sub"
+                style={{
+                  marginLeft: 8,
+                  fontSize: 11,
+                  padding: "3px 8px",
+                  borderRadius: 999,
+                  background:
+                    optimizerStatus.health === "green"
+                      ? "rgba(61,220,151,.18)"
+                      : optimizerStatus.health === "yellow"
+                        ? "rgba(255,214,102,.18)"
+                        : "rgba(255,122,122,.18)",
+                  color:
+                    optimizerStatus.health === "green"
+                      ? "#7af0ba"
+                      : optimizerStatus.health === "yellow"
+                        ? "#ffd666"
+                        : "#ff9a9a",
+                  border: "1px solid var(--border)",
+                }}
+                title="Optimizer health from acceptance rate (green > 60, yellow 30–60, red < 30)."
+              >
+                Health: {optimizerStatus.health.toUpperCase()}
+              </span>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
                 <button
                   type="button"
@@ -3530,28 +3620,106 @@ export default function App() {
                 background: "linear-gradient(180deg,rgba(24,30,48,.65),rgba(14,18,30,.78))",
               }}
             >
-              <div style={{ fontWeight: 700, marginBottom: 6 }}>Optimizer Status</div>
-              <div className="sub" style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(110px,1fr))", gap: 8, fontSize: 12 }}>
-                <div>
-                  <div style={{ opacity: 0.8 }}>Current cycle</div>
-                  <div>{String(optimizerStatus.cycles)}</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 700 }}>Optimizer Status</div>
+                <div
+                  className="sub"
+                  style={{ fontSize: 11, whiteSpace: "nowrap" }}
+                  title="Lab A book-equity change per hour, estimated from the last ~30 equity snapshots (slope of first→last in that window). Positive = account trending up in sim."
+                >
+                  Slope:{" "}
+                  <strong>
+                    {optimizerStatus.equitySlopePerHour >= 0 ? "+" : ""}
+                    {optimizerStatus.equitySlopePerHour.toFixed(2)} $/h
+                  </strong>
                 </div>
-                <div>
-                  <div style={{ opacity: 0.8 }}>Last run</div>
-                  <div>{optimizerStatus.lastRunAt ? fmtIsoLocal(optimizerStatus.lastRunAt) : "—"}</div>
-                </div>
-                <div>
-                  <div style={{ opacity: 0.8 }}>Acceptance rate</div>
-                  <div>{optimizerStatus.acceptanceRatePct.toFixed(1)}%</div>
-                </div>
-                <div>
-                  <div style={{ opacity: 0.8 }}>Best fitness (7d)</div>
-                  <div>{optimizerStatus.bestFitnessWeek.toFixed(3)}</div>
-                </div>
-                <div>
-                  <div style={{ opacity: 0.8 }}>Live pulse status</div>
-                  <div>{optimizerStatus.pulseStatus || "idle"}</div>
-                </div>
+              </div>
+              <div
+                style={{ width: "100%", height: 96, marginBottom: 8 }}
+                title="Last 20 Lab A equity points (dollars) from stored snapshots. Hover points for value."
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={optimizerStatus.chart}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1a2544" vertical={false} />
+                    <XAxis dataKey="idx" tick={false} />
+                    <YAxis hide domain={["auto", "auto"]} />
+                    <Tooltip
+                      formatter={(v: unknown) => [(v == null ? "—" : Number(v).toFixed(3)), "Equity (USD)"]}
+                      labelFormatter={(label) => (label != null && label !== "" ? `Lab A · #${String(label)}` : "Lab A equity")}
+                    />
+                    <Line type="monotone" dataKey="equity" stroke="#6ee7ff" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div
+                className="sub"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+                  gap: "6px 8px",
+                  fontSize: 11,
+                  lineHeight: 1.25,
+                }}
+              >
+                {(
+                  [
+                    {
+                      k: "cycle",
+                      label: "Cycle",
+                      labelTitle: "Current optimizer cycle count (total runs; increases on each successful optimizer tick).",
+                      value: String(optimizerStatus.cycles),
+                      valueTitle: `Full value: ${optimizerStatus.cycles}`,
+                    },
+                    {
+                      k: "last",
+                      label: "Last",
+                      labelTitle: "Local date/time of the last optimizer run (from last_run_at or last pulse eval if present).",
+                      value: optimizerStatus.lastRunAt ? fmtIsoLocalCompact(optimizerStatus.lastRunAt) : "—",
+                      valueTitle: optimizerStatus.lastRunAt
+                        ? fmtIsoLocal(optimizerStatus.lastRunAt, true)
+                        : "No timestamp yet",
+                    },
+                    {
+                      k: "accpt",
+                      label: "Accpt",
+                      labelTitle:
+                        "Acceptance rate: accepted decisions ÷ decisions in the internal trace (or server acceptance_rate_pct). Health badge uses the same %.",
+                      value: `${optimizerStatus.acceptanceRatePct.toFixed(1)}%`,
+                      valueTitle: `Acceptance rate ${optimizerStatus.acceptanceRatePct.toFixed(1)}% (trace-based where available)`,
+                    },
+                    {
+                      k: "fit",
+                      label: "Fit 7d",
+                      labelTitle: "Best composite fitness score observed in the rolling 7-day window (higher = better in the optimizer’s metric).",
+                      value: optimizerStatus.bestFitnessWeek.toFixed(3),
+                      valueTitle: `best_fitness_score_7d = ${optimizerStatus.bestFitnessWeek.toFixed(4)}`,
+                    },
+                    {
+                      k: "pulse",
+                      label: "Pulse",
+                      labelTitle: "Last internal pulse or mutation result code (e.g. ok_noop, ok_internal_pulse). idle if never run.",
+                      value: String(optimizerStatus.pulseStatus || "idle"),
+                      valueTitle: `Status: ${optimizerStatus.pulseStatus || "idle"} · pulse evals (activity): ${optimizerStatus.pulseEvalCount}`,
+                    },
+                  ] as const
+                ).map((row) => (
+                  <div key={row.k} style={{ minWidth: 0 }} title={row.labelTitle}>
+                    <div style={{ opacity: 0.75, fontSize: 10, letterSpacing: 0.2 }}>{row.label}</div>
+                    <div
+                      style={{
+                        fontWeight: 600,
+                        fontSize: 12,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontFamily: row.k === "pulse" ? "var(--font-mono, ui-monospace, monospace)" : undefined,
+                      }}
+                      title={row.valueTitle}
+                    >
+                      {row.value}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
             <BranchOptimizerVisualizer
@@ -4582,6 +4750,7 @@ export default function App() {
         onSaveOptimizerConfig={saveOptimizerConfig}
         optimizerSaving={optimizerSaving}
         onRunOptimizerNow={runOptimizerNow}
+        onForceInternalMutationNow={forceInternalMutationNow}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
         liveEngineOn={liveBranchEngineOn}
@@ -4721,6 +4890,25 @@ export default function App() {
           }}
           showSnapshot={false}
         />
+        <span
+          className="sub"
+          style={{
+            marginLeft: 8,
+            padding: "2px 8px",
+            borderRadius: 999,
+            fontSize: 11,
+            border: "1px solid var(--border)",
+            background:
+              optimizerStatus.health === "green"
+                ? "rgba(61,220,151,.16)"
+                : optimizerStatus.health === "yellow"
+                  ? "rgba(255,214,102,.16)"
+                  : "rgba(255,122,122,.16)",
+          }}
+          title="Optimizer health badge from acceptance rate."
+        >
+          Optimizer {optimizerStatus.health.toUpperCase()}
+        </span>
       </div>
         </>
       ) : null}

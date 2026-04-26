@@ -1930,3 +1930,121 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "mutation_accepted": bool(mutation_meta.get("accepted")),
     }
 
+
+async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
+    """
+    Force-run one internal mutant cycle immediately (no scheduler gate).
+
+    Calls ``_internal_mutate_rules_and_params`` directly, persists trace/status, and returns
+    accept/reject diagnostics with score delta.
+    """
+    cfg = await store.load_config()
+    oc = _norm_opt_cfg(_opt_cfg(cfg))
+    end = _utc_now()
+    end_iso = _iso(end)
+    lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
+    max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
+    start = end - dt.timedelta(hours=lookback_h)
+    start_iso = _iso(start)
+    try:
+        oc["optimizer_cycle_count"] = int(oc.get("optimizer_cycle_count") or 0) + 1
+    except (TypeError, ValueError):
+        oc["optimizer_cycle_count"] = 1
+
+    tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+
+    row, meta = _internal_mutate_rules_and_params(
+        cfg=cfg,
+        oc=oc,
+        st_a=st_a,
+        st_b=st_b,
+        st_c=st_c,
+        st_d=st_d,
+        sg_a=sg_a,
+        sg_b=sg_b,
+        sg_c=sg_c,
+        sg_d=sg_d,
+        at_iso=end_iso,
+    )
+    if row:
+        hist = oc.get("change_history")
+        prev = hist if isinstance(hist, list) else []
+        lim = max(20, min(500, _safe_int(oc.get("max_history"), 120)))
+        oc["change_history"] = [row, *prev][:lim]
+        oc["last_change_at"] = end_iso
+        _merge_pulse_trace(oc, [row])
+
+    trace_entry = {
+        "at": end_iso,
+        "cycle": int(oc.get("optimizer_cycle_count") or 0),
+        "score": meta.get("score_after") if meta.get("score_after") is not None else meta.get("score_before"),
+        "score_before": meta.get("score_before"),
+        "score_after": meta.get("score_after"),
+        "accepted": bool(meta.get("accepted")),
+        "reject_reason": str(meta.get("reject_reason") or ""),
+        "mutant": True,
+        "changes_n": 1 if row else 0,
+        "forced": True,
+    }
+    _append_internal_trace(oc, trace_entry)
+    tr_rows = oc.get("internal_optimizer_trace")
+    tr_list = tr_rows if isinstance(tr_rows, list) else []
+    accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
+    oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / len(tr_list)), 2) if tr_list else 0.0
+    oc["last_run_at"] = end_iso
+    oc["last_pulse_eval_at"] = end_iso
+    oc["last_status"] = "forced_internal_mutation_accepted" if meta.get("accepted") else "forced_internal_mutation_rejected"
+    oc["last_error"] = ""
+    if meta.get("score_after") is not None:
+        try:
+            best = float(oc.get("best_fitness_score_7d") or 0.0)
+            oc["best_fitness_score_7d"] = round(max(best, float(meta["score_after"])), 6)
+        except (TypeError, ValueError):
+            pass
+    cfg["optimizer"] = oc
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="optimizer_internal_forced",
+        history_reason=oc["last_status"],
+    )
+    logger.info(
+        "forced internal mutation: accepted=%s reason=%s score_before=%s score_after=%s",
+        bool(meta.get("accepted")),
+        str(meta.get("reject_reason") or ""),
+        meta.get("score_before"),
+        meta.get("score_after"),
+    )
+    score_before = meta.get("score_before")
+    score_after = meta.get("score_after")
+    delta = None
+    try:
+        if score_before is not None and score_after is not None:
+            delta = float(score_after) - float(score_before)
+    except (TypeError, ValueError):
+        delta = None
+    return {
+        "ok": True,
+        "forced": True,
+        "accepted": bool(meta.get("accepted")),
+        "reason": str(meta.get("reject_reason") or ("accepted" if bool(meta.get("accepted")) else "")),
+        "score_before": score_before,
+        "score_after": score_after,
+        "new_fitness": score_after,
+        "fitness_delta": delta,
+        "change_applied": bool(row is not None),
+        "cycle": int(oc.get("optimizer_cycle_count") or 0),
+        "at": end_iso,
+    }
+

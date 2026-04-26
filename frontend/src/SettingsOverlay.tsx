@@ -840,6 +840,8 @@ export type SettingsOverlayProps = {
   optimizerSaving?: boolean;
   /** POST /api/optimizer/run (force); refreshes config when done. */
   onRunOptimizerNow?: () => void | Promise<void>;
+  /** POST /api/optimizer/force-internal-mutation (force one internal mutant cycle). */
+  onForceInternalMutationNow?: () => void | Promise<void>;
   onResetTradingData: (
     branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d",
     backup: boolean,
@@ -901,6 +903,7 @@ export default function SettingsOverlay({
   onSaveOptimizerConfig,
   optimizerSaving = false,
   onRunOptimizerNow,
+  onForceInternalMutationNow,
   onResetTradingData,
   onApplyLabBranches,
   liveEngineOn,
@@ -924,6 +927,7 @@ export default function SettingsOverlay({
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("all");
   const [labSizingTab, setLabSizingTab] = useState<LabBranchKey>("a");
+  const [forcingMutation, setForcingMutation] = useState(false);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1896,11 +1900,53 @@ export default function SettingsOverlay({
             </div>
             <div style={{ marginTop: 16 }}>
               <h3 style={{ margin: "0 0 6px 0", fontSize: 13, color: "var(--text)" }}>Internal Optimizer Trace (last 20 cycles)</h3>
-              <div className="sub" style={{ display: "grid", gap: 4, marginBottom: 8, fontSize: 11 }}>
-                <div>Cycles: <strong>{optimizerTraceStats.cycles}</strong></div>
-                <div>Acceptance rate: <strong>{optimizerTraceStats.rate.toFixed(1)}%</strong></div>
-                <div>Last fitness score: <strong>{optimizerTraceStats.lastScore == null ? "—" : optimizerTraceStats.lastScore.toFixed(3)}</strong></div>
-                <div>Average score trend/cycle: <strong>{optimizerTraceStats.avgTrend >= 0 ? "+" : ""}{optimizerTraceStats.avgTrend.toFixed(3)}</strong></div>
+              <div style={{ marginBottom: 10 }}>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
+                  title="Force one internal mutant cycle now; applies only if replay+stat gates pass."
+                  onClick={() =>
+                    void (async () => {
+                      if (!onForceInternalMutationNow) return;
+                      setForcingMutation(true);
+                      try {
+                        await onForceInternalMutationNow();
+                      } finally {
+                        setForcingMutation(false);
+                      }
+                    })()
+                  }
+                >
+                  {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
+                </button>
+              </div>
+              <div
+                className="sub"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                  gap: "6px 12px",
+                  marginBottom: 8,
+                  fontSize: 11,
+                  lineHeight: 1.3,
+                }}
+              >
+                <div title="Number of decisions recorded in the trace (last 20 window).">
+                  Cycles: <strong>{optimizerTraceStats.cycles}</strong>
+                </div>
+                <div title="Share of trace rows marked accepted; same basis as the dashboard health badge (when filled).">
+                  Accpt%: <strong>{optimizerTraceStats.rate.toFixed(1)}%</strong>
+                </div>
+                <div title="Fitness score on the most recent trace row (if any).">
+                  Last: <strong>{optimizerTraceStats.lastScore == null ? "—" : optimizerTraceStats.lastScore.toFixed(3)}</strong>
+                </div>
+                <div title="Linear trend of score across trace rows, divided by the number of steps (rough slope per cycle).">
+                  Trend/c: <strong>
+                    {optimizerTraceStats.avgTrend >= 0 ? "+" : ""}
+                    {optimizerTraceStats.avgTrend.toFixed(3)}
+                  </strong>
+                </div>
               </div>
               <div style={{ width: "100%", height: 180, marginTop: 8 }}>
                 <ResponsiveContainer width="100%" height="100%">

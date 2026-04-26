@@ -44,7 +44,7 @@ from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import Store, expand_partial_lab_branch
 from .optimizer.promotion import lab_a_promotion_report
-from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
+from .optimizer_claude import force_internal_mutation_once, pulse_chart_baseline, run_optimizer_once
 from .settings_env import env, kalshi_credentials_report
 
 
@@ -2056,7 +2056,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         "include_fees_in_score",
         "backtest_proposals",
         "adaptive_skip_backtest_gate",
-        "optimize_rules_with_claude",
+        "optimize_internal_mutations",
     ):
         if k in body:
             v = body[k]
@@ -2090,7 +2090,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                 "include_fees_in_score",
                 "backtest_proposals",
                 "adaptive_skip_backtest_gate",
-                "optimize_rules_with_claude",
+                "optimize_internal_mutations",
             ):
                 nxt[k] = bool(v)
             else:
@@ -2109,3 +2109,10 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/api/optimizer/run")
 async def optimizer_run() -> dict[str, Any]:
     return await run_optimizer_once(store, force=True)
+
+
+@app.post("/api/optimizer/force-internal-mutation")
+async def optimizer_force_internal_mutation() -> dict[str, Any]:
+    """Force one internal mutant cycle immediately (bypasses scheduler cadence)."""
+    logger.info("forced internal mutation requested via API")
+    return await force_internal_mutation_once(store)
