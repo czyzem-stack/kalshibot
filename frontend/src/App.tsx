@@ -29,6 +29,9 @@ import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 
 type AnyObj = Record<string, any>;
 
+const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
+const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
+
 /** Stable empty lab when config has no lab object yet — avoids `new {}` every render breaking PUT payloads. */
 const EMPTY_LAB: AnyObj = Object.freeze({});
 
@@ -2907,8 +2910,6 @@ function EngineAssetSnapBlock({
 export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
-  const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
-  const DASHBOARD_STALE_INFLIGHT_MS = DASHBOARD_REQUEST_TIMEOUT_MS + 5_000;
   const [dash, setDash] = useState<AnyObj | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2961,16 +2962,14 @@ export default function App() {
   const dashSnapshotRef = useRef<AnyObj | null>(null);
 
   /**
-   * Dashboard fetch coordination:
-   * - reuse one in-flight refresh Promise for non-forced callers (polls, startup, passive refreshes)
-   * - force refresh explicitly aborts and supersedes
-   * A monotonic epoch still lets superseded/unmount-aborted fetches skip stale setState.
+   * Dashboard fetch: dedupe in-flight; force aborts. No fetch epoch: React Strict (and effect re-runs) used
+   * to increment an epoch in cleanup, discarding a valid /api/dashboard response and leaving the UI
+   * without data or a fresh poll.
    */
   const dashboardAbortRef = useRef<AbortController | null>(null);
-  const dashboardFetchEpoch = useRef(0);
   const dashboardInFlightRef = useRef<Promise<AnyObj | null> | null>(null);
   const dashboardInFlightStartedAtRef = useRef(0);
-  const firstDashLoadedRef = useRef(false);
+  const dashboardPollMountedRef = useRef(true);
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
     const inFlight = dashboardInFlightRef.current;
@@ -2978,10 +2977,10 @@ export default function App() {
       inFlight &&
       Date.now() - dashboardInFlightStartedAtRef.current < DASHBOARD_STALE_INFLIGHT_MS;
     if (hasFreshInFlight && !force) {
+      void inFlight.catch(() => {});
       return inFlight;
     }
     if (dashboardInFlightRef.current && !hasFreshInFlight) {
-      // Recovery path for wedged Promises: stop reusing stale in-flight work.
       dashboardAbortRef.current?.abort();
       dashboardInFlightRef.current = null;
       dashboardInFlightStartedAtRef.current = 0;
@@ -2990,21 +2989,22 @@ export default function App() {
       dashboardAbortRef.current?.abort();
     }
     const req = (async (): Promise<AnyObj | null> => {
-      const myEpoch = ++dashboardFetchEpoch.current;
       const ac = new AbortController();
       dashboardAbortRef.current = ac;
       const maxMs = DASHBOARD_REQUEST_TIMEOUT_MS;
-      const tid = window.setTimeout(() => ac.abort(), maxMs);
+      let timedOutByDeadline = false;
+      const tid = window.setTimeout(() => {
+        timedOutByDeadline = true;
+        ac.abort();
+      }, maxMs);
       let payload: AnyObj | null = null;
       try {
-        // Do not clear errors on every poll: a slow /api/dashboard would otherwise flip the UI to
-        // the loading screen (!dash && !err) until the request finishes or times out.
         if (force) setErr(null);
         const r = await fetch("/api/dashboard", { signal: ac.signal });
-        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        if (!dashboardPollMountedRef.current) return null;
         if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
         const text = await r.text();
-        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        if (!dashboardPollMountedRef.current) return null;
         const d: AnyObj = (() => {
           try {
             return JSON.parse(text) as AnyObj;
@@ -3012,20 +3012,21 @@ export default function App() {
             throw new Error("Invalid JSON from /api/dashboard");
           }
         })();
-        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        if (!dashboardPollMountedRef.current) return null;
         setErr(null);
         setDash(d);
-        firstDashLoadedRef.current = true;
         payload = d;
       } catch (e: any) {
-        if (myEpoch !== dashboardFetchEpoch.current) return null;
+        if (!dashboardPollMountedRef.current) return null;
         const msg = String(e?.message || e);
         const aborted =
           String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
         if (aborted) {
-          setErr(
-            `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
-          );
+          if (timedOutByDeadline) {
+            setErr(
+              `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
+            );
+          }
         } else if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
           setErr(
             "Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app at http://localhost:5173 — not the API port alone.",
@@ -3054,7 +3055,7 @@ export default function App() {
         dashboardInFlightStartedAtRef.current = 0;
       }
     });
-  }, [DASHBOARD_REQUEST_TIMEOUT_MS, DASHBOARD_STALE_INFLIGHT_MS]);
+  }, []);
 
   /** Merge saved bot config into dashboard state without waiting on slow ``/api/dashboard`` (MTM, order books). */
   const applyDashboardConfig = useCallback((nextConfig: AnyObj) => {
@@ -3108,29 +3109,33 @@ export default function App() {
         if (!r.ok) return;
         const d = (await r.json()) as AnyObj;
         if (!d || typeof d !== "object") return;
-        setDash((prev) =>
-          prev == null
-            ? d
-            : { ...d, config: d.config && typeof d.config === "object" ? d.config : prev.config },
-        );
+        setDash((prev) => {
+          if (!prev) return prev;
+          return { ...d, config: d.config && typeof d.config === "object" ? d.config : prev.config };
+        });
       } catch {
         /* ignore */
       }
     })();
   }, []);
 
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const refreshEquityLightRef = useRef(refreshEquityLight);
+  refreshEquityLightRef.current = refreshEquityLight;
+
   useEffect(() => {
-    void refresh();
-    // Full dashboard: MTM + order books — poll less often; use ``/api/dashboard/equity`` for the fast path.
-    const idFull = window.setInterval(() => void refresh(), 12000);
-    const idEq = window.setInterval(() => void refreshEquityLight(), 4000);
+    dashboardPollMountedRef.current = true;
+    void refreshRef.current();
+    const idFull = window.setInterval(() => void refreshRef.current(), 12000);
+    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), 4000);
     return () => {
       window.clearInterval(idFull);
       window.clearInterval(idEq);
-      dashboardFetchEpoch.current += 1;
+      dashboardPollMountedRef.current = false;
       dashboardAbortRef.current?.abort();
     };
-  }, [refresh, refreshEquityLight]);
+  }, []);
 
   const loadOptimizer = useCallback(async () => {
     try {
@@ -4230,7 +4235,10 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      <div className="top">
+      <div
+        className="top"
+        style={!dash && !err ? { position: "relative", zIndex: 2500 } : undefined}
+      >
         <div className="hero">
           <div className="hero-head">
             <div className="hero-head__main" style={{ width: "100%" }}>
@@ -4270,7 +4278,7 @@ export default function App() {
       </div>
 
       {!dash && err ? <ApiOfflineCallout message={err} /> : null}
-      {!dash && !err ? <DashboardLoadingScreen /> : null}
+      {!dash && !err ? <DashboardLoadingScreen onRetry={() => void refresh({ force: true })} /> : null}
       {dash && err ? (
         <div className="error" title="Last API or validation error from this browser session.">
           {err}
@@ -6031,7 +6039,7 @@ function ApiOfflineCallout({ message }: { message: string }) {
 }
 
 /** First dashboard fetch: minimal full-screen state until `/api/dashboard` returns. */
-function DashboardLoadingScreen() {
+function DashboardLoadingScreen({ onRetry }: { onRetry: () => void }) {
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
@@ -6058,6 +6066,20 @@ function DashboardLoadingScreen() {
         <p className="app-loading-screen__elapsed" aria-live="off">
           {elapsedSec}s
         </p>
+        <p className="app-loading-screen__retry-hint" role="note">
+          Stuck? <strong>Retry</strong> below, or <strong>Settings</strong> (⚙) → <strong>Refresh now</strong>. Open the app at{" "}
+          <code>http://localhost:5173</code> (Vite) so requests to <code>/api</code> proxy to the Python server.
+        </p>
+        <div className="app-loading-screen__actions">
+          <button
+            type="button"
+            className="primary app-loading-screen__retry-btn"
+            onClick={onRetry}
+            title="Force a new /api/dashboard request (same as Settings → Refresh now)."
+          >
+            Retry
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -2509,6 +2509,33 @@ input[type="number"] {
   letter-spacing: 0.04em;
 }
 
+.app-loading-screen__retry-hint {
+  margin: 20px 0 0;
+  max-width: 40rem;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(160, 170, 200, 0.92);
+  text-align: left;
+}
+
+.app-loading-screen__retry-hint code {
+  font-size: 0.9em;
+  padding: 0 0.2em;
+}
+
+.app-loading-screen__actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+.app-loading-screen__retry-btn {
+  min-width: 7rem;
+  padding: 8px 18px;
+  font-size: 14px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-loading-screen__spinner {
     animation-duration: 1.6s;
@@ -2655,7 +2682,7 @@ input[type="number"] {
 .settings-overlay-root {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 2500;
   display: flex;
   align-items: flex-start;
   justify-content: center;
