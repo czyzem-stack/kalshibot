@@ -16,3 +16,10 @@ export function resolveUiTrack(): { kind: UiTrackKind; label: string } {
   if (origin.includes(":8770")) return { kind: "main", label: "main" };
   return { kind: "dev", label: "dev" };
 }
+
+/** Browser tab title: develop-style stack vs main sidecar (see VITE_UI_TRACK / port 8770). */
+export function resolveDocumentTitle(): string {
+  const t = resolveUiTrack();
+  if (t.kind === "dev") return "Chomp's Diner beta";
+  return "Chomp's Diner live";
+}

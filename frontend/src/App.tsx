@@ -27,7 +27,7 @@ import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
 import { BranchHeroMarquee, BranchHeroSnapshotHeader } from "./BranchMarketTickers";
 import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import { withApiAuth } from "./apiAuth";
-import { resolveUiTrack } from "./uiTrack";
+import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
 
 type AnyObj = Record<string, any>;
 
@@ -3848,6 +3848,10 @@ export default function App() {
   refreshRef.current = refresh;
   const refreshEquityLightRef = useRef(refreshEquityLight);
   refreshEquityLightRef.current = refreshEquityLight;
+
+  useLayoutEffect(() => {
+    document.title = resolveDocumentTitle();
+  }, []);
 
   useEffect(() => {
     dashboardPollMountedRef.current = true;

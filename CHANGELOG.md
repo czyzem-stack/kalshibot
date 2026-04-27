@@ -2,6 +2,11 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.04 - Dual UI tab title and track pill - 2026-04-27
+
+- **Frontend:** Browser tab title is **`Chomp's Diner beta`** when this UI targets the develop stack (`VITE_UI_TRACK=dev` or default when `VITE_API_ORIGIN` is not port **8770**), and **`Chomp's Diner live`** for the main sidecar (`main` / `live` track or **8770** in the API origin). `index.html` default title is **`Chomp's Diner`** until the SPA mounts.
+- **Bootstrap:** Main worktree `frontend/.env` also gets **`VITE_UI_TRACK=main`** (with **`VITE_API_ORIGIN`**) so the title row pill and tab text stay aligned without hand-editing.
+
 ## v0.4.03 - Separate DBs per checkout (env path resolution) - 2026-04-27
 
 - **Settings:** `SQLITE_PATH` and `DATA_LOG_DIR` treat **relative** values as paths under **this checkout’s repo root** (not the process working directory), so develop and a sibling `main` worktree keep distinct SQLite and JSONL trees by default. `launch_local.ps1` warns if both `.env` files set the same explicit `SQLITE_PATH` string. `setup-main-worktree.ps1`’s `ENV_SIDECAR.example` now includes `SQLITE_PATH` + `DATA_LOG_DIR` lines for clarity.
