@@ -9,7 +9,7 @@
 #   .\scripts\launch-main-sidecar.ps1
 #   .\scripts\launch-main-sidecar.ps1 -WorktreePath "D:\repos\Kalshibot-main"
 #
-# Opens API in a new PowerShell window; runs Vite on port 5174 in this window.
+# Opens API in a new PowerShell window; runs Vite on port 5173 in this window (local convention: main = 5173, develop = 5174).
 
 param(
     [string]$WorktreePath = ""
@@ -84,9 +84,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $fe "node_modules"))) {
 }
 
 Write-Host ""
-Write-Host "Starting MAIN dashboard (Vite) on http://localhost:5174 - proxy -> $healthUrl" -ForegroundColor Green
-Write-Host "Develop stays on http://localhost:5173 -> http://127.0.0.1:8765" -ForegroundColor DarkGray
+Write-Host "Starting MAIN dashboard (Vite) on http://localhost:5173 - proxy -> $healthUrl" -ForegroundColor Green
+Write-Host "Develop stays on http://localhost:5174 -> http://127.0.0.1:8765" -ForegroundColor DarkGray
 Write-Host "Press Ctrl+C here to stop Vite only; close the API window to stop uvicorn." -ForegroundColor DarkGray
 Write-Host ""
 
-npm run dev -- --port 5174 --strictPort
+npm run dev -- --port 5173 --strictPort

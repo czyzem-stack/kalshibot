@@ -799,6 +799,88 @@ export default function SettingsOverlay({
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
               Four independent paper branches (A–D). Sizing and rules are per lab; use <strong>Save all labs</strong> or per-lab saves. Live trading is unaffected.
             </p>
+            <div
+              className="panel settings-nested-panel"
+              style={{
+                marginTop: 12,
+                padding: "12px 14px",
+                border: "1px solid rgba(180, 83, 120, 0.45)",
+                background: "rgba(24, 12, 20, 0.35)",
+              }}
+            >
+              <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="POST /api/data/reset?branch=all_labs">
+                Reset all labs (A–D) + paper balance
+              </h3>
+              <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
+                Wipes <strong>only</strong> Lab A–D signals, trades, and equity snapshots in SQLite (Live history is kept). If you set a cent amount below, the API also sets that same{" "}
+                <code>paper_balance_cents</code> on <strong>Live paper</strong> and <strong>every lab key in config</strong> (including breeding child slots) and clears per-lab lifetime basis fields so charts start from the new seed.
+              </p>
+              {dash?.storage?.data_reset_token_configured ? (
+                <div className="field" style={{ marginBottom: 10 }}>
+                  <label htmlFor="reset_token_labs_bulk" className="section-tip" title="Same as Data tab — required when DATA_RESET_TOKEN is set.">
+                    Reset token
+                  </label>
+                  <input id="reset_token_labs_bulk" type="password" autoComplete="off" disabled={busy} placeholder="DATA_RESET_TOKEN" />
+                </div>
+              ) : null}
+              <div className="field">
+                <label htmlFor="all_labs_uniform_reset_cents" className="section-tip" title="Applied after the wipe via bot_config (same as Data → Reset all branches optional field).">
+                  Same starting paper balance after reset (cents)
+                </label>
+                <input
+                  id="all_labs_uniform_reset_cents"
+                  type="number"
+                  min={0}
+                  max={100_000_000}
+                  step={1000}
+                  disabled={busy}
+                  defaultValue={String(Number(labA?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500_000))}
+                />
+                <div className="sub" style={{ marginTop: 4, fontSize: 11, opacity: 0.88 }}>
+                  Example: <code>10000</code> = $100.00 each where applied. Clear the field to reset lab data only without changing bankroll fields.
+                </div>
+              </div>
+              <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
+                <input id="all_labs_reset_backup" type="checkbox" defaultChecked disabled={busy} />
+                <span>SQLite + JSONL backup before wipe (first lab owns the backup when all_labs)</span>
+              </label>
+              <button
+                type="button"
+                className="primary"
+                style={{ borderColor: "#6b2a2a", background: "linear-gradient(180deg,#2a1520,#1a0f18)" }}
+                disabled={busy}
+                title="POST /api/data/reset?branch=all_labs&confirm=yes"
+                onClick={() => {
+                  const backupEl = document.getElementById("all_labs_reset_backup") as HTMLInputElement | null;
+                  const backup = backupEl ? backupEl.checked : true;
+                  const balEl = document.getElementById("all_labs_uniform_reset_cents") as HTMLInputElement | null;
+                  const rawBal = balEl?.value?.trim() ?? "";
+                  let uniformCents: number | null = null;
+                  if (rawBal !== "") {
+                    const n = Number(rawBal.replace(/,/g, ""));
+                    if (!Number.isFinite(n) || n < 0 || n > 100_000_000) {
+                      window.alert("Paper balance must be a number between 0 and 100000000 cents, or leave blank to skip bankroll changes.");
+                      return;
+                    }
+                    uniformCents = Math.round(n);
+                  }
+                  const balHint =
+                    uniformCents != null
+                      ? `Then Live + all lab config slots will be set to ${uniformCents} cents paper (and lifetime bases cleared).`
+                      : "Config bankroll fields are left unchanged (only SQLite lab rows are deleted).";
+                  if (
+                    !window.confirm(
+                      `Reset ALL simulation lab trading data (Labs A, B, C, D)? This cannot be undone. ${balHint}\n\nLive branch SQLite rows are NOT deleted.`,
+                    )
+                  ) {
+                    return;
+                  }
+                  void onResetTradingData("all_labs", backup, uniformCents);
+                }}
+              >
+                Reset all labs (A–D)
+              </button>
+            </div>
             <div className="chart-tabs" role="tablist" aria-label="Simulation labs A through D" style={{ marginTop: 12 }}>
               {sizingTabs.map((t) => (
                 <button

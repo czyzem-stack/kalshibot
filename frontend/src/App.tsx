@@ -3754,11 +3754,15 @@ export default function App() {
           }
         } else if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
           setErr(
-            "Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app at http://localhost:5173 — not the API port alone.",
+            `Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app in the browser at ${
+              typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"
+            } (Vite) — not the API port alone.`,
           );
         } else if (/\b404\b/.test(msg)) {
           setErr(
-            "Got 404 from /api — use the Vite URL http://localhost:5173 so /api is proxied to the Python server.",
+            `Got 404 from /api — use this Vite app (${
+              typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"
+            }) so /api is proxied to the Python server.`,
           );
         } else {
           setErr(msg);
@@ -5041,7 +5045,9 @@ export default function App() {
       }
       const headers: Record<string, string> = {};
       if (dash?.storage?.data_reset_token_configured) {
-        const el = document.getElementById("reset_token_field") as HTMLInputElement | null;
+        const el =
+          (document.getElementById("reset_token_field") as HTMLInputElement | null) ??
+          (document.getElementById("reset_token_labs_bulk") as HTMLInputElement | null);
         const t = el?.value?.trim();
         if (t) headers["X-Reset-Token"] = t;
       }
@@ -5190,8 +5196,8 @@ export default function App() {
                   <span
                     className={`ui-track-pill ui-track-pill--${UI_TRACK.kind}`}
                     title={
-                      "Which checkout this UI belongs to (dual local). Set VITE_UI_TRACK=dev|main|live in frontend/.env; " +
-                      "if unset, port 8770 in VITE_API_ORIGIN implies main, otherwise dev."
+                      "Which checkout this UI belongs to (local worktrees). Set VITE_UI_TRACK=dev|main|test|live in frontend/.env; " +
+                      "if unset, VITE_API_ORIGIN port 8775 → test, 8770 → main, else dev."
                     }
                   >
                     {UI_TRACK.label}
@@ -7221,8 +7227,9 @@ function ApiOfflineCallout({ message }: { message: string }) {
           <code>.\scripts\launch_local.ps1</code> for API + UI together).
         </li>
         <li>
-          Open the UI at <strong>http://localhost:5173</strong> (Vite). Do not use port 8765 in the browser for
-          the dashboard; that URL is JSON only.
+          Open the UI at <strong>{typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"}</strong>{" "}
+          (Vite, local convention: develop <code>:5174</code>, main <code>:5173</code>, test <code>:5175</code>). Do
+          not use port 8765 in the browser for the dashboard; that URL is JSON only.
         </li>
         <li>
           If the API uses another port, set <code>KALSHI_BOT_PORT</code> and match it in{" "}
@@ -7262,8 +7269,10 @@ function DashboardLoadingScreen({ onRetry }: { onRetry: () => void }) {
           {elapsedSec}s
         </p>
         <p className="app-loading-screen__retry-hint" role="note">
-          Stuck? <strong>Retry</strong> below, or <strong>Settings</strong> (⚙) → <strong>Refresh now</strong>. Open the app at{" "}
-          <code>http://localhost:5173</code> (Vite) so requests to <code>/api</code> proxy to the Python server.
+          Stuck? <strong>Retry</strong> below, or <strong>Settings</strong> (⚙) → <strong>Refresh now</strong>. Open the
+          app at the Vite URL (this page:{" "}
+          <code>{typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"}</code>) so requests
+          to <code>/api</code> proxy to the Python server.
         </p>
         <div className="app-loading-screen__actions">
           <button

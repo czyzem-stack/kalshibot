@@ -1802,6 +1802,12 @@ input[type="number"] {
   border: 1px solid rgba(110, 231, 255, 0.4);
 }
 
+.ui-track-pill--test {
+  color: #fcd34d;
+  background: rgba(252, 211, 77, 0.12);
+  border: 1px solid rgba(252, 211, 77, 0.42);
+}
+
 .ui-track-pill--live {
   color: #86efac;
   background: rgba(134, 239, 172, 0.1);

@@ -2,6 +2,17 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.06 - Optional `test` worktree + triple local launch - 2026-04-27
+
+- **Scripts:** **`setup-test-worktree.ps1`** / **`bootstrap-test-worktree.ps1`** add a sibling **`[test]`** git worktree (default `../Kalshibot-test`) with API **8775**, Vite **5175**, and its own **`data/bot.sqlite3`** under that checkout. **`launch_local.ps1`** starts develop + optional main + optional test in parallel; **`-SkipTestSidecar`** / **`-SkipMainSidecar`** omit stacks. **`launch-test-sidecar.ps1`** runs test only.
+- **Scripts:** **`launch_local.ps1`** / **`launch-test-sidecar.ps1`** resolve the test checkout by **`KALSHIBOT_TEST_WORKTREE`**, then **`git worktree list` `[test]`**, then sibling **`Kalshibot-test`** / **`kalshibot-test`** if either has a **`.git`** (any branch)—so the third stack runs without requiring the git branch to be named `test` when the folder convention matches.
+- **Scripts:** **`launch_local.ps1`** now auto-invokes **`bootstrap-main-worktree.ps1`** / **`bootstrap-test-worktree.ps1`** when a sidecar has **`.git`** but no **`.env`**, and runs **`setup-test-worktree.ps1`** for missing conventional **`..\Kalshibot-test`** (unless **`KALSHIBOT_TEST_WORKTREE`** overrides the path)—so a single **`.\scripts\launch_local.ps1`** run can bring up **5175** without separate copy-paste bootstrap steps.
+- **Scripts:** **`update_all_worktrees.ps1`** runs **`git fetch`** + **`git pull --ff-only`** on develop + main + test paths (same discovery rules); optional **`-Pip`** / **`-Npm`** refresh deps in each checkout that has **`.venv`** / **`frontend`**. **`launch_local.ps1`** fix: define **`$repoCanon`** in **`Resolve-TestWorktreeRoot`** when scanning sibling test folders.
+- **`bootstrap-main-worktree.ps1`** / **`setup-main-worktree.ps1`:** default **`CORS_ORIGINS`** examples now include **:5175** for triple-local.
+- **Frontend:** **`VITE_UI_TRACK=test`**, port **8775** inference, tab title **Chomp's Diner test**, pill styles **`.ui-track-pill--test`** (`frontend/src/uiTrack.ts`, `styles.css`, `App.tsx` tooltip).
+- **Docs:** README environment matrix, scripts table, and **test → develop → main** promotion diagram notes.
+- **Local Vite:** fixed convention — **main = :5173**, **develop = :5174**, **test = :5175** (`launch_local.ps1`, `launch-main-sidecar.ps1`, `frontend/vite.config.ts` default, README; CORS still lists all three).
+
 ## v0.4.05 - Fleet committed % and child labs default on - 2026-04-27
 
 - **Dashboard / API:** Branch performance **committed** subtitle uses **`committed_pct_of_fleet_start`** when present: open premium as a % of **combined** configured paper starts (Live when in paper mode + Labs A–D). **`committed_pct_of_start`** remains per-branch. New helper **`fleet_visible_paper_start_cents`** in `branch_config.py`.
@@ -20,7 +31,7 @@ All notable project-level changes should be documented in this file.
 
 ## v0.4.02 - Parallel `main` worktree (run stable while developing) - 2026-04-27
 
-- **Dev workflow:** `scripts/setup-main-worktree.ps1` adds a sibling **`main`** git worktree (default `../Kalshibot-main`) with example env for **API 8770** + **Vite 5174**; `scripts/launch-main-sidecar.ps1` starts that stack alone. **`launch_local.ps1`** can start **both** (develop API + main API in separate windows, Vite **5173** + **5174**) when the worktree has `.env`; the main API uses the worktree’s **`.venv`** when it exists. `scripts/run_backend_at.ps1` runs uvicorn from an arbitrary repo root.
+- **Dev workflow:** `scripts/setup-main-worktree.ps1` adds a sibling **`main`** git worktree (default `../Kalshibot-main`) with example env for **API 8770** + **Vite 5173**; `scripts/launch-main-sidecar.ps1` starts that stack alone. **`launch_local.ps1`** can start **develop + main** (Vite **5174** + **5173**) and optional test (**5175**) when the worktrees have `.env`; the main API uses the worktree’s **`.venv`** when it exists. `scripts/run_backend_at.ps1` runs uvicorn from an arbitrary repo root.
 - **Docs:** README developer note on two checkouts, ports, and not double-writing Live with the same keys.
 
 ## v0.4.01 - Versioning policy (patch train under v0.4) - 2026-04-27

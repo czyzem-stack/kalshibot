@@ -1,10 +1,10 @@
 # One-shot: ensure a [main] git worktree exists next to develop (or at -WorktreePath), then write
-# worktree .env + frontend/.env so .\scripts\launch_local.ps1 can start dual UI (5173 + 5174).
+# worktree .env + frontend/.env so .\scripts\launch_local.ps1 can start dual UI (main 5173 + develop 5174; CORS includes 5175 for test).
 #
 # - Calls setup-main-worktree.ps1 when the folder is not yet a worktree (git worktree add).
 # - If the worktree has no .env: copies develop's .env (if present) else .env.example, then sets
-#   KALSHI_BOT_PORT=8770, SQLITE_PATH, DATA_LOG_DIR, CORS_ORIGINS for sidecar + Vite 5174.
-# - If .env already exists: only updates those keys (and VITE_API_ORIGIN + VITE_UI_TRACK in frontend/.env).
+#   KALSHI_BOT_PORT=8770, SQLITE_PATH, DATA_LOG_DIR, CORS_ORIGINS for sidecar + Vite 5173.
+# - If .env already exists: only updates those keys (and VITE_API_ORIGIN + VITE_UI_TRACK in frontend/.env). CORS includes :5175 when a test sidecar runs.
 #
 # Usage (from repo root):
 #   .\scripts\bootstrap-main-worktree.ps1
@@ -108,13 +108,13 @@ SQLITE_PATH=data/bot.sqlite3
 DATA_LOG_DIR=data/logs
 #
 # If you use API bearer auth, use a different token OR the same token (both APIs must match frontend .env).
-# CORS: add second Vite origin when running UI on 5174 (see frontend ENV example next to this file).
-# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
+# CORS: include Vite 5173 (main) + 5174 (develop) + 5175 (test) when running all three locally.
+# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175
 "@
     $exampleFe = @"
 # Point this worktree's Vite dev server at the MAIN sidecar API port.
 VITE_API_ORIGIN=http://127.0.0.1:8770
-# Shown next to the app title so this window is not confused with develop (5173).
+# Shown next to the app title so this window is not confused with develop (5174).
 VITE_UI_TRACK=main
 # VITE_API_BEARER_TOKEN=   # if you set KALSHI_API_BEARER_TOKEN in root .env for this worktree
 "@
@@ -185,7 +185,7 @@ if (-not (Test-Path -LiteralPath ($scPaths['FrontDir']))) {
     New-Item -ItemType Directory -Path ($scPaths['FrontDir']) -Force | Out-Null
 }
 
-$cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+$cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175"
 $rootDotEnvPath = [string]($scPaths['RootDotEnv'])
 Assert-EnvFileIsSmallTextFile -LiteralPath $rootDotEnvPath -DisplayLabel "worktree .env"
 $sidecarKeys = @("KALSHI_BOT_PORT", "SQLITE_PATH", "DATA_LOG_DIR", "CORS_ORIGINS")

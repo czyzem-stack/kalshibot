@@ -53,8 +53,8 @@ SQLITE_PATH=data/bot.sqlite3
 DATA_LOG_DIR=data/logs
 #
 # If you use API bearer auth, use a different token OR the same token (both APIs must match frontend .env).
-# CORS: add second Vite origin when running UI on 5174 (see frontend ENV example next to this file).
-# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
+# CORS: include 5173 (main) + 5174 (develop) + 5175 (test) when running all three locally (see bootstrap scripts).
+# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175
 "@
 
 $exampleFe = @"
@@ -75,4 +75,4 @@ Write-Host "    .\scripts\bootstrap-main-worktree.ps1 -WorktreePath `"$WorktreeP
 Write-Host "  Or manually: copy .env / frontend/.env from develop and merge ENV_SIDECAR.example files." -ForegroundColor DarkGray
 Write-Host "  Then:  .\scripts\launch_local.ps1   or   .\scripts\launch-main-sidecar.ps1 -WorktreePath `"$WorktreePath`"" -ForegroundColor Gray
 Write-Host ""
-Write-Host "Develop: keep using .\scripts\launch_local.ps1 (8765 + 5173). Main sidecar: 8770 + 5174." -ForegroundColor Cyan
+Write-Host "Develop: keep using .\scripts\launch_local.ps1 (8765 + 5174). Main sidecar: 8770 + 5173." -ForegroundColor Cyan

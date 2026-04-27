@@ -245,7 +245,7 @@ export default function SettingsHelpPlaybook({
             <strong>Global / Live</strong>: subtitle filters, live sizing, swing exit, live reset, shared rules JSON.
           </li>
           <li>
-            <strong>Simulation labs</strong>: four-branch sizing row, per-lab panels (auto-reset, YES/NO band sliders, branch save).
+            <strong>Simulation labs</strong>: <strong>Reset all labs (A–D)</strong> (optional uniform paper cents), four-branch sizing row, per-lab panels (auto-reset, YES/NO band sliders, branch save).
           </li>
           <li>
             <strong>Rules &amp; bands</strong>: default YES/NO bands, dev sim controls, experiment hints.
