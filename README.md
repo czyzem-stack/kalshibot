@@ -120,7 +120,7 @@ sequenceDiagram
   A->>K: portfolio / public probe (as implemented)
   K-->>A: JSON
   A-->>V: 200 Dashboard JSON
-  V-->>U: hydrate React state (dash ≠ null → hide loading)
+  V-->>U: hydrate React state (dash non-null, hide loading)
 
   Note over U,A: Every ~12s: full /api/dashboard again; every ~4s: /api/dashboard/equity merge (no slow mark pass).
 ```
@@ -370,7 +370,7 @@ The **Optimizer** column is **read-only telemetry** for the internal and optiona
 |--------|----------------|
 | **Title row** | **force** — runs an internal mutation path immediately (`POST /api/optimizer/force-internal-mutation`), gated by the same fitness/stat checks as scheduled runs; also bumps the Breeder status refetch when that card is in **Breeder** mode. **report** — opens a full **Optimizer report** overlay (run metrics, acceptance, schedule, change history, pulse log, and richer tables than the main card). **Info** — in-page explainer for the column. |
 | **Footer (bottom-right)** | **Optimizer** \| **Breeder** — switches the card body between default **Optimizer Thinking** telemetry (from **`GET /api/dashboard`**) and **Labs Breeding** readout (from **`GET /api/optimizer/status`** only). |
-| **Health dot** (red / yellow / green) | **Internal-mutation acceptance rate** over recent trace rows: **>60%** green, **30–60%** yellow, **&lt;30%** red. The same field drives long-form `optimizer_suggested_action` toasts (throttled), not a duplicate of the dot. |
+| **Health dot** (red / yellow / green) | **Internal-mutation acceptance rate** over recent trace rows: **above 60%** reads green, **30–60%** yellow, **below 30%** red. The same field drives long-form `optimizer_suggested_action` toasts (throttled), not a duplicate of the dot. |
 | **Optimizer Thinking (radar)** | A **Recharts** spider / radar: **six** axes, each **0–100** after server-side normalization so you can compare branches on one scale. Typical spokes: **fitness** (composite replay score), **acceptance** (mutant acceptance %), **mutation** (dial and tier rolled into one view), **stop‑loss safety** (replay stop burden), **equity momentum** (Lab A $/h slope from snapshots), and **streak (inverted)** so **higher = better** (low red-stress). Colored **bands** = **Live + Lab A–D**; **Lab A** is the primary “staging” readout. **Double-click** the chart to open a large modal with a tabular **detail** block and the same series—**Esc** closes. If a branch is cold or lacks data, a spoke can sit in the **mid-50s** or look flat until fresh settles and snapshots exist. |
 | **Mutation row** (under the radar) | A compact **tier** label (**Light** / **Medium** / **Strong** — driven by the same acceptance bands as health), the **effective mutation scale** (0–1 internal blend of tier and `mutation_aggressiveness`), and a **horizontal “Dial (0–1)”** bar showing persisted **`mutation_aggressiveness`**. This replaces the old single-line “key internal metrics…” caption: it is the at-a-glance **exploration pressure** readout. |
 | **Lab pulse** | A scrolling line of short **engine / optimizer** hints (e.g. open sim, return vs basis, last optimizer note). Sourced from dashboard `lab_thoughts` / `optimizer_activity` slices—useful for “what happened last tick” without opening Settings. |
@@ -957,8 +957,8 @@ Ruff is configured to touch `backend/` only (see `.pre-commit-config.yaml`).
 
 ### When enabling API bearer token auth
 
-- **Root `.env`:** `KALSHI_API_BEARER_TOKEN=<your-long-random-secret>`
-- **`frontend/.env`:** `VITE_API_BEARER_TOKEN=<same-value>`
+- **Root `.env`:** set `KALSHI_API_BEARER_TOKEN` to a long random string (no angle brackets in the value).
+- **`frontend/.env`:** set `VITE_API_BEARER_TOKEN` to the **same** string so the browser sends `Authorization: Bearer …` on `/api/*`.
 - Restart both **uvicorn** and **`npm run dev`**
 
 ### Keyring support (optional)
@@ -1057,7 +1057,7 @@ This project is released under the [MIT License](LICENSE).
 
 ## Optional API authentication & hardening
 
-- **`KALSHI_API_BEARER_TOKEN`**: when non-empty, requests to `/api/*` require `Authorization: Bearer <token>`, except **`/api/health`**. The interactive dashboard should set the same value in **`frontend/.env`** as **`VITE_API_BEARER_TOKEN`** (see `frontend/.env.example` and [Migration and testing](#migration-and-testing-exact-commands)). Default is **off** for local use.
+- **`KALSHI_API_BEARER_TOKEN`**: when non-empty, requests to `/api/*` require an `Authorization: Bearer` header whose value matches this secret, except **`GET /api/health`**. The interactive dashboard should set the same value in **`frontend/.env`** as **`VITE_API_BEARER_TOKEN`** (see `frontend/.env.example` and [Migration and testing](#migration-and-testing-exact-commands)). Default is **off** for local use.
 - **`CORS_ORIGINS`**: comma-separated **exact** origins (default includes Vite dev URLs). In production, set this to the single origin that serves the dashboard.
 - **`KALSHI_USE_KEYRING`**: when `1` and neither inline PEM nor path is set, the Kalshi private key PEM is read from the OS keyring (requires `keyring` in `requirements.txt` and a stored secret under `KALSHI_KEYRING_SERVICE` / `KALSHI_KEYRING_USERNAME`).
 - The API sets conservative **security headers** (frame deny, nosniff, etc.). **HSTS** and TLS termination should be configured on your reverse proxy if you expose the service.

@@ -32,6 +32,7 @@ from .branch_config import (
     BRANCH_LAB_D,
     BRANCH_LABS,
     BRANCH_LIVE,
+    LAB_BRANCH_OVERLAY_KEYS,
     build_optimizer_radar_payload,
     lab_paper_equity_start_cents,
     live_paper_trading_enabled,
@@ -60,12 +61,10 @@ from .settings_env import env, kalshi_credentials_report
 from .state import (
     DASHBOARD_ORDERBOOK_CACHE,
     DASHBOARD_ORDERBOOK_CACHE_TTL_S,
-    REPO_ROOT,
     init_runtime_engines,
     require_kalshi,
     storage_dict,
     store,
-    stop_event,
 )
 from .types_api import (
     AccountResponse,

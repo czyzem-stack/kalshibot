@@ -11,10 +11,6 @@ from .. import state
 from ..alert_webhook import post_branch_error_alerts
 from ..branch_config import (
     BRANCH_CHILD_LABS,
-    BRANCH_LAB_A,
-    BRANCH_LAB_B,
-    BRANCH_LAB_C,
-    BRANCH_LAB_D,
     BRANCH_LABS,
     BRANCH_LIVE,
     live_paper_trading_enabled,

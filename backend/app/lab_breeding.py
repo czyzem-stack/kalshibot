@@ -31,7 +31,6 @@ from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
-    BRANCH_LAB_D,
     BRANCH_LABS,
     LAB_BREEDING_INTERNAL_MAX_SLOTS,
     LAB_BREEDING_MAX_CHILD_SLOTS,

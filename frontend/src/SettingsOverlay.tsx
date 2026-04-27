@@ -16,6 +16,7 @@ import {
   SwingExitImpliedDropControl,
 } from "./settingsRules";
 import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
+import SettingsHelpPlaybook from "./settingsHelpPlaybook";
 
 type AnyObj = Record<string, any>;
 type SettingsTab =
@@ -25,7 +26,8 @@ type SettingsTab =
   | "patient_stop"
   | "optimizer"
   | "fees_sim"
-  | "data";
+  | "data"
+  | "help";
 /** SQLite lab branches A–D (simulation). Breeding is backend-only — no extra UI tabs. */
 type LabBranchKey = "a" | "b" | "c" | "d";
 
@@ -301,6 +303,7 @@ export default function SettingsOverlay({
     }
   }, [open]);
 
+  const showHelp = settingsTab === "help";
   const showGlobal = settingsTab === "global";
   const showRulesBands = settingsTab === "rules_bands";
   const showPatientStopTab = settingsTab === "patient_stop";
@@ -403,6 +406,7 @@ export default function SettingsOverlay({
               ["optimizer", "Optimizer"],
               ["fees_sim", "Fees & sim"],
               ["data", "Data & backups"],
+              ["help", "Help & first-time guide"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -417,6 +421,21 @@ export default function SettingsOverlay({
             </button>
           ))}
         </div>
+        {showHelp ? (
+          <SettingsHelpPlaybook
+            goGlobal={() => setSettingsTab("global")}
+            goLabs={(lab) => {
+              setSettingsTab("labs");
+              setActiveLab(lab);
+            }}
+            goRules={() => setSettingsTab("rules_bands")}
+            goPatientStop={() => setSettingsTab("patient_stop")}
+            goOptimizer={() => setSettingsTab("optimizer")}
+            goFeesSim={() => setSettingsTab("fees_sim")}
+            goData={() => setSettingsTab("data")}
+          />
+        ) : (
+          <>
         <div style={{ marginTop: 10 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <strong style={{ fontSize: 11, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--muted)" }}>
@@ -1466,6 +1485,8 @@ export default function SettingsOverlay({
         </button>
           </>
         ) : null}
+          </>
+        )}
       </div>
     </div>
   );

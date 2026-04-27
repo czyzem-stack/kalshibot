@@ -11,7 +11,11 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from app.kalshi_fees import kalshi_buy_debit_cents, kalshi_quadratic_trade_fee_usd, kalshi_sell_credit_cents
+from app.kalshi_fees import (  # noqa: E402
+    kalshi_buy_debit_cents,
+    kalshi_quadratic_trade_fee_usd,
+    kalshi_sell_credit_cents,
+)
 
 
 class KalshiFeesTest(unittest.TestCase):

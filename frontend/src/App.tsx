@@ -2578,6 +2578,41 @@ type EquityGranularity = "intraday" | "dd" | "ww" | "mm" | "yy";
 
 type EquityChartRow = { t: string; tsMs: number; equity: number; mtm: number | null; synthetic?: boolean };
 
+/** ``pct_change_window`` — each series is % change from the first *usable* point in that branch’s plotted window (book and MTM use their own first-row bases). */
+type EquityValueScale = "dollars" | "pct_change_window";
+
+function scaleEquityRowsPctFromWindowStart(rows: EquityChartRow[]): EquityChartRow[] {
+  if (!rows.length) return rows;
+  let baseEq: number | null = null;
+  let baseMtm: number | null = null;
+  let startIdx = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const e = Number(rows[i]?.equity);
+    if (Number.isFinite(e) && Math.abs(e) > 1e-9) {
+      baseEq = e;
+      startIdx = i;
+      break;
+    }
+  }
+  if (baseEq == null || !Number.isFinite(baseEq) || Math.abs(baseEq) < 1e-9) return rows;
+  const r0 = rows[startIdx];
+  const m0 = r0?.mtm != null && Number.isFinite(Number(r0.mtm)) ? Number(r0.mtm) : null;
+  baseMtm = m0 != null && Math.abs(m0) > 1e-9 ? m0 : baseEq;
+  return rows.map((r) => {
+    const mtmN = r.mtm != null && Number.isFinite(Number(r.mtm)) ? Number(r.mtm) : r.equity;
+    return {
+      ...r,
+      equity: (r.equity / baseEq! - 1) * 100,
+      mtm: (mtmN / baseMtm! - 1) * 100,
+    };
+  });
+}
+
+function applyEquityValueScale(rows: EquityChartRow[], scale: EquityValueScale): EquityChartRow[] {
+  if (scale === "dollars") return rows;
+  return scaleEquityRowsPctFromWindowStart(rows);
+}
+
 function mondayUtcKey(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -2782,10 +2817,13 @@ function EquityDualLineChart({
   data,
   equityStroke,
   mtmStroke,
+  yFormat = "dollar",
 }: {
   data: EquityChartRow[];
   equityStroke: string;
   mtmStroke: string;
+  /** ``pct`` = Y-axis and tooltip show % change from first point in ``data`` (see ``scaleEquityRowsPctFromWindowStart``). */
+  yFormat?: "dollar" | "pct";
 }) {
   // Recharts ignores null/undefined for Line points — synthesize a numeric series so MTM always draws.
   const plotData = useMemo(
@@ -2796,16 +2834,19 @@ function EquityDualLineChart({
       })),
     [data],
   );
+  const fmtY = (v: number) =>
+    yFormat === "pct" ? `${Number(v).toFixed(2)}%` : `$${Number(v).toFixed(2)}`;
+  const fmtTick = (v: number) => (yFormat === "pct" ? `${Number(v).toFixed(1)}%` : `$${Number(v).toFixed(0)}`);
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
-        <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
+        <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} tickFormatter={fmtTick} />
         <Tooltip
           allowEscapeViewBox={{ x: true, y: true }}
           contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
-          formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
+          formatter={(value: number, name: string) => [fmtY(value), name]}
         />
         <Legend
           verticalAlign="bottom"
@@ -2816,7 +2857,7 @@ function EquityDualLineChart({
         <Line
           type="monotone"
           dataKey="equity"
-          name="Book value (cost basis)"
+          name={yFormat === "pct" ? "Book % vs first point" : "Book value (cost basis)"}
           stroke={equityStroke}
           strokeWidth={2}
           dot={false}
@@ -2825,7 +2866,7 @@ function EquityDualLineChart({
         <Line
           type="monotone"
           dataKey="mtmPlot"
-          name="Current worth (MTM)"
+          name={yFormat === "pct" ? "MTM % vs first point" : "Current worth (MTM)"}
           stroke={mtmStroke}
           strokeWidth={2}
           strokeDasharray="6 4"
@@ -3121,6 +3162,7 @@ export default function App() {
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
+  const [equityValueScale, setEquityValueScale] = useState<EquityValueScale>("dollars");
   const [equityVisible, setEquityVisible] = useState<Record<"live" | "a" | "b" | "c" | "d", boolean>>({
     live: true,
     a: true,
@@ -4002,30 +4044,52 @@ export default function App() {
     Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabC.total_pnl_dollars ?? 0) &&
     Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabD.total_pnl_dollars ?? 0);
 
-  const chartData = useMemo(
+  const chartDataLiveRaw = useMemo(
     () => equitySeriesWithLiveTail(snaps, equityGranularity, metrics, fmtIsoLocal),
     [snaps, equityGranularity, metrics, fmtIsoLocal],
   );
-
-  const chartDataLabA = useMemo(
+  const chartDataLabARaw = useMemo(
     () => equitySeriesWithLiveTail(equitySnapsLabA, equityGranularity, metricsLabA, fmtIsoLocal),
     [equitySnapsLabA, equityGranularity, metricsLabA, fmtIsoLocal],
   );
-  const chartDataLabB = useMemo(
+  const chartDataLabBRaw = useMemo(
     () => equitySeriesWithLiveTail(equitySnapsLabB, equityGranularity, metricsLabB, fmtIsoLocal),
     [equitySnapsLabB, equityGranularity, metricsLabB, fmtIsoLocal],
   );
-  const chartDataLabC = useMemo(
+  const chartDataLabCRaw = useMemo(
     () => equitySeriesWithLiveTail(equitySnapsLabC, equityGranularity, metricsLabC, fmtIsoLocal),
     [equitySnapsLabC, equityGranularity, metricsLabC, fmtIsoLocal],
   );
-  const chartDataLabD = useMemo(
+  const chartDataLabDRaw = useMemo(
     () => equitySeriesWithLiveTail(equitySnapsLabD, equityGranularity, metricsLabD, fmtIsoLocal),
     [equitySnapsLabD, equityGranularity, metricsLabD, fmtIsoLocal],
   );
+
+  const chartData = useMemo(
+    () => applyEquityValueScale(chartDataLiveRaw, equityValueScale),
+    [chartDataLiveRaw, equityValueScale],
+  );
+  const chartDataLabA = useMemo(
+    () => applyEquityValueScale(chartDataLabARaw, equityValueScale),
+    [chartDataLabARaw, equityValueScale],
+  );
+  const chartDataLabB = useMemo(
+    () => applyEquityValueScale(chartDataLabBRaw, equityValueScale),
+    [chartDataLabBRaw, equityValueScale],
+  );
+  const chartDataLabC = useMemo(
+    () => applyEquityValueScale(chartDataLabCRaw, equityValueScale),
+    [chartDataLabCRaw, equityValueScale],
+  );
+  const chartDataLabD = useMemo(
+    () => applyEquityValueScale(chartDataLabDRaw, equityValueScale),
+    [chartDataLabDRaw, equityValueScale],
+  );
+  /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the five small charts for per-branch % view. */
   const equityOverlayData = useMemo(
-    () => mergeEquityOverlayRows(chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD),
-    [chartData, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD],
+    () =>
+      mergeEquityOverlayRows(chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw),
+    [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw],
   );
 
   const assets = (cfg.assets || {}) as AnyObj;
@@ -5102,8 +5166,9 @@ export default function App() {
                           broken quotes. (4) Mismatch with Branch performance: performance tiles are one instant; these charts are
                           time-series—always compare the same branch tab and the same time window mentally. (5) Lab curves that{" "}
                           <em>look</em> like clones but sit at different dollar levels: each chart uses its own snapshot series and book
-                          rollups—check the line under each title (pts / book / settled). Shared rules + the same market tape often
-                          produce very similar <em>shapes</em> at different bankrolls.
+                          rollups—check the line under each title (pts / book / settled). Use the <strong>%Δ</strong> tab to re-scale every
+                          chart as <em>% change from its first plotted point</em> so Lab B/C/D divergence is obvious when bankrolls differ.
+                          Shared rules + the same market tape often produce very similar <em>dollar</em> shapes at different levels.
                         </p>
                         <p>
                           <strong>How to work with the rest of the UI.</strong> After a trade, expect dashed to move first, solid to move on
@@ -5143,6 +5208,35 @@ export default function App() {
               </button>
             ))}
           </div>
+          <div
+            className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs dash-equity-panel__tabs--scale"
+            role="tablist"
+            aria-label="Equity Y-axis scale (all branch charts)"
+            style={{ marginTop: 6 }}
+          >
+            {(
+              [
+                ["dollars", "$", "Absolute dollars from SQLite snapshots (each lab has its own series)."],
+                [
+                  "pct_change_window",
+                  "%Δ",
+                  "% change from the first plotted point in this chart’s window — makes B/C/D divergence visible when bankrolls differ but moves are correlated.",
+                ],
+              ] as const
+            ).map(([id, label, tip]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={equityValueScale === id}
+                className={`chart-tab ${equityValueScale === id ? "chart-tab--active" : ""}`}
+                title={tip}
+                onClick={() => setEquityValueScale(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="dash-equity-charts">
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
@@ -5153,13 +5247,19 @@ export default function App() {
               </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
-                  title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
                   detail={<EquityDblReadout m={metrics} name={activityBranchTabLabel("live")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
-                      <EquityDualLineChart data={chartData} equityStroke="#6ee7ff" mtmStroke="#38bdf8" />
+                      <EquityDualLineChart
+                        key={`eq-live-${equityValueScale}-${equityGranularity}-${chartData.length}`}
+                        data={chartData}
+                        equityStroke="#6ee7ff"
+                        mtmStroke="#38bdf8"
+                        yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                      />
                     </div>
                   )}
                 />
@@ -5174,13 +5274,19 @@ export default function App() {
               </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
-                  title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
                   detail={<EquityDblReadout m={metricsLabA} name={activityBranchTabLabel("lab_a")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
-                      <EquityDualLineChart data={chartDataLabA} equityStroke="#a78bfa" mtmStroke="#c4b5fd" />
+                      <EquityDualLineChart
+                        key={`eq-a-${equityValueScale}-${equityGranularity}-${chartDataLabA.length}`}
+                        data={chartDataLabA}
+                        equityStroke="#a78bfa"
+                        mtmStroke="#c4b5fd"
+                        yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                      />
                     </div>
                   )}
                 />
@@ -5195,13 +5301,19 @@ export default function App() {
               </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
-                  title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
                   detail={<EquityDblReadout m={metricsLabB} name={activityBranchTabLabel("lab_b")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
-                      <EquityDualLineChart data={chartDataLabB} equityStroke="#f59e0b" mtmStroke="#fcd34d" />
+                      <EquityDualLineChart
+                        key={`eq-b-${equityValueScale}-${equityGranularity}-${chartDataLabB.length}`}
+                        data={chartDataLabB}
+                        equityStroke="#f59e0b"
+                        mtmStroke="#fcd34d"
+                        yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                      />
                     </div>
                   )}
                 />
@@ -5216,13 +5328,19 @@ export default function App() {
               </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
-                  title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
                   detail={<EquityDblReadout m={metricsLabC} name={activityBranchTabLabel("lab_c")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
-                      <EquityDualLineChart data={chartDataLabC} equityStroke="#f472b6" mtmStroke="#fbcfe8" />
+                      <EquityDualLineChart
+                        key={`eq-c-${equityValueScale}-${equityGranularity}-${chartDataLabC.length}`}
+                        data={chartDataLabC}
+                        equityStroke="#f472b6"
+                        mtmStroke="#fbcfe8"
+                        yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                      />
                     </div>
                   )}
                 />
@@ -5237,13 +5355,19 @@ export default function App() {
               </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
-                  title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
+                  title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
                   detail={<EquityDblReadout m={metricsLabD} name={activityBranchTabLabel("lab_d")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
-                      <EquityDualLineChart data={chartDataLabD} equityStroke="#fca5a5" mtmStroke="#fecaca" />
+                      <EquityDualLineChart
+                        key={`eq-d-${equityValueScale}-${equityGranularity}-${chartDataLabD.length}`}
+                        data={chartDataLabD}
+                        equityStroke="#fca5a5"
+                        mtmStroke="#fecaca"
+                        yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                      />
                     </div>
                   )}
                 />
@@ -6205,7 +6329,7 @@ export default function App() {
                       ? "one line per branch, average of book and MTM at each time step."
                       : "MTM minus book (open-risk mark) at each time step."}{" "}
                     Use the checkboxes in this popup to show or hide series; those toggles are shared with the main Compare view. Time scale is the
-                    current tab ({String(equityGranularity)}).
+                    current tab ({String(equityGranularity)}). This overlay is always <strong>dollars</strong> (the %Δ tab applies to the five small charts only).
                   </p>
                 }
                 render={({ h }) => (
@@ -6290,6 +6414,18 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      <div className="app-bottom-marquee" aria-label="Live and lab branch tickers (persistent)">
+        <BranchHeroMarquee
+          dash={dash}
+          cfg={{
+            ...(cfg as AnyObj),
+            hero_marquee_speed_mult: heroMarqueeSpeedMult,
+          }}
+          showSnapshot={false}
+        />
+      </div>
+        </>
+      ) : null}
       {infoPopup ? (
         <div
           role="dialog"
@@ -6298,7 +6434,8 @@ export default function App() {
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: infoPopup.variant === "optimizerReport" ? 1400 : 1200,
+            /* Above .app-loading-screen (2000) and hero while loading (2500) so help stays visible during refresh. */
+            zIndex: infoPopup.variant === "optimizerReport" ? 2700 : 2600,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -6326,18 +6463,6 @@ export default function App() {
             {infoPopup.body}
           </div>
         </div>
-      ) : null}
-      <div className="app-bottom-marquee" aria-label="Live and lab branch tickers (persistent)">
-        <BranchHeroMarquee
-          dash={dash}
-          cfg={{
-            ...(cfg as AnyObj),
-            hero_marquee_speed_mult: heroMarqueeSpeedMult,
-          }}
-          showSnapshot={false}
-        />
-      </div>
-        </>
       ) : null}
     </div>
   );

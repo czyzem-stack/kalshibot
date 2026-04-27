@@ -35,7 +35,6 @@ from ..branch_config import (
 )
 from ..kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kalshi_settlement_credit_cents
 from ..kalshi_client import KalshiClient
-from ..optimizer import maybe_auto_optimize
 from ..persistence import Store, _data_log
 from ..settings_env import env
 from ..types_kalshi import MarketRow

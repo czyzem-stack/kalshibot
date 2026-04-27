@@ -4,7 +4,6 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import math
 import random
 from statistics import mean, pstdev
 from typing import TYPE_CHECKING, Any
@@ -28,9 +27,8 @@ from .branch_config import (
 from .engine import _calculate_net_unrealized_pct_after_fees, rule_matches
 from .optimizer.fitness import composite_fitness_score, is_statistically_better
 from .optimizer.weighted_edge import calculate_weighted_edge, synthetic_orderbook_for_replay
-from .optimizer.schemas import ClaudeOptimizerResponse, parse_claude_optimizer_json
+from .optimizer.schemas import ClaudeOptimizerResponse
 from .lab_breeding import maybe_breed_dead_labs, maybe_soft_cull_lab_branches, run_lab_breeding_ga_cycle
-from .settings_env import env
 
 if TYPE_CHECKING:
     from .persistence import Store
