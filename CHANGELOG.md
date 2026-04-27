@@ -2,6 +2,17 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.03 - Separate DBs per checkout (env path resolution) - 2026-04-27
+
+- **Settings:** `SQLITE_PATH` and `DATA_LOG_DIR` treat **relative** values as paths under **this checkout’s repo root** (not the process working directory), so develop and a sibling `main` worktree keep distinct SQLite and JSONL trees by default. `launch_local.ps1` warns if both `.env` files set the same explicit `SQLITE_PATH` string. `setup-main-worktree.ps1`’s `ENV_SIDECAR.example` now includes `SQLITE_PATH` + `DATA_LOG_DIR` lines for clarity.
+- **Scripts:** `launch_local.ps1` discovers the `main` worktree via `git worktree list` (not only `..\Kalshibot-main`) and prints a **yellow reason** when dual UI is skipped (missing checkout vs missing `.env`).
+- **Scripts:** `bootstrap-main-worktree.ps1` runs `setup-main-worktree.ps1` if needed, then creates/updates the worktree **`.env`** and **`frontend/.env`** from develop (or examples) with sidecar ports and CORS so **`launch_local.ps1`** can start dual UI without manual merges.
+
+## v0.4.02 - Parallel `main` worktree (run stable while developing) - 2026-04-27
+
+- **Dev workflow:** `scripts/setup-main-worktree.ps1` adds a sibling **`main`** git worktree (default `../Kalshibot-main`) with example env for **API 8770** + **Vite 5174**; `scripts/launch-main-sidecar.ps1` starts that stack alone. **`launch_local.ps1`** can start **both** (develop API + main API in separate windows, Vite **5173** + **5174**) when the worktree has `.env`; the main API uses the worktree’s **`.venv`** when it exists. `scripts/run_backend_at.ps1` runs uvicorn from an arbitrary repo root.
+- **Docs:** README developer note on two checkouts, ports, and not double-writing Live with the same keys.
+
 ## v0.4.01 - Versioning policy (patch train under v0.4) - 2026-04-27
 
 - **Versioning:** After **v0.4**, routine releases use **patch** numbers **`v0.4.01`**, **`v0.4.02`**, … in [`VERSION`](VERSION) until the operator asks for a **bump** (next minor/major, e.g. **v0.5**). See **Versioning going forward** at the bottom of this file.

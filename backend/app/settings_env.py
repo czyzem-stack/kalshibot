@@ -59,6 +59,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _load_dotenv(_REPO_ROOT / ".env")
 
 
+def _resolved_path_env(name: str, *, default: Path) -> str:
+    """
+    Resolve SQLITE_PATH / DATA_LOG_DIR: relative values are anchored at this checkout's repo root
+    (not the process cwd), so parallel develop + worktree APIs never accidentally share one file.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return str(default.resolve())
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p.resolve())
+    return str((_REPO_ROOT / p).resolve())
+
+
 def _get(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -93,9 +107,9 @@ class EnvSettings:
     kalshi_private_key_path: str = _get("KALSHI_PRIVATE_KEY_PATH")
     kalshi_private_key_pem: str = _get("KALSHI_PRIVATE_KEY_PEM")
     kalshi_env: str = _get("KALSHI_ENV", "demo") or "demo"
-    sqlite_path: str = _get(
+    sqlite_path: str = _resolved_path_env(
         "SQLITE_PATH",
-        str(_REPO_ROOT / "data" / "bot.sqlite3"),
+        default=_REPO_ROOT / "data" / "bot.sqlite3",
     )
     cors_origins: str = (
         _get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
@@ -111,7 +125,10 @@ class EnvSettings:
     kalshi_keyring_service: str = _get("KALSHI_KEYRING_SERVICE", "kalshibot")
     kalshi_keyring_username: str = _get("KALSHI_KEYRING_USERNAME", "KALSHI_PRIVATE_KEY_PEM")
     # JSONL logs: signals, trades, optional equity; under repo or absolute path.
-    data_log_dir: str = _get("DATA_LOG_DIR", str(_REPO_ROOT / "data" / "logs"))
+    data_log_dir: str = _resolved_path_env(
+        "DATA_LOG_DIR",
+        default=_REPO_ROOT / "data" / "logs",
+    )
     data_logging_enabled: bool = _get("DATA_LOGGING", "1").lower() not in ("0", "false", "no", "")
     data_log_equity: bool = _get("DATA_LOG_EQUITY", "0").lower() in ("1", "true", "yes")
     # If set, POST /api/data/reset must send header ``X-Reset-Token: <value>`` in addition to confirm=yes.

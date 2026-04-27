@@ -27,8 +27,11 @@ import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
 import { BranchHeroMarquee, BranchHeroSnapshotHeader } from "./BranchMarketTickers";
 import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import { withApiAuth } from "./apiAuth";
+import { resolveUiTrack } from "./uiTrack";
 
 type AnyObj = Record<string, any>;
+
+const UI_TRACK = resolveUiTrack();
 
 const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
 const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
@@ -5161,12 +5164,23 @@ export default function App() {
           <div className="hero-head">
             <div className="hero-head__main" style={{ width: "100%" }}>
               <div className="hero-head__title-stack" style={{ flex: 1, minWidth: 0 }}>
-                <h1
-                  className="title section-tip"
-                  title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
-                >
-                  Chomp's Diner
-                </h1>
+                <div className="hero-head__title-row">
+                  <h1
+                    className="title section-tip"
+                    title="15-minute crypto series, rule-based entries. Simulate = paper on the Live branch; Real $ can POST limit orders when the Live engine runs and a rule matches. Sim lab is always paper and uses separate sizing."
+                  >
+                    Chomp's Diner
+                  </h1>
+                  <span
+                    className={`ui-track-pill ui-track-pill--${UI_TRACK.kind}`}
+                    title={
+                      "Which checkout this UI belongs to (dual local). Set VITE_UI_TRACK=dev|main|live in frontend/.env; " +
+                      "if unset, port 8770 in VITE_API_ORIGIN implies main, otherwise dev."
+                    }
+                  >
+                    {UI_TRACK.label}
+                  </span>
+                </div>
               </div>
               <div style={{ flexShrink: 0 }}>
                 <button

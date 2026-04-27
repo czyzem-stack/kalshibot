@@ -30,6 +30,10 @@ Expert full-stack quant work on **Kalshibot** only: local-first, self-hosted Kal
 
 - **`VERSION` + `CHANGELOG`:** After **v0.4**, routine releases increment the **patch** under 0.4 (**`v0.4.01`**, **`v0.4.02`**, …). Use a **bump** (e.g. next **`v0.5`**) only when the operator explicitly asks to bump the minor/major line.
 
+## Parallel `main` + `develop` (local)
+
+- Optional **git worktree** + scripts under **`scripts/`** (`setup-main-worktree.ps1`, `bootstrap-main-worktree.ps1`, `launch_local.ps1`, `launch-main-sidecar.ps1`): separate **ports** and **`data/`** per checkout (`SQLITE_PATH` / `DATA_LOG_DIR` relative paths resolve per repo root); avoid two processes **posting live orders** with the same Kalshi credentials unless that is intentional.
+
 ## Implementation discipline
 
 - **Backend:** Pydantic v2, structlog, DI where the codebase already uses it; engines stay in **`engine.py`** / **`dual_engine_loop`**; breeding logic in **`lab_breeding.py`** / optimizer modules — clear separation internal pulse vs Claude.

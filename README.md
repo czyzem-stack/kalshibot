@@ -8,7 +8,7 @@ It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys),
 
 **Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Quick Start – Breeding Mode](#quick-start--breeding-mode-one-page-checklist) · [Monitoring Breeding](#monitoring-breeding) · [Configuration](#configuration) · [API overview](#api-overview) · [Operator flows (diagrams)](#operator-flows-sequences-and-visuals) · [Dashboard (UI map)](#dashboard-ui-map) · [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) · [Optimizer visualizations](#optimizer-visualizations) · [Production readiness & limitations](#production-readiness--known-limitations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
 
-**Version:** `v0.4.01` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). **v0.3** shipped Optimizer-card breeding strip + **Tree** tab, **`config_history.audit_meta`** on Live paper-off with `confirm=YES`, and README clarity. **v0.4** added docs polish and the **Breeding** pill on Branch performance. **Patch releases** after v0.4 use **`v0.4.01`**, **`v0.4.02`**, … until a deliberate **bump** (e.g. **v0.5**). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
+**Version:** `v0.4.02` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). **v0.3** shipped Optimizer-card breeding strip + **Tree** tab, **`config_history.audit_meta`** on Live paper-off with `confirm=YES`, and README clarity. **v0.4** added docs polish and the **Breeding** pill on Branch performance. **Patch releases** after v0.4 use **`v0.4.01`**, **`v0.4.02`**, … until a deliberate **bump** (e.g. **v0.5**). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
 
 **Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
@@ -329,7 +329,7 @@ Live   Lab A   Lab B   Lab C   Lab D     lab_child_1 … lab_child_6
 
 | Surface | Typical origin | Kalshi keys | API port | UI |
 |---------|----------------|-------------|----------|-----|
-| **Local dev** | `launch_local.ps1` | Root `.env` | `8765` | `5173` via Vite proxy |
+| **Local dev** | `launch_local.ps1` | Root `.env` | `8765` (+ **8770** if a **`[main]`** worktree from `git worktree list` or `..\Kalshibot-main` has its own `.env`) | `5173` (+ **5174** when dual mode runs) |
 | **Docker** | `docker run … --env-file .env` | Same vars inside container | published `-p` | Host nginx/Caddy → `dist/` |
 | **Windows .exe** | PyInstaller `dist/` output | `.env` beside exe + `data/` | configurable | Still use Vite or static `dist/` |
 
@@ -923,8 +923,8 @@ All backend env vars are documented in **`.env.example`**. Highlights:
 | `KALSHI_ENV` | Selects demo vs production-style API host (see comments in `.env.example`). |
 | `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_*` | RSA private key authentication for Kalshi. |
 | `KALSHI_BOT_PORT` | API listen port (default **8765**). Use if 8765 is blocked (for example some Windows reserved ranges). |
-| `SQLITE_PATH` | Override SQLite file location (default `data/bot.sqlite3`). |
-| `DATA_LOG_DIR`, `DATA_LOGGING`, `DATA_LOG_EQUITY` | Append-only **JSONL** logs under `data/logs/`. |
+| `SQLITE_PATH` | Override SQLite file location (default `data/bot.sqlite3`). **Relative paths are resolved from this checkout’s repo root** (not the shell cwd), so develop and a `main` worktree never collide unless you point both at the same **absolute** path on purpose. |
+| `DATA_LOG_DIR`, `DATA_LOGGING`, `DATA_LOG_EQUITY` | Append-only **JSONL** logs; default `data/logs`. Relative values are also repo-rooted (same rule as `SQLITE_PATH`). |
 | `DATA_RESET_TOKEN` | If set, destructive reset endpoints require matching `X-Reset-Token` header. |
 | `ANTHROPIC_API_KEY` | Enables optimizer paths that call Anthropic's HTTP API. |
 | `ALERT_WEBHOOK_URL` | Optional Discord or Slack incoming webhook for new/changed engine errors (see [Health, alerts, and Docker](#health-alerts-and-docker)). |
@@ -1109,6 +1109,7 @@ docker run --rm -p 8765:8765 \
 - **Migrations** — Schema lives in `persistence` helpers; the project favors **forward-additive** SQLite `ALTER` patterns—back up `data/bot.sqlite3` before updating from a much older tag.
 - **Recharts / dashboard** — Radar and line charts are standard **Recharts**; avoid adding another charting library for the same tiles unless you refactor. Accessibility: we rely on browser tooltips and ARIA for dialogs where implemented—extra props welcome in small PRs.
 - **Branches in git** — **`develop` → `main`** is the typical integration path described at the top of this README; force-push to `main` only in emergencies and coordinate with anyone running forks.
+- **Run `main` while hacking `develop`** — Use a **git worktree** so `main` lives in a second folder (default sibling `../Kalshibot-main`) with its own **`data/`** and SQLite file. One-shot env wiring: **`scripts\bootstrap-main-worktree.ps1`** (calls **`setup-main-worktree.ps1`** if needed, then writes worktree **`.env`** + **`frontend/.env`** with **8770** / **5174** settings). Then **`scripts\launch_local.ps1`** starts **5173 + 5174** together, or use **`scripts\launch-main-sidecar.ps1`** for main only. Avoid two live writers with the **same** Kalshi keys unless you intend to; demo keys or read-only on one sidecar is safer.
 
 ---
 
@@ -1118,7 +1119,11 @@ docker run --rm -p 8765:8765 \
 |--------|---------|
 | `scripts\create_venv.ps1` | Create `.venv` and `pip install -r requirements.txt`. |
 | `scripts\run_backend.ps1` | Run uvicorn with reload on `127.0.0.1` and `KALSHI_BOT_PORT` (default 8765). |
-| `scripts\launch_local.ps1` | Start backend in a new window, wait for `/api/health`, then `npm run dev` in `frontend/`. |
+| `scripts\run_backend_at.ps1` | Internal: run uvicorn from a given repo root + port (used by `launch-main-sidecar.ps1`). |
+| `scripts\launch_local.ps1` | When a **`[main]`** checkout (from **`git worktree list`** or default `..\Kalshibot-main`) has **`.env`**: **develop** API (new window) + **main** API (second window) + **two Vite windows** (**:5173** and **:5174**). If dual mode is off, prints **why** (no checkout vs worktree missing `.env`); then **one** API window + `npm run dev` in **this** window on **:5173**. **`-SkipMainSidecar`** forces that single-UI flow. |
+| `scripts\setup-main-worktree.ps1` | Add `../Kalshibot-main` (or `-WorktreePath`) as a **`main`** worktree; writes `ENV_SIDECAR.example` files for port **8770** + Vite proxy. |
+| `scripts\bootstrap-main-worktree.ps1` | After (or alongside) setup: ensures worktree **`.env`** + **`frontend/.env`** — copies from **develop** when missing, then sets **`KALSHI_BOT_PORT=8770`**, DB/log paths, **`CORS_ORIGINS`** (5173+5174), **`VITE_API_ORIGIN`** → 8770. Then run **`launch_local.ps1`**. |
+| `scripts\launch-main-sidecar.ps1` | **Main only:** worktree API + Vite **:5174** (two windows). Prefer **`launch_local.ps1`** to start develop + main together. |
 
 For a frozen **Windows .exe**, see **`kalshibot-api.spec`** and **`scripts/exe_api_entry.py`**. For Linux servers without PowerShell, prefer **`Dockerfile`** or the manual uvicorn command in [macOS and Linux](#macos-and-linux-manual).
 
