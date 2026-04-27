@@ -140,4 +140,22 @@ class DashboardResponse(TypedDict, total=False):
     lab_c_config: dict[str, Any]
     lab_d_config: dict[str, Any]
     lab_thoughts: dict[str, list[str]]
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
     optimizer_activity: dict[str, Any]
+
+
+class OptimizerStatusResponse(TypedDict, total=False):
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
+    enabled: bool
+    adaptive_enabled: bool
+    model: str
+    optimizer_cycle_count: int
+    pulse_eval_count: int
+    last_run_at: str
+    last_status: str
+    last_error: str
+    next_tick_preview: str
+    proposal_history: list[dict[str, Any]]
+    internal_optimizer_trace: list[dict[str, Any]]
+    advanced_metrics_last: dict[str, Any]
+    acceptance_rate_pct: float

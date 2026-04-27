@@ -92,3 +92,9 @@ Use `KALSHI_LOG_TICK_INTERVAL_S=30` to log `dual_engine_tick_ms` and `ob_cache_h
 ## Not changed in this pass
 
 - SQLite is still **one connection per operation** in `Store` (schema runs per transaction); pooling a single `aiosqlite` connection was skipped to keep behavior predictable.
+
+## Optimizer upgrade note (v0.1)
+
+- # OPTIMIZER UPGRADE v0.1: advanced optimizer scoring now includes Sharpe, Sortino, Calmar, profit factor, expectancy, Kelly fraction, regime-aware weighting, and a drawdown tolerance gate.
+- Proposal lifecycle observability was expanded via `/api/optimizer/status` (proposal history, internal trace, and latest advanced metrics snapshot).
+- Measured backtest improvement (latest local replay window): risk-adjusted composite score and estimated Sharpe improved versus baseline accepted mutations while honoring drawdown tolerance guardrails.

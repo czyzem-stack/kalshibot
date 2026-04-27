@@ -287,6 +287,12 @@ Code path: **`run_optimizer_once`** in `backend/app/optimizer_claude.py`. **UI n
 
 If the scheduler is off and there is no API key, the optimizer still records **internal-only** pulses when adaptive tuning fires.
 
+### Optimizer upgrade v0.1
+
+- `backend/app/optimizer_claude.py` computes an advanced replay score with Sharpe, Sortino, Calmar, profit factor, expectancy, Kelly fraction, drawdown tolerance guards, and regime-aware weighting (fixed internal weights; no extra env knobs).
+- Optional observability: `GET /api/optimizer/status` returns proposal history, internal trace, and latest advanced metrics for power users.
+- Lab A remains the only auto-apply target for persisted mutations; other labs stay manual as in v0.0.
+
 ---
 
 ## Health and metrics
