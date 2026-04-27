@@ -26,6 +26,10 @@ Expert full-stack quant work on **Kalshibot** only: local-first, self-hosted Kal
 - **Breeder UI:** 12-axis personality radar and related readouts from **`GET /api/optimizer/status`** (with dashboard Optimizer vs Breeder modes).
 - **Adoption** of children into Lab A **remains gated** (no shortcuts).
 
+## Versioning (operator default)
+
+- **`VERSION` + `CHANGELOG`:** After **v0.4**, routine releases increment the **patch** under 0.4 (**`v0.4.01`**, **`v0.4.02`**, …). Use a **bump** (e.g. next **`v0.5`**) only when the operator explicitly asks to bump the minor/major line.
+
 ## Implementation discipline
 
 - **Backend:** Pydantic v2, structlog, DI where the codebase already uses it; engines stay in **`engine.py`** / **`dual_engine_loop`**; breeding logic in **`lab_breeding.py`** / optimizer modules — clear separation internal pulse vs Claude.
