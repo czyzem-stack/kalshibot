@@ -1548,7 +1548,8 @@ function buildMultiBranchOptimizerRadar(
     }
     if (sk === "mut") {
       const mutBase = 100 * base.mutationDial;
-      const cmt = Number(m.committed_pct_of_start ?? 0) || 0;
+      const cmtRaw = m.committed_pct_of_fleet_start ?? m.committed_pct_of_start;
+      const cmt = Number(cmtRaw ?? 0) || 0;
       const st = Number(m.settled_trades ?? 0) || 0;
       return Math.min(100, Math.max(0, mutBase * 0.5 + cmt * 0.4 + Math.min(25, st * 0.35)));
     }
@@ -4555,6 +4556,17 @@ export default function App() {
     return map[perfBranch];
   }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC, metricsLabD]);
 
+  const perfCommittedDisplay = useMemo(() => {
+    const m = perfBranchMeta.metrics as AnyObj;
+    const fleet = m.committed_pct_of_fleet_start;
+    const useFleet = fleet != null && fleet !== "" && Number.isFinite(Number(fleet));
+    const pct = useFleet ? Number(fleet) : Number(m.committed_pct_of_start ?? 0);
+    const sub =
+      fmtPct(pct) +
+      (useFleet ? " of combined paper fleet (Live + Labs A–D)" : ` of ${perfBranchMeta.bankNoun}`);
+    return { sub, subTone: metricSignedTone(-pct) };
+  }, [perfBranchMeta]);
+
   const activeTradesForPerfBranch = useMemo(() => {
     const rows = mergeTradeRowsForToastEffect(dash?.recent_trades, toastTradeRows);
     const list: AnyObj[] = [];
@@ -5445,9 +5457,9 @@ export default function App() {
           <MetricTile
             label={`${perfBranchMeta.label} committed`}
             value={fmtMoney(Number(perfBranchMeta.metrics.open_sim_committed_dollars || 0))}
-            title="Premium tied up in open positions."
-            sub={fmtPct(perfBranchMeta.metrics.committed_pct_of_start) + ` of ${perfBranchMeta.bankNoun}`}
-            subTone={metricSignedTone(-Number(perfBranchMeta.metrics.committed_pct_of_start))}
+            title="Premium tied up in open positions. Subtitle % uses combined configured paper starts (Live when paper + Labs A–D) when available; otherwise this branch's start only."
+            sub={perfCommittedDisplay.sub}
+            subTone={perfCommittedDisplay.subTone}
           />
         </div>
         <div className="branch-performance-bottom">

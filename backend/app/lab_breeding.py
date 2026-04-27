@@ -584,17 +584,6 @@ def _pick_child_slot(oc: dict[str, Any]) -> str | None:
     return None
 
 
-def _breeder_any_engine_on(cfg: dict[str, Any]) -> bool:
-    for br in BRANCH_BREEDERS:
-        lk = _lab_key_for_branch(br)
-        if not lk:
-            continue
-        lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
-        if lab.get("engine_running"):
-            return True
-    return False
-
-
 async def _clear_child_engine_slot(store: Store, cfg: dict[str, Any], slot: str, end_iso: str) -> None:
     from .persistence import default_bot_config, expand_partial_lab_branch
 
@@ -1117,8 +1106,7 @@ async def run_lab_breeding_ga_cycle(
             at_iso=end_iso,
             max_rows=max_rows,
         )
-        baby_run = _breeder_any_engine_on(cfg)
-        merged_lab = {**baby_lab, "engine_running": bool(baby_run)}
+        merged_lab = {**baby_lab, "engine_running": True}
         cfg[slot] = expand_partial_lab_branch(slot, merged_lab)
         try:
             await store.reset_trading_data(backup=False, branch=slot)

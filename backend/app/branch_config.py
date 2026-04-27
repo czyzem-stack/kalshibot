@@ -10,7 +10,7 @@ BRANCH_LAB_C = "lab_c"
 BRANCH_LAB_D = "lab_d"
 BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
 # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
-# Six SQLite-backed child branches (invisible to dashboard UI); each has its own TradingEngine when enabled.
+# Six SQLite-backed child branches (invisible to dashboard UI); each has its own TradingEngine (on unless cleared).
 BRANCH_CHILD_1 = "lab_child_1"
 BRANCH_CHILD_2 = "lab_child_2"
 BRANCH_CHILD_3 = "lab_child_3"
@@ -113,6 +113,22 @@ def _lab_key_for_branch(branch: str) -> str | None:
     return None
 
 
+def fleet_visible_paper_start_cents(full_cfg: dict[str, Any]) -> int:
+    """
+    Sum of paper-equity start bases for **Live** (only when Live is in paper mode) plus **Labs A–D**.
+
+    Used as the dashboard denominator for ``committed_pct_of_fleet_start`` so open premium on one branch
+    is shown as a fraction of combined configured paper capital, not only that branch's start.
+    """
+    sync_live_paper_trading_keys(full_cfg)
+    total = 0
+    if live_paper_trading_enabled(full_cfg):
+        total += lab_paper_equity_start_cents(full_cfg, BRANCH_LIVE)
+    for lk in BRANCH_LABS:
+        total += lab_paper_equity_start_cents(full_cfg, lk)
+    return max(0, total)
+
+
 def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
     """
     Paper **book / MTM** baseline for a branch — must match the dashboard rollups
@@ -181,7 +197,14 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
     lab_key = _lab_key_for_branch(branch)
     if lab_key is not None:
         lab = full_cfg.get(lab_key)
-        if not isinstance(lab, dict) or not lab.get("engine_running"):
+        # Breeding child engines (``lab_child_*``): on by default; only an explicit ``engine_running: false``
+        # (e.g. pool eviction / cleared slot) stops the branch. Parent labs still require ``engine_running``.
+        if lab_key in BRANCH_CHILD_LABS:
+            if not isinstance(lab, dict):
+                lab = {}
+            if lab.get("engine_running") is False:
+                return None
+        elif not isinstance(lab, dict) or not lab.get("engine_running"):
             return None
         out = dict(full_cfg)
         for k in LAB_BRANCH_OVERLAY_KEYS:

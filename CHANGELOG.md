@@ -2,6 +2,11 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.05 - Fleet committed % and child labs default on - 2026-04-27
+
+- **Dashboard / API:** Branch performance **committed** subtitle uses **`committed_pct_of_fleet_start`** when present: open premium as a % of **combined** configured paper starts (Live when in paper mode + Labs A–D). **`committed_pct_of_start`** remains per-branch. New helper **`fleet_visible_paper_start_cents`** in `branch_config.py`.
+- **Breeding child engines (`lab_child_*`):** Defaults and runtime treat children as **on** unless **`engine_running` is explicitly `false`** (e.g. cleared slot after eviction). **`merge_branch_config`**, **`dual_engine_loop`**, and **`POST` breeding** new-slot writes align with that; default config sets **`engine_running`: true** for all six child keys.
+
 ## v0.4.04 - Dual UI tab title and track pill - 2026-04-27
 
 - **Frontend:** Browser tab title is **`Chomp's Diner beta`** when this UI targets the develop stack (`VITE_UI_TRACK=dev` or default when `VITE_API_ORIGIN` is not port **8770**), and **`Chomp's Diner live`** for the main sidecar (`main` / `live` track or **8770** in the API origin). `index.html` default title is **`Chomp's Diner`** until the SPA mounts.

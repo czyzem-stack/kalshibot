@@ -305,10 +305,10 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # LABS BREEDING v0.1 IMPROVEMENT — invisible child engines (defaults off until GA assigns genomes).
+        # LABS BREEDING v0.1 — invisible child engines: on by default (explicit ``engine_running: false`` clears a slot).
         **{
             ck: {
-                "engine_running": False,
+                "engine_running": True,
                 "auto_optimize": False,
                 "auto_reset_paper_on_tick_failure": False,
                 "enable_patient_stop_loss": True,

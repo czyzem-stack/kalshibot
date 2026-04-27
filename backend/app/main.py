@@ -34,6 +34,7 @@ from .branch_config import (
     BRANCH_LIVE,
     LAB_BRANCH_OVERLAY_KEYS,
     build_optimizer_radar_payload,
+    fleet_visible_paper_start_cents,
     lab_paper_equity_start_cents,
     live_paper_trading_enabled,
     merge_branch_config,
@@ -293,6 +294,7 @@ def _enrich_strategy_metrics(
     bal_json: dict[str, Any] | None,
     latest_equity_snap_dollars: float | None,
     latest_mtm_snap_dollars: float | None = None,
+    fleet_paper_start_cents: int | None = None,
 ) -> None:
     """Adds win rate, paper equity path, and (for Live real) exchange balance / portfolio value."""
     settled = int(m.get("settled_trades") or 0)
@@ -332,6 +334,10 @@ def _enrich_strategy_metrics(
     m["return_vs_start_pct"] = ((eq - ps) / ps * 100.0) if ps > 0 else None
     m["realized_pnl_pct_of_start"] = ((realized / ps) * 100.0) if ps > 0 else None
     m["committed_pct_of_start"] = ((committed / ps) * 100.0) if ps > 0 else None
+    if fleet_paper_start_cents is not None:
+        fleet_ps = max(0, int(fleet_paper_start_cents)) / 100.0
+        if fleet_ps > 0:
+            m["committed_pct_of_fleet_start"] = round((committed / fleet_ps) * 100.0, 4)
     if latest_mtm_snap_dollars is not None:
         m["current_mtm_dollars"] = float(latest_mtm_snap_dollars)
         m["return_mtm_vs_start_pct"] = ((latest_mtm_snap_dollars - ps) / ps * 100.0) if ps > 0 else None
@@ -1521,10 +1527,11 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     lab_b_engine_on = bool(lab_b.get("engine_running")) if isinstance(lab_b, dict) else False
     lab_c_engine_on = bool(lab_c.get("engine_running")) if isinstance(lab_c, dict) else False
     lab_d_engine_on = bool(lab_d.get("engine_running")) if isinstance(lab_d, dict) else False
-    child_lab_engine_any_on = any(
-        bool((cfg.get(ck) or {}).get("engine_running")) if isinstance(cfg.get(ck), dict) else False
-        for ck in BRANCH_CHILD_LABS
-    )
+    def _child_lab_polling_on(raw: Any) -> bool:
+        slab = raw if isinstance(raw, dict) else {}
+        return slab.get("engine_running") is not False
+
+    child_lab_engine_any_on = any(_child_lab_polling_on(cfg.get(ck)) for ck in BRANCH_CHILD_LABS)
 
     client = require_kalshi()
     public_ok = False
@@ -1562,6 +1569,9 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     simulate_live = live_paper_trading_enabled(cfg)
     order_writes_live = portfolio_read_ok and not simulate_live
 
+    fleet_paper_start = fleet_visible_paper_start_cents(cfg)
+    fleet_for_committed = fleet_paper_start if fleet_paper_start > 0 else None
+
     _enrich_strategy_metrics(
         metrics_live,
         paper_mode=simulate_live,
@@ -1569,6 +1579,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         bal_json=bal_json if isinstance(bal_json, dict) else None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_live),
         latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_live),
+        fleet_paper_start_cents=fleet_for_committed if simulate_live else None,
     )
     lab_paper_basis_a = lab_paper_equity_start_cents(cfg, BRANCH_LAB_A)
     _enrich_strategy_metrics(
@@ -1578,6 +1589,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_a),
         latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_a),
+        fleet_paper_start_cents=fleet_for_committed,
     )
     lab_paper_basis_b = lab_paper_equity_start_cents(cfg, BRANCH_LAB_B)
     _enrich_strategy_metrics(
@@ -1587,6 +1599,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_b),
         latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_b),
+        fleet_paper_start_cents=fleet_for_committed,
     )
     _inject_last_snap_mtm_minus_equity(metrics_live, snaps_live)
     _inject_last_snap_mtm_minus_equity(metrics_lab_a, snaps_lab_a)
@@ -1599,6 +1612,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_c),
         latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_c),
+        fleet_paper_start_cents=fleet_for_committed,
     )
     _inject_last_snap_mtm_minus_equity(metrics_lab_c, snaps_lab_c)
     lab_paper_basis_d = lab_paper_equity_start_cents(cfg, BRANCH_LAB_D)
@@ -1609,6 +1623,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         bal_json=None,
         latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_d),
         latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_d),
+        fleet_paper_start_cents=fleet_for_committed,
     )
     _inject_last_snap_mtm_minus_equity(metrics_lab_d, snaps_lab_d)
 

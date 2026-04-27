@@ -33,6 +33,13 @@ from ..settings_env import env
 logger = logging.getLogger("kalshibot.dual_engine")
 
 
+def _lab_branch_tick_enabled(br: str, lc: dict[str, Any]) -> bool:
+    """Parent labs require ``engine_running``; child ``lab_child_*`` slots default on unless explicitly ``false``."""
+    if br in BRANCH_CHILD_LABS:
+        return lc.get("engine_running") is not False
+    return bool(lc.get("engine_running"))
+
+
 async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asyncio.Event) -> None:
     # PHASE 2: never run a tick until lifespan finished pre-warm + WS subscription list seed (see main._app_lifespan).
     await state.startup_complete.wait()
@@ -105,7 +112,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             lab_stagger_armed = False
             for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
-                if lc.get("engine_running"):
+                if _lab_branch_tick_enabled(br, lc):
                     # Per-lab fraction nudger when auto_optimize is on — disabled while scheduled optimizer runs.
                     oc0 = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
                     if tick % 25 == 0 and bool(lc.get("auto_optimize")) and not bool(oc0.get("enabled")):
@@ -193,7 +200,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             lab_snap_items: list[tuple[str, Any]] = []
             for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
-                if lc.get("engine_running"):
+                if _lab_branch_tick_enabled(br, lc):
                     eng = engines.get(br)
                     if eng:
                         lab_snap_items.append((br, snapshot_equity(eng, full_cfg=full_cfg)))
