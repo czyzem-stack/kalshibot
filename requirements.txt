@@ -11,3 +11,4 @@ python-dateutil==2.9.0.post0
 keyring>=25.0
 # Structured logging (dev = colored; LOG_JSON=1 = one JSON line per log)
 structlog>=24.4.0,<26
+websockets>=13.0,<16
