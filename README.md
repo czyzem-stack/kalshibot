@@ -1,12 +1,12 @@
 # Kalshibot
 
-> **What this is (one sentence):** a **self-hosted** Kalshi trading stack—**FastAPI** + **React**—that polls markets, matches **JSON probability/time rules**, records fills in **SQLite**, and runs **Live** and **four paper labs** in parallel, with an optional **optimizer loop** (internal tuning plus optional **Claude**) that reads all labs but only **auto-persists** sizing-style changes for **Lab A** under guardrails.
+> **What this is (one sentence):** a **self-hosted** Kalshi trading stack—**FastAPI** + **React**—that polls markets, matches **JSON probability/time rules**, records fills in **SQLite**, and runs **Live** and **four paper labs** in parallel, with an optional **optimizer loop** (internal tuning plus optional **Claude**) that reads all labs but only **auto-persists** sizing-style changes for **Lab A** under guardrails. **Labs Breeding v0.1** adds up to **six** parallel **child** paper branches (`lab_child_1`…`lab_child_6`) with real engines in the dual loop, breeder-driven genomes, adoption/replacement from the pool, and a **Breeder** dashboard mode (personality radar from **`GET /api/optimizer/status`**).
 
 It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys), runs **rule-based engines** per branch, and ships a **Vite** dashboard for config, charts, and health—**no separate hosted control plane**; your keys and data stay on the machine you run it on.
 
 **Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Optimizer visualizations](#optimizer-visualizations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
 
-**Version:** `v0.0` baseline in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables and **no** extra advanced-metrics panel on the dashboard; power users read **`GET /api/optimizer/status`** instead.
+**Version:** `v0.0` baseline in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). **Labs Breeding v0.1** ships in the same tree (child lab engines, `lab_breeding.py`, dashboard **Breeder** view). There are **no** new `OPTIMIZER_*` environment variables and **no** extra advanced-metrics panel on the default Optimizer card; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
 
 **Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
@@ -48,7 +48,7 @@ Exact numbers live in `default_bot_config()` and your SQLite config; the table r
 - **Engines** — Background loops scan markets, evaluate rules, and manage positions per branch (see `backend/app/engine.py`).
 - **Dashboard** — Single-page UI: branch performance, equity charts, holdings, signals and trades, Kalshi connection status, settings (rules, filters, sizing, engines, optimizer), historical export, and more. The dev server proxies `/api` to the backend. A small **optimizer health** pill (green / yellow / red from internal trace acceptance) sits in the **top bar next to the settings (⚙) control** (hover for a tooltip); it is not shown on the bottom ticker strip.
 - **Persistence** — Config (active row + **`config_history`** audit table), trades, signals, and snapshots are stored under `data/` (default SQLite: `data/bot.sqlite3`). Optional **JSONL** logs for signals and trades (and optional equity logging) under `data/logs/` when enabled in `.env`.
-- **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; optional Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard does not ship a separate “Claude rule editor” surface—**Settings** holds serious config. The main **Optimizer** card shows a **“Optimizer Thinking (Lab A)”** radar, a **mutation** summary row, and a **lab pulse** ticker; see [Optimizer visualizations](#optimizer-visualizations) below. The radar is a **readout of internal metrics** (not a second trading engine).
+- **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; optional Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard does not ship a separate “Claude rule editor” surface—**Settings** holds serious config. The main **Optimizer** card defaults to **Optimizer** mode: **“Optimizer Thinking (Lab A)”** radar, **mutation** summary row, and **lab pulse** ticker; switch the header toggle to **Breeder** for **Labs Breeding v0.1** (twelve-axis personality radar and breeding readouts from **`GET /api/optimizer/status`**). The default radar is a **readout of internal optimizer metrics** (not a second trading engine); the Breeder radar is **derived UI** from traits and lab knobs (see [Breeder view](#breeder-view-labs-breeding-v01)).
 - **Polling** — The UI leans on **`GET /api/dashboard/equity`** and focused routes for high-frequency updates and **`GET /api/dashboard`** for heavier “full” snapshots, so a slow home Wi‑Fi or large open-book payload does not block the whole page forever.
 
 ---
@@ -62,7 +62,7 @@ Where the main **React** surface puts things (all optional panels depending on y
 | **Top bar** | Connection / engine at-a-glance, **Settings (⚙)**, **optimizer health** color pill (hovers explain acceptance band), toasts. |
 | **Branch strip / hero** | Per-branch (Live + A–D) PnL and key metrics; clicking usually ties into compare / filters. |
 | **Compare (equity) region** | Multi-line equity / blended or potential view; overplot toggles, granularity tabs; many charts are **double‑click to expand** in a lightbox (Esc to close), matching the pattern used on the **optimizer** radar. |
-| **Branch brain (optimizer block)** | **Optimizer Thinking** radar (double‑click to expand), **mutation** row (tier, effective scale, 0–1 dial bar) directly under the chart, then **lab pulse** ticker. Full run metrics, trace, and equity sparklines are in the **report** overlay—not duplicate tiles on the card. Promote **Lab A → Live** and dangerous toggles still require confirms documented in the UI. |
+| **Branch brain (optimizer block)** | Header: **Optimizer** \| **Breeder** toggle (same row as **force** / **report** / **Info**). **Optimizer** mode: **Optimizer Thinking** radar (double‑click to expand), **mutation** row (tier, effective scale, 0–1 dial bar), then **lab pulse** ticker. **Breeder** mode: fetches **`GET /api/optimizer/status`** and shows the **twelve-axis** `labs_breeding_personality_radar` plus breeding log/children summaries (parents **B/C/D** mint children; **Lab A** is staging/adoption—see [Breeder view](#breeder-view-labs-breeding-v01)). Full run metrics, trace, and equity sparklines stay in the **report** overlay. Promote **Lab A → Live** and dangerous toggles still require confirms documented in the UI. |
 | **Settings overlay** | Full **JSON** config editor, per-lab overlays, rules, fees, **patient** stop, optimizer tuning—this is the authoritative place for `PUT /api/config` and lab parity with `merge_branch_config`. |
 
 **Resize / mobile:** the compare row and optimizer column use **flex** (`row` on wide, **stack** on small screens); if something looks “missing,” zoom out or widen—the layout does not hard-require two monitors, but the dense dashboard targets **~1280px** width for the full two-column branch experience.
@@ -83,11 +83,25 @@ The **Optimizer** column is **read-only telemetry** for the internal and optiona
 | **Mutation row** (under the radar) | A compact **tier** label (**Light** / **Medium** / **Strong** — driven by the same acceptance bands as health), the **effective mutation scale** (0–1 internal blend of tier and `mutation_aggressiveness`), and a **horizontal “Dial (0–1)”** bar showing persisted **`mutation_aggressiveness`**. This replaces the old single-line “key internal metrics…” caption: it is the at-a-glance **exploration pressure** readout. |
 | **Lab pulse** | A scrolling line of short **engine / optimizer** hints (e.g. open sim, return vs basis, last optimizer note). Sourced from dashboard `lab_thoughts` / `optimizer_activity` slices—useful for “what happened last tick” without opening Settings. |
 
-**Advanced replay metrics (v0.1):** Sharpe/Sortino/Calmar-style signals, Kelly-style fractions, slippage and drawdown guardrails feed **internal fitness** only. They are **not** exposed on the main **Optimizer** card or under `optimizer_activity` in **`GET /api/dashboard`**. For `advanced_metrics_last`, `proposal_history`, and a trimmed trace, call **`GET /api/optimizer/status`** (read-only).
+### Breeder view (Labs Breeding v0.1)
+
+When the main dashboard **Optimizer** card is set to **Breeder**, the UI calls **`GET /api/optimizer/status`** (same bearer rules as other `/api/*` when enabled) and renders breeding telemetry—not the Lab A “Optimizer Thinking” spider chart.
+
+| Topic | Behavior |
+|--------|----------|
+| **Child engines** | Up to **six** SQLite-backed branches **`lab_child_1`** … **`lab_child_6`** run inside **`dual_engine_loop`** alongside Live and Labs A–D. They are **not** separate tiles on the main branch strip; they exist for **settlement, snapshots, and sim trading** when a slot holds a genome. See `backend/app/branch_config.py` (`BRANCH_CHILD_LABS`) and `backend/app/lab_breeding.py`. |
+| **Parents** | **Lab B, Lab C, Lab D** act as breeders; **Lab A** is the primary **staging / adoption** arm in the breeding design. |
+| **Replacement cooldown** | A **5-minute** cooldown is recorded for **soft cull** and **adoption** style replacements only. **Hard** (zero-equity) **death** replacement is **immediate** (no cooldown). Server exposes `labs_breeding_replace_cooldown_until` on status. |
+| **Personality radar** | Field **`labs_breeding_personality_radar`**: **twelve** normalized **0–100** mood axes derived from **`_labs_breeding_traits`** and sizing-style knobs for **read-only** display (no new persisted keys for the radar itself). Built in `build_labs_breeding_personality_radar` (`lab_breeding.py`) and returned from **`GET /api/optimizer/status`**. |
+| **Other status fields** | `labs_breeding_log`, `labs_breeding_children`, `labs_breeding_death_chamber`, `labs_breeding_lineage_history`, `labs_breeding_last_generation_iso` (caps/truncation per route). Types: `backend/app/types_api.py`. |
+| **After force mutation** | The Breeder view refetches status when you use **force** from the card header so the radar and rows stay current. |
+
+**Advanced replay metrics (v0.1):** Sharpe/Sortino/Calmar-style signals, Kelly-style fractions, slippage and drawdown guardrails feed **internal fitness** only. They are **not** exposed on the main **Optimizer** card or under `optimizer_activity` in **`GET /api/dashboard`**. For `advanced_metrics_last`, `proposal_history`, a trimmed trace, and **labs breeding** payloads, call **`GET /api/optimizer/status`** (read-only).
 
 ### How it connects to the backend
 
-- The radar and health dot are built from **`GET /api/dashboard`** (and related) metrics: `cfg.optimizer` (acceptance, best fitness, red streak, effective scale, `mutation_tier`, etc.) plus branch rollups. The exact spoke formulas live in the **dashboard builder** in `backend/app/main.py` and the **React** bundle in `App.tsx` (`optimizerThinkingRadarBundle` and friends)—they are **heuristic**, not raw exchange PnL.
+- **Optimizer** mode (default): the radar and health dot are built from **`GET /api/dashboard`** (and related) metrics: `cfg.optimizer` (acceptance, best fitness, red streak, effective scale, `mutation_tier`, etc.) plus branch rollups. The exact spoke formulas live in the **dashboard builder** in `backend/app/main.py` and the **React** bundle in `App.tsx` (`optimizerThinkingRadarBundle` and friends)—they are **heuristic**, not raw exchange PnL.
+- **Breeder** mode: charts and tables use **`GET /api/optimizer/status`** only (see [Breeder view](#breeder-view-labs-breeding-v01)).
 - **Intraday equity movement** and **book vs MTM** on the main **Equity curves** block are **separate** from the optimizer card: the optimizer radar does not replace the equity small-multiples; use both together.
 - If **`optimizer.enabled`** is false and no internal pulses have run, spokes may look **neutral**; enable the scheduler in **Settings → Optimizer** and let **Lab A** accumulate **sim** settles so fitness and acceptance have signal.
 
@@ -97,17 +111,18 @@ For **internal pulse vs optional Claude** and what can auto-persist, see [Optimi
 
 ## Branches and optimizer loop (mental model)
 
-Five engines share the same Kalshi feed but **separate ledgers**. The optimizer task reads **settled** activity across labs; **Claude** is optional and **writes through** the same guarded paths as the internal pulse (Lab A–centric).
+Five **visible** branch engines (Live + Labs A–D) share the same Kalshi feed but **separate ledgers**, plus up to **six** optional **`lab_child_*`** instances when breeding slots are active. The optimizer task reads **settled** activity across labs (and breeding logic may touch child branches); **Claude** is optional and **writes through** the same guarded paths as the internal pulse (Lab A–centric).
 
 ```mermaid
 flowchart TB
   KS[Kalshi REST API]
-  subgraph engines [dual_engine_loop — five TradingEngine instances]
+  subgraph engines [dual_engine_loop — Live + Labs A–D + lab_child_1..6 when enabled]
     L[Live]
     A[Lab A]
     B[Lab B]
     C[Lab C]
     D[Lab D]
+    CH[lab_child_1..6]
   end
   SQL[(SQLite config + trades + signals + equity)]
   OPT[optimizer_loop]
@@ -118,16 +133,19 @@ flowchart TB
   KS <--> B
   KS <--> C
   KS <--> D
+  KS <--> CH
   CFG --> L
   CFG --> A
   CFG --> B
   CFG --> C
   CFG --> D
+  CFG --> CH
   L --> SQL
   A --> SQL
   B --> SQL
   C --> SQL
   D --> SQL
+  CH --> SQL
   SQL --> OPT
   OPT --> CL
   OPT -.->|internal pulse + gated Claude patches| A
@@ -136,6 +154,7 @@ flowchart TB
 - **Live** — Real limits when `simulate` is off and keys are valid; otherwise paper-like behavior per config.
 - **Labs B/C/D** — Reference arms for compare and optimizer context; **no** automatic "copy B into Live" from Claude output.
 - **Lab A** — Primary experiment branch: promote-to-Live copies **overlays** from Lab A when settled PnL gates pass; optimizer persistence is also **Lab A–biased** by design.
+- **`lab_child_1`…`lab_child_6`** — Optional **Labs Breeding v0.1** paper engines with their own ledgers when assigned; see [Breeder view](#breeder-view-labs-breeding-v01).
 
 ---
 
@@ -170,7 +189,7 @@ flowchart LR
 ```
 
 - **Active config** is one merged JSON row in **`bot_config`**, with **append-only** **`config_history`** for audit. Engines read through `merge_branch_config` so each branch sees **global defaults** plus **lab overlays** where set.
-- **Five trading engines** share one event loop task group pattern (`dual_engine_loop`): Live plus Lab A through D, each with its own `TradingEngine` instance.
+- **Trading engines** share one event loop task group pattern (`dual_engine_loop`): **Live**, **Labs A–D**, and up to **six** **`lab_child_*`** instances when breeding slots are active—each branch key maps to its own `TradingEngine` when present in the `engines` dict.
 
 ---
 
@@ -355,7 +374,7 @@ Constructive extensions that fit this codebase:
 
 ## Performance and startup
 
-The API avoids heavy import-time work: **five `TradingEngine` instances** and a **single shared `httpx.AsyncClient`** are created in the FastAPI **lifespan**; Kalshi’s `/markets` list is **pre-warmed** once from your configured `assets` (deduped series tickers) so the first `dual_engine_loop` turns mostly hit the in-process cache instead of five parallel cold fetches. In-memory cache TTLs are **wider for the first few seconds** (`KALSHI_COLD_START_CACHE_TTL_S`, default 90) and then return to `KALSHI_OPEN_MARKETS_TTL_S` / `KALSHI_ORDERBOOK_TTL_S`.
+The API avoids heavy import-time work: a **base set of five `TradingEngine` instances** (Live + Labs A–D), **plus** optional **`lab_child_*`** engines when breeding slots are active, and a **single shared `httpx.AsyncClient`** are created in the FastAPI **lifespan**; Kalshi’s `/markets` list is **pre-warmed** once from your configured `assets` (deduped series tickers) so early `dual_engine_loop` turns mostly hit the in-process cache instead of many parallel cold fetches. In-memory cache TTLs are **wider for the first few seconds** (`KALSHI_COLD_START_CACHE_TTL_S`, default 90) and then return to `KALSHI_OPEN_MARKETS_TTL_S` / `KALSHI_ORDERBOOK_TTL_S`.
 
 Set **`KALSHI_PROFILE_STARTUP=1`** to log phase timings (`http_client_and_cold_ttls`, `trading_engines`, `prewarm_open_markets`, `startup_complete`, optional `kalshi_ws_task`, `kalshibot_startup_ready`).
 
@@ -567,7 +586,7 @@ Representative routes:
 - `GET /api/trades`, `GET /api/signals` — Recent activity.
 - `GET /api/history/{table}`, `GET /api/history/export.csv` — Historical tables and CSV export.
 - `POST /api/data/reset` — Reset trading data (protect with `DATA_RESET_TOKEN` in production contexts).
-- Optimizer: `GET /api/optimizer/recommendations`, `PUT /api/optimizer/config`, `POST /api/optimizer/run`, `POST /api/optimizer/force-internal-mutation`, and **`GET /api/optimizer/status`** (v0.1: `advanced_metrics_last`, `proposal_history`, trace caps). Radar / mutation dial / acceptance for the UI come from **`GET /api/dashboard`** (and equity split routes)—not from `/api/optimizer/status`. If the radar looks **flat/50s**, the API may still be warming up or a branch has no settled trades yet.
+- Optimizer: `GET /api/optimizer/recommendations`, `PUT /api/optimizer/config`, `POST /api/optimizer/run`, `POST /api/optimizer/force-internal-mutation`, and **`GET /api/optimizer/status`** (v0.1: `advanced_metrics_last`, `proposal_history`, trace caps; **Labs Breeding v0.1**: `labs_breeding_log`, `labs_breeding_children`, `labs_breeding_death_chamber`, `labs_breeding_lineage_history`, `labs_breeding_personality_radar`, `labs_breeding_last_generation_iso`, `labs_breeding_replace_cooldown_until`). Default **Optimizer** radar / mutation dial / acceptance come from **`GET /api/dashboard`** (and equity split routes). The dashboard **Breeder** mode reads **`GET /api/optimizer/status`** for its radar and tables. If the default radar looks **flat/50s**, the API may still be warming up or a branch has no settled trades yet.
 - `POST /api/config/validate-rules` — validate a `rules` array without saving.
 - **`POST /api/config/promote-lab-a-to-live`** — gated PnL compare vs B/C/D, optional `ack_live=APPLY_LIVE` in real mode (see [Promoting Lab A to Live](#promoting-lab-a-to-live)).
 - **OpenAPI** — `GET` parameters like `?confirm=YES` and JSON bodies for toggles are documented in **`/docs`**; when debugging 400s, read the `detail` string in the response body (FastAPI’s error shape).
@@ -675,8 +694,9 @@ docker run --rm -p 8765:8765 \
 - **`backend/app/engine.py`** — `dual_engine_loop`, `TradingEngine`, rule match / sim trade ranking, per-branch execution (large file: search `rule_matches`, `pick_trade_rule` for behavior).
 - **`backend/app/branch_config.py`**, **`persistence.py`** — `merge_branch_config`, `default_bot_config`, SQLite row shapes.
 - **`backend/app/optimizer_claude.py`** — `run_optimizer_once` and internal pulse; Claude gating and **Lab A–only** `balance_fraction_per_window` auto-apply.
+- **`backend/app/lab_breeding.py`** — Labs Breeding v0.1: child genomes, adoption/replacement, cooldowns, `build_labs_breeding_personality_radar`, toast-oriented log hints.
 - **`backend/tests/`** — Pytest: money-path, engine guards, API contracts where present—run from repo root: **`python -m pytest backend/tests -q`** (see [Migration and testing](#migration-and-testing-exact-commands)); **`pytest.ini`** at the repo root sets `pythonpath = backend`.
-- **`frontend/src/`** — React dashboard: **`App.tsx`** holds the main board, large equity/compare blocks, and optimizer **Recharts** radar; **`SettingsOverlay.tsx`** is the full-screen config editor.
+- **`frontend/src/`** — React dashboard: **`App.tsx`** holds the main board, large equity/compare blocks, **Optimizer / Breeder** toggle on the optimizer card, and **Recharts** radars; **`SettingsOverlay.tsx`** is the full-screen config editor.
 - **`scripts/`** — Windows PowerShell: venv creation, run API, launch API plus UI.
 - **`data/`** — Default SQLite and logs (created at runtime; may be gitignored).
 - **`requirements.txt`** — Python dependencies for the API.
@@ -736,7 +756,7 @@ This project is released under the [MIT License](LICENSE).
 ## Contributing
 
 - Default branch for day-to-day work: **`develop`**; release merges use **`main`** (see the intro above).
-- Before large Python changes, run **`python -m pytest backend/tests -q`** from the repo root (see [Migration and testing](#migration-and-testing-exact-commands)) and respect **`backend/mypy.ini`**. Do not weaken the **five-engine** (Live + Labs A–D) model, **`merge_branch_config`**, or **confirm=YES** gates without explicit review.
+- Before large Python changes, run **`python -m pytest backend/tests -q`** from the repo root (see [Migration and testing](#migration-and-testing-exact-commands)) and respect **`backend/mypy.ini`**. Do not weaken the **Live + Labs A–D** core model, optional **`lab_child_*`** breeding contracts, **`merge_branch_config`**, or **confirm=YES** gates without explicit review.
 - Optional: **`pre-commit install`** (see [Migration and testing](#migration-and-testing-exact-commands) and `.pre-commit-config.yaml`).
 
 ## Optional API authentication & hardening

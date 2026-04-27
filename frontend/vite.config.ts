@@ -13,6 +13,9 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: origin,
           changeOrigin: true,
+          // Slow first dashboard + large payloads; does not fix ECONNRESET (peer closed = API died/restarted).
+          timeout: 120_000,
+          proxyTimeout: 120_000,
         },
       },
     },
