@@ -163,6 +163,10 @@ class OptimizerStatusResponse(TypedDict, total=False):
     labs_breeding_children: list[dict[str, Any]]
     labs_breeding_death_chamber: list[dict[str, Any]]
     labs_breeding_lineage_history: list[dict[str, Any]]
+    # LABS BREEDING v0.1 — radar chart + Optimizer/Breeder toggle (derived moods; no new persisted keys).
+    labs_breeding_personality_radar: dict[str, Any]
+    labs_breeding_last_generation_iso: str
+    labs_breeding_replace_cooldown_until: str
     internal_optimizer_trace: list[dict[str, Any]]
     advanced_metrics_last: dict[str, Any]
     acceptance_rate_pct: float

@@ -2335,43 +2335,65 @@ function labsBreedingLabLabel(branchRaw: unknown): string {
   if (s === "lab_b" || s === "b") return "Lab B";
   if (s === "lab_c" || s === "c") return "Lab C";
   if (s === "lab_d" || s === "d") return "Lab D";
+  const childM = /^lab_child_(\d+)$/i.exec(s);
+  if (childM) return `Child ${childM[1]}`;
   if (s.startsWith("lab_")) return s.replace("lab_", "Lab ").toUpperCase().replace("LAB ", "Lab ");
   return s ? s : "Lab";
 }
 
-// LABS BREEDING v0.1 — special toasts for birth and death/cull
+// LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+// LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
 function labsBreedingToastFromLogRow(row: AnyObj): { tone: "green" | "yellow" | "red"; segments: { tier: "green" | "yellow" | "red"; text: string }[] } | null {
   const tid = String(row?.toast_id || "").trim();
   const family = String(row?.toast_family || "").trim();
   if (!tid || !family) return null;
   if (family === "birth") {
+    const kind = String(row?.kind || "").trim();
+    if (kind === "adoption") {
+      const text =
+        "Lab A just adopted the top-ranked child genome — sharper rules mix, same steady dashboard you trust.";
+      return { tone: "green", segments: [{ tier: "green", text }] };
+    }
+    if (kind === "child_born") {
+      const parent = labsBreedingLabLabel(row.parent);
+      const phrase = String(row?.breeding_traits_phrase || "").trim();
+      const traitBit = phrase ? ` — ${phrase} inherited` : " — competitive traits loaded";
+      const text = `Strong new child born from ${parent}${traitBit}, now live in its own paper engine.`;
+      return { tone: "green", segments: [{ tier: "green", text }] };
+    }
     const parent = labsBreedingLabLabel(row.parent);
-    const text = `New child born from ${parent} — strong traits inherited.`;
+    const text = `A bright new paper child arrived from ${parent} — its own live engine slot, already trading with the labs.`;
     return { tone: "green", segments: [{ tier: "green", text }] };
   }
   if (family === "sad") {
     const reason = String(row?.reason || "").trim();
     const via = String(row?.via || "").trim();
+    const logKind = String(row?.kind || "").trim();
     const victim = labsBreedingLabLabel(row.victim);
-    const viaPhrase =
-      via === "child"
-        ? "replaced by a stronger virtual offspring"
-        : via === "breed"
-          ? "replaced after a fresh crossover"
-          : "retired to make room for fitter genomes";
+    const fromChild = logKind.endsWith("_child") || via === "child";
+    const fromBreed = via === "breed";
+    const replacement = fromChild
+      ? "replaced by a superior ranked offspring"
+      : fromBreed
+        ? "replaced by a fresh crossover genome bred from the strongest paper parents"
+        : "retired to make room for a fitter lineup";
     if (reason === "child_pool_cull") {
-      const text = "A virtual offspring left the pool (natural selection) — stronger profiles keep the slots.";
+      const text = `The weakest child was put to bed (pool cap) — only sharper genomes keep a live engine slot.`;
+      return { tone: "yellow", segments: [{ tier: "yellow", text }] };
+    }
+    if (reason === "child_slot_preempt") {
+      const text = `A lower-scoring child was put to bed so a new birth could claim the slot — clean rotation, zero UI noise.`;
       return { tone: "yellow", segments: [{ tier: "yellow", text }] };
     }
     if (reason === "hard_death") {
-      const text = `${victim} has been put to bed (zero equity) — ${viaPhrase}.`;
+      const text = `${victim} has been put to bed (zero paper equity) — ${replacement}.`;
       return { tone: "red", segments: [{ tier: "red", text }] };
     }
     if (reason === "soft_cull") {
-      const text = `${victim} has been put to bed (underperformed peers) — ${viaPhrase}.`;
+      const text = `${victim} has been put to bed (lagged peers on internal replay) — ${replacement}.`;
       return { tone: "yellow", segments: [{ tier: "yellow", text }] };
     }
-    const text = `${victim} has been put to bed — ${viaPhrase}.`;
+    const text = `${victim} has been put to bed — ${replacement}.`;
     return { tone: "yellow", segments: [{ tier: "yellow", text }] };
   }
   return null;
@@ -3001,6 +3023,12 @@ export default function App() {
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
+  /** LABS BREEDING v0.1 — prominent Optimizer/Breeder toggle in header (fixed visibility); default Optimizer. */
+  const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder">("optimizer");
+  const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
+  const [breederStatusLoading, setBreederStatusLoading] = useState(false);
+  const [breederStatusError, setBreederStatusError] = useState<string | null>(null);
+  const [breederRefetchNonce, setBreederRefetchNonce] = useState(0);
   /** Epoch ms: last time we enqueued an Optimizer suggested-action toast (hourly cap vs. ``optimizerStatus`` effect). */
   const lastSuggestedToastTimeRef = useRef(0);
   /** Prior snapshot to detect health / acceptance / streak / revert step-changes before mutating refs for the next tick. */
@@ -3567,6 +3595,44 @@ export default function App() {
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
   const metricsLabD = (dash?.metrics_lab_d || {}) as AnyObj;
   const optimizerStatus = useMemo(() => buildOptimizerStatus((dash as AnyObj | null) || null, cfg as AnyObj), [cfg?.optimizer, dash]);
+
+  const breederRadarRows = useMemo(() => {
+    const r = breederStatusPayload?.labs_breeding_personality_radar as AnyObj | undefined;
+    return Array.isArray(r?.rows) ? (r.rows as AnyObj[]) : [];
+  }, [breederStatusPayload]);
+
+  const breederRadarSeries = useMemo(() => {
+    const r = breederStatusPayload?.labs_breeding_personality_radar as AnyObj | undefined;
+    return Array.isArray(r?.series) ? (r.series as AnyObj[]) : [];
+  }, [breederStatusPayload]);
+
+  useEffect(() => {
+    if (optimizerDashboardView !== "breeder") return;
+    let cancelled = false;
+    setBreederStatusLoading(true);
+    setBreederStatusError(null);
+    void fetch("/api/optimizer/status", withApiAuth())
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<AnyObj>;
+      })
+      .then((j) => {
+        if (!cancelled) setBreederStatusPayload(j);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
+      })
+      .finally(() => {
+        if (!cancelled) setBreederStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [optimizerDashboardView, breederRefetchNonce]);
+
+  useEffect(() => {
+    if (optimizerDashboardView !== "breeder") setBreederStatusPayload(null);
+  }, [optimizerDashboardView]);
 
   useEffect(() => {
     const HOUR_MS = 60 * 60 * 1000;
@@ -4697,7 +4763,28 @@ export default function App() {
                   "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
                 }
               />
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+              {/* LABS BREEDING v0.1 — prominent Optimizer/Breeder toggle in header (fixed visibility) */}
+              <div className="dash-optimizer-actions">
+                <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer or Breeder view">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={optimizerDashboardView === "optimizer"}
+                    className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "optimizer" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
+                    onClick={() => setOptimizerDashboardView("optimizer")}
+                  >
+                    Optimizer
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={optimizerDashboardView === "breeder"}
+                    className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "breeder" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
+                    onClick={() => setOptimizerDashboardView("breeder")}
+                  >
+                    Breeder
+                  </button>
+                </div>
                 <button
                   type="button"
                   className="primary dash-panel-btn"
@@ -4716,6 +4803,7 @@ export default function App() {
                       setForceInternalMutationBusy(true);
                       try {
                         await forceInternalMutationNow();
+                        setBreederRefetchNonce((n) => n + 1);
                       } finally {
                         setForceInternalMutationBusy(false);
                       }
@@ -4747,15 +4835,123 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <BranchOptimizerVisualizer
-              labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
-              radar={optimizerThinkingRadarBundle}
-              mutationStatus={{
-                tierLabel: optimizerStatus.mutationTierLabel,
-                effectiveMutationScale: optimizerStatus.effectiveMutationScale,
-                mutationDial: optimizerStatus.mutationDial,
-              }}
-            />
+            {optimizerDashboardView === "breeder" ? (
+              <div className="branch-brain-optimizer-breeder" style={{ marginTop: 12 }}>
+                <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
+                  Twelve mood axes (Labs A–D + child engines) from internal breeding traits and sizing. Read-only — same
+                  source as <code>GET /api/optimizer/status</code>.
+                </p>
+                {breederStatusLoading ? (
+                  <p className="sub" style={{ marginTop: 8 }}>
+                    Loading radar…
+                  </p>
+                ) : breederStatusError ? (
+                  <p className="sub" style={{ marginTop: 8, color: "#f87171" }} role="alert">
+                    {breederStatusError}
+                  </p>
+                ) : (
+                  <>
+                    <div style={{ width: "100%", height: 400, marginTop: 4 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <RadarChart cx="50%" cy="52%" outerRadius="68%" data={breederRadarRows}>
+                          <PolarGrid stroke="var(--border)" />
+                          <PolarAngleAxis dataKey="subject" tick={{ fill: "var(--muted)", fontSize: 9 }} />
+                          <PolarRadiusAxis
+                            angle={18}
+                            domain={[0, 100]}
+                            tick={{ fill: "var(--muted)", fontSize: 8 }}
+                            tickCount={5}
+                          />
+                          {breederRadarSeries.map((s, i) => {
+                            const col = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"][i % 10];
+                            const on = Boolean(s.engine_running);
+                            return (
+                              <Radar
+                                key={String(s.key ?? i)}
+                                name={String(s.label ?? s.key ?? "")}
+                                dataKey={String(s.key)}
+                                stroke={col}
+                                fill={col}
+                                fillOpacity={on ? 0.22 : 0.07}
+                                strokeWidth={on ? 2.2 : 1}
+                                isAnimationActive={false}
+                              />
+                            );
+                          })}
+                          <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
+                          <Tooltip
+                            contentStyle={{
+                              background: "rgba(20,24,40,.95)",
+                              border: "1px solid var(--border)",
+                              borderRadius: 8,
+                              fontSize: 11,
+                            }}
+                            formatter={(v: number | string) => [`${typeof v === "number" ? v.toFixed(0) : v}`, ""]}
+                          />
+                        </RadarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                        gap: 8,
+                        marginTop: 12,
+                        fontSize: 11,
+                        lineHeight: 1.45,
+                        color: "var(--muted)",
+                      }}
+                    >
+                      <div>
+                        Last breeding tick:{" "}
+                        <strong style={{ color: "var(--text)" }}>
+                          {breederStatusPayload?.labs_breeding_last_generation_iso
+                            ? fmtIsoLocal(String(breederStatusPayload.labs_breeding_last_generation_iso), false)
+                            : "—"}
+                        </strong>
+                      </div>
+                      <div>
+                        Replace cooldown:{" "}
+                        <strong style={{ color: "var(--text)" }}>
+                          {breederStatusPayload?.labs_breeding_replace_cooldown_until
+                            ? fmtIsoLocal(String(breederStatusPayload.labs_breeding_replace_cooldown_until), false)
+                            : "—"}
+                        </strong>
+                      </div>
+                      <div>
+                        Pool children:{" "}
+                        <strong style={{ color: "var(--text)" }}>
+                          {Array.isArray(breederStatusPayload?.labs_breeding_children)
+                            ? breederStatusPayload!.labs_breeding_children.length
+                            : 0}
+                        </strong>
+                      </div>
+                      <div>
+                        Lineage rows:{" "}
+                        <strong style={{ color: "var(--text)" }}>
+                          {Array.isArray(breederStatusPayload?.labs_breeding_lineage_history)
+                            ? breederStatusPayload!.labs_breeding_lineage_history.length
+                            : 0}
+                        </strong>
+                      </div>
+                    </div>
+                    <p className="sub" style={{ marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
+                      Thicker strokes = engine running on that branch.
+                    </p>
+                  </>
+                )}
+              </div>
+            ) : (
+              <BranchOptimizerVisualizer
+                labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
+                radar={optimizerThinkingRadarBundle}
+                mutationStatus={{
+                  tierLabel: optimizerStatus.mutationTierLabel,
+                  effectiveMutationScale: optimizerStatus.effectiveMutationScale,
+                  mutationDial: optimizerStatus.mutationDial,
+                }}
+              />
+            )}
           </div>
         </section>
       </div>

@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
+from ..lab_breeding import build_labs_breeding_personality_radar
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
 from ..types_api import OptimizerStatusResponse
@@ -163,6 +164,10 @@ async def optimizer_status() -> OptimizerStatusResponse:
         ][:10],
         "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
         "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:10],
+        # LABS BREEDING v0.1 — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).
+        "labs_breeding_personality_radar": build_labs_breeding_personality_radar(cfg),
+        "labs_breeding_last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),
+        "labs_breeding_replace_cooldown_until": str(oc.get("labs_breeding_replace_cooldown_until") or ""),
         "internal_optimizer_trace": [x for x in (oc.get("internal_optimizer_trace") or []) if isinstance(x, dict)][:30],
         "advanced_metrics_last": dict(oc.get("advanced_metrics_last") or {}),
         "acceptance_rate_pct": float(oc.get("acceptance_rate_pct") or 0.0),

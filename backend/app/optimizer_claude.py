@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from .api_models import normalize_rules_list
 from .branch_config import (
+    BRANCH_CHILD_LABS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
@@ -34,6 +36,52 @@ if TYPE_CHECKING:
     from .persistence import Store
 
 logger = logging.getLogger("kalshibot.optimizer")
+
+
+async def _lab_breeding_trades_signals_maps(
+    store: Store,
+    *,
+    start_iso: str,
+    end_iso: str,
+    max_rows: int,
+    tr_a: list[dict[str, Any]],
+    tr_b: list[dict[str, Any]],
+    tr_c: list[dict[str, Any]],
+    tr_d: list[dict[str, Any]],
+    sg_a: list[dict[str, Any]],
+    sg_b: list[dict[str, Any]],
+    sg_c: list[dict[str, Any]],
+    sg_d: list[dict[str, Any]],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    """Parents + ``lab_child_*`` paper rows for lab breeding fitness (invisible)."""
+    trades_by_branch: dict[str, list[dict[str, Any]]] = {
+        BRANCH_LAB_A: tr_a,
+        BRANCH_LAB_B: tr_b,
+        BRANCH_LAB_C: tr_c,
+        BRANCH_LAB_D: tr_d,
+    }
+    signals_by_branch: dict[str, list[dict[str, Any]]] = {
+        BRANCH_LAB_A: sg_a,
+        BRANCH_LAB_B: sg_b,
+        BRANCH_LAB_C: sg_c,
+        BRANCH_LAB_D: sg_d,
+    }
+    if not BRANCH_CHILD_LABS:
+        return trades_by_branch, signals_by_branch
+    tr_tasks = [
+        store.query_table("trades", branch=ck, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+        for ck in BRANCH_CHILD_LABS
+    ]
+    sg_tasks = [
+        store.query_table("signals", branch=ck, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+        for ck in BRANCH_CHILD_LABS
+    ]
+    tr_kids, sg_kids = await asyncio.gather(asyncio.gather(*tr_tasks), asyncio.gather(*sg_tasks))
+    for i, ck in enumerate(BRANCH_CHILD_LABS):
+        trades_by_branch[ck] = tr_kids[i]
+        signals_by_branch[ck] = sg_kids[i]
+    return trades_by_branch, signals_by_branch
+
 
 # After Claude rule deltas, reject if list grows beyond this (API ``normalize_rules_list`` allows up to 48).
 MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS = 30
@@ -127,12 +175,14 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("last_paper_loser_swap_at", "")
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (internal proposal log only).
     out.setdefault("proposal_history", [])
-    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+    # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
     out.setdefault("labs_breeding_log", [])
     out.setdefault("labs_breeding_children", [])
     out.setdefault("labs_breeding_death_chamber", [])
     out.setdefault("labs_breeding_lineage_history", [])
     out.setdefault("labs_breeding_last_generation_iso", "")
+    out.setdefault("labs_breeding_replace_cooldown_until", "")
     # Regime-level EWMA of composite ``score_dollars`` and observation counts; decayed every optimizer tick
     # so older telemetry fades (meta-learning, no user tuning).
     out.setdefault(
@@ -3193,7 +3243,23 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
-    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+    trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+        store,
+        start_iso=start_iso,
+        end_iso=end_iso,
+        max_rows=max_rows,
+        tr_a=tr_a,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        tr_d=tr_d,
+        sg_a=sg_a,
+        sg_b=sg_b,
+        sg_c=sg_c,
+        sg_d=sg_d,
+    )
+
+    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+    # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
     try:
         breed_rows = await maybe_breed_dead_labs(
             store,
@@ -3202,18 +3268,8 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             start_iso=start_iso,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch={
-                BRANCH_LAB_A: tr_a,
-                BRANCH_LAB_B: tr_b,
-                BRANCH_LAB_C: tr_c,
-                BRANCH_LAB_D: tr_d,
-            },
-            signals_by_branch={
-                BRANCH_LAB_A: sg_a,
-                BRANCH_LAB_B: sg_b,
-                BRANCH_LAB_C: sg_c,
-                BRANCH_LAB_D: sg_d,
-            },
+            trades_by_branch=trades_by_branch_lb,
+            signals_by_branch=signals_by_branch_lb,
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )
@@ -3223,18 +3279,8 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             oc,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch={
-                BRANCH_LAB_A: tr_a,
-                BRANCH_LAB_B: tr_b,
-                BRANCH_LAB_C: tr_c,
-                BRANCH_LAB_D: tr_d,
-            },
-            signals_by_branch={
-                BRANCH_LAB_A: sg_a,
-                BRANCH_LAB_B: sg_b,
-                BRANCH_LAB_C: sg_c,
-                BRANCH_LAB_D: sg_d,
-            },
+            trades_by_branch=trades_by_branch_lb,
+            signals_by_branch=signals_by_branch_lb,
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )
@@ -3245,18 +3291,8 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             start_iso=start_iso,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch={
-                BRANCH_LAB_A: tr_a,
-                BRANCH_LAB_B: tr_b,
-                BRANCH_LAB_C: tr_c,
-                BRANCH_LAB_D: tr_d,
-            },
-            signals_by_branch={
-                BRANCH_LAB_A: sg_a,
-                BRANCH_LAB_B: sg_b,
-                BRANCH_LAB_C: sg_c,
-                BRANCH_LAB_D: sg_d,
-            },
+            trades_by_branch=trades_by_branch_lb,
+            signals_by_branch=signals_by_branch_lb,
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )
@@ -3583,7 +3619,23 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
-    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+    trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+        store,
+        start_iso=start_iso,
+        end_iso=end_iso,
+        max_rows=max_rows,
+        tr_a=tr_a,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        tr_d=tr_d,
+        sg_a=sg_a,
+        sg_b=sg_b,
+        sg_c=sg_c,
+        sg_d=sg_d,
+    )
+
+    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+    # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
     try:
         breed_rows = await maybe_breed_dead_labs(
             store,
@@ -3592,18 +3644,8 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
             start_iso=start_iso,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch={
-                BRANCH_LAB_A: tr_a,
-                BRANCH_LAB_B: tr_b,
-                BRANCH_LAB_C: tr_c,
-                BRANCH_LAB_D: tr_d,
-            },
-            signals_by_branch={
-                BRANCH_LAB_A: sg_a,
-                BRANCH_LAB_B: sg_b,
-                BRANCH_LAB_C: sg_c,
-                BRANCH_LAB_D: sg_d,
-            },
+            trades_by_branch=trades_by_branch_lb,
+            signals_by_branch=signals_by_branch_lb,
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )
@@ -3613,18 +3655,8 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
             oc,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch={
-                BRANCH_LAB_A: tr_a,
-                BRANCH_LAB_B: tr_b,
-                BRANCH_LAB_C: tr_c,
-                BRANCH_LAB_D: tr_d,
-            },
-            signals_by_branch={
-                BRANCH_LAB_A: sg_a,
-                BRANCH_LAB_B: sg_b,
-                BRANCH_LAB_C: sg_c,
-                BRANCH_LAB_D: sg_d,
-            },
+            trades_by_branch=trades_by_branch_lb,
+            signals_by_branch=signals_by_branch_lb,
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )
@@ -3635,18 +3667,8 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
             start_iso=start_iso,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch={
-                BRANCH_LAB_A: tr_a,
-                BRANCH_LAB_B: tr_b,
-                BRANCH_LAB_C: tr_c,
-                BRANCH_LAB_D: tr_d,
-            },
-            signals_by_branch={
-                BRANCH_LAB_A: sg_a,
-                BRANCH_LAB_B: sg_b,
-                BRANCH_LAB_C: sg_c,
-                BRANCH_LAB_D: sg_d,
-            },
+            trades_by_branch=trades_by_branch_lb,
+            signals_by_branch=signals_by_branch_lb,
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )

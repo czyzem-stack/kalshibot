@@ -25,10 +25,12 @@ from .core.logging import (
     reset_uvicorn_loggers_to_root,
 )
 from .branch_config import (
+    BRANCH_CHILD_LABS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
+    BRANCH_LABS,
     BRANCH_LIVE,
     build_optimizer_radar_payload,
     lab_paper_equity_start_cents,
@@ -720,11 +722,18 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
     if s == "all":
         order = (BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
     elif s == "all_labs":
-        order = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+        order = (*BRANCH_LABS, *BRANCH_CHILD_LABS)
     elif s in ("both", "lab_both", "a+b"):
         order = (BRANCH_LAB_A, BRANCH_LAB_B)
     else:
-        m = {"live": BRANCH_LIVE, "lab_a": BRANCH_LAB_A, "lab_b": BRANCH_LAB_B, "lab_c": BRANCH_LAB_C, "lab_d": BRANCH_LAB_D}
+        m = {
+            "live": BRANCH_LIVE,
+            "lab_a": BRANCH_LAB_A,
+            "lab_b": BRANCH_LAB_B,
+            "lab_c": BRANCH_LAB_C,
+            "lab_d": BRANCH_LAB_D,
+            **{ck: ck for ck in BRANCH_CHILD_LABS},
+        }
         k = m.get(s)
         order = (k,) if k else ()
     for br in order:
@@ -742,7 +751,14 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
     if branch_scope == "all":
         keys = list(state.ENGINES.keys())
     else:
-        m = {"live": BRANCH_LIVE, "lab_a": BRANCH_LAB_A, "lab_b": BRANCH_LAB_B, "lab_c": BRANCH_LAB_C, "lab_d": BRANCH_LAB_D}
+        m = {
+            "live": BRANCH_LIVE,
+            "lab_a": BRANCH_LAB_A,
+            "lab_b": BRANCH_LAB_B,
+            "lab_c": BRANCH_LAB_C,
+            "lab_d": BRANCH_LAB_D,
+            **{ck: ck for ck in BRANCH_CHILD_LABS},
+        }
         k = m.get(branch_scope)
         keys = [k] if k else []
     for key in keys:
@@ -1464,6 +1480,10 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     lab_b_engine_on = bool(lab_b.get("engine_running")) if isinstance(lab_b, dict) else False
     lab_c_engine_on = bool(lab_c.get("engine_running")) if isinstance(lab_c, dict) else False
     lab_d_engine_on = bool(lab_d.get("engine_running")) if isinstance(lab_d, dict) else False
+    child_lab_engine_any_on = any(
+        bool((cfg.get(ck) or {}).get("engine_running")) if isinstance(cfg.get(ck), dict) else False
+        for ck in BRANCH_CHILD_LABS
+    )
 
     client = require_kalshi()
     public_ok = False
@@ -1692,7 +1712,12 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             "private_ok": portfolio_read_ok,
             "private_error": private_err,
             "portfolio_notes": portfolio_notes,
-            "polling_enabled": live_engine_on or lab_a_engine_on or lab_b_engine_on or lab_c_engine_on or lab_d_engine_on,
+            "polling_enabled": live_engine_on
+            or lab_a_engine_on
+            or lab_b_engine_on
+            or lab_c_engine_on
+            or lab_d_engine_on
+            or child_lab_engine_any_on,
             "credentials": creds,
             "simulate_live": simulate_live,
             "portfolio_read_ok": portfolio_read_ok,

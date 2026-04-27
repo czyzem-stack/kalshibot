@@ -1,7 +1,8 @@
 """Compatibility re-exports. Trading logic lives in :mod:`app.engines` (``engine`` + ``dual_engine_loop``).
 
-LABS BREEDING v0.1 (Lab A staging/adopts + B/C/D breed + competitive children): internal breeding/adoption runs on the
-optimizer cadence (``optimizer_claude`` / ``lab_breeding``), not inside the per-branch tick loop.
+# LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+Internal breeding/adoption runs on the optimizer cadence (``optimizer_claude`` / ``lab_breeding``), not inside the
+per-branch tick loop.
 """
 
 from __future__ import annotations

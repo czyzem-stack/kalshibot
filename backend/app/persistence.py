@@ -11,7 +11,12 @@ from typing import Any
 
 import aiosqlite
 
-from .branch_config import ensure_patient_stop_loss_on_branch_dict, sync_live_paper_trading_keys
+from .branch_config import (
+    ALL_CFG_LAB_KEYS,
+    BRANCH_CHILD_LABS,
+    ensure_patient_stop_loss_on_branch_dict,
+    sync_live_paper_trading_keys,
+)
 from .settings_env import env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,14 +81,9 @@ def _sql_branch_predicate(branch: str) -> str:
     b = str(branch or "").strip().lower()
     if b == "sim_lab":
         b = "lab_a"
-    if b == "lab_a":
-        return f"({key}) = 'lab_a'"
-    if b == "lab_b":
-        return f"({key}) = 'lab_b'"
-    if b == "lab_c":
-        return f"({key}) = 'lab_c'"
-    if b == "lab_d":
-        return f"({key}) = 'lab_d'"
+    for cand in ALL_CFG_LAB_KEYS:
+        if b == cand:
+            return f"({key}) = '{cand}'"
     if b == "live":
         return f"({key}) = 'live'"
     raise ValueError(f"unsupported branch for SQL filter: {branch!r}")
@@ -96,7 +96,7 @@ def normalize_trade_branch_for_db(branch: str | None) -> str:
         return "live"
     if b == "sim_lab":
         return "lab_a"
-    if b in ("live", "lab_a", "lab_b", "lab_c", "lab_d"):
+    if b == "live" or b in ALL_CFG_LAB_KEYS:
         return b
     return b
 
@@ -305,6 +305,24 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
+        # LABS BREEDING v0.1 IMPROVEMENT — invisible child engines (defaults off until GA assigns genomes).
+        **{
+            ck: {
+                "engine_running": False,
+                "auto_optimize": False,
+                "auto_reset_paper_on_tick_failure": False,
+                "enable_patient_stop_loss": True,
+                "stop_loss_trigger_pct": -9.0,
+                "min_hold_minutes_before_stop": 22,
+                "balance_fraction_per_window": 0.09,
+                "window_minutes": 12,
+                "paper_fee_model": "kalshi_taker",
+                "kalshi_fee_multiplier": 1.0,
+                "paper_fee_bps": 0,
+                "paper_balance_cents": 500_000,
+            }
+            for ck in BRANCH_CHILD_LABS
+        },
         "optimizer": {
             "enabled": True,
             "interval_minutes": 20,
@@ -360,8 +378,8 @@ def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any
     Shallow-merge ``lab`` over ``default_bot_config()[branch]`` so thin saves (e.g. only paper / fraction / window)
     cannot strip ``engine_running``, fee keys, or other lab defaults.
     """
-    if branch not in ("lab_a", "lab_b", "lab_c", "lab_d"):
-        raise ValueError(f"branch must be lab_a, lab_b, lab_c, or lab_d, got {branch!r}")
+    if branch not in ALL_CFG_LAB_KEYS:
+        raise ValueError(f"branch must be a known lab key (parents or lab_child_*), got {branch!r}")
     base = dict(default_bot_config().get(branch) or {})
     base.update(lab)
     if isinstance(base.get("assets"), dict) and len(base["assets"]) == 0:
@@ -514,6 +532,10 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": 10,
             "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
         }
+    _dchild = default_bot_config()
+    for ck in BRANCH_CHILD_LABS:
+        if ck not in cfg or not isinstance(cfg.get(ck), dict):
+            cfg[ck] = dict(_dchild.get(ck) or {})
     dopt = dict(default_bot_config().get("optimizer") or {})
     cur_o = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     merged_o = {**dopt, **cur_o}
@@ -542,16 +564,11 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Dev sim high-YES bypass: migrate legacy boolean to percent field
     if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(cfg.get("dev_sim_yes_implied_ge_70")):
         cfg["dev_sim_yes_implied_ge_pct"] = 70.0
-    if isinstance(cfg.get("lab_a"), dict):
-        cfg["lab_a"] = expand_partial_lab_branch("lab_a", dict(cfg["lab_a"]))
-    if isinstance(cfg.get("lab_b"), dict):
-        cfg["lab_b"] = expand_partial_lab_branch("lab_b", dict(cfg["lab_b"]))
-    if isinstance(cfg.get("lab_c"), dict):
-        cfg["lab_c"] = expand_partial_lab_branch("lab_c", dict(cfg["lab_c"]))
-    if isinstance(cfg.get("lab_d"), dict):
-        cfg["lab_d"] = expand_partial_lab_branch("lab_d", dict(cfg["lab_d"]))
+    for lk in ALL_CFG_LAB_KEYS:
+        if isinstance(cfg.get(lk), dict):
+            cfg[lk] = expand_partial_lab_branch(lk, dict(cfg[lk]))
     # Per-lab ``assets: {}`` would override globals at merge time and disable all scanning for that lab.
-    for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+    for lk in ALL_CFG_LAB_KEYS:
         block = cfg.get(lk)
         if isinstance(block, dict) and isinstance(block.get("assets"), dict) and len(block["assets"]) == 0:
             del block["assets"]
@@ -684,7 +701,7 @@ class Store:
                 merged = default_bot_config()
                 merged["paper_balance_cents"] = c
                 merged.pop("paper_lifetime_basis_cents", None)
-                for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+                for lk in ALL_CFG_LAB_KEYS:
                     block = dict(merged.get(lk) or {})
                     block["paper_balance_cents"] = c
                     block.pop("paper_lifetime_basis_cents", None)
@@ -730,7 +747,7 @@ class Store:
                         cfg = _normalize_loaded_config(parsed_obj)
                 cfg["paper_balance_cents"] = c
                 cfg.pop("paper_lifetime_basis_cents", None)
-                for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+                for lk in ALL_CFG_LAB_KEYS:
                     block = dict(cfg.get(lk) or {})
                     block["paper_balance_cents"] = c
                     block.pop("paper_lifetime_basis_cents", None)
@@ -748,7 +765,7 @@ class Store:
                 await db.commit()
         return {
             "paper_balance_cents": c,
-            "applied_to": ["live_paper", "lab_a", "lab_b", "lab_c", "lab_d"],
+            "applied_to": ["live_paper", *ALL_CFG_LAB_KEYS],
             "paper_lifetime_basis_cents_cleared": True,
         }
 
@@ -803,10 +820,10 @@ class Store:
         ``paper_balance_cents``) then reflects all capital ever re-seeded into that lab.
         """
         br = str(branch or "").strip().lower()
-        if br not in ("lab_a", "lab_b", "lab_c", "lab_d"):
+        if br not in ALL_CFG_LAB_KEYS:
             return
         cfg = await self.load_config()
-        lab_key = {"lab_a": "lab_a", "lab_b": "lab_b", "lab_c": "lab_c", "lab_d": "lab_d"}[br]
+        lab_key = br
         lab = dict(cfg.get(lab_key) or {})
         seed = int(lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
         prev = int(lab.get("paper_lifetime_basis_cents") or 0)
@@ -1308,9 +1325,9 @@ class Store:
             bn = str(branch).strip().lower()
             if bn == "sim_lab":
                 bn = "lab_a"
-            if bn not in ("live", "lab_a", "lab_b", "lab_c", "lab_d"):
+            if bn != "live" and bn not in ALL_CFG_LAB_KEYS:
                 raise ValueError(
-                    f"branch filter must be live, lab_a, lab_b, lab_c, lab_d, or sim_lab (legacy) (got {branch!r})"
+                    f"branch filter must be live, a parent lab, lab_child_1..6, or sim_lab (legacy) (got {branch!r})"
                 )
             where.append(_sql_branch_predicate(bn))
         if mode and table in {"signals", "trades", "equity_snapshots"}:
@@ -1444,7 +1461,8 @@ class Store:
                 exports.append(f"jsonl_export_error:{e}")
         br_arg = str(branch or "").strip().lower()
         scope = "all" if br_arg in ("", "all") else br_arg
-        if scope not in ("all", "live", "lab_a", "lab_b", "lab_c", "lab_d"):
+        _allowed = ("all", "live", *ALL_CFG_LAB_KEYS)
+        if scope not in _allowed:
             raise ValueError(f"invalid reset branch: {branch!r}")
         pred = None if scope == "all" else _sql_branch_predicate(scope)
         async with self._open_db() as db:

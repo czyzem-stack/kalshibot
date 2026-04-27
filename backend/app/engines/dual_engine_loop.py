@@ -1,18 +1,21 @@
-"""Five-branch polling loop: Live + Labs A–D (settle, tick, snapshot, optional auto-optimize)."""
+"""Polling loop: Live + Labs A–D + invisible breeding child branches (settle, tick, snapshot, optional auto-optimize)."""
 
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 import logging
 import time
 
 from .. import state
 from ..alert_webhook import post_branch_error_alerts
 from ..branch_config import (
+    BRANCH_CHILD_LABS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
+    BRANCH_LABS,
     BRANCH_LIVE,
     live_paper_trading_enabled,
 )
@@ -48,13 +51,11 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
         try:
             # PHASE FINAL: env-backed poll default preserves prior 8s behavior when config omits poll_seconds.
             poll_candidates: list[float] = [float(cfg.get("poll_seconds") or env.default_poll_seconds)]
-            branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D]
-            lab_conf = {
-                BRANCH_LAB_A: cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {},
-                BRANCH_LAB_B: cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {},
-                BRANCH_LAB_C: cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {},
-                BRANCH_LAB_D: cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {},
-            }
+            branch_order = [BRANCH_LIVE, *BRANCH_LABS, *BRANCH_CHILD_LABS]
+            lab_conf: dict[str, dict[str, Any]] = {}
+            for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
+                raw = cfg.get(br) if isinstance(cfg.get(br), dict) else {}
+                lab_conf[br] = raw if isinstance(raw, dict) else {}
             for bk, bcfg in lab_conf.items():
                 if isinstance(bcfg, dict):
                     poll_candidates.append(float(bcfg.get("poll_seconds") or poll_candidates[0]))
@@ -106,7 +107,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             # When Live is off, labs used to tick with zero spacing → three parallel-ish series scans + order books
             # in one loop turn, which spikes Kalshi public limits (HTTP 429) and looks like "labs never trade".
             lab_stagger_armed = False
-            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D):
+            for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
                     # Per-lab fraction nudger when auto_optimize is on — disabled while scheduled optimizer runs.
@@ -194,7 +195,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             # Previously gated on ``tick % 5`` + settle/swing, so quiet labs (e.g. fewer settlements) updated charts
             # ~5× slower than busy labs despite identical poll rates.
             lab_snap_items: list[tuple[str, Any]] = []
-            for br in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D):
+            for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if lc.get("engine_running"):
                     eng = engines.get(br)
@@ -255,11 +256,11 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
 
         # Reuse config loaded at loop start — avoids a second SQLite read every poll interval.
         poll_live = float(full_cfg.get("poll_seconds") or env.default_poll_seconds)
-        poll_lab_a = float(((full_cfg.get("lab_a") or {}) if isinstance(full_cfg.get("lab_a"), dict) else {}).get("poll_seconds") or poll_live)
-        poll_lab_b = float(((full_cfg.get("lab_b") or {}) if isinstance(full_cfg.get("lab_b"), dict) else {}).get("poll_seconds") or poll_live)
-        poll_lab_c = float(((full_cfg.get("lab_c") or {}) if isinstance(full_cfg.get("lab_c"), dict) else {}).get("poll_seconds") or poll_live)
-        poll_lab_d = float(((full_cfg.get("lab_d") or {}) if isinstance(full_cfg.get("lab_d"), dict) else {}).get("poll_seconds") or poll_live)
-        poll = max(poll_live, poll_lab_a, poll_lab_b, poll_lab_c, poll_lab_d)
+        poll_candidates_end: list[float] = [poll_live]
+        for lk in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
+            blk = full_cfg.get(lk) if isinstance(full_cfg.get(lk), dict) else {}
+            poll_candidates_end.append(float((blk or {}).get("poll_seconds") or poll_live))
+        poll = max(poll_candidates_end)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=poll)
         except TimeoutError:

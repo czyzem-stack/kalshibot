@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from .branch_config import (
+    BRANCH_CHILD_LABS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
@@ -42,8 +43,8 @@ engine_lab_c: TradingEngine | None = None
 engine_lab_d: TradingEngine | None = None
 ENGINES: dict[str, TradingEngine] = {}
 
-# LABS BREEDING v0.1 (Lab A staging/adopts + B/C/D breed + competitive children) — handled in ``run_optimizer_once`` /
-# ``lab_breeding``, not on engine singletons.
+# LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+# Breeding/adoption runs in ``run_optimizer_once`` / ``lab_breeding``; child engines live in ``ENGINES`` by branch key.
 
 stop_event = asyncio.Event()
 # PHASE 2: set after pre-warm (and WS ticker seed); dual_engine_loop awaits this so ticks never race ahead of cache fill.
@@ -70,7 +71,7 @@ def require_kalshi() -> KalshiClient:
 
 
 def init_runtime_engines(kalshi: KalshiClient | None = None) -> None:
-    """Build five ``TradingEngine`` instances sharing one ``KalshiClient``."""
+    """Build Live + four parent labs + six child-lab ``TradingEngine`` instances sharing one ``KalshiClient``."""
     from .engine import TradingEngine
 
     # PHASE 4: prefer process-shared client injection from ``require_kalshi``.
@@ -80,6 +81,7 @@ def init_runtime_engines(kalshi: KalshiClient | None = None) -> None:
     eb = TradingEngine(store, BRANCH_LAB_B, client=kc)
     ec = TradingEngine(store, BRANCH_LAB_C, client=kc)
     ed = TradingEngine(store, BRANCH_LAB_D, client=kc)
+    child_engines: dict[str, TradingEngine] = {br: TradingEngine(store, br, client=kc) for br in BRANCH_CHILD_LABS}
     global engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d
     engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d = (el, ea, eb, ec, ed)
     # Update in place so importers that bound early to ``ENGINES`` still see engines (if any).
@@ -91,6 +93,7 @@ def init_runtime_engines(kalshi: KalshiClient | None = None) -> None:
             BRANCH_LAB_B: eb,
             BRANCH_LAB_C: ec,
             BRANCH_LAB_D: ed,
+            **child_engines,
         }
     )
 

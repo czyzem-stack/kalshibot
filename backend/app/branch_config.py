@@ -9,11 +9,28 @@ BRANCH_LAB_B = "lab_b"
 BRANCH_LAB_C = "lab_c"
 BRANCH_LAB_D = "lab_d"
 BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+# LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+# Six SQLite-backed child branches (invisible to dashboard UI); each has its own TradingEngine when enabled.
+BRANCH_CHILD_1 = "lab_child_1"
+BRANCH_CHILD_2 = "lab_child_2"
+BRANCH_CHILD_3 = "lab_child_3"
+BRANCH_CHILD_4 = "lab_child_4"
+BRANCH_CHILD_5 = "lab_child_5"
+BRANCH_CHILD_6 = "lab_child_6"
+BRANCH_CHILD_LABS = (
+    BRANCH_CHILD_1,
+    BRANCH_CHILD_2,
+    BRANCH_CHILD_3,
+    BRANCH_CHILD_4,
+    BRANCH_CHILD_5,
+    BRANCH_CHILD_6,
+)
+# All paper lab keys in config JSON (parents + breeding children).
+ALL_CFG_LAB_KEYS: tuple[str, ...] = BRANCH_LABS + BRANCH_CHILD_LABS
 # Breeding parents only (Lab A is staging / adoption — see ``lab_breeding``).
 BRANCH_BREEDERS = (BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
-# LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
-# Internal virtual offspring queue (not SQLite branches); lineage audit cap matches this pool.
-LAB_BREEDING_MAX_VIRTUAL_POOL = 10
+# One child genome row per slot (each row maps to a real ``lab_child_*`` engine branch).
+LAB_BREEDING_MAX_CHILD_SLOTS = 6
 LAB_BREEDING_INTERNAL_MAX_SLOTS = 10
 
 # Protected flag: when True, the Live engine uses paper / simulated order flow. Canonical JSON key;
@@ -88,14 +105,11 @@ LAB_BRANCH_OVERLAY_KEYS = (
 
 
 def _lab_key_for_branch(branch: str) -> str | None:
-    if branch == BRANCH_LAB_A:
-        return "lab_a"
-    if branch == BRANCH_LAB_B:
-        return "lab_b"
-    if branch == BRANCH_LAB_C:
-        return "lab_c"
-    if branch == BRANCH_LAB_D:
-        return "lab_d"
+    b = str(branch or "").strip().lower()
+    if b == BRANCH_LIVE:
+        return None
+    if b in ALL_CFG_LAB_KEYS:
+        return b
     return None
 
 
@@ -316,6 +330,8 @@ _PATIENT_STOP_DEFAULTS: dict[str, tuple[bool, float, int]] = {
     BRANCH_LAB_C: (True, -12.0, 60),
     BRANCH_LAB_D: (True, -7.0, 25),
 }
+for _cb in BRANCH_CHILD_LABS:
+    _PATIENT_STOP_DEFAULTS[_cb] = (True, -9.0, 22)
 
 
 def apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg: dict[str, Any], branch: str, out: dict[str, Any]) -> None:

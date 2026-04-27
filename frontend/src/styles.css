@@ -752,6 +752,89 @@ input[type="number"] {
   margin-bottom: 0;
 }
 
+/* LABS BREEDING v0.1 — prominent Optimizer/Breeder toggle in header (fixed visibility) */
+.dash-optimizer-panel .branch-brain-inline__head {
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.dash-optimizer-panel .branch-brain-inline__head .dash-section__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-optimizer-panel .dash-optimizer-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(110, 231, 255, 0.42);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 2px 14px rgba(110, 231, 255, 0.12);
+  background: linear-gradient(180deg, rgba(26, 38, 72, 0.98), rgba(10, 16, 36, 0.99));
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment {
+  appearance: none;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: #c8d4f5;
+  background: rgba(12, 18, 38, 0.55);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment:hover {
+  color: #eef3ff;
+  background: rgba(110, 231, 255, 0.1);
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment + .dash-optimizer-mode-toggle__segment {
+  border-left: 1px solid var(--border);
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment--active {
+  color: #0a1020;
+  background: linear-gradient(180deg, rgba(130, 240, 255, 0.95), rgba(90, 210, 235, 0.88));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment:focus-visible {
+  outline: 2px solid rgba(110, 231, 255, 0.75);
+  outline-offset: 2px;
+  z-index: 1;
+}
+
 /* Rounded panels (branch card, optimizer card, equity column, etc.) */
 .dash-split-card {
   background: rgba(18, 26, 51, 0.72);

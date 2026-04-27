@@ -1,14 +1,17 @@
-# LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+# LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+# LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
 """
-Invisible internal GA for paper labs (no Claude, no UI, no extra SQLite branches).
+Invisible internal GA for paper labs (no Claude, no UI changes on dashboard).
 
-Only **lab_a–lab_d** trade. A virtual **child pool** (cap ``LAB_BREEDING_MAX_VIRTUAL_POOL``) holds genomes
-spawned by breeders **B/C/D** every 30 minutes. **Lab A** never breeds; it may adopt the strongest child on
-schedule. Whenever any lab slot is **hard-dead** (equity ≤ 0) or **soft-culled** (weak replay vs peers), it is
-**immediately** filled from the best available child if any, otherwise from breeder crossover.
+**lab_a–lab_d** remain the visible parent slots. Up to **six** parallel child engines (``lab_child_1``…``lab_child_6``)
+each have their own SQLite branch and ``TradingEngine`` when assigned a genome. Breeders **B/C/D** mint offspring on
+the 30-minute cadence into free child slots; **Lab A** never breeds and may adopt. Parent slots are refilled from
+the strongest pool child (live child engine genome) or breeder crossover on hard death; soft cull respects a short
+cooldown to limit churn.
 
-**Lineage / death** caps (10) and ``labs_breeding_log`` are exposed via full config (dashboard) and ``GET /api/optimizer/status``.
-Some log rows include ``toast_id`` / ``toast_family`` for ephemeral client toasts (birth vs death/cull).
+**Lineage / death** caps and ``labs_breeding_log`` (including optional toast hints) ship in config / ``GET /api/optimizer/status``.
+
+Replacement cooldown (5m) applies only to **soft cull** and **adoption** — not hard (zero equity) death.
 """
 from __future__ import annotations
 
@@ -22,14 +25,16 @@ from uuid import uuid4
 
 from .api_models import normalize_rules_list
 from .branch_config import (
+    ALL_CFG_LAB_KEYS,
     BRANCH_BREEDERS,
+    BRANCH_CHILD_LABS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
     BRANCH_LABS,
     LAB_BREEDING_INTERNAL_MAX_SLOTS,
-    LAB_BREEDING_MAX_VIRTUAL_POOL,
+    LAB_BREEDING_MAX_CHILD_SLOTS,
     _lab_key_for_branch,
     clamp_balance_fraction_per_window,
 )
@@ -41,7 +46,7 @@ logger = logging.getLogger("kalshibot.lab_breeding")
 
 
 def _toast_fields(*, family: str, **kwargs: Any) -> dict[str, Any]:
-    # LABS BREEDING v0.1 — special toasts for birth and death/cull
+    # LABS BREEDING v0.1 — birth vs death/cull toasts (only visible “labs” surface)
     out: dict[str, Any] = {"toast_id": str(uuid4()), "toast_family": family}
     for k, v in kwargs.items():
         if v is not None and v != "":
@@ -57,11 +62,145 @@ ReplayBundleFn = Callable[..., dict[str, Any]]
 ReplayOpenKwFn = Callable[..., dict[str, Any]]
 
 LAB_BREEDING_GENERATION_INTERVAL = dt.timedelta(minutes=30)
+REPLACEMENT_COOLDOWN = dt.timedelta(minutes=5)
 MIN_SETTLED_FOR_ADOPTION_COMPARE = 4
 MIN_SETTLED_FOR_SOFT_CULL = 5
 TRAIT_KEYS = ("aggressiveness", "risk_tolerance", "adaptivity", "exploration", "resilience")
 DEATH_CHAMBER_CAP = 10
 LINEAGE_HISTORY_CAP = 10
+
+# LABS BREEDING v0.1 — radar chart + Optimizer/Breeder toggle (12 mood axes; derived from traits + sizing for UI only).
+MOOD_DIMENSIONS: tuple[tuple[str, str], ...] = (
+    ("aggressive", "Aggressive"),
+    ("greedy", "Greedy"),
+    ("sophisticated", "Sophisticated"),
+    ("patient", "Patient"),
+    ("calm", "Calm"),
+    ("adaptive", "Adaptive"),
+    ("exploratory", "Exploratory"),
+    ("resilient", "Resilient"),
+    ("optimistic", "Optimistic"),
+    ("cautious", "Cautious"),
+    ("ruthless", "Ruthless"),
+    ("methodical", "Methodical"),
+)
+
+
+def _mood_pct(x: float) -> float:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        v = 0.0
+    if v != v:
+        v = 0.0
+    return max(0.0, min(100.0, v))
+
+
+def mood_vector_for_lab(lab: dict[str, Any], *, base_rules: list[Any] | None = None) -> dict[str, float]:
+    """Map breeding traits + lab knobs to twelve 0–100 mood axes (read-only / display)."""
+    lab_o = dict(lab) if isinstance(lab, dict) else {}
+    t = _read_traits(lab_o)
+    ag = float(t.get("aggressiveness", 0.5))
+    rt = float(t.get("risk_tolerance", 0.5))
+    ad = float(t.get("adaptivity", 0.5))
+    ex = float(t.get("exploration", 0.5))
+    res = float(t.get("resilience", 0.5))
+    try:
+        bf = float(lab_o.get("balance_fraction_per_window") or 0.03)
+    except (TypeError, ValueError):
+        bf = 0.03
+    try:
+        wm = float(lab_o.get("window_minutes") or 15)
+    except (TypeError, ValueError):
+        wm = 15.0
+    try:
+        mhold = float(lab_o.get("min_hold_minutes_before_stop") or 30)
+    except (TypeError, ValueError):
+        mhold = 30.0
+    try:
+        stp = float(lab_o.get("stop_loss_trigger_pct") or -8.0)
+    except (TypeError, ValueError):
+        stp = -8.0
+    stp_n = min(1.0, max(0.0, abs(stp) / 35.0))
+    base = list(base_rules) if isinstance(base_rules, list) else []
+    lr = lab_o.get("rules") if isinstance(lab_o.get("rules"), list) and len(lab_o["rules"]) > 0 else base
+    try:
+        rules = normalize_rules_list(lr)
+    except Exception:
+        rules = normalize_rules_list(base or [])
+    rules_u = min(1.0, len(rules) / 24.0)
+    bf_u = min(1.0, max(0.0, bf / 0.18))
+    wm_u = min(1.0, max(0.0, wm / 60.0))
+    mh_u = min(1.0, max(0.0, mhold / 120.0))
+    aggressive = _mood_pct(ag * 100.0)
+    greedy = _mood_pct(bf_u * 58.0 + ag * 42.0)
+    sophisticated = _mood_pct(rules_u * 72.0 + ad * 28.0)
+    patient = _mood_pct(mh_u * 52.0 + wm_u * 38.0 + (1.0 - ag) * 10.0)
+    calm = _mood_pct(res * 62.0 + (1.0 - ag) * 22.0 + (1.0 - ex) * 16.0)
+    adaptive = _mood_pct(ad * 100.0)
+    exploratory = _mood_pct(ex * 100.0)
+    resilient = _mood_pct(res * 100.0)
+    optimistic = _mood_pct(rt * 100.0)
+    cautious = _mood_pct((1.0 - 0.62 * ag - 0.28 * ex) * 100.0)
+    ruthless = _mood_pct(ag * 58.0 + (1.0 - res) * 32.0 + bf_u * 28.0 + stp_n * 12.0)
+    methodical = _mood_pct(ad * 48.0 + rules_u * 100.0 * 0.42 + (1.0 - ex) * 18.0)
+    return {
+        "aggressive": aggressive,
+        "greedy": greedy,
+        "sophisticated": sophisticated,
+        "patient": patient,
+        "calm": calm,
+        "adaptive": adaptive,
+        "exploratory": exploratory,
+        "resilient": resilient,
+        "optimistic": optimistic,
+        "cautious": cautious,
+        "ruthless": ruthless,
+        "methodical": methodical,
+    }
+
+
+def _personality_branch_label(cfg_key: str) -> str:
+    if cfg_key == "lab_a":
+        return "Lab A"
+    if cfg_key == "lab_b":
+        return "Lab B"
+    if cfg_key == "lab_c":
+        return "Lab C"
+    if cfg_key == "lab_d":
+        return "Lab D"
+    if cfg_key.startswith("lab_child_") and cfg_key[10:].isdigit():
+        return f"Child {cfg_key[10:]}"
+    return cfg_key
+
+
+def build_labs_breeding_personality_radar(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Payload for Settings **Breeder** radar (parents + child slots)."""
+    base_rules = cfg.get("rules") if isinstance(cfg.get("rules"), list) else []
+    series: list[dict[str, Any]] = []
+    for lk in ALL_CFG_LAB_KEYS:
+        lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
+        moods = mood_vector_for_lab(lab, base_rules=base_rules)
+        series.append(
+            {
+                "key": lk,
+                "branch": lk,
+                "label": _personality_branch_label(lk),
+                "engine_running": bool(lab.get("engine_running")),
+                "moods": {k: round(float(moods[k]), 1) for k, _ in MOOD_DIMENSIONS},
+            }
+        )
+    rows: list[dict[str, Any]] = []
+    for mk, mlabel in MOOD_DIMENSIONS:
+        row: dict[str, Any] = {"subject": mlabel, "subject_key": mk}
+        for s in series:
+            row[str(s["key"])] = round(float(s["moods"].get(mk, 0.0)), 1)
+        rows.append(row)
+    return {
+        "dimensions": [{"key": k, "label": lb} for k, lb in MOOD_DIMENSIONS],
+        "series": series,
+        "rows": rows,
+    }
 
 
 def _parse_iso_utc(s: str) -> dt.datetime | None:
@@ -77,6 +216,21 @@ def _parse_iso_utc(s: str) -> dt.datetime | None:
         return d.astimezone(dt.timezone.utc)
     except Exception:
         return None
+
+
+def _record_replacement_cooldown(oc: dict[str, Any], end_iso: str) -> None:
+    now = _parse_iso_utc(end_iso)
+    if now is None:
+        return
+    oc["labs_breeding_replace_cooldown_until"] = (now + REPLACEMENT_COOLDOWN).replace(microsecond=0).isoformat()
+
+
+def _replacement_cooldown_active(oc: dict[str, Any], end_iso: str) -> bool:
+    until = _parse_iso_utc(str(oc.get("labs_breeding_replace_cooldown_until") or ""))
+    now = _parse_iso_utc(end_iso)
+    if until is None or now is None:
+        return False
+    return now < until
 
 
 async def _last_equity_cents(store: Store, branch: str) -> int | None:
@@ -108,7 +262,7 @@ def _rules_for_lab(cfg: dict[str, Any], lab_o: dict[str, Any]) -> tuple[dict[str
 
 
 def _default_traits() -> dict[str, float]:
-    return {k: 0.55 for k in TRAIT_KEYS}
+    return {k: 0.9 for k in TRAIT_KEYS}
 
 
 def _read_traits(lab_o: dict[str, Any]) -> dict[str, float]:
@@ -118,40 +272,57 @@ def _read_traits(lab_o: dict[str, Any]) -> dict[str, float]:
     out: dict[str, float] = {}
     for k in TRAIT_KEYS:
         try:
-            out[k] = max(0.05, min(0.98, float(raw.get(k, 0.55))))
+            out[k] = max(0.08, min(0.99, float(raw.get(k, 0.9))))
         except (TypeError, ValueError):
-            out[k] = 0.55
+            out[k] = 0.9
     return out
+
+
+def _traits_birth_summary(traits: dict[str, float]) -> str:
+    human = {
+        "aggressiveness": "aggressiveness",
+        "risk_tolerance": "risk tolerance",
+        "adaptivity": "adaptivity",
+        "exploration": "exploration",
+        "resilience": "resilience",
+    }
+    ranked = sorted(((float(traits.get(k, 0.0)), k) for k in TRAIT_KEYS), key=lambda x: -x[0])
+    if not ranked:
+        return "a competitive trait mix"
+    top = [k for _, k in ranked[:2]]
+    if len(top) == 1:
+        return f"strong {human.get(top[0], top[0])}"
+    return f"high {human.get(top[0], top[0])} & {human.get(top[1], top[1])}"
 
 
 def _competitive_trait_breed(rng: random.Random, parent: dict[str, float], elite: dict[str, float]) -> dict[str, float]:
     out: dict[str, float] = {}
     for k in TRAIT_KEYS:
-        base = 0.5 * float(parent.get(k, 0.55)) + 0.5 * float(elite.get(k, 0.55))
-        skew = rng.uniform(0.05, 0.16)
-        noise = rng.uniform(-0.05, 0.11)
-        out[k] = max(0.05, min(0.98, base + skew + noise))
+        base = 0.28 * float(parent.get(k, 0.9)) + 0.72 * float(elite.get(k, 0.9))
+        skew = rng.uniform(0.16, 0.36)
+        noise = rng.uniform(-0.01, 0.22)
+        out[k] = max(0.08, min(0.99, base + skew + noise))
     return out
 
 
 def _apply_competitive_traits(child: dict[str, Any], traits: dict[str, float]) -> None:
-    child["_labs_breeding_traits"] = {k: float(traits.get(k, 0.55)) for k in TRAIT_KEYS}
-    ag = float(traits.get("aggressiveness", 0.55))
-    rt = float(traits.get("risk_tolerance", 0.55))
-    res = float(traits.get("resilience", 0.55))
+    child["_labs_breeding_traits"] = {k: float(traits.get(k, 0.9)) for k in TRAIT_KEYS}
+    ag = float(traits.get("aggressiveness", 0.9))
+    rt = float(traits.get("risk_tolerance", 0.9))
+    res = float(traits.get("resilience", 0.9))
     try:
         bf = float(child.get("balance_fraction_per_window") or 0.03)
-        child["balance_fraction_per_window"] = clamp_balance_fraction_per_window(bf * (0.86 + 0.28 * ag))
+        child["balance_fraction_per_window"] = clamp_balance_fraction_per_window(bf * (0.69 + 0.56 * ag))
     except (TypeError, ValueError):
-        child["balance_fraction_per_window"] = clamp_balance_fraction_per_window(0.03 * (0.86 + 0.28 * ag))
+        child["balance_fraction_per_window"] = clamp_balance_fraction_per_window(0.03 * (0.69 + 0.56 * ag))
     try:
         wm = int(child.get("window_minutes") or 15)
-        child["window_minutes"] = max(1, min(1440, wm - int((1.0 - rt) * 6)))
+        child["window_minutes"] = max(1, min(1440, wm - int((1.0 - rt) * 14)))
     except (TypeError, ValueError):
         pass
     try:
         st = float(child.get("stop_loss_trigger_pct") or -8.0)
-        adj = -1.2 * (1.0 - res) + 0.8 * (ag - 0.5)
+        adj = -1.7 * (1.0 - res) + 1.22 * (ag - 0.5)
         child["stop_loss_trigger_pct"] = max(-35.0, min(-2.0, st + adj))
     except (TypeError, ValueError):
         pass
@@ -367,10 +538,69 @@ def _migrate_legacy_lineages(oc: dict[str, Any], *, end_iso: str) -> None:
         )
 
 
-def _sorted_child_pool(oc: dict[str, Any]) -> list[dict[str, Any]]:
-    pool = [c for c in (oc.get("labs_breeding_children") or []) if isinstance(c, dict) and isinstance(c.get("lab"), dict)]
+def _child_row_effective_lab(c: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
+    if isinstance(c.get("lab"), dict):
+        return c["lab"]
+    eb = str(c.get("engine_branch") or "").strip()
+    if eb and isinstance(cfg.get(eb), dict):
+        return cfg[eb]
+    return None
+
+
+def _sorted_child_pool(oc: dict[str, Any], cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    pool: list[dict[str, Any]] = []
+    for c in (oc.get("labs_breeding_children") or []):
+        if not isinstance(c, dict):
+            continue
+        if _child_row_effective_lab(c, cfg) is not None:
+            pool.append(c)
     pool.sort(key=lambda x: -float(x.get("replay_fitness", 0.0)))
     return pool
+
+
+def _engine_branches_in_pool(oc: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for c in (oc.get("labs_breeding_children") or []):
+        if not isinstance(c, dict):
+            continue
+        eb = str(c.get("engine_branch") or "").strip()
+        if eb in BRANCH_CHILD_LABS:
+            out.add(eb)
+    return out
+
+
+def _pick_child_slot(oc: dict[str, Any]) -> str | None:
+    taken = _engine_branches_in_pool(oc)
+    for sl in BRANCH_CHILD_LABS:
+        if sl not in taken:
+            return sl
+    return None
+
+
+def _breeder_any_engine_on(cfg: dict[str, Any]) -> bool:
+    for br in BRANCH_BREEDERS:
+        lk = _lab_key_for_branch(br)
+        if not lk:
+            continue
+        lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
+        if lab.get("engine_running"):
+            return True
+    return False
+
+
+async def _clear_child_engine_slot(store: Store, cfg: dict[str, Any], slot: str, end_iso: str) -> None:
+    from .persistence import default_bot_config, expand_partial_lab_branch
+
+    if slot not in BRANCH_CHILD_LABS:
+        return
+    base = dict((default_bot_config() or {}).get(slot) or {})
+    base["engine_running"] = False
+    cfg[slot] = expand_partial_lab_branch(slot, base)
+    try:
+        await store.reset_trading_data(backup=False, branch=slot)
+    except Exception as e:
+        logger.warning("clear child slot reset failed slot=%s err=%s", slot, e)
+    _ = end_iso
 
 
 def _set_child_pool(oc: dict[str, Any], pool: list[dict[str, Any]]) -> None:
@@ -433,7 +663,10 @@ async def _breed_fallback_into_branch(
     rng: random.Random,
     include_fees: bool,
     log_kind: str,
+    record_cooldown: bool = True,
 ) -> dict[str, Any]:
+    from .persistence import expand_partial_lab_branch
+
     lk = _lab_key_for_branch(victim)
     if not lk:
         return {"kind": log_kind, "victim": victim, "via": "breed_skip"}
@@ -472,7 +705,7 @@ async def _breed_fallback_into_branch(
             pa, pb = BRANCH_LAB_B, BRANCH_LAB_C
         traits = _traits_from_two_parents(cfg, pa, pb, rng)
         child = _breed_child(victim_branch=victim, parent_a=pa, parent_b=pb, cfg=cfg, rng=rng, competitive_traits=traits)
-        cfg["lab_a"] = child
+        cfg["lab_a"] = expand_partial_lab_branch("lab_a", dict(child))
     else:
         candidates = _breeder_parent_candidates(victim, pending_dead)
         if len(candidates) < 2:
@@ -509,7 +742,7 @@ async def _breed_fallback_into_branch(
             pa, pb = others[0], others[-1]
         traits = _traits_from_two_parents(cfg, pa, pb, rng)
         child = _breed_child(victim_branch=victim, parent_a=pa, parent_b=pb, cfg=cfg, rng=rng, competitive_traits=traits)
-        cfg[lk] = child
+        cfg[lk] = expand_partial_lab_branch(lk, dict(child))
 
     try:
         await store.reset_trading_data(backup=False, branch=victim)
@@ -524,6 +757,8 @@ async def _breed_fallback_into_branch(
     }
     append_breeding_log(oc, entry)
     _append_lineage_history(oc, {**entry, "slot": victim})
+    if record_cooldown:
+        _record_replacement_cooldown(oc, end_iso)
     return entry
 
 
@@ -544,16 +779,25 @@ async def replace_branch_from_best_child_or_breed(
     include_fees: bool,
     log_kind: str,
 ) -> dict[str, Any] | None:
+    from .persistence import expand_partial_lab_branch
+
+    record_cooldown = log_kind != "hard_death"
     lk = _lab_key_for_branch(victim)
     if not lk:
         return None
-    pool = _sorted_child_pool(oc)
+    pool = _sorted_child_pool(oc, cfg)
     if pool:
         chosen = pool[0]
         cid = chosen.get("id")
         new_pool = [c for c in pool if c.get("id") != cid]
         _set_child_pool(oc, new_pool)
-        cfg[lk] = copy.deepcopy(chosen["lab"])
+        slot = str(chosen.get("engine_branch") or "").strip()
+        if slot in BRANCH_CHILD_LABS and isinstance(cfg.get(slot), dict):
+            cfg[lk] = expand_partial_lab_branch(lk, copy.deepcopy(cfg[slot]))
+            await _clear_child_engine_slot(store, cfg, slot, end_iso)
+        else:
+            lab_src = _child_row_effective_lab(chosen, cfg) or chosen.get("lab")
+            cfg[lk] = expand_partial_lab_branch(lk, dict(lab_src) if isinstance(lab_src, dict) else {})
         try:
             await store.reset_trading_data(backup=False, branch=victim)
         except Exception as e:
@@ -569,6 +813,8 @@ async def replace_branch_from_best_child_or_breed(
         append_breeding_log(oc, entry)
         _append_lineage_history(oc, {**entry, "slot": victim})
         logger.info("LABS BREEDING: %s replaced %s with child %s", log_kind, victim, cid)
+        if record_cooldown:
+            _record_replacement_cooldown(oc, end_iso)
         return entry
     return await _breed_fallback_into_branch(
         store,
@@ -585,6 +831,7 @@ async def replace_branch_from_best_child_or_breed(
         rng=rng,
         include_fees=include_fees,
         log_kind=log_kind,
+        record_cooldown=record_cooldown,
     )
 
 
@@ -680,6 +927,8 @@ async def maybe_soft_cull_lab_branches(
 ) -> list[dict[str, Any]]:
     """At most one soft-culled slot per optimizer tick (replay underperformance vs peers)."""
     out: list[dict[str, Any]] = []
+    if _replacement_cooldown_active(oc, end_iso):
+        return out
     rng = random.Random()
     include_fees = bool(oc.get("include_fees_in_score", True))
     per_branch: list[tuple[str, float, dict[str, Any], int, int]] = []
@@ -746,8 +995,8 @@ async def run_lab_breeding_ga_cycle(
     replay_bundle: ReplayBundleFn,
     open_kw: ReplayOpenKwFn,
 ) -> list[dict[str, Any]]:
-    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
-    """30-minute tick: breeders spawn children; pool cap evicts weak virtuals; Lab A may adopt strongest child."""
+    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+    """30-minute tick: breeders bind offspring to ``lab_child_*`` engines; pool cap evicts weakest; Lab A may adopt."""
     _ = start_iso
     out_log: list[dict[str, Any]] = []
     now_dt = _parse_iso_utc(end_iso)
@@ -788,10 +1037,54 @@ async def run_lab_breeding_ga_cycle(
             max_rows=max_rows,
         )
 
+    from .persistence import expand_partial_lab_branch
+
     new_babies: list[dict[str, Any]] = []
     for parent in BRANCH_BREEDERS:
         eq = await _last_equity_cents(store, parent)
         if eq is None or eq <= 0:
+            continue
+        while _pick_child_slot(oc) is None and _sorted_child_pool(oc, cfg):
+            pool_tmp = _sorted_child_pool(oc, cfg)
+            w = pool_tmp[-1]
+            _set_child_pool(oc, [x for x in pool_tmp if x.get("id") != w.get("id")])
+            eb = str(w.get("engine_branch") or "").strip()
+            if eb in BRANCH_CHILD_LABS:
+                await _clear_child_engine_slot(store, cfg, eb, end_iso)
+            _death_chamber_append(
+                oc,
+                {
+                    "culled_at": end_iso,
+                    "reason": "slot_preempt",
+                    "parent": w.get("parent"),
+                    "replay_fitness": w.get("replay_fitness"),
+                    "id": w.get("id"),
+                },
+            )
+            _append_lineage_history(
+                oc,
+                {
+                    "at": end_iso,
+                    "kind": "child_death",
+                    "id": w.get("id"),
+                    "replay_fitness": w.get("replay_fitness"),
+                    "reason": "slot_preempt",
+                },
+            )
+            append_breeding_log(
+                oc,
+                {
+                    "kind": "child_slot_preempt",
+                    "at": end_iso,
+                    "child_id": w.get("id"),
+                    "parent": w.get("parent"),
+                    "replay_fitness": w.get("replay_fitness"),
+                    **_toast_fields(family="sad", reason="child_slot_preempt", via="pool"),
+                },
+            )
+        slot = _pick_child_slot(oc)
+        if not slot:
+            logger.warning("LABS BREEDING: no free child slot for parent=%s", parent)
             continue
         mate = _pick_mate(parent, fitness_by_br)
         traits = _traits_from_two_parents(cfg, parent, mate, rng)
@@ -817,15 +1110,24 @@ async def run_lab_breeding_ga_cycle(
             at_iso=end_iso,
             max_rows=max_rows,
         )
+        baby_run = _breeder_any_engine_on(cfg)
+        merged_lab = {**baby_lab, "engine_running": bool(baby_run)}
+        cfg[slot] = expand_partial_lab_branch(slot, merged_lab)
+        try:
+            await store.reset_trading_data(backup=False, branch=slot)
+        except Exception as e:
+            logger.warning("lab breeding child slot reset failed slot=%s err=%s", slot, e)
         cid = str(uuid4())
+        baby_traits = _read_traits(baby_lab)
         new_babies.append(
             {
                 "id": cid,
                 "parent": parent,
                 "born_at": end_iso,
-                "traits": _read_traits(baby_lab),
+                "traits": baby_traits,
                 "replay_fitness": baby_fit,
-                "lab": baby_lab,
+                "engine_branch": slot,
+                "lab": copy.deepcopy(baby_lab),
             }
         )
         append_breeding_log(
@@ -837,19 +1139,31 @@ async def run_lab_breeding_ga_cycle(
                 "parent": parent,
                 "child_id": cid,
                 "replay_fitness": baby_fit,
+                "engine_branch": slot,
+                "breeding_traits_phrase": _traits_birth_summary(baby_traits),
             },
         )
         _append_lineage_history(
             oc,
-            {"at": end_iso, "kind": "birth", "parent": parent, "child_id": cid, "replay_fitness": baby_fit},
+            {
+                "at": end_iso,
+                "kind": "birth",
+                "parent": parent,
+                "child_id": cid,
+                "replay_fitness": baby_fit,
+                "engine_branch": slot,
+            },
         )
 
-    prev = _sorted_child_pool(oc)
+    prev = _sorted_child_pool(oc, cfg)
     merged = new_babies + prev
-    cap = max(1, int(LAB_BREEDING_MAX_VIRTUAL_POOL))
+    cap = max(1, int(LAB_BREEDING_MAX_CHILD_SLOTS))
     while len(merged) > cap:
         merged.sort(key=lambda x: float(x.get("replay_fitness", 0.0)))
         evicted = merged.pop(0)
+        eb = str(evicted.get("engine_branch") or "").strip()
+        if eb in BRANCH_CHILD_LABS:
+            await _clear_child_engine_slot(store, cfg, eb, end_iso)
         _death_chamber_append(
             oc,
             {
@@ -886,12 +1200,22 @@ async def run_lab_breeding_ga_cycle(
     fit_a = float(fitness_by_br.get(BRANCH_LAB_A, 0.0))
     st_a = settled_by_br.get(BRANCH_LAB_A) or []
     adopt_margin = 0.04
-    pool_after = _sorted_child_pool(oc)
-    if len(st_a) >= MIN_SETTLED_FOR_ADOPTION_COMPARE and pool_after:
+    pool_after = _sorted_child_pool(oc, cfg)
+    if (
+        not _replacement_cooldown_active(oc, end_iso)
+        and len(st_a) >= MIN_SETTLED_FOR_ADOPTION_COMPARE
+        and pool_after
+    ):
         best_child = max(pool_after, key=lambda x: float(x.get("replay_fitness", 0.0)))
         if float(best_child.get("replay_fitness", 0.0)) > fit_a + adopt_margin:
             cid = best_child.get("id")
-            cfg["lab_a"] = copy.deepcopy(best_child["lab"])
+            slot_ad = str(best_child.get("engine_branch") or "").strip()
+            if slot_ad in BRANCH_CHILD_LABS and isinstance(cfg.get(slot_ad), dict):
+                cfg["lab_a"] = expand_partial_lab_branch("lab_a", copy.deepcopy(cfg[slot_ad]))
+                await _clear_child_engine_slot(store, cfg, slot_ad, end_iso)
+            else:
+                lab_src = _child_row_effective_lab(best_child, cfg) or best_child.get("lab")
+                cfg["lab_a"] = expand_partial_lab_branch("lab_a", dict(lab_src) if isinstance(lab_src, dict) else {})
             _set_child_pool(oc, [c for c in pool_after if c.get("id") != cid])
             try:
                 await store.reset_trading_data(backup=False, branch=BRANCH_LAB_A)
@@ -901,6 +1225,7 @@ async def run_lab_breeding_ga_cycle(
                 oc,
                 {
                     "kind": "adoption",
+                    **_toast_fields(family="birth"),
                     "at": end_iso,
                     "child_id": cid,
                     "replay_fitness": best_child.get("replay_fitness"),
@@ -909,6 +1234,7 @@ async def run_lab_breeding_ga_cycle(
             )
             _append_lineage_history(oc, {"at": end_iso, "kind": "adoption", "child_id": cid, "replay_fitness": best_child.get("replay_fitness")})
             out_log.append({"kind": "adoption", "at": end_iso})
+            _record_replacement_cooldown(oc, end_iso)
 
     oc["labs_breeding_last_generation_iso"] = end_iso
     append_breeding_log(
@@ -917,7 +1243,7 @@ async def run_lab_breeding_ga_cycle(
             "kind": "generation",
             "at": end_iso,
             "new_children": len(new_babies),
-            "children_total": len(_sorted_child_pool(oc)),
+            "children_total": len(_sorted_child_pool(oc, cfg)),
             "max_pool": cap,
         },
     )
