@@ -663,6 +663,10 @@ export function BranchHeroMarquee({
     : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
   const labTip = (lab: "A" | "B" | "C" | "D") =>
     `Lab ${lab}: $ = MTM or cost-basis equity; % = return vs bankroll (MTM) when present.`;
+  const cashLiveStr =
+    livePaper || !keys
+      ? null
+      : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
   const snapshotRows: {
     key: string;
     label: string;

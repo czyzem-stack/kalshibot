@@ -244,6 +244,30 @@ class SimulateDisableGuardTest(unittest.TestCase):
         self.assertFalse(live_paper_trading_enabled(j))
         self.assertFalse(j.get("simulate"))
 
+    def test_put_config_confirm_yes_stores_audit_meta(self) -> None:
+        with (
+            patch("app.main.dual_engine_loop", _stall_until_stop),
+            patch("app.main._optimizer_loop", _opt_until_stop),
+        ):
+            c = self._client()
+            with c:
+                r = c.put(
+                    "/api/config?confirm=YES",
+                    json={"simulate": False},
+                    headers={"User-Agent": "KalshibotTest/audit"},
+                )
+                self.assertEqual(r.status_code, 200, msg=r.text)
+                h = c.get("/api/config/history?limit=1&include_config=false")
+        self.assertEqual(h.status_code, 200)
+        rows = h.json().get("rows") or []
+        self.assertTrue(rows, msg=h.text)
+        am = rows[0].get("audit_meta")
+        self.assertIsInstance(am, dict, msg=repr(rows[0]))
+        self.assertEqual(am.get("event"), "live_paper_trading_disabled_confirm_yes")
+        self.assertEqual(am.get("confirm_token"), "YES")
+        self.assertIn("request_body", am)
+        self.assertEqual(am.get("user_agent"), "KalshibotTest/audit")
+
     def test_engine_toggle_disabling_paper_requires_confirm(self) -> None:
         with (
             patch("app.main.dual_engine_loop", _stall_until_stop),
@@ -841,6 +865,46 @@ class AutonomousOptimizerMetaAndTuningTest(unittest.TestCase):
         out = ocm._interleave_blended_rules("low_vol", la, h2, max_rules=20)
         names = {r.get("name") for r in out}
         self.assertTrue({"h1", "b1"}.issubset(names) or len(out) >= 1)
+
+
+class BreedingDependentRuleGuardTest(unittest.TestCase):
+    """Guards on rule selection that breeding and all sim branches rely on (via ``pick_trade_rule`` / ``rule_matches``)."""
+
+    def test_pick_trade_rule_skips_yes_when_has_yes_rules_false(self) -> None:
+        yes_rule = {
+            "name": "y",
+            "side": "yes",
+            "min_prob": 0.4,
+            "max_prob": 0.6,
+            "min_minutes_left": 0.0,
+            "max_minutes_left": 20.0,
+        }
+        hit = pick_trade_rule(0.5, 10.0, [yes_rule], has_yes_rules=False, has_no_book=True, cfg={})
+        self.assertIsNone(hit)
+
+    def test_pick_trade_rule_skips_no_without_orderbook_when_forced_to_no_side(self) -> None:
+        cfg = {"no_bet_when_yes_below_pct": 50.0}
+        no_rule = {
+            "name": "n",
+            "side": "no",
+            "min_prob": 0.05,
+            "max_prob": 0.95,
+            "min_minutes_left": 0.0,
+            "max_minutes_left": 20.0,
+        }
+        hit = pick_trade_rule(0.05, 10.0, [no_rule], has_yes_rules=True, has_no_book=False, cfg=cfg)
+        self.assertIsNone(hit)
+
+    def test_rule_matches_false_when_minutes_outside_window(self) -> None:
+        rule = {
+            "name": "win",
+            "min_prob": 0.0,
+            "max_prob": 1.0,
+            "min_minutes_left": 5.0,
+            "max_minutes_left": 15.0,
+        }
+        self.assertFalse(rule_matches(0.5, 2.0, rule))
+        self.assertTrue(rule_matches(0.5, 10.0, rule))
 
 
 if __name__ == "__main__":

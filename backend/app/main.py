@@ -888,6 +888,33 @@ def _config_live_paper_flag(cfg: dict[str, Any]) -> bool:
     return live_paper_trading_enabled(cfg)
 
 
+def _live_paper_disable_audit_meta(
+    request: Request,
+    *,
+    confirm_query: str,
+    request_body: dict[str, Any] | None = None,
+    query_params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Forensics blob stored in ``config_history.audit_meta`` when Live paper mode is turned off with ``confirm=YES``.
+
+    Does not replace ``config_json`` (full merged config remains the primary snapshot); this object is JSON-only
+    metadata for operators and incident review.
+    """
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client is not None else None
+    return {
+        "event": "live_paper_trading_disabled_confirm_yes",
+        "confirm_token": str(confirm_query or "").strip().upper(),
+        "client_host": host,
+        "user_agent": (request.headers.get("user-agent") or "")[:2000],
+        "x_forwarded_for": (request.headers.get("x-forwarded-for") or "")[:512],
+        "x_real_ip": (request.headers.get("x-real-ip") or "")[:128],
+        "request_body": request_body,
+        "query_params": query_params,
+    }
+
+
 @app.get("/api/config/history")
 async def get_config_history(
     limit: int = Query(20, ge=1, le=100),
@@ -919,11 +946,26 @@ async def put_config(
                 detail="Disabling paper trading for Live (simulate=false) requires query confirm=YES (real orders if keys allow).",
             )
         logger.info("PUT /api/config: Live paper trading disabled (simulate=False) with confirm=YES")
+    paper_off_audit: dict[str, Any] | None = None
+    if was_paper and not _config_live_paper_flag(merged):
+        try:
+            body_snap = body.model_dump(mode="json")
+        except Exception:
+            body_snap = {"error": "model_dump_failed"}
+        paper_off_audit = _live_paper_disable_audit_meta(
+            request,
+            confirm_query=confirm,
+            request_body=body_snap if isinstance(body_snap, dict) else {"payload": body_snap},
+        )
+    hist_reason = config_change_reason
+    if paper_off_audit is not None:
+        hist_reason = hist_reason or "live_paper_trading disabled via PUT /api/config (confirm=YES)"
     await store.save_config(
         merged,
         history_branch="global",
         history_changed_by="api:put_config",
-        history_reason=config_change_reason,
+        history_reason=hist_reason,
+        history_audit_meta=paper_off_audit,
     )
     return merged
 
@@ -1967,11 +2009,34 @@ async def engine_toggle(
                 detail="Disabling paper trading (simulate=False) requires query confirm=YES.",
             )
         logger.info("POST /api/engine/toggle: Live paper disabled (simulate=False) with confirm=YES")
+    paper_off_audit: dict[str, Any] | None = None
+    if was_paper and not _config_live_paper_flag(cfg):
+        paper_off_audit = _live_paper_disable_audit_meta(
+            request,
+            confirm_query=confirm,
+            query_params={
+                k: v
+                for k, v in (
+                    ("running", running),
+                    ("simulate", simulate),
+                    ("confirm", confirm),
+                    ("sim_lab_running", sim_lab_running),
+                    ("lab_a_running", lab_a_running),
+                    ("lab_b_running", lab_b_running),
+                    ("lab_c_running", lab_c_running),
+                    ("lab_d_running", lab_d_running),
+                )
+                if v is not None
+            },
+        )
     await store.save_config(
         cfg,
         history_branch="global",
         history_changed_by="api:engine_toggle",
-        history_reason=None,
+        history_reason="live_paper_trading disabled via POST /api/engine/toggle (confirm=YES)"
+        if paper_off_audit
+        else None,
+        history_audit_meta=paper_off_audit,
     )
     return {"ok": True, "config": cfg}
 

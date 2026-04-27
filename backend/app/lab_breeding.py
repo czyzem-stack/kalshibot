@@ -342,6 +342,14 @@ def _replay_metrics_for_branch(
     trades: list[dict[str, Any]],
     max_rows: int,
 ) -> dict[str, Any]:
+    """
+    Fitness inputs for breeding and adoption: **same replay bundle** as the main optimizer path.
+
+    ``include_fees`` mirrors ``optimizer.include_fees_in_score``—when true, ``replay_bundle`` applies Kalshibot's
+    **paper** fee model (quadratic / flat bps / none from branch + root config). That model is **consistent across
+    sim trading and replay** but is **not** guaranteed to match every nuance of Kalshi's live exchange fee schedule
+    (contract counts, promotions, etc.). Use scores to **rank** genomes under one internal ruler, not as published exchange PnL.
+    """
     tail = settled[-max_rows:] if len(settled) > max_rows else settled
     try:
         return replay_bundle(

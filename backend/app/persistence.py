@@ -404,6 +404,15 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _migrate_config_history_audit_meta(db: aiosqlite.Connection) -> None:
+    """Append-only ``config_history`` gains optional ``audit_meta`` JSON for high-risk writes (e.g. Live paper off)."""
+    cur = await db.execute("PRAGMA table_info(config_history)")
+    cols = {str(r[1]) for r in await cur.fetchall()}
+    if "audit_meta" not in cols:
+        await db.execute("ALTER TABLE config_history ADD COLUMN audit_meta TEXT")
+        await db.commit()
+
+
 async def _migrate_trades_open_sim_unique(db: aiosqlite.Connection) -> None:
     """
     At most one open/resting simulated row per (canonical branch, ticker): dedupe legacy duplicates, then enforce
@@ -595,6 +604,7 @@ class Store:
             await db.executescript(SCHEMA)
             await _migrate_columns(db)
             await _migrate_trades_open_sim_unique(db)
+            await _migrate_config_history_audit_meta(db)
             cur = await db.execute("SELECT COUNT(*) c FROM bot_config WHERE id=1")
             row = await cur.fetchone()
             if row is None or int(row["c"]) == 0:
@@ -650,6 +660,7 @@ class Store:
         history_changed_by: str | None = "api",
         history_reason: str | None = None,
         skip_config_history: bool = False,
+        history_audit_meta: dict[str, Any] | None = None,
     ) -> None:
         """
         Persist the merged bot config to the single active row in ``bot_config`` (id=1).
@@ -657,19 +668,28 @@ class Store:
         Unless ``skip_config_history`` is True, also appends a full JSON snapshot to ``config_history``
         for audit and optional rollback. ``branch_name`` in history is a logical tag (e.g. ``global``,
         ``lab_a``) for who initiated the change; the stored ``config_json`` is always the full config object.
+
+        ``history_audit_meta`` (optional) is JSON-serialized into ``audit_meta`` for forensics (e.g. confirm gate
+        context when disabling Live paper trading). Older databases pick up the column via ``_migrate_config_history_audit_meta``.
         """
         sync_live_paper_trading_keys(cfg)
         payload = json.dumps(cfg, default=str)
         ts = datetime.now(timezone.utc).isoformat()
         br = (history_branch or "global").strip() or "global"
+        audit_blob: str | None = None
+        if history_audit_meta is not None:
+            try:
+                audit_blob = json.dumps(history_audit_meta, default=str)
+            except (TypeError, ValueError):
+                audit_blob = json.dumps({"error": "audit_meta_not_serializable"})
         async with self._open_db() as db:
             if not skip_config_history:
                 await db.execute(
                     """
-                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason, audit_meta)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (br, ts, payload, history_changed_by, history_reason),
+                    (br, ts, payload, history_changed_by, history_reason, audit_blob),
                 )
             await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
             await db.commit()
@@ -710,10 +730,10 @@ class Store:
                 payload = json.dumps(merged, default=str)
                 await db.execute(
                     """
-                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason, audit_meta)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (br, ts, payload, history_changed_by, history_reason),
+                    (br, ts, payload, history_changed_by, history_reason, None),
                 )
                 await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
                 await db.commit()
@@ -756,10 +776,10 @@ class Store:
                 payload = json.dumps(cfg, default=str)
                 await db.execute(
                     """
-                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO config_history (branch_name, timestamp, config_json, changed_by, reason, audit_meta)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (br, ts, payload, history_changed_by, history_reason),
+                    (br, ts, payload, history_changed_by, history_reason, None),
                 )
                 await db.execute("UPDATE bot_config SET json=? WHERE id=1", (payload,))
                 await db.commit()
@@ -782,7 +802,7 @@ class Store:
             if include_config:
                 cur = await db.execute(
                     """
-                    SELECT id, branch_name, timestamp, config_json, changed_by, reason
+                    SELECT id, branch_name, timestamp, config_json, changed_by, reason, audit_meta
                     FROM config_history
                     ORDER BY id DESC
                     LIMIT ?
@@ -792,7 +812,7 @@ class Store:
             else:
                 cur = await db.execute(
                     """
-                    SELECT id, branch_name, timestamp, changed_by, reason, length(config_json) AS config_bytes
+                    SELECT id, branch_name, timestamp, changed_by, reason, length(config_json) AS config_bytes, audit_meta
                     FROM config_history
                     ORDER BY id DESC
                     LIMIT ?
@@ -802,6 +822,14 @@ class Store:
             rows = await cur.fetchall()
         for r in rows:
             d = dict(r)
+            am = d.pop("audit_meta", None)
+            if am is not None and str(am).strip():
+                try:
+                    d["audit_meta"] = json.loads(str(am))
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    d["audit_meta"] = {"raw": str(am)[:4000]}
+            else:
+                d["audit_meta"] = None
             if include_config:
                 raw = d.pop("config_json", None)
                 if raw is not None:

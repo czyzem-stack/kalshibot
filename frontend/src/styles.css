@@ -752,27 +752,33 @@ input[type="number"] {
   margin-bottom: 0;
 }
 
-/* LABS BREEDING v0.1 — optimizer card stacks body + mode toggle footer */
+/* Shared vertical budget: Optimizer / Breeder / Tree must match (chart + fixed hint row; Tree subtracts tab strip from chart h in TS). */
+.dash-split-card.dash-optimizer-panel {
+  --dash-opt-chart-h: 440px;
+  --dash-opt-hint-min-h: 48px;
+}
+
+/* LABS BREEDING v0.1 — optimizer card stacks body + status strip + mode toggle footer */
 .dash-optimizer-panel__section {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
 }
 
 .dash-optimizer-panel .branch-brain-inline--optimizer-stack {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
 }
 
-/* Shared bounding box for Optimizer vs Breeder so tab switches do not jump the card. */
+/* Tab content — min height matches chart + hint so switching Optimizer / Breeder / Tree does not shift the grid. */
 .dash-optimizer-panel__body {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  min-height: clamp(560px, 56vh, 700px);
+  min-height: calc(var(--dash-opt-chart-h) + var(--dash-opt-hint-min-h));
   display: flex;
   flex-direction: column;
 }
@@ -782,10 +788,40 @@ input[type="number"] {
   min-height: 0;
 }
 
+.dash-optimizer-panel__body > .branch-brain-optimizer-stack--dashboard {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(var(--dash-opt-chart-h) + var(--dash-opt-hint-min-h));
+}
+
+.dash-optimizer-panel__status-strip {
+  flex-shrink: 0;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(100, 120, 180, 0.22);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.dash-optimizer-panel__status-strip .branch-brain-chart-wrap {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  border-color: rgba(55, 65, 100, 0.48);
+}
+
+.dash-optimizer-panel__status-strip .branch-brain-chart-wrap.branch-brain-chart-wrap--pulse-ticker {
+  padding: 5px 8px 6px;
+}
+
+.dash-optimizer-panel__pulse-ticker {
+  margin-top: 2px;
+}
+
 .dash-optimizer-panel__chart-skeleton {
   box-sizing: border-box;
   flex: 1 1 auto;
-  min-height: 440px;
+  min-height: calc(var(--dash-opt-chart-h) + var(--dash-opt-hint-min-h));
   width: 100%;
   display: flex;
   align-items: center;
@@ -803,10 +839,13 @@ input[type="number"] {
 .dash-optimizer-panel__mode-footer {
   flex-shrink: 0;
   display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  margin-top: 10px;
-  padding-top: 10px;
+  justify-content: stretch;
+  align-items: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid rgba(100, 120, 180, 0.22);
 }
 
@@ -851,6 +890,46 @@ input[type="number"] {
   white-space: nowrap;
 }
 
+/* Breeding pool / death chamber snapshot (moved from Branch performance header). */
+.dash-optimizer-breeding-summary {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 6px;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(55, 65, 100, 0.48);
+  background: rgba(8, 14, 32, 0.52);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: #b9c6e6;
+  font-size: 12px;
+  line-height: 1.35;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.dash-optimizer-breeding-summary:hover {
+  border-color: rgba(110, 231, 255, 0.38);
+  background: rgba(12, 22, 48, 0.75);
+}
+
+.dash-optimizer-breeding-summary__text strong {
+  color: #eef3ff;
+  font-weight: 600;
+}
+
+.dash-optimizer-breeding-summary__sep {
+  white-space: nowrap;
+}
+
+.dash-optimizer-breeding-summary:focus-visible {
+  outline: 2px solid rgba(110, 231, 255, 0.75);
+  outline-offset: 2px;
+}
+
 .dash-optimizer-panel .dash-optimizer-actions {
   flex: 0 0 auto;
   display: flex;
@@ -862,16 +941,19 @@ input[type="number"] {
 }
 
 .dash-optimizer-panel .dash-optimizer-mode-toggle {
-  flex-shrink: 0;
-  display: inline-flex;
+  flex: 1 1 auto;
+  display: flex;
   align-items: stretch;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   border-radius: 10px;
   overflow: hidden;
-  border: 1px solid rgba(110, 231, 255, 0.42);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.45),
-    0 2px 14px rgba(110, 231, 255, 0.12);
+  /* Match breeding / mutation inner rails so left/right edges line up in the card. */
+  border: 1px solid rgba(55, 65, 100, 0.48);
+  box-shadow: none;
   background: linear-gradient(180deg, rgba(26, 38, 72, 0.98), rgba(10, 16, 36, 0.99));
+  -webkit-font-smoothing: antialiased;
 }
 
 .dash-optimizer-panel .dash-optimizer-mode-toggle__segment {
@@ -880,18 +962,34 @@ input[type="number"] {
   border: none;
   border-radius: 0;
   cursor: pointer;
-  padding: 8px 14px;
-  font-size: 13px;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  text-align: center;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.015em;
   line-height: 1.2;
   white-space: nowrap;
-  color: #c8d4f5;
+  color: #eef3ff;
   background: rgba(12, 18, 38, 0.55);
   transition:
     background 0.12s ease,
     color 0.12s ease,
     box-shadow 0.12s ease;
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment:first-of-type {
+  border-radius: 9px 0 0 9px;
+}
+
+.dash-optimizer-panel .dash-optimizer-mode-toggle__segment:last-of-type {
+  border-radius: 0 9px 9px 0;
 }
 
 .dash-optimizer-panel .dash-optimizer-mode-toggle__segment:hover {
@@ -904,9 +1002,120 @@ input[type="number"] {
 }
 
 .dash-optimizer-panel .dash-optimizer-mode-toggle__segment--active {
-  color: #0a1020;
+  color: #061018;
   background: linear-gradient(180deg, rgba(130, 240, 255, 0.95), rgba(90, 210, 235, 0.88));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+  line-height: 1.2;
+}
+
+/* Chart double-click: static in-card hint (replaces hover ``title`` popups on optimizer radars). */
+.chart-dbl-expand-surface {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.chart-dbl-expand-surface__hint {
+  margin: 5px 0 0;
+  width: 100%;
+  max-width: 100%;
+  padding: 4px 8px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #9aacd4;
+  text-align: center;
+  border-radius: 6px;
+  border: 1px solid rgba(55, 65, 100, 0.48);
+  background: rgba(8, 14, 32, 0.5);
+  box-sizing: border-box;
+}
+
+.dash-optimizer-panel .chart-dbl-expand-surface__hint {
+  min-height: var(--dash-opt-hint-min-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dash-optimizer-panel .chart-dbl-expand-surface {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Labs Breeding — Tree sub-tabs + timeline (App.tsx BreedingFamilyTreePanel) */
+.dash-breeding-tree-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+/* Single row + fixed strip height so ``DASH_OPTIMIZER_TREE_TABS_RESERVE_PX`` in App.tsx stays in sync with chart height. */
+.dash-optimizer-panel .dash-breeding-tree-tabs {
+  flex-wrap: nowrap;
+  min-height: 38px;
+  box-sizing: border-box;
+}
+
+/*
+  Tree panel only: global ``.chart-tabs`` adds margin-top; ``--dashboard`` stack adds gap between children.
+  Optimizer/Breeder have a single main block — that extra vertical chrome made the card ~16px taller and nudged borders.
+*/
+.dash-optimizer-panel .dash-breeding-tree-panel-root {
+  gap: 0;
+}
+
+.dash-optimizer-panel .dash-breeding-tree-panel-root > .chart-tabs.dash-breeding-tree-tabs {
+  margin-top: 0;
+}
+
+.dash-optimizer-panel .dash-breeding-tree-tabs .chart-tab {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dash-optimizer-panel .dash-breeding-tree-tabs .chart-tab--active {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dash-breeding-tree-scroll {
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.dash-breeding-tree-node {
+  position: relative;
+  margin: 0 0 10px 10px;
+  padding: 10px 12px 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(10, 16, 36, 0.72);
+  border-left: 3px solid rgba(110, 231, 255, 0.65);
+}
+
+.dash-breeding-tree-node--adoption {
+  border-left-color: rgba(52, 211, 153, 0.85);
+}
+
+.dash-breeding-tree-node--cull {
+  border-left-color: rgba(248, 113, 113, 0.75);
+}
+
+.dash-breeding-tree-node--birth {
+  border-left-color: rgba(167, 139, 250, 0.85);
+}
+
+.dash-breeding-tree-connector {
+  margin: -4px 0 4px 22px;
+  width: 2px;
+  height: 10px;
+  background: rgba(110, 231, 255, 0.25);
 }
 
 .dash-optimizer-panel .dash-optimizer-mode-toggle__segment:focus-visible {
@@ -942,8 +1151,8 @@ input[type="number"] {
 .dash-main-4grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 14px;
-  margin-bottom: 20px;
+  gap: 10px;
+  margin-bottom: 12px;
   /* Same outer cap for Assets and Account so the row stays even and scroll lives in __body. */
   --dash-lower-panel-max: min(88vh, 1320px);
 }
@@ -974,17 +1183,17 @@ input[type="number"] {
 @media (min-width: 980px) {
   .dash-main-4grid {
     grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
-    gap: 20px 14px;
+    gap: 12px 14px;
   }
 
   .dash-split-row__col--metrics .optimizer-activity-charts {
     grid-template-columns: 1fr;
   }
 
-  /* Clear vertical break between branch / optimizer card and equity curves column */
+  /* Vertical break between metrics stack and equity; column-gap already separates columns — avoid extra inset so Account lines up with Equity. */
   .dash-split-row__col--equity {
     border-left: 1px solid rgba(56, 68, 110, 0.95);
-    padding-left: 16px;
+    padding-left: 0;
     margin-left: 0;
   }
 }
@@ -995,7 +1204,7 @@ input[type="number"] {
 
 /* Equity column: same chrome as left; title uses dash-section__title (not .panel h2) */
 .dash-split-card.dash-equity-panel > h2.dash-section__title.dash-equity-panel__title {
-  margin: 0 0 10px 0;
+  margin: 0 0 6px 0;
 }
 
 .dash-split-panel__tabs {
@@ -1003,7 +1212,7 @@ input[type="number"] {
 }
 
 .dash-equity-panel__legend {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .dash-split-card > .dash-section.optimizer-activity {
@@ -1016,8 +1225,8 @@ input[type="number"] {
 .dash-equity-charts {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  margin-top: 8px;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 .dash-equity-chart-block {
@@ -1193,7 +1402,7 @@ input[type="number"] {
 }
 
 .branch-brain-optimizer-stack--dashboard {
-  gap: 10px;
+  gap: 6px;
 }
 
 /* Radar angle labels: allow dimension text to sit in margin without SVG clip */

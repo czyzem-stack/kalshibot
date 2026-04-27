@@ -410,6 +410,21 @@ function nextTickBodyPlain(preview: string): string {
   return t.replace(/^\s*next\s*tick\s*:\s*/i, "").trim() || t;
 }
 
+/** Shared expand-dialog type scale for Optimizer / Breeder / Tree radars (inline + overlay stay aligned). */
+const DASH_OPTIMIZER_RADAR_EXPAND_FONTS = {
+  expandedTitleFontSize: 24,
+  expandedDetailFontSize: 18,
+  expandedTipFontSize: 14,
+} as const;
+
+/**
+ * Inline main chart height (Optimizer + Breeder). Tree uses ``DASH_OPTIMIZER_INLINE_RADAR_H - DASH_OPTIMIZER_TREE_TABS_RESERVE_PX``
+ * so tabs + chart + hint matches this height (see ``--dash-opt-*`` in styles.css).
+ */
+const DASH_OPTIMIZER_INLINE_RADAR_H = 440;
+/** Must match the CSS footprint of ``.dash-optimizer-panel .dash-breeding-tree-tabs`` (row + margin-bottom). */
+const DASH_OPTIMIZER_TREE_TABS_RESERVE_PX = 48;
+
 /** Double-click a chart to open a full-size readout with the same render tree at a larger height. */
 function ChartDblClickExpand({
   title,
@@ -422,6 +437,10 @@ function ChartDblClickExpand({
   expandedDetailFontSize = 12,
   expandedTipFontSize = 10,
   className = "",
+  /** Tighter padding and gaps so dense radars do not feel letterboxed in the dialog. */
+  compactOverlay = false,
+  /** Short line under the chart (dashboard); avoids native ``title`` tooltips that float unstyled. */
+  surfaceHint,
   render,
 }: {
   title: string;
@@ -436,6 +455,8 @@ function ChartDblClickExpand({
   expandedDetailFontSize?: number;
   expandedTipFontSize?: number;
   className?: string;
+  compactOverlay?: boolean;
+  surfaceHint?: string;
   /** Chart area height in px (wrapper provides width: 100%). */
   render: (o: { h: number }) => ReactNode;
 }) {
@@ -457,17 +478,28 @@ function ChartDblClickExpand({
     window.addEventListener("keydown", onK);
     return () => window.removeEventListener("keydown", onK);
   }, [open]);
+  const ariaForShell = `${title}. ${hint}`.slice(0, 280);
+  const shell = (
+    <div
+      ref={shellRef}
+      role="presentation"
+      className={className}
+      aria-label={ariaForShell}
+      style={{ cursor: "zoom-in" }}
+    >
+      {render({ h: defaultHeight })}
+    </div>
+  );
   return (
     <>
-      <div
-        ref={shellRef}
-        role="presentation"
-        className={className}
-        title={hint}
-        style={{ cursor: "zoom-in" }}
-      >
-        {render({ h: defaultHeight })}
-      </div>
+      {surfaceHint ? (
+        <div className="chart-dbl-expand-surface">
+          {shell}
+          <p className="chart-dbl-expand-surface__hint sub">{surfaceHint}</p>
+        </div>
+      ) : (
+        shell
+      )}
       {open ? (
         <div
           role="dialog"
@@ -493,20 +525,64 @@ function ChartDblClickExpand({
               maxWidth: "100%",
               maxHeight: "min(96vh, 1200px)",
               overflow: "auto",
-              padding: "14px 16px",
+              padding: compactOverlay ? "10px 12px 12px" : "14px 16px",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
-              <h3 style={{ margin: 0, fontSize: expandedTitleFontSize, lineHeight: 1.25 }}>{title}</h3>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                marginBottom: compactOverlay ? 4 : 8,
+              }}
+            >
+              <h3
+                style={{
+                  margin: 0,
+                  fontSize: expandedTitleFontSize,
+                  lineHeight: 1.25,
+                  fontWeight: 700,
+                  letterSpacing: "-0.02em",
+                  color: "var(--text)",
+                }}
+              >
+                {title}
+              </h3>
               <button type="button" className="primary dash-panel-btn" onClick={() => setOpen(false)}>
                 Close
               </button>
             </div>
-            <div style={{ width: "100%", height: expandedHeight, minHeight: 120, minWidth: 0 }}>{render({ h: expandedHeight })}</div>
-            <div className="sub" style={{ fontSize: expandedDetailFontSize, lineHeight: 1.55, marginTop: 12 }}>
+            <div
+              style={{
+                width: "100%",
+                height: expandedHeight,
+                minHeight: compactOverlay ? 96 : 120,
+                minWidth: 0,
+              }}
+            >
+              {render({ h: expandedHeight })}
+            </div>
+            <div
+              className="sub"
+              style={{
+                fontSize: expandedDetailFontSize,
+                lineHeight: 1.55,
+                marginTop: compactOverlay ? 6 : 12,
+                color: "rgba(232, 238, 255, 0.95)",
+              }}
+            >
               {detail}
             </div>
-            <p className="sub" style={{ fontSize: expandedTipFontSize, marginTop: 8, marginBottom: 0, opacity: 0.85 }}>
+            <p
+              className="sub"
+              style={{
+                fontSize: expandedTipFontSize,
+                marginTop: compactOverlay ? 6 : 8,
+                marginBottom: 0,
+                opacity: 0.92,
+              }}
+            >
               Tip: double-click the chart on the dashboard for this view. Press Esc or the backdrop to close.
             </p>
           </div>
@@ -529,12 +605,88 @@ function BreederPersonalityRadarChart({
   height: number;
 }) {
   const hh = height > 0 ? height : 200;
+  /** Match OptimizerMultiBranchRadar: dashboard uses h≥360 as “expanded”; overlay uses tall h. */
+  const big = hh >= 360;
+  const overlayRead = hh >= 500;
+  const angleFs = big ? 12 : hh < 280 ? 8 : 9;
+  const radiusFs = big ? (hh >= 520 ? 12 : 11) : hh < 300 ? 8 : 9;
+  const toolFs = overlayRead ? 14 : big ? 12 : 11;
+  const toolHead = overlayRead ? 16 : big ? 12 : 11;
+  const toolHint = overlayRead ? 12.5 : big ? 10 : 9;
+  const toolPad = overlayRead ? "10px 12px" : big ? "8px 11px" : "6px 9px";
+  const outerR =
+    rows.length > 10 ? (big ? (hh < 500 ? "72%" : "78%") : hh < 300 ? "64%" : "68%") : big ? "72%" : "68%";
+  const moodKeyBySubject = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of rows) {
+      const subj = String(r?.subject ?? "").trim();
+      const sk = String(r?.subject_key ?? "").trim();
+      if (subj) m.set(subj, sk);
+    }
+    return m;
+  }, [rows]);
+  const chartMargin = overlayRead
+    ? { top: 8, right: 10, bottom: 8, left: 10 }
+    : big
+      ? { top: 10, right: 12, bottom: 10, left: 12 }
+      : { top: 6, right: 8, bottom: 8, left: 8 };
+  const labelRadialNudge = big ? 7 : 5;
   return (
-    <ResponsiveContainer width="100%" height={hh}>
-      <RadarChart cx="50%" cy="52%" outerRadius="68%" data={rows}>
+    <ResponsiveContainer width="100%" height={hh} style={{ overflow: "visible" }}>
+      <RadarChart cx="50%" cy="50%" outerRadius={outerR} data={rows} margin={chartMargin} style={{ overflow: "visible" }}>
         <PolarGrid stroke="var(--border)" />
-        <PolarAngleAxis dataKey="subject" tick={{ fill: "var(--muted)", fontSize: 9 }} />
-        <PolarRadiusAxis angle={18} domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 8 }} tickCount={5} />
+        <PolarAngleAxis
+          dataKey="subject"
+          tickLine={false}
+          tick={(props) => {
+            const p = props as { x: number; y: number; textAnchor: string; payload: { value: string }; cx?: number; cy?: number };
+            const { x, y, textAnchor, payload, cx, cy } = p;
+            const label = String(payload?.value ?? "");
+            const sk = moodKeyBySubject.get(label) || "";
+            const hint = breederPersonalityAxisTooltip(label, sk);
+            const ta = textAnchor as "start" | "middle" | "end" | "inherit" | undefined;
+            let tx = x;
+            let ty = y;
+            if (typeof cx === "number" && typeof cy === "number") {
+              const dx = x - cx;
+              const dy0 = y - cy;
+              const len = Math.hypot(dx, dy0) || 1;
+              tx = x + (dx / len) * labelRadialNudge;
+              ty = y + (dy0 / len) * labelRadialNudge;
+            }
+            return (
+              <g className="recharts-layer recharts-polar-angle-axis-tick" style={{ overflow: "visible", cursor: "help" }}>
+                <title>{hint}</title>
+                <text
+                  x={tx}
+                  y={ty}
+                  textAnchor={ta}
+                  fill="#b8c8e8"
+                  fontWeight={500}
+                  dy="0.15em"
+                  style={{ overflow: "visible", pointerEvents: "auto" }}
+                >
+                  <tspan x={tx} dy="0" fontSize={angleFs}>
+                    {label}
+                  </tspan>
+                </text>
+              </g>
+            );
+          }}
+        />
+        <PolarRadiusAxis
+          angle={18}
+          domain={[0, 100]}
+          tickCount={5}
+          tick={({ x, y, payload }: AnyObj) => (
+            <g style={{ cursor: "help" }}>
+              <title>0–100 mood intensity for the active trait spoke; same ring scale for every branch.</title>
+              <text x={x} y={y} fill="rgba(135, 152, 186, 0.95)" fontSize={radiusFs} textAnchor="middle" dy="0.3em">
+                {payload?.value ?? ""}
+              </text>
+            </g>
+          )}
+        />
         {series.map((s, i) => {
           const col = BREEDER_RADAR_COLORS[i % BREEDER_RADAR_COLORS.length];
           const on = Boolean(s.engine_running);
@@ -553,31 +705,294 @@ function BreederPersonalityRadarChart({
         })}
         <Tooltip
           allowEscapeViewBox={{ x: true, y: true }}
-          contentStyle={{
-            background: "rgba(20,24,40,.95)",
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            fontSize: 11,
+          cursor={{ strokeWidth: 1, stroke: "rgba(99, 102, 241, 0.35)" }}
+          content={({ active, label, payload }) => {
+            if (!active || !payload?.length) return null;
+            const trait = String(label ?? "");
+            const sk = moodKeyBySubject.get(trait) || "";
+            const hint = breederPersonalityAxisTooltip(trait, sk);
+            return (
+              <div
+                style={{
+                  background: "#0b1228",
+                  border: "1px solid #243055",
+                  borderRadius: 6,
+                  padding: toolPad,
+                  maxWidth: overlayRead ? 400 : 300,
+                  fontSize: toolFs,
+                  color: "var(--text)",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 2, fontSize: toolHead }}>{trait || "Mood axis"}</div>
+                <div className="sub" style={{ fontSize: toolHint, lineHeight: 1.45, color: "var(--muted)", marginBottom: 8, opacity: 0.95 }}>
+                  {hint}
+                </div>
+                {payload
+                  .filter((e) => e && e.dataKey && e.dataKey !== "subject" && (e.dataKey as string) !== "subject")
+                  .map((e) => (
+                    <div
+                      key={String(e.dataKey)}
+                      style={{ lineHeight: 1.45, color: (e as AnyObj).color ?? (e as AnyObj).fill ?? "var(--text)" }}
+                    >
+                      <span style={{ color: (e as AnyObj).color }}>{e.name}:</span>{" "}
+                      {e.value != null && !Number.isNaN(Number(e.value)) ? <strong>{Number(e.value).toFixed(0)}</strong> : "—"}
+                    </div>
+                  ))}
+              </div>
+            );
           }}
-          formatter={(v: number | string) => [`${typeof v === "number" ? v.toFixed(0) : v}`, ""]}
         />
       </RadarChart>
     </ResponsiveContainer>
   );
 }
 
-function BranchOptimizerVisualizer({
+type BreedingTreeSubTab = "lineage" | "pool" | "culls" | "log";
+
+function _breedingIsoSortKey(s: string): string {
+  return String(s || "").trim();
+}
+
+/** Labs Breeding v0.1 — family-style timeline from ``GET /api/optimizer/status`` (lineage, pool, culls, log). */
+function BreedingFamilyTreePanel({
+  status,
+  loading,
+  error,
+}: {
+  status: AnyObj | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const [sub, setSub] = useState<BreedingTreeSubTab>("lineage");
+
+  const lineage = useMemo(() => {
+    const raw = Array.isArray(status?.labs_breeding_lineage_history) ? (status!.labs_breeding_lineage_history as AnyObj[]) : [];
+    return [...raw].sort((a, b) =>
+      _breedingIsoSortKey(String(b.at || b.culled_at || "")).localeCompare(_breedingIsoSortKey(String(a.at || a.culled_at || ""))),
+    );
+  }, [status]);
+
+  const pool = useMemo(() => {
+    return Array.isArray(status?.labs_breeding_children) ? (status!.labs_breeding_children as AnyObj[]) : [];
+  }, [status]);
+
+  const culls = useMemo(() => {
+    const raw = Array.isArray(status?.labs_breeding_death_chamber) ? (status!.labs_breeding_death_chamber as AnyObj[]) : [];
+    return [...raw].sort((a, b) =>
+      _breedingIsoSortKey(String(b.culled_at || b.at || "")).localeCompare(_breedingIsoSortKey(String(a.culled_at || a.at || ""))),
+    );
+  }, [status]);
+
+  const log = useMemo(() => {
+    const raw = Array.isArray(status?.labs_breeding_log) ? (status!.labs_breeding_log as AnyObj[]) : [];
+    return [...raw].sort((a, b) => _breedingIsoSortKey(String(b.at || "")).localeCompare(_breedingIsoSortKey(String(a.at || ""))));
+  }, [status]);
+
+  const nodeClassForKind = (kind: string) => {
+    const k = String(kind || "").toLowerCase();
+    if (k.includes("adopt")) return "dash-breeding-tree-node dash-breeding-tree-node--adoption";
+    if (k.includes("death") || k.includes("cull") || k.includes("preempt") || k.includes("replace")) {
+      return "dash-breeding-tree-node dash-breeding-tree-node--cull";
+    }
+    if (k.includes("birth") || k.includes("born")) return "dash-breeding-tree-node dash-breeding-tree-node--birth";
+    return "dash-breeding-tree-node";
+  };
+
+  const renderInner = (h: number) => {
+    if (error) {
+      return (
+        <div
+          className="dash-optimizer-panel__chart-skeleton dash-optimizer-panel__chart-skeleton--error"
+          style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}
+        >
+          <p className="sub" style={{ margin: 0, color: "#f87171" }} role="alert">
+            {error}
+          </p>
+        </div>
+      );
+    }
+    if (loading && !status) {
+      return (
+        <div
+          className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading"
+          style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+          aria-label="Loading breeding tree"
+        />
+      );
+    }
+    const maxH = Math.max(200, Math.min(h, 920));
+    return (
+      <div
+        className="dash-breeding-tree-scroll"
+        style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}
+      >
+        {sub === "lineage" ? (
+          lineage.length ? (
+            lineage.map((row, i) => {
+              const kind = String(row.kind || row.type || "event");
+              const at = String(row.at || row.culled_at || "—");
+              const cid = row.child_id != null ? String(row.child_id) : row.id != null ? String(row.id) : "";
+              const shortId = cid.length > 10 ? `${cid.slice(0, 8)}…` : cid;
+              const title = `${kind}${row.slot ? ` · ${row.slot}` : ""}${shortId ? ` · ${shortId}` : ""}`;
+              const fit = row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · fitness ${Number(row.replay_fitness).toFixed(3)}` : "";
+              return (
+                <div key={`${at}-${i}-${kind}`}>
+                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                  <div className={nodeClassForKind(kind)}>
+                    <strong>{title}</strong>
+                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                      {at}
+                      {fit}
+                      {row.parent ? ` · parent ${row.parent}` : ""}
+                      {row.via ? ` · via ${row.via}` : ""}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <p className="sub" style={{ margin: 0 }}>
+              No lineage rows yet. After the optimizer runs with breeding enabled, births, adoptions, and culls append here (newest first).
+            </p>
+          )
+        ) : null}
+        {sub === "pool" ? (
+          pool.length ? (
+            pool.map((c, i) => (
+              <div key={String(c.id ?? i)}>
+                {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
+                  <strong>Child {c.id != null ? String(c.id).slice(0, 10) : "—"}</strong>
+                  <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                    parent <strong>{String(c.parent ?? "—")}</strong>
+                    {" · "}
+                    born {String(c.born_at ?? "—")}
+                    {c.replay_fitness != null && Number.isFinite(Number(c.replay_fitness)) ? ` · fitness ${Number(c.replay_fitness).toFixed(3)}` : ""}
+                    {c.engine_branch ? ` · slot ${String(c.engine_branch)}` : ""}
+                    {typeof c.rules_n === "number" ? ` · rules ${c.rules_n}` : ""}
+                  </div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p className="sub" style={{ margin: 0 }}>
+              Pool is empty in this status snapshot (children appear after breeder ticks assign genomes).
+            </p>
+          )
+        ) : null}
+        {sub === "culls" ? (
+          culls.length ? (
+            culls.map((row, i) => {
+              const at = String(row.culled_at || row.at || "—");
+              const reason = String(row.reason || row.kind || "—");
+              return (
+                <div key={`${at}-${i}-${reason}`}>
+                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                  <div className="dash-breeding-tree-node dash-breeding-tree-node--cull">
+                    <strong>{reason}</strong>
+                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                      {at}
+                      {row.id != null ? ` · id ${String(row.id).slice(0, 10)}` : ""}
+                      {row.parent != null ? ` · parent ${row.parent}` : ""}
+                      {row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness))
+                        ? ` · last fitness ${Number(row.replay_fitness).toFixed(3)}`
+                        : ""}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <p className="sub" style={{ margin: 0 }}>No recent culls in the death-chamber window.</p>
+          )
+        ) : null}
+        {sub === "log" ? (
+          log.length ? (
+            log.map((row, i) => {
+              const kind = String(row.kind || "—");
+              const at = String(row.at || "—");
+              return (
+                <div key={`${at}-${i}-${kind}`}>
+                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                  <div className={nodeClassForKind(kind)}>
+                    <strong>{kind}</strong>
+                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                      {at}
+                      {row.child_id != null ? ` · child ${String(row.child_id).slice(0, 10)}` : ""}
+                      {row.parent != null ? ` · parent ${row.parent}` : ""}
+                      {row.breeding_traits_phrase ? ` · ${String(row.breeding_traits_phrase)}` : ""}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <p className="sub" style={{ margin: 0 }}>Breeding log is empty for this snapshot.</p>
+          )
+        ) : null}
+      </div>
+    );
+  };
+
+  const tabs: Array<{ id: BreedingTreeSubTab; label: string }> = [
+    { id: "lineage", label: "Lineage" },
+    { id: "pool", label: "Children" },
+    { id: "culls", label: "Cullings" },
+    { id: "log", label: "Log" },
+  ];
+
+  return (
+    <div
+      className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard dash-breeding-tree-panel-root"
+      role="region"
+      aria-label="Breeding family tree"
+    >
+      <div className="chart-tabs dash-breeding-tree-tabs" role="tablist" aria-label="Breeding tree facets">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={sub === t.id}
+            className={`chart-tab ${sub === t.id ? "chart-tab--active" : ""}`}
+            onClick={() => setSub(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <ChartDblClickExpand
+        className="branch-brain-optimizer-radar__zoom"
+        title="Breeding lineage and adoptions"
+        defaultHeight={DASH_OPTIMIZER_INLINE_RADAR_H - DASH_OPTIMIZER_TREE_TABS_RESERVE_PX}
+        expandedHeight={780}
+        expandedPanelMaxWidth="min(1100px, 99vw)"
+        {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
+        compactOverlay
+        surfaceHint="Double-click to enlarge · same tree in overlay · Esc or backdrop closes."
+        hint="Double-click to enlarge. Hover a trait label or the fill for the same readout as the dashboard. Source: GET /api/optimizer/status."
+        detail={
+          <p className="sub" style={{ margin: 0 }}>
+            Tabs above slice the same payload: <strong>Lineage</strong> (append-only history), <strong>Children</strong> (pool trim
+            list), <strong>Cullings</strong> (death chamber), and <strong>Log</strong> (toast-oriented events). Order is newest-first
+            where timestamps exist.
+          </p>
+        }
+        render={({ h }) => renderInner(h)}
+      />
+    </div>
+  );
+}
+
+/** Mutation dial + lab pulse — rendered once above the Optimizer/Breeder/Tree tabs on every sub-view. */
+function OptimizerMutationPulseStrip({
   labThoughts,
-  radar,
   mutationStatus,
 }: {
   labThoughts: AnyObj | undefined;
-  radar: {
-    data: AnyObj[];
-    series: { dataKey: string; name: string; color: string; strokeWidth: number; fillOpacity: number }[];
-    tableDetail: ReactNode;
-    caption: string;
-  };
   mutationStatus: {
     tierLabel: string;
     effectiveMutationScale: number;
@@ -585,10 +1000,88 @@ function BranchOptimizerVisualizer({
   };
 }) {
   return (
+    <div className="dash-optimizer-panel__status-strip" role="region" aria-label="Mutation tier and lab pulse">
+      <div
+        className="sub dash-optimizer-panel__mutation-dial"
+        style={{
+          margin: 0,
+          width: "100%",
+          maxWidth: "100%",
+          fontSize: 10,
+          padding: "5px 8px",
+          borderRadius: 6,
+          border: "1px solid rgba(55,65,100,0.65)",
+          background: "rgba(12,18,38,0.45)",
+          boxSizing: "border-box" as const,
+        }}
+        title="Tier follows acceptance rate (light / medium / strong). Dial is config mutation_aggressiveness (0–1); effective scale also blends the tier."
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 700 }}>
+            Mutation: <strong style={{ color: "var(--text)" }}>{mutationStatus.tierLabel}</strong>
+            {mutationStatus.effectiveMutationScale > 0 ? (
+              <span style={{ opacity: 0.85, fontWeight: 500 }}>
+                {" "}
+                · scale {mutationStatus.effectiveMutationScale.toFixed(2)}
+              </span>
+            ) : null}
+          </span>
+          <span style={{ opacity: 0.8 }}>Dial (0–1)</span>
+        </div>
+        <div
+          style={{
+            marginTop: 4,
+            height: 6,
+            borderRadius: 4,
+            background: "rgba(30,41,72,0.9)",
+            overflow: "hidden",
+            border: "1px solid rgba(55,65,100,0.8)",
+          }}
+          aria-hidden
+        >
+          <div
+            style={{
+              width: `${Math.round(mutationStatus.mutationDial * 100)}%`,
+              height: "100%",
+              borderRadius: 3,
+              background: "linear-gradient(90deg,#6366f1,#a5b4fc)",
+            }}
+          />
+        </div>
+      </div>
+      <div
+        className="branch-brain-optimizer-pulse-bottom dash-optimizer-panel__pulse-ticker"
+        style={{
+          width: "100%",
+          minWidth: 0,
+          flex: "0 0 auto",
+          borderTop: "1px solid rgba(36, 48, 85, 0.75)",
+          paddingTop: 5,
+        }}
+      >
+        <div className="branch-brain-chart-wrap branch-brain-chart-wrap--pulse-ticker" style={{ width: "100%" }}>
+          <LabPulseWideTicker thoughts={labThoughts} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BranchOptimizerVisualizer({
+  radar,
+}: {
+  radar: {
+    data: AnyObj[];
+    series: { dataKey: string; name: string; color: string; strokeWidth: number; fillOpacity: number }[];
+    tableDetail: ReactNode;
+    caption: string;
+  };
+}) {
+  return (
     <div
       className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard"
       role="region"
-      aria-label="Optimizer: thinking radar, mutation dial, and lab pulse"
+      aria-label="Optimizer: multi-branch thinking radar"
     >
       <div
         className="branch-brain-optimizer-radar-outer"
@@ -598,17 +1091,17 @@ function BranchOptimizerVisualizer({
             className="branch-brain-optimizer-radar__zoom"
             title="Optimizer Thinking (Lab A)"
             expandedPanelMaxWidth="min(1280px, 99.5vw)"
-            expandedTitleFontSize={22}
-            expandedDetailFontSize={17}
-            expandedTipFontSize={13}
+            {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
+            compactOverlay
+            surfaceHint="Double-click the radar to enlarge · hover a spoke or the fill for axis scores (overlay matches)."
             detail={
               <div>
                 {radar.tableDetail}
-                <p style={{ margin: "8px 0 0" }}>{radar.caption}</p>
+                <p style={{ margin: "4px 0 0" }}>{radar.caption}</p>
               </div>
             }
-            hint="Double-click the radar to enlarge. Axes: fitness, acceptance, mutation, stop loss, momentum, red (0–100). Hover for branch scores and full axis tips."
-            defaultHeight={440}
+            hint="Double-click the radar to enlarge. Hover a spoke label (browser tooltip) or the shaded area (rich tooltip) for what each axis measures; same in this overlay."
+            defaultHeight={DASH_OPTIMIZER_INLINE_RADAR_H}
             expandedHeight={800}
             render={({ h }) => (
               <div
@@ -616,7 +1109,7 @@ function BranchOptimizerVisualizer({
                   width: "100%",
                   maxWidth: "100%",
                   height: h,
-                  minHeight: 120,
+                  minHeight: h,
                   margin: "0 auto",
                   overflow: "visible",
                 }}
@@ -630,68 +1123,6 @@ function BranchOptimizerVisualizer({
               </div>
             )}
           />
-        <div
-          className="sub"
-          style={{
-            margin: "6px auto 0",
-            maxWidth: 640,
-            width: "100%",
-            fontSize: 10,
-            padding: "6px 8px",
-            borderRadius: 6,
-            border: "1px solid rgba(55,65,100,0.65)",
-            background: "rgba(12,18,38,0.45)",
-            boxSizing: "border-box" as const,
-          }}
-          title="Tier follows acceptance rate (light / medium / strong). Dial is config mutation_aggressiveness (0–1); effective scale also blends the tier."
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontWeight: 700 }}>
-              Mutation: <strong style={{ color: "var(--text)" }}>{mutationStatus.tierLabel}</strong>
-              {mutationStatus.effectiveMutationScale > 0 ? (
-                <span style={{ opacity: 0.85, fontWeight: 500 }}>
-                  {" "}
-                  · scale {mutationStatus.effectiveMutationScale.toFixed(2)}
-                </span>
-              ) : null}
-            </span>
-            <span style={{ opacity: 0.8 }}>Dial (0–1)</span>
-          </div>
-          <div
-            style={{
-              marginTop: 4,
-              height: 6,
-              borderRadius: 4,
-              background: "rgba(30,41,72,0.9)",
-              overflow: "hidden",
-              border: "1px solid rgba(55,65,100,0.8)",
-            }}
-            aria-hidden
-          >
-            <div
-              style={{
-                width: `${Math.round(mutationStatus.mutationDial * 100)}%`,
-                height: "100%",
-                borderRadius: 3,
-                background: "linear-gradient(90deg,#6366f1,#a5b4fc)",
-              }}
-            />
-          </div>
-        </div>
-      </div>
-      <div
-        className="branch-brain-optimizer-pulse-bottom"
-        style={{
-          width: "100%",
-          minWidth: 0,
-          flex: "0 0 auto",
-          borderTop: "1px solid rgba(36, 48, 85, 0.75)",
-          paddingTop: 6,
-        }}
-      >
-        <div className="branch-brain-chart-wrap branch-brain-chart-wrap--pulse-ticker" style={{ width: "100%" }}>
-          <LabPulseWideTicker thoughts={labThoughts} />
-        </div>
       </div>
     </div>
   );
@@ -1009,7 +1440,53 @@ const RADAR_AXIS_TOOLTIPS: Record<string, string> = {
 };
 
 function radarAxisTooltip(label: string): string {
-  return RADAR_AXIS_TOOLTIPS[label] || `0–100 score for this spoke: ${label}.`;
+  const raw = String(label ?? "").trim();
+  if (raw && RADAR_AXIS_TOOLTIPS[raw]) return RADAR_AXIS_TOOLTIPS[raw];
+  const norm = raw.toLowerCase();
+  for (const [k, v] of Object.entries(RADAR_AXIS_TOOLTIPS)) {
+    if (k.toLowerCase() === norm) return v;
+  }
+  return `0–100 score for this spoke: ${raw || "axis"}. Hover any axis label for this note; hover the fill for branch values.`;
+}
+
+/** Breeder 12-axis moods — keys match ``subject_key`` / lowercased ``subject`` from ``labs_breeding_personality_radar.rows``. */
+const BREEDER_MOOD_AXIS_TOOLTIPS: Record<string, string> = {
+  aggressive:
+    "How hard the lab pushes size and risk appetite. Higher = more aggression signal in rules and bankroll pressure (0–100 mood, not dollars).",
+  greedy:
+    "Drive to chase return vs sit tight. Blends bankroll utilization with aggression so crowded or hot runs read “hungrier” on this spoke.",
+  sophisticated:
+    "Rule density and structure vs winging it. Rewards more configured rules and adaptive blending — a proxy for “how engineered” the genome feels.",
+  patient:
+    "Willingness to wait: longer watch windows and hold ceilings, tempered by aggression. Higher = more slow-burn, less hair-trigger.",
+  calm:
+    "Emotional steadiness of the profile: resilience plus damped aggression and exploration — higher = less twitchy under noise.",
+  adaptive:
+    "How strongly the lab leans on adaptive / feedback-driven knobs vs static defaults. Directly tied to the adaptive weight in the breeder mix.",
+  exploratory:
+    "Appetite for trying new paths and perturbations. Tracks the exploration weight — higher = more wander, lower = more repeat-the-plan.",
+  resilient:
+    "Bounce-back after setbacks: pure resilience channel. Higher = more recovery bias coded into the mood vector.",
+  optimistic:
+    "Forward tone from recent return / trend proxies — higher reads as expecting upside; not a guarantee of future PnL.",
+  cautious:
+    "Safety bias vs charge: pulls down when aggression and exploration run hot without offsetting controls. Higher = more defensive posture.",
+  ruthless:
+    "Cold edge: aggression with less mercy for drawdowns, plus bankroll pressure and stop-tightening signals. Not “evil” — a style axis.",
+  methodical:
+    "Plodding discipline: adaptive + rules structure with less scatter from exploration. Higher = more procedural, less impulsive.",
+};
+
+function breederPersonalityAxisTooltip(label: string, subjectKey?: string): string {
+  const sk = String(subjectKey ?? "")
+    .trim()
+    .toLowerCase();
+  if (sk && BREEDER_MOOD_AXIS_TOOLTIPS[sk]) return BREEDER_MOOD_AXIS_TOOLTIPS[sk];
+  const lb = String(label ?? "")
+    .trim()
+    .toLowerCase();
+  if (lb && BREEDER_MOOD_AXIS_TOOLTIPS[lb]) return BREEDER_MOOD_AXIS_TOOLTIPS[lb];
+  return `Breeding mood axis “${String(label || "").trim() || subjectKey}”: 0–100 style score from lab rules + behavior proxies on the server; hover axis labels or the chart for detail.`;
 }
 
 /**
@@ -1162,9 +1639,11 @@ function OptimizerMultiBranchRadar({
   const toolHead = overlayRead ? 16 : big ? 12 : 11;
   const toolHint = overlayRead ? 12.5 : big ? 10 : 9;
   const toolPad = overlayRead ? "10px 12px" : big ? "8px 11px" : "6px 9px";
-  const chartMargin = big
-    ? { top: 14, right: 16, bottom: 14, left: 16 }
-    : { top: 10, right: 12, bottom: 10, left: 12 };
+  const chartMargin = overlayRead
+    ? { top: 8, right: 10, bottom: 8, left: 10 }
+    : big
+      ? { top: 14, right: 16, bottom: 14, left: 16 }
+      : { top: 10, right: 12, bottom: 10, left: 12 };
   const labelRadialNudge = big ? 8 : 6;
   return (
     <ResponsiveContainer width="100%" height={height > 0 ? height : 200} style={{ overflow: "visible" }}>
@@ -1193,7 +1672,7 @@ function OptimizerMultiBranchRadar({
               ty = y + (dy0 / len) * labelRadialNudge;
             }
             return (
-              <g className="recharts-layer recharts-polar-angle-axis-tick" style={{ overflow: "visible" }}>
+              <g className="recharts-layer recharts-polar-angle-axis-tick" style={{ overflow: "visible", cursor: "help" }}>
                 <title>{radarAxisTooltip(label)}</title>
                 <text
                   x={tx}
@@ -1202,7 +1681,7 @@ function OptimizerMultiBranchRadar({
                   fill="#b8c8e8"
                   fontWeight={500}
                   dy="0.15em"
-                  style={{ overflow: "visible" }}
+                  style={{ overflow: "visible", pointerEvents: "auto" }}
                 >
                   <tspan x={tx} dy="0" fontSize={labelTickFs}>
                     {label}
@@ -1217,7 +1696,7 @@ function OptimizerMultiBranchRadar({
           domain={[0, 100]}
           tickCount={5}
           tick={({ x, y, payload }: AnyObj) => (
-            <g>
+            <g style={{ cursor: "help" }}>
               <title>Distance from center: 0 = worst, 100 = best on this normalized 0–100 scale for the spoke. Same for every branch.</title>
               <text x={x} y={y} fill="rgba(135, 152, 186, 0.95)" fontSize={rTick} textAnchor="middle" dy="0.3em">
                 {payload?.value ?? ""}
@@ -1230,7 +1709,7 @@ function OptimizerMultiBranchRadar({
           cursor={{ strokeWidth: 1, stroke: "rgba(99, 102, 241, 0.35)" }}
           content={({ active, label, payload }) => {
             if (!active || !payload?.length) return null;
-            const hint = radarAxisTooltip(String(label));
+            const hint = radarAxisTooltip(String(label ?? ""));
             return (
               <div
                 style={{
@@ -1243,7 +1722,7 @@ function OptimizerMultiBranchRadar({
                   color: "var(--text)",
                 }}
               >
-                <div style={{ fontWeight: 600, marginBottom: 2, fontSize: toolHead }}>{String(label)}</div>
+                <div style={{ fontWeight: 600, marginBottom: 2, fontSize: toolHead }}>{String(label ?? "Axis")}</div>
                 <div className="sub" style={{ fontSize: toolHint, lineHeight: 1.45, color: "var(--muted)", marginBottom: 8, opacity: 0.95 }}>
                   {hint}
                 </div>
@@ -1295,7 +1774,7 @@ function OptimizerRadarTableDetail({ data, series }: { data: AnyObj[]; series: O
               color: "var(--muted)",
               fontSize: 15,
             }}
-            title="Spoke name; hover a row’s axis for what it measures (same as the radar’s axis tooltips)."
+            title="Spoke name; hover a cell for what this axis measures (same copy as the radar’s axis label + chart tooltips)."
           >
             Axis
           </th>
@@ -2010,12 +2489,11 @@ function optimizerBriefInfoBody(): ReactNode {
   return (
     <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <p>
-        <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. Under
-        the radar, the <strong>mutation</strong> row (tier, effective scale, dial) summarizes internal perturbed exploration; full{" "}
-        <strong>run-metric</strong> detail (cycle, last run, accept %, fit 7d, pulse) is in the <strong>report</strong> overlay. The{" "}
-        <strong>Experiments</strong> multi-line chart (further down in
-        this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–D from a shared
-        window. <strong>Lab pulse</strong> (ticker under Experiments) is a digest of the last engine tick.
+        <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. The{" "}
+        <strong>mutation</strong> dial and <strong>Lab pulse</strong> ticker sit <strong>above the Optimizer / Breeder / Tree tabs</strong>{" "}
+        on every sub-view (same readout while you switch radars or the tree). Full <strong>run-metric</strong> detail (cycle, last run,
+        accept %, fit 7d, pulse) is in the <strong>report</strong> overlay. The <strong>Experiments</strong> multi-line chart (further down in
+        this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–D from a shared window.
       </p>
       <p>
         <strong>Health dot (title row).</strong> A small <strong>green / yellow / red</strong> circle reflects internal-mutation
@@ -2039,8 +2517,19 @@ function optimizerBriefInfoBody(): ReactNode {
         <code>POST /api/optimizer/force-internal-mutation</code> and bypasses the normal scheduler; it does not by itself post exchange
         orders. The same action exists in <strong>Settings → Optimizer</strong> for convenience. <strong>report</strong> opens the full
         overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
-        <strong>Optimizer / Breeder</strong> is a segmented control at the <strong>bottom-right of this card</strong> (Breeder = 12-axis
-        personality radar from <code>GET /api/optimizer/status</code>).
+        <strong>Optimizer / Breeder / Tree</strong> is a segmented control at the <strong>bottom-right of this card</strong>.{" "}
+        <strong>Breeder</strong> shows the 12-axis personality radar from <code>GET /api/optimizer/status</code>; <strong>Tree</strong> is a
+        lineage / children / culls / log readout from the same endpoint.
+      </p>
+      <p>
+        <strong>Radar tooltips (Optimizer + Breeder).</strong> Hover a <strong>spoke label</strong> for a native tooltip that explains what
+        that axis measures (0–100). Hover the <strong>chart fill</strong> for a richer card: trait title, the same explanation, then per-branch
+        scores. <strong>Double-click</strong> either radar to open a larger frame with the same behavior. The table under Optimizer Thinking
+        reuses the same axis text in each cell’s hover title.
+      </p>
+      <p>
+        <strong>Breeding snapshot.</strong> The one-line <strong>Breeding: … in pool · … in death chamber</strong> readout under the
+        Optimizer title (same data as <code>GET /api/optimizer/status</code>, ~45s refresh) opens the <strong>Tree</strong> tab when clicked.
       </p>
       <p>
         <strong>Experiments chart.</strong> Each line is a branch path from a common window start. Crossovers usually mean different fills,
@@ -3134,11 +3623,17 @@ export default function App() {
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
   /** LABS BREEDING v0.1 — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
-  const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder">("optimizer");
+  const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder" | "tree">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
   const [breederStatusLoading, setBreederStatusLoading] = useState(false);
   const [breederStatusError, setBreederStatusError] = useState<string | null>(null);
+  /** Keeps latest payload for breeder/tree fetch effect without re-running the effect on every payload update. */
+  const breederStatusPayloadRef = useRef(breederStatusPayload);
+  breederStatusPayloadRef.current = breederStatusPayload;
   const [breederRefetchNonce, setBreederRefetchNonce] = useState(0);
+  /** Breeding pool / death-chamber snapshot for Optimizer card (``GET /api/optimizer/status``, ~45s poll). */
+  const [breedingStripStatus, setBreedingStripStatus] = useState<AnyObj | null>(null);
+  const [breedingStripError, setBreedingStripError] = useState<string | null>(null);
   /** Epoch ms: last time we enqueued an Optimizer suggested-action toast (hourly cap vs. ``optimizerStatus`` effect). */
   const lastSuggestedToastTimeRef = useRef(0);
   /** Prior snapshot to detect health / acceptance / streak / revert step-changes before mutating refs for the next tick. */
@@ -3753,9 +4248,10 @@ export default function App() {
   }, [breederStatusPayload]);
 
   useEffect(() => {
-    if (optimizerDashboardView !== "breeder") return;
+    if (optimizerDashboardView !== "breeder" && optimizerDashboardView !== "tree") return;
     let cancelled = false;
-    setBreederStatusLoading(true);
+    // Avoid skeleton flash when switching Breeder ↔ Tree (same API payload).
+    if (!breederStatusPayloadRef.current) setBreederStatusLoading(true);
     setBreederStatusError(null);
     void fetch("/api/optimizer/status", withApiAuth())
       .then(async (r) => {
@@ -3777,8 +4273,35 @@ export default function App() {
   }, [optimizerDashboardView, breederRefetchNonce]);
 
   useEffect(() => {
-    if (optimizerDashboardView !== "breeder") setBreederStatusPayload(null);
-  }, [optimizerDashboardView]);
+    if (!dash) {
+      setBreedingStripStatus(null);
+      setBreedingStripError(null);
+      return;
+    }
+    let cancelled = false;
+    const tick = () => {
+      void fetch("/api/optimizer/status", withApiAuth())
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json() as Promise<AnyObj>;
+        })
+        .then((j) => {
+          if (!cancelled) {
+            setBreedingStripStatus(j);
+            setBreedingStripError(null);
+          }
+        })
+        .catch((e: unknown) => {
+          if (!cancelled) setBreedingStripError(e instanceof Error ? e.message : "Breeding status failed");
+        });
+    };
+    tick();
+    const id = window.setInterval(tick, 45_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [Boolean(dash)]);
 
   useEffect(() => {
     const HOUR_MS = 60 * 60 * 1000;
@@ -4692,7 +5215,7 @@ export default function App() {
           <h2 id="dash-heading-branch-performance" className="dash-section__title" style={{ margin: 0 }}>
             Branch performance
           </h2>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button
               type="button"
               className="primary dash-panel-btn"
@@ -4975,9 +5498,10 @@ export default function App() {
                   type="button"
                   className="primary dash-panel-btn"
                   title={
-                    "This card: multi-branch thinking radar, mutation bar under the chart, then Lab pulse ticker. " +
-                    "Suggested-action text is not inline here—it may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
-                    "force / report: same row as this button; Optimizer/Breeder toggle is at the bottom-right of this card. Pulse empty → check engine toggles and Account, not just this card."
+                    "This card: main area switches Optimizer radar vs Breeder vs Tree; mutation dial + Lab pulse stay fixed just above the tab row on every tab. " +
+                    "Under the title: Breeding pool / death-chamber snapshot (click → Tree tab). " +
+                    "Suggested-action text may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
+                    "force / report: same row as this button; Optimizer / Breeder / Tree toggle is bottom-right. Pulse empty → check engine toggles and Account."
                   }
                   onClick={() => setInfoPopup({ title: "Optimizer", body: optimizerBriefInfoBody() })}
                 >
@@ -4985,6 +5509,49 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <button
+              type="button"
+              className="dash-optimizer-breeding-summary"
+              title={
+                "Labs Breeding v0.1 snapshot from GET /api/optimizer/status (refreshes about every 45s). " +
+                "Pool = labs_breeding_children (capped on server). Death chamber = recent culls. Click to open the Tree tab on this card."
+              }
+              onClick={() => {
+                setOptimizerDashboardView("tree");
+                window.requestAnimationFrame(() => {
+                  document.getElementById("dash-heading-optimizer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                });
+              }}
+            >
+              {breedingStripError ? (
+                <span className="dash-optimizer-breeding-summary__text">
+                  <strong>Breeding</strong> — error ({breedingStripError.slice(0, 48)}
+                  {breedingStripError.length > 48 ? "…" : ""})
+                </span>
+              ) : breedingStripStatus ? (
+                <span className="dash-optimizer-breeding-summary__text">
+                  <strong>Breeding</strong>
+                  {": "}
+                  {Array.isArray(breedingStripStatus.labs_breeding_children)
+                    ? `${breedingStripStatus.labs_breeding_children.length} in pool`
+                    : "—"}
+                  <span className="dash-optimizer-breeding-summary__sep"> · </span>
+                  {Array.isArray(breedingStripStatus.labs_breeding_death_chamber)
+                    ? `${breedingStripStatus.labs_breeding_death_chamber.length} in death chamber`
+                    : "—"}
+                  {breedingStripStatus.enabled === false ? (
+                    <span title="Optimizer scheduler disabled in config; breeding generation will not advance.">
+                      {" "}
+                      · scheduler off
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="dash-optimizer-breeding-summary__text">
+                  <strong>Breeding</strong>: loading…
+                </span>
+              )}
+            </button>
             <div className="dash-optimizer-panel__body">
               {optimizerDashboardView === "breeder" ? (
                 <div
@@ -4992,7 +5559,7 @@ export default function App() {
                   role="region"
                   aria-label="Breeder personality radar"
                 >
-                  {breederStatusLoading ? (
+                  {breederStatusLoading && !breederStatusPayload ? (
                     <div
                       className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading"
                       role="status"
@@ -5014,17 +5581,17 @@ export default function App() {
                       <ChartDblClickExpand
                         className="branch-brain-optimizer-radar__zoom"
                         title="Breeder personality (Labs A–D + children)"
-                        defaultHeight={440}
+                        defaultHeight={DASH_OPTIMIZER_INLINE_RADAR_H}
                         expandedHeight={720}
                         expandedPanelMaxWidth="min(1100px, 99vw)"
-                        expandedTitleFontSize={20}
-                        expandedDetailFontSize={12}
-                        expandedTipFontSize={10}
-                        hint="Double-click to enlarge. Twelve mood axes from GET /api/optimizer/status; thicker stroke = engine running."
+                        {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
+                        compactOverlay
+                        surfaceHint="Double-click to enlarge · hover mood labels or fill for trait help · thick stroke = engine on."
+                        hint="Double-click to enlarge. Hover a mood label or the fill for trait meaning + branch scores (GET /api/optimizer/status). Thicker stroke = engine running."
                         detail={
                           <p className="sub" style={{ margin: 0 }}>
-                            Read-only <code>labs_breeding_personality_radar</code>. Hover the chart for branch values. Lab A promotion
-                            and adoption paths stay gated on the server.
+                            Read-only <code>labs_breeding_personality_radar</code>. Each mood axis has a short explainer on label hover
+                            and in the hover card over the chart. Lab A promotion and adoption paths stay gated on the server.
                           </p>
                         }
                         render={({ h }) => (
@@ -5033,7 +5600,7 @@ export default function App() {
                               width: "100%",
                               maxWidth: "100%",
                               height: h,
-                              minHeight: 120,
+                              minHeight: h,
                               margin: "0 auto",
                               overflow: "visible",
                             }}
@@ -5045,22 +5612,27 @@ export default function App() {
                     </div>
                   )}
                 </div>
-              ) : (
-                <BranchOptimizerVisualizer
-                  labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
-                  radar={optimizerThinkingRadarBundle}
-                  mutationStatus={{
-                    tierLabel: optimizerStatus.mutationTierLabel,
-                    effectiveMutationScale: optimizerStatus.effectiveMutationScale,
-                    mutationDial: optimizerStatus.mutationDial,
-                  }}
+              ) : optimizerDashboardView === "tree" ? (
+                <BreedingFamilyTreePanel
+                  status={breederStatusPayload}
+                  loading={breederStatusLoading}
+                  error={breederStatusError}
                 />
+              ) : (
+                <BranchOptimizerVisualizer radar={optimizerThinkingRadarBundle} />
               )}
             </div>
-          </div>
-          {/* LABS BREEDING v0.1 — Optimizer/Breeder toggle bottom-right of card (radar uses Tooltip only; no chart legend). */}
+            <OptimizerMutationPulseStrip
+              labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
+              mutationStatus={{
+                tierLabel: optimizerStatus.mutationTierLabel,
+                effectiveMutationScale: optimizerStatus.effectiveMutationScale,
+                mutationDial: optimizerStatus.mutationDial,
+              }}
+            />
+          {/* LABS BREEDING v0.1 — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
-            <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer or Breeder view">
+            <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
               <button
                 type="button"
                 role="tab"
@@ -5079,7 +5651,17 @@ export default function App() {
               >
                 Breeder
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={optimizerDashboardView === "tree"}
+                className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "tree" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
+                onClick={() => setOptimizerDashboardView("tree")}
+              >
+                Tree
+              </button>
             </div>
+          </div>
           </div>
         </section>
       </div>
@@ -5245,7 +5827,7 @@ export default function App() {
               <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
                 {snaps.length} pts · book {fmtMoney(Number(metrics.current_equity_dollars ?? 0))} · {Number(metrics.settled_trades ?? 0)} settled
               </p>
-              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+              <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
@@ -5272,7 +5854,7 @@ export default function App() {
               <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
                 {equitySnapsLabA.length} pts · book {fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))} · {Number(metricsLabA.settled_trades ?? 0)} settled
               </p>
-              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+              <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
@@ -5299,7 +5881,7 @@ export default function App() {
               <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_b.">
                 {equitySnapsLabB.length} pts · book {fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))} · {Number(metricsLabB.settled_trades ?? 0)} settled
               </p>
-              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+              <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
@@ -5326,7 +5908,7 @@ export default function App() {
               <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_c.">
                 {equitySnapsLabC.length} pts · book {fmtMoney(Number(metricsLabC.current_equity_dollars ?? 0))} · {Number(metricsLabC.settled_trades ?? 0)} settled
               </p>
-              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+              <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
@@ -5353,7 +5935,7 @@ export default function App() {
               <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_d.">
                 {equitySnapsLabD.length} pts · book {fmtMoney(Number(metricsLabD.current_equity_dollars ?? 0))} · {Number(metricsLabD.settled_trades ?? 0)} settled
               </p>
-              <div className="chart chart--equity-stack" title="Double-click chart to expand.">
+              <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
@@ -6315,7 +6897,7 @@ export default function App() {
             </div>
             <div
               className="chart chart--equity-overlay"
-              title="Double-click chart to expand. Toggles at top still apply."
+              aria-label="Double-click chart to expand. Toggles at top still apply."
             >
               <ChartDblClickExpand
                 title={
