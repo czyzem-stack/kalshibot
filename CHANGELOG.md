@@ -2,6 +2,14 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.07 - Local develop + main only (drop test worktree stack) - 2026-04-27
+
+- **Scripts:** Remove optional third stack: delete **`setup-test-worktree.ps1`**, **`bootstrap-test-worktree.ps1`**, **`launch-test-sidecar.ps1`**. **`launch_local.ps1`** and **`update_all_worktrees.ps1`** only handle **develop** + **main** (Vite **5174** + **5173**, APIs **8765** + **8770**). **`-SkipTestSidecar`**, **`-TestWorktreePath`**, and **`KALSHIBOT_TEST_WORKTREE`** are no longer used.
+- **Bootstrap:** **`bootstrap-main-worktree.ps1`** / **`setup-main-worktree.ps1`:** **`CORS_ORIGINS`** default is **5173+5174** only (no **:5175**).
+- **Frontend:** **`uiTrack.ts`** infers **dev**/**main** from port **5174**/**5173** and **8770**; removed **:5175** and **:8775** auto-mapping (explicit **`VITE_UI_TRACK=test`** still works for rare cases).
+- **Docs:** README / **`.env.example`** updated for the two-stack workflow.
+- **Scripts:** **`launch_local.ps1`** with a **main** sidecar no longer opens a **separate** window for **develop** Vite; **:5174** runs in the terminal you launched from, and only **:5173** (main UI) + API windows use extra PowerShell windows.
+
 ## v0.4.06 - Optional `test` worktree + triple local launch - 2026-04-27
 
 - **Scripts:** **`setup-test-worktree.ps1`** / **`bootstrap-test-worktree.ps1`** add a sibling **`[test]`** git worktree (default `../Kalshibot-test`) with API **8775**, Vite **5175**, and its own **`data/bot.sqlite3`** under that checkout. **`launch_local.ps1`** starts develop + optional main + optional test in parallel; **`-SkipTestSidecar`** / **`-SkipMainSidecar`** omit stacks. **`launch-test-sidecar.ps1`** runs test only.
@@ -31,7 +39,7 @@ All notable project-level changes should be documented in this file.
 
 ## v0.4.02 - Parallel `main` worktree (run stable while developing) - 2026-04-27
 
-- **Dev workflow:** `scripts/setup-main-worktree.ps1` adds a sibling **`main`** git worktree (default `../Kalshibot-main`) with example env for **API 8770** + **Vite 5173**; `scripts/launch-main-sidecar.ps1` starts that stack alone. **`launch_local.ps1`** can start **develop + main** (Vite **5174** + **5173**) and optional test (**5175**) when the worktrees have `.env`; the main API uses the worktree’s **`.venv`** when it exists. `scripts/run_backend_at.ps1` runs uvicorn from an arbitrary repo root.
+- **Dev workflow:** `scripts/setup-main-worktree.ps1` adds a sibling **`main`** git worktree (default `../Kalshibot-main`) with example env for **API 8770** + **Vite 5173**; `scripts/launch-main-sidecar.ps1` starts that stack alone. **`launch_local.ps1`** can start **develop + main** (Vite **5174** + **5173**) when the worktrees have `.env`; the main API uses the worktree’s **`.venv`** when it exists. `scripts/run_backend_at.ps1` runs uvicorn from an arbitrary repo root.
 - **Docs:** README developer note on two checkouts, ports, and not double-writing Live with the same keys.
 
 ## v0.4.01 - Versioning policy (patch train under v0.4) - 2026-04-27

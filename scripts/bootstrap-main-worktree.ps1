@@ -1,10 +1,10 @@
 # One-shot: ensure a [main] git worktree exists next to develop (or at -WorktreePath), then write
-# worktree .env + frontend/.env so .\scripts\launch_local.ps1 can start dual UI (main 5173 + develop 5174; CORS includes 5175 for test).
+# worktree .env + frontend/.env so .\scripts\launch_local.ps1 can start dual UI (main 5173 + develop 5174).
 #
 # - Calls setup-main-worktree.ps1 when the folder is not yet a worktree (git worktree add).
 # - If the worktree has no .env: copies develop's .env (if present) else .env.example, then sets
 #   KALSHI_BOT_PORT=8770, SQLITE_PATH, DATA_LOG_DIR, CORS_ORIGINS for sidecar + Vite 5173.
-# - If .env already exists: only updates those keys (and VITE_API_ORIGIN + VITE_UI_TRACK in frontend/.env). CORS includes :5175 when a test sidecar runs.
+# - If .env already exists: only updates those keys (and VITE_API_ORIGIN + VITE_UI_TRACK in frontend/.env). CORS includes :5173 and :5174.
 #
 # Usage (from repo root):
 #   .\scripts\bootstrap-main-worktree.ps1
@@ -108,8 +108,8 @@ SQLITE_PATH=data/bot.sqlite3
 DATA_LOG_DIR=data/logs
 #
 # If you use API bearer auth, use a different token OR the same token (both APIs must match frontend .env).
-# CORS: include Vite 5173 (main) + 5174 (develop) + 5175 (test) when running all three locally.
-# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175
+# CORS: Vite 5173 (main) + 5174 (develop) when both stacks run locally.
+# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
 "@
     $exampleFe = @"
 # Point this worktree's Vite dev server at the MAIN sidecar API port.
@@ -185,7 +185,7 @@ if (-not (Test-Path -LiteralPath ($scPaths['FrontDir']))) {
     New-Item -ItemType Directory -Path ($scPaths['FrontDir']) -Force | Out-Null
 }
 
-$cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175"
+$cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
 $rootDotEnvPath = [string]($scPaths['RootDotEnv'])
 Assert-EnvFileIsSmallTextFile -LiteralPath $rootDotEnvPath -DisplayLabel "worktree .env"
 $sidecarKeys = @("KALSHI_BOT_PORT", "SQLITE_PATH", "DATA_LOG_DIR", "CORS_ORIGINS")

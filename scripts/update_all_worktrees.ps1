@@ -1,17 +1,15 @@
-# Git pull (and optional pip/npm) on **develop** (this repo) + **main** + **test** checkouts.
-# Path rules match ``launch_local.ps1`` (git worktree list, siblings Kalshibot-main / Kalshibot-test, KALSHIBOT_TEST_WORKTREE).
+# Git pull (and optional pip/npm) on **develop** (this repo) + **main** worktree.
+# Main path resolution matches ``launch_local.ps1`` (git [main] worktree, sibling Kalshibot-main, or -MainWorktreePath).
 #
 # Usage (from develop repo root):
 #   .\scripts\update_all_worktrees.ps1
 #   .\scripts\update_all_worktrees.ps1 -Pip -Npm
-#   .\scripts\update_all_worktrees.ps1 -SkipMain -SkipTest
-#   .\scripts\update_all_worktrees.ps1 -MainWorktreePath "D:\repos\Kalshibot-main" -TestWorktreePath "D:\repos\Kalshibot-test"
+#   .\scripts\update_all_worktrees.ps1 -SkipMain
+#   .\scripts\update_all_worktrees.ps1 -MainWorktreePath "D:\repos\Kalshibot-main"
 
 param(
     [string]$MainWorktreePath = "",
-    [string]$TestWorktreePath = "",
     [switch]$SkipMain,
-    [switch]$SkipTest,
     [switch]$Pip,
     [switch]$Npm
 )
@@ -39,26 +37,6 @@ function Get-LinkedMainWorktreePath([string]$Repo) {
     return $null
 }
 
-function Get-LinkedTestWorktreePath([string]$Repo) {
-    try {
-        $lines = @(git -C $Repo worktree list 2>$null)
-    } catch {
-        return $null
-    }
-    if (-not $lines) { return $null }
-    $repoCanon = [System.IO.Path]::GetFullPath($Repo)
-    foreach ($line in $lines) {
-        if ($line -notmatch '\s\[test\]\s*$') { continue }
-        if ($line -match '\s+([0-9a-f]{7,})\s+\[test\]\s*$') {
-            $pathPart = $line.Substring(0, $line.Length - $matches[0].Length).TrimEnd()
-            if (-not $pathPart) { continue }
-            $p = [System.IO.Path]::GetFullPath($pathPart)
-            if ($p -ne $repoCanon) { return $p }
-        }
-    }
-    return $null
-}
-
 function Test-HasGitMeta([string]$Dir) {
     if ([string]::IsNullOrWhiteSpace($Dir)) { return $false }
     return Test-Path -LiteralPath (Join-Path $Dir ".git")
@@ -71,26 +49,6 @@ function Resolve-MainWorktreeRoot([string]$RepoRoot, [string]$ExplicitFromParam)
     $fromGit = Get-LinkedMainWorktreePath $RepoRoot
     if ($fromGit) { return $fromGit }
     return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $RepoRoot) "Kalshibot-main"))
-}
-
-function Resolve-TestWorktreeRoot([string]$RepoRoot, [string]$ExplicitFromParam) {
-    $envOverride = $env:KALSHIBOT_TEST_WORKTREE
-    if (-not [string]::IsNullOrWhiteSpace($envOverride)) {
-        return [System.IO.Path]::GetFullPath($envOverride.Trim())
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ExplicitFromParam)) {
-        return [System.IO.Path]::GetFullPath($ExplicitFromParam.Trim())
-    }
-    $fromGit = Get-LinkedTestWorktreePath $RepoRoot
-    if ($fromGit) { return $fromGit }
-    $repoCanon = [System.IO.Path]::GetFullPath($RepoRoot)
-    $parent = Split-Path -Parent $RepoRoot
-    foreach ($leaf in @("Kalshibot-test", "kalshibot-test")) {
-        $cand = [System.IO.Path]::GetFullPath((Join-Path $parent $leaf))
-        if ($cand -eq $repoCanon) { continue }
-        if (Test-HasGitMeta $cand) { return $cand }
-    }
-    return [System.IO.Path]::GetFullPath((Join-Path $parent "Kalshibot-test"))
 }
 
 function Update-OneCheckout {
@@ -151,18 +109,12 @@ function Update-OneCheckout {
 }
 
 $mainResolved = Resolve-MainWorktreeRoot $RepoRoot $MainWorktreePath
-$testResolved = Resolve-TestWorktreeRoot $RepoRoot $TestWorktreePath
 
 Write-Host "update_all_worktrees - develop: $RepoRoot" -ForegroundColor Green
 if (-not $SkipMain) {
     Write-Host "  main:  $mainResolved" -ForegroundColor Green
 } else {
     Write-Host "  main:  (skipped -SkipMain)" -ForegroundColor DarkGray
-}
-if (-not $SkipTest) {
-    Write-Host "  test:  $testResolved" -ForegroundColor Green
-} else {
-    Write-Host "  test:  (skipped -SkipTest)" -ForegroundColor DarkGray
 }
 
 $bad = 0
@@ -173,16 +125,6 @@ if (-not $SkipMain) {
         Write-Warning "Main path equals develop root; skipping second pull on develop."
     } else {
         $bad = [Math]::Max($bad, (Update-OneCheckout -Path $mainResolved -Label "main"))
-    }
-}
-
-if (-not $SkipTest) {
-    if (([System.IO.Path]::GetFullPath($testResolved)) -eq ([System.IO.Path]::GetFullPath($RepoRoot))) {
-        Write-Warning "Test path equals develop root; skipping second pull on develop."
-    } elseif (([System.IO.Path]::GetFullPath($testResolved)) -eq ([System.IO.Path]::GetFullPath($mainResolved)) -and -not $SkipMain) {
-        Write-Warning "Test path equals main path; skipping duplicate."
-    } else {
-        $bad = [Math]::Max($bad, (Update-OneCheckout -Path $testResolved -Label "test"))
     }
 }
 

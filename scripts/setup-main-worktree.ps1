@@ -53,8 +53,8 @@ SQLITE_PATH=data/bot.sqlite3
 DATA_LOG_DIR=data/logs
 #
 # If you use API bearer auth, use a different token OR the same token (both APIs must match frontend .env).
-# CORS: include 5173 (main) + 5174 (develop) + 5175 (test) when running all three locally (see bootstrap scripts).
-# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175
+# CORS: include 5173 (main) + 5174 (develop) when both stacks run locally (see bootstrap scripts).
+# CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174
 "@
 
 $exampleFe = @"

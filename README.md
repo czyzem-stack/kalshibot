@@ -8,9 +8,9 @@ It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys),
 
 **Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Quick Start – Breeding Mode](#quick-start--breeding-mode-one-page-checklist) · [Monitoring Breeding](#monitoring-breeding) · [Configuration](#configuration) · [API overview](#api-overview) · [Operator flows (diagrams)](#operator-flows-sequences-and-visuals) · [Dashboard (UI map)](#dashboard-ui-map) · [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) · [Optimizer visualizations](#optimizer-visualizations) · [Production readiness & limitations](#production-readiness--known-limitations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
 
-**Version:** `v0.4.06` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). **v0.4.06** adds an optional **`test`** git worktree path (**`bootstrap-test-worktree.ps1`**, API **8775**, Vite **5175**, tab **`Chomp's Diner test`**) so **`launch_local.ps1`** can run **develop + main + test** together, each with its own SQLite under its checkout. **v0.4.03** tightened per-checkout **`SQLITE_PATH` / `DATA_LOG_DIR`** resolution and **`bootstrap-main-worktree.ps1`**. **v0.4.04** adds a small **dev / main / live** pill next to the dashboard title plus **browser tab** titles **`Chomp's Diner beta`** vs **`Chomp's Diner live`** (see `VITE_UI_TRACK` in `frontend/.env.example`). **Patch releases** after v0.4 use **`v0.4.01`**, **`v0.4.02`**, … until a deliberate **bump** (e.g. **v0.5**). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
+**Version:** `v0.4.07` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). **v0.4.07** simplifies local work to **develop + main** only: Vite **5174** (this repo) and **5173** (main worktree), APIs **8765** / **8770**; the optional **test** git worktree / third stack scripts are removed. **v0.4.03** tightened per-checkout **`SQLITE_PATH` / `DATA_LOG_DIR`** resolution and **`bootstrap-main-worktree.ps1`**. **v0.4.04** adds a small **dev / main / live** pill next to the dashboard title plus **browser tab** titles **`Chomp's Diner beta`** vs **`Chomp's Diner live`** (see `VITE_UI_TRACK` in `frontend/.env.example`). **Patch releases** after v0.4 use **`v0.4.01`**, **`v0.4.02`**, … until a deliberate **bump** (e.g. **v0.5**). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
 
-**Default workflow:** work on **`develop`** (or experiment on **`test`** and merge **test → develop**), then merge to **`main`** for release; branches should track `origin` consistently if you use a multi-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
+**Default workflow:** work on **`develop`**, then merge to **`main`** for release; branches should track `origin` consistently if you use a multi-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
 **Security reminder:** the stack is **intended to run on your own host** (localhost or a private server). The FastAPI app has no built-in multi-user auth—anyone who can reach the API port can change config if you bind beyond loopback. Use a firewall, VPN, or reverse auth if you expose it.
 
@@ -176,7 +176,7 @@ This section is the **“how do I read the system in motion?”** companion to t
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Browser (http://localhost:5174 = develop; main 5173 / test 5175)        │
+│  Browser (http://localhost:5174 = develop; main worktree 5173)            │
 │  ┌──────────────┐   ┌─────────────────┐   ┌──────────────────────────┐ │
 │  │ React SPA    │──▶│ Vite /api proxy │──▶│ FastAPI :8765 (or exe)     │ │
 │  │ App.tsx      │   │ (vite.config)   │   │ main.py + routers          │ │
@@ -194,7 +194,7 @@ This section is the **“how do I read the system in motion?”** companion to t
                                     └─────────────────────────┘
 ```
 
-**Rule of thumb:** if the **UI** misbehaves, check **origin** (Vite on **:5173 / :5174 / :5175** vs raw API **8765/8770/8775**) first; if **data** looks wrong, check **branch** columns in SQLite before blaming the chart.
+**Rule of thumb:** if the **UI** misbehaves, check **origin** (Vite on **:5173 / :5174** vs raw API **8765/8770**) first; if **data** looks wrong, check **branch** columns in SQLite before blaming the chart.
 
 ### Flow A — first dashboard load (happy path)
 
@@ -319,7 +319,7 @@ Live   Lab A   Lab B   Lab C   Lab D     lab_child_1 … lab_child_6
 
 | Symptom | Likely layer | First checks |
 |---------|--------------|--------------|
-| Spinner never ends | UI ↔ API | Correct Vite origin (develop **5174**, main **5173**, test **5175**), `/api/dashboard` status, bearer token match, browser console. |
+| Spinner never ends | UI ↔ API | Correct Vite origin (develop **5174** vs main **5173**), `/api/dashboard` status, bearer token match, browser console. |
 | Charts identical | Data vs perception | SQLite `branch` on `equity_snapshots`; UI fingerprint “pts / book / settled” per chart. |
 | 429 storms | Kalshi client | Logs for `Retry-After`; reduce concurrent markets or enable WS cache path. |
 | Optimizer flat | Cold start / no trades | Wait for settles; verify `optimizer.enabled` and scheduler gates in config. |
@@ -329,7 +329,7 @@ Live   Lab A   Lab B   Lab C   Lab D     lab_child_1 … lab_child_6
 
 | Surface | Typical origin | Kalshi keys | API port | UI |
 |---------|----------------|-------------|----------|-----|
-| **Local dev** | `launch_local.ps1` | Root `.env` | `8765` (+ **8770** / **8775** when **`[main]`** / **`[test]`** worktrees have their own `.env`; see bootstrap scripts) | Vite: **develop `5174`**, **main `5173`**, **test `5175`** (when those stacks run) |
+| **Local dev** | `launch_local.ps1` | Root `.env` | `8765` + **8770** when a **`[main]`** worktree has its own `.env` (see `bootstrap-main-worktree.ps1`) | Vite: **develop `5174`**, **main `5173`** (when the main sidecar runs) |
 | **Docker** | `docker run … --env-file .env` | Same vars inside container | published `-p` | Host nginx/Caddy → `dist/` |
 | **Windows .exe** | PyInstaller `dist/` output | `.env` beside exe + `data/` | configurable | Still use Vite or static `dist/` |
 
@@ -341,22 +341,16 @@ Live   Lab A   Lab B   Lab C   Lab D     lab_child_1 … lab_child_6
    uvicorn / exe  ◀──── proxy / CORS ────  npm run dev  OR  static host
 ```
 
-### Release promotion flow (`test` → `develop` → `main`)
+### Release promotion flow (`develop` → `main`)
 
-Use a dedicated **`test`** branch + **[`test`] git worktree** when you want a third runnable stack (own SQLite under that folder) alongside **develop** and **main**—see **`scripts\bootstrap-test-worktree.ps1`** and **`launch_local.ps1`**. Merge **test → develop → main** (PRs or local merges) when you are ready.
+Use **develop** (this repo) and an optional **main** git worktree (see `launch_local.ps1` / `bootstrap-main-worktree.ps1`). Promote with PRs or local merges when you are ready.
 
 ```mermaid
 flowchart LR
-  subgraph try [Experiment]
-    TB[test branch]
-    TT[test worktree optional]
-    TB --> TT
-  end
   subgraph dev [Day-to-day]
     D[feature commits]
     DV[origin/develop]
     D --> DV
-    TT -->|merge when ready| DV
   end
   subgraph gate [Quality]
     T[pytest backend/tests]
@@ -440,7 +434,7 @@ sequenceDiagram
 
 1. Copy **`.env.example` → `.env`**, set at least **`KALSHI_ENV`** and key material (or stay read-only without keys).
 2. Run **`scripts/launch_local.ps1`** (Windows) or uvicorn + Vite manually (macOS/Linux sections below).
-3. Open **`http://localhost:5174`** (develop; main **:5173**, test **:5175** with sidecars), confirm **`/api/dashboard`** returns **200** in Network tools.
+3. Open **`http://localhost:5174`** (develop; main **:5173** when the main worktree sidecar is running), confirm **`/api/dashboard`** returns **200** in Network tools.
 4. Turn on **one lab** first, watch **Branch performance** + **equity fingerprints** diverge as trades accrue.
 5. Read **Optimizer report** before toggling **Breeder** mode so you know whether the scheduler has signal.
 6. When exposing beyond localhost, set **`KALSHI_API_BEARER_TOKEN`** + matching **`VITE_API_BEARER_TOKEN`**, tighten **`CORS_ORIGINS`**, and prefer a reverse proxy for TLS.
@@ -861,7 +855,7 @@ Restart the backend after changing `.env`.
 .\scripts\launch_local.ps1
 ```
 
-This starts **uvicorn** in a **new** PowerShell window (default **http://127.0.0.1:8765**) and **Vite** in the current window (**http://localhost:5174** for this checkout, develop). Open that **Vite** URL in your browser, **not** the API port alone, so `/api` is proxied correctly. With main/test sidecars, the script also opens Vite for **:5173** (main) and **:5175** (test); see the script’s printed “Open in your browser” list.
+This starts **uvicorn** in a **new** PowerShell window (default **http://127.0.0.1:8765**) and **Vite** in the current window (**http://localhost:5174** for this checkout, develop). Open that **Vite** URL in your browser, **not** the API port alone, so `/api` is proxied correctly. With a **main** worktree configured, the script can also start Vite on **:5173** for that checkout; see the script’s “Open in your browser” list.
 
 ### 4. Or run backend and frontend separately
 
@@ -879,7 +873,7 @@ npm install
 npm run dev
 ```
 
-Then open **http://localhost:5174** (Vite default in this repo; main **:5173**, test **:5175** in other worktrees when those stacks run).
+Then open **http://localhost:5174** (Vite default in this repo; the **main** worktree UI is **:5173** when that sidecar is running).
 
 ---
 
@@ -967,7 +961,7 @@ Restart `npm run dev`.
 
 | Service | Default URL | Role |
 |---------|-------------|------|
-| **Dashboard (Vite, develop checkout)** | http://localhost:5174 | Day-to-day hacking on this branch. **Main** worktree UI: **:5173**; **test**: **:5175** (see [Scripts reference](#scripts-reference-windows)). |
+| **Dashboard (Vite, develop checkout)** | http://localhost:5174 | Day-to-day hacking on this branch. **Main** worktree UI: **:5173** (see [Scripts reference](#scripts-reference-windows)). |
 | **Backend (FastAPI)** | http://127.0.0.1:8765 | JSON API and `/docs` Swagger. Visiting `/` on the API port shows a short HTML hint. |
 
 Health: **GET** http://127.0.0.1:8765/api/health and **GET** http://127.0.0.1:8765/api/health/deep — see [Health, alerts, and Docker](#health-alerts-and-docker).
@@ -1116,9 +1110,8 @@ docker run --rm -p 8765:8765 \
 - **Config shape** — When in doubt, **`GET /api/config` is truth**; `BotConfigPayload` in **`backend/app/api_models.py`** documents safe ranges. Partial lab updates go through dedicated routes; never assume the UI holds every key the server defaults.
 - **Migrations** — Schema lives in `persistence` helpers; the project favors **forward-additive** SQLite `ALTER` patterns—back up `data/bot.sqlite3` before updating from a much older tag.
 - **Recharts / dashboard** — Radar and line charts are standard **Recharts**; avoid adding another charting library for the same tiles unless you refactor. Accessibility: we rely on browser tooltips and ARIA for dialogs where implemented—extra props welcome in small PRs.
-- **Branches in git** — Typical path **`test` → `develop` → `main`** when using a `test` worktree; otherwise **`develop` → `main`** as at the top of this README. Force-push to `main` only in emergencies and coordinate with anyone running forks.
-- **Run `main` while hacking `develop`** — Use a **git worktree** so `main` lives in a second folder (default sibling `../Kalshibot-main`) with its own **`data/`** and SQLite file. One-shot env wiring: **`scripts\bootstrap-main-worktree.ps1`** (calls **`setup-main-worktree.ps1`** if needed, then writes worktree **`.env`** + **`frontend/.env`** with **8770** and Vite on **:5173** (main; develop stays **:5174**), **`VITE_API_ORIGIN`**, and **`VITE_UI_TRACK=main`**). Then **`scripts\launch_local.ps1`** runs **:5173** (main) + **:5174** (develop) + **:5175** (test) together when enabled, or use **`scripts\launch-main-sidecar.ps1`** for main only. Each browser tab shows **`Chomp's Diner beta`** (develop) vs **`Chomp's Diner live`** (main sidecar) from the same rules as the title pill (`frontend/src/uiTrack.ts`). Avoid two live writers with the **same** Kalshi keys unless you intend to; demo keys or read-only on one sidecar is safer.
-- **Run `test` alongside develop and main** — Run **`scripts\bootstrap-test-worktree.ps1`** so **`../Kalshibot-test`** has **`.env`** (API **8775**, Vite **5175**, own **`data/bot.sqlite3`**). **`launch_local.ps1`** also picks up a sibling **`Kalshibot-test`** / **`kalshibot-test`** folder whenever it contains a **`.git`** checkout (branch name may be **`develop`** or **`test`**). Override the path with **`KALSHIBOT_TEST_WORKTREE`**. Use **`-SkipTestSidecar`** / **`-SkipMainSidecar`** to omit a stack. Tab title **`Chomp's Diner test`** when **`VITE_UI_TRACK=test`**. **`launch-test-sidecar.ps1`** runs the test stack alone.
+- **Branches in git** — Typical path **`develop` → `main`** (see the promotion diagram above). Force-push to `main` only in emergencies and coordinate with anyone running forks.
+- **Run `main` while hacking `develop`** — Use a **git worktree** so `main` lives in a second folder (default sibling `../Kalshibot-main`) with its own **`data/`** and SQLite file. One-shot env wiring: **`scripts\bootstrap-main-worktree.ps1`** (calls **`setup-main-worktree.ps1`** if needed, then writes worktree **`.env`** + **`frontend/.env`** with **8770** and Vite on **:5173** (main; develop stays **:5174**), **`VITE_API_ORIGIN`**, and **`VITE_UI_TRACK=main`**). Then **`scripts\launch_local.ps1`** runs **:5173** (main) + **:5174** (develop) when both are configured, or use **`scripts\launch-main-sidecar.ps1`** for main only. Each browser tab shows **`Chomp's Diner beta`** (develop) vs **`Chomp's Diner live`** (main sidecar) from the same rules as the title pill (`frontend/src/uiTrack.ts`). Avoid two live writers with the **same** Kalshi keys unless you intend to; demo keys or read-only on one sidecar is safer.
 
 ---
 
@@ -1129,14 +1122,11 @@ docker run --rm -p 8765:8765 \
 | `scripts\create_venv.ps1` | Create `.venv` and `pip install -r requirements.txt`. |
 | `scripts\run_backend.ps1` | Run uvicorn with reload on `127.0.0.1` and `KALSHI_BOT_PORT` (default 8765). |
 | `scripts\run_backend_at.ps1` | Internal: run uvicorn from a given repo root + port (used by `launch-main-sidecar.ps1`). |
-| `scripts\launch_local.ps1` | Starts **develop** API (new window) + optional **main** + optional **test**. Auto-runs **`bootstrap-main-worktree.ps1`** / **`bootstrap-test-worktree.ps1`** when a sidecar checkout has **`.git`** but no **`.env`**; creates conventional **`..\Kalshibot-test`** via **`setup-test-worktree.ps1`** when missing (unless **`KALSHIBOT_TEST_WORKTREE`** is set). Vite: **main `5173`**, **develop `5174`**, **test `5175`**. **`-SkipMainSidecar`** / **`-SkipTestSidecar`** omit a stack; both skips → one API + Vite on **:5174** in this window. |
+| `scripts\launch_local.ps1` | Starts **develop** API (new window) + optional **main** worktree. Auto-runs **`bootstrap-main-worktree.ps1`** when main has **`.git`** but no **`.env`**. Vite: **develop `5174`**, **main `5173`**. **`-SkipMainSidecar`:** develop only. |
 | `scripts\setup-main-worktree.ps1` | Add `../Kalshibot-main` (or `-WorktreePath`) as a **`main`** worktree; writes `ENV_SIDECAR.example` files for port **8770** + Vite (main) **:5173**. |
-| `scripts\bootstrap-main-worktree.ps1` | After (or alongside) setup: ensures worktree **`.env`** + **`frontend/.env`** — copies from **develop** when missing, then sets **`KALSHI_BOT_PORT=8770`**, DB/log paths, **`CORS_ORIGINS`** (5173+5174+5175), **`VITE_API_ORIGIN`** → 8770, **`VITE_UI_TRACK=main`**. Then run **`launch_local.ps1`**. |
+| `scripts\bootstrap-main-worktree.ps1` | After (or alongside) setup: ensures worktree **`.env`** + **`frontend/.env`** — copies from **develop** when missing, then sets **`KALSHI_BOT_PORT=8770`**, DB/log paths, **`CORS_ORIGINS`** (5173+5174), **`VITE_API_ORIGIN`** → 8770, **`VITE_UI_TRACK=main`**. Then run **`launch_local.ps1`**. |
 | `scripts\launch-main-sidecar.ps1` | **Main only:** worktree API + Vite **:5173** (two windows). Prefer **`launch_local.ps1`** to start develop + main together. |
-| `scripts\setup-test-worktree.ps1` | Add **`../Kalshibot-test`** (or `-WorktreePath`) as a **`test`** worktree (requires local branch **`test`**). Writes **`ENV_SIDECAR.example`** for **8775** + **5175**. |
-| `scripts\bootstrap-test-worktree.ps1` | Same idea as main bootstrap: **`.env`** + **`frontend/.env`** with **8775**, **`CORS_ORIGINS`** including **5175**, **`VITE_UI_TRACK=test`**, separate **`SQLITE_PATH`** under that checkout. |
-| `scripts\launch-test-sidecar.ps1` | **Test only:** worktree API + Vite **:5175** (two windows). |
-| `scripts\update_all_worktrees.ps1` | **`git fetch` + `git pull --ff-only`** on **develop** (this repo) + **main** + **test** paths (same discovery as **`launch_local.ps1`**). **`-Pip`** / **`-Npm`** reinstall Python / frontend deps per checkout. **`-SkipMain`** / **`-SkipTest`** skip a tree. |
+| `scripts\update_all_worktrees.ps1` | **`git fetch` + `git pull --ff-only`** on **develop** (this repo) + **main** path. **`-Pip`** / **`-Npm`** refresh deps; **`-SkipMain`** skips the main worktree. |
 
 For a frozen **Windows .exe**, see **`kalshibot-api.spec`** and **`scripts/exe_api_entry.py`**. For Linux servers without PowerShell, prefer **`Dockerfile`** or the manual uvicorn command in [macOS and Linux](#macos-and-linux-manual).
 
@@ -1153,8 +1143,8 @@ For a frozen **Windows .exe**, see **`kalshibot-api.spec`** and **`scripts/exe_a
 ## Troubleshooting
 
 - **401 on `/api/*`** — If you enabled `KALSHI_API_BEARER_TOKEN`, set the same value as `VITE_API_BEARER_TOKEN` in `frontend/.env` and restart Vite, or call the API with `Authorization: Bearer …`.
-- **Cannot reach the backend / failed fetch** — Start the API first; open the Vite app — **:5174** (develop this repo), or **:5173** (main) / **:5175** (test) in those worktrees — so the Vite proxy forwards `/api` to the matching API port.
-- **404 on `/api`** — You opened the wrong origin (for example only port 8765 without the Vite app). Use a Vite port (**5173 / 5174 / 5175** per track), or call **8765** directly only for JSON and `/docs`.
+- **Cannot reach the backend / failed fetch** — Start the API first; open the Vite app — **:5174** (develop this repo) or **:5173** (main worktree) — so the Vite proxy forwards `/api` to the matching API port.
+- **404 on `/api`** — You opened the wrong origin (for example only port 8765 without the Vite app). Use a Vite port (**5173** or **5174**), or call **8765** directly only for JSON and `/docs`.
 - **Port 8765 in use** — Set `KALSHI_BOT_PORT` and matching `VITE_API_ORIGIN` in `frontend/.env`, then restart both processes.
 - **Slow `/api/dashboard`** — The payload can be heavy (open positions, order books). The UI may show timeouts; reduce open sim positions, pause engines, or inspect backend logs. Prefer the split routes (`/dashboard/equity`, `/open_positions`, etc.) in custom scripts for automation.
 - **Optimizer / radar looks wrong after restore** — If you restored a DB or reset `data/`, the optimizer and equity slopes need fresh snapshots: let engines run, confirm **`GET /api/health`** shows both loops, then recheck. Red streak and acceptance read from optimizer state, not the chart alone.

@@ -5027,6 +5027,7 @@ export default function App() {
   ) => {
     setBusy(true);
     setErr(null);
+    let resetOk = false;
     try {
       const q = new URLSearchParams({
         confirm: "yes",
@@ -5053,13 +5054,20 @@ export default function App() {
       }
       const r = await fetch(`/api/data/reset?${q.toString()}`, withApiAuth({ method: "POST", headers }));
       if (!r.ok) throw new Error((await r.text()) || `reset ${r.status}`);
+      resetOk = true;
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
       setBusy(false);
     }
-    // Run after clearing busy so a slow /api/dashboard poll does not freeze the whole toolbar for tens of seconds.
-    void refresh();
+    // A plain refresh() reuses a "fresh" in-flight /api/dashboard and can re-apply pre-reset data; force refetches
+    // so equity/branch charts pick up cleared snapshots. Run after clearing busy so the toolbar is not stuck.
+    if (resetOk) {
+      void refresh({ force: true }).then(() => {
+        refreshEquityLight();
+        setBreederRefetchNonce((n) => n + 1);
+      });
+    }
   };
 
   const addAllLabsPaperBankroll = async () => {
@@ -5196,8 +5204,8 @@ export default function App() {
                   <span
                     className={`ui-track-pill ui-track-pill--${UI_TRACK.kind}`}
                     title={
-                      "Which checkout this UI belongs to (local worktrees). Set VITE_UI_TRACK=dev|main|test|live in frontend/.env; " +
-                      "if unset, VITE_API_ORIGIN port 8775 → test, 8770 → main, else dev."
+                      "Which checkout this UI belongs to (local worktrees). Set VITE_UI_TRACK=dev|main|test|live in frontend/.env. " +
+                      "If unset: dev server port 5173 → main, 5174 → develop; else VITE_API_ORIGIN 8770 → main, else dev."
                     }
                   >
                     {UI_TRACK.label}
@@ -7228,7 +7236,7 @@ function ApiOfflineCallout({ message }: { message: string }) {
         </li>
         <li>
           Open the UI at <strong>{typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"}</strong>{" "}
-          (Vite, local convention: develop <code>:5174</code>, main <code>:5173</code>, test <code>:5175</code>). Do
+          (Vite: develop <code>:5174</code>, main <code>:5173</code>). Do
           not use port 8765 in the browser for the dashboard; that URL is JSON only.
         </li>
         <li>
