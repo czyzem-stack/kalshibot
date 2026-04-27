@@ -1,0 +1,12 @@
+# pip install pip-tools && pip-compile requirements.in -o requirements.txt
+# Pinned set mirrors current production deps; adjust pins deliberately.
+
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+cryptography==44.0.0
+pydantic==2.10.3
+aiosqlite==0.20.0
+python-dateutil==2.9.0.post0
+keyring>=25.0
+structlog>=24.4.0,<26

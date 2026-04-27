@@ -7,3 +7,7 @@ cryptography==44.0.0
 pydantic==2.10.3
 aiosqlite==0.20.0
 python-dateutil==2.9.0.post0
+# Optional: KALSHI_USE_KEYRING=1 for loading Kalshi private key from OS keychain (see .env.example)
+keyring>=25.0
+# Structured logging (dev = colored; LOG_JSON=1 = one JSON line per log)
+structlog>=24.4.0,<26

@@ -552,17 +552,75 @@ Output is under **`frontend/dist/`**. Serving that folder is **not** wired into 
 
 ---
 
-## Tests (backend)
+## Development (structured logging + CI)
 
-With the venv activated:
+- **Logging** — The API uses **structlog** with the stdlib: every existing `logger = logging.getLogger(__name__)` call is unchanged. Configure with **`LOG_JSON`** and **`LOG_LEVEL`** in `.env` (see `.env.example`). **Dev** (default `LOG_JSON=0`): colored console. **Prod / Docker** (`LOG_JSON=1`): one **JSON** object per line on stdout, suitable for log aggregators. **Request context**: each HTTP request gets a `request_id` (from the `X-Request-Id` header or a new UUID) bound into the log context and echoed on the response as **`X-Request-Id`**. Implementation: **`backend/app/core/logging.py`**; **`main.py`** calls `configure_logging()` at import and `reset_uvicorn_loggers_to_root()` in the app lifespan so **uvicorn** / **uvicorn.error** / **uvicorn.access** use the same formatter as application logs.
+- **CI** — **GitHub Actions** (`.github/workflows/ci.yml` on `main` / `develop`): Python **3.12**, `pip install -r requirements.txt` + `pytest` + `pytest-cov` + `pre-commit`, then **`pre-commit run --all-files`** and **`python -m pytest backend/tests -q --cov=app --cov-report=term-missing`**. Reproduce locally after installing deps:  
+  `python -m pip install pytest pytest-cov pre-commit`  
+  `pre-commit run --all-files`  
+  `LOG_JSON=0 LOG_LEVEL=INFO python -m pytest backend/tests -q --cov=app --cov-report=term-missing`
+- For **install, tests, pre-commit, bearer, keyring, and Docker** commands used day-to-day, use [Migration and testing (exact commands)](#migration-and-testing-exact-commands) below (same as earlier phases; no extra flags required for structlog in normal local runs).
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-cd backend
-python -m pytest
+---
+
+## Migration and testing (exact commands)
+
+*As of the usual `develop` / `main` workflow (Apr 26, 2026). After applying a full restructure or any incremental phase, verify with the steps below.*
+
+### Install dependencies
+
+From the **repository root** (venv recommended):
+
+```bash
+python -m pip install -U pip
+python -m pip install -r requirements.txt
 ```
 
-Install pytest first if needed: `pip install pytest`.
+### Backend tests
+
+Run from **repository root** — `pytest.ini` sets `pythonpath = backend` so `import app.…` resolves without `cd backend`:
+
+```bash
+python -m pytest backend/tests -q
+```
+
+On Windows, with the venv activated: `.\.venv\Scripts\python.exe -m pytest backend/tests -q`. Install `pytest` first if it is not already in the environment: `python -m pip install pytest`.
+
+### Optional pre-commit hooks (recommended)
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+Ruff is configured to touch `backend/` only (see `.pre-commit-config.yaml`).
+
+### When enabling API bearer token auth
+
+- **Root `.env`:** `KALSHI_API_BEARER_TOKEN=<your-long-random-secret>`
+- **`frontend/.env`:** `VITE_API_BEARER_TOKEN=<same-value>`
+- Restart both **uvicorn** and **`npm run dev`**
+
+### Keyring support (optional)
+
+```bash
+keyring set kalshibot KALSHI_PRIVATE_KEY_PEM
+```
+
+In **`.env`:** `KALSHI_USE_KEYRING=1` (and remove the inline PEM or path). Restart the API.
+
+### Docker (recommended)
+
+```bash
+docker volume create kalshibot-data
+docker build -t kalshibot-api .
+docker run --rm -p 8765:8765 \
+  --env-file .env \
+  -e SQLITE_PATH=/app/data/bot.sqlite3 \
+  -v kalshibot-data:/app/data \
+  kalshibot-api
+```
 
 ---
 
@@ -573,11 +631,12 @@ Install pytest first if needed: `pip install pytest`.
 - **`backend/app/engine.py`** — `dual_engine_loop`, `TradingEngine`, rule match / sim trade ranking, per-branch execution (large file: search `rule_matches`, `pick_trade_rule` for behavior).
 - **`backend/app/branch_config.py`**, **`persistence.py`** — `merge_branch_config`, `default_bot_config`, SQLite row shapes.
 - **`backend/app/optimizer_claude.py`** — `run_optimizer_once` and internal pulse; Claude gating and **Lab A–only** `balance_fraction_per_window` auto-apply.
-- **`backend/tests/`** — Pytest: money-path, engine guards, API contracts where present—run with `cd backend; python -m pytest`.
+- **`backend/tests/`** — Pytest: money-path, engine guards, API contracts where present—run from repo root: **`python -m pytest backend/tests -q`** (see [Migration and testing](#migration-and-testing-exact-commands)); **`pytest.ini`** at the repo root sets `pythonpath = backend`.
 - **`frontend/src/`** — React dashboard: **`App.tsx`** holds the main board, large equity/compare blocks, and optimizer **Recharts** radar; **`SettingsOverlay.tsx`** is the full-screen config editor.
 - **`scripts/`** — Windows PowerShell: venv creation, run API, launch API plus UI.
 - **`data/`** — Default SQLite and logs (created at runtime; may be gitignored).
 - **`requirements.txt`** — Python dependencies for the API.
+- **`pytest.ini`** (repo root) — Sets `pythonpath = backend` so you can run **`python -m pytest backend/tests -q`** from the repo root.
 - **`.env.example`** — Documented environment template.
 - **`kalshibot-api.spec`**, **`scripts/exe_api_entry.py`** — PyInstaller one-file API **.exe** build; UI still Vite or static-serve in production.
 - **`Dockerfile`** — API-only container build (see [Health, alerts, and Docker](#health-alerts-and-docker)).
@@ -616,12 +675,32 @@ For a frozen **Windows .exe**, see **`kalshibot-api.spec`** and **`scripts/exe_a
 
 ## Troubleshooting
 
+- **401 on `/api/*`** — If you enabled `KALSHI_API_BEARER_TOKEN`, set the same value as `VITE_API_BEARER_TOKEN` in `frontend/.env` and restart Vite, or call the API with `Authorization: Bearer …`.
 - **Cannot reach the backend / failed fetch** — Start the API first; use **http://localhost:5173** so the Vite proxy forwards `/api` to uvicorn.
 - **404 on `/api`** — You opened the wrong origin (for example only port 8765 without the Vite app). Use port **5173** for normal UI work, or call **8765** directly only for JSON and `/docs`.
 - **Port 8765 in use** — Set `KALSHI_BOT_PORT` and matching `VITE_API_ORIGIN` in `frontend/.env`, then restart both processes.
 - **Slow `/api/dashboard`** — The payload can be heavy (open positions, order books). The UI may show timeouts; reduce open sim positions, pause engines, or inspect backend logs. Prefer the split routes (`/dashboard/equity`, `/open_positions`, etc.) in custom scripts for automation.
 - **Optimizer / radar looks wrong after restore** — If you restored a DB or reset `data/`, the optimizer and equity slopes need fresh snapshots: let engines run, confirm **`GET /api/health`** shows both loops, then recheck. Red streak and acceptance read from optimizer state, not the chart alone.
 - **PyInstaller or Docker shows API only** — The Windows `.exe` and **`Dockerfile`** are **API-first**; open the Vite dev app against that API (`VITE_API_ORIGIN`) or build **`frontend/dist`** and serve with nginx—there is no embedded React in the default `Dockerfile` image.
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE).
+
+## Contributing
+
+- Default branch for day-to-day work: **`develop`**; release merges use **`main`** (see the intro above).
+- Before large Python changes, run **`python -m pytest backend/tests -q`** from the repo root (see [Migration and testing](#migration-and-testing-exact-commands)) and respect **`backend/mypy.ini`**. Do not weaken the **five-engine** (Live + Labs A–D) model, **`merge_branch_config`**, or **confirm=YES** gates without explicit review.
+- Optional: **`pre-commit install`** (see [Migration and testing](#migration-and-testing-exact-commands) and `.pre-commit-config.yaml`).
+
+## Optional API authentication & hardening
+
+- **`KALSHI_API_BEARER_TOKEN`**: when non-empty, requests to `/api/*` require `Authorization: Bearer <token>`, except **`/api/health`**. The interactive dashboard should set the same value in **`frontend/.env`** as **`VITE_API_BEARER_TOKEN`** (see `frontend/.env.example` and [Migration and testing](#migration-and-testing-exact-commands)). Default is **off** for local use.
+- **`CORS_ORIGINS`**: comma-separated **exact** origins (default includes Vite dev URLs). In production, set this to the single origin that serves the dashboard.
+- **`KALSHI_USE_KEYRING`**: when `1` and neither inline PEM nor path is set, the Kalshi private key PEM is read from the OS keyring (requires `keyring` in `requirements.txt` and a stored secret under `KALSHI_KEYRING_SERVICE` / `KALSHI_KEYRING_USERNAME`).
+- The API sets conservative **security headers** (frame deny, nosniff, etc.). **HSTS** and TLS termination should be configured on your reverse proxy if you expose the service.
 
 ---
 

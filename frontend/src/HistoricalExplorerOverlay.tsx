@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { withApiAuth } from "./apiAuth";
 
 type AnyObj = Record<string, any>;
 
@@ -29,7 +30,7 @@ export default function HistoricalExplorerOverlay({
       setLoading(true);
       try {
         const q = new URLSearchParams({ branch, limit: "300" });
-        const r = await fetch(`/api/history/${table}?${q.toString()}`);
+        const r = await fetch(`/api/history/${table}?${q.toString()}`, withApiAuth());
         if (!r.ok) {
           setRows([]);
           return;

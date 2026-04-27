@@ -1,0 +1,9 @@
+# pip install pre-commit && pre-commit install
+# Ruff only by default — run mypy/black manually or extend hooks as needed.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.3
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^backend/

@@ -19,13 +19,16 @@ def kalshi_credentials_report() -> dict[str, Any]:
             path_ok = path_obj.is_file()
         except OSError:
             path_ok = False
-    pk_ready = has_pem or path_ok
+    use_kr = _get("KALSHI_USE_KEYRING", "0").lower() in ("1", "true", "yes")
+    pk_ready = has_pem or path_ok or use_kr
     if has_pem:
         source = "pem"
     elif path_ok:
         source = "file"
     elif path_s:
         source = "file_missing"
+    elif use_kr:
+        source = "keyring"
     else:
         source = "not_set"
     return {
@@ -71,6 +74,15 @@ class EnvSettings:
         _get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
         or "http://localhost:5173,http://127.0.0.1:5173"
     )
+    # Logging: LOG_JSON=1 for one JSON line per log (Docker / prod). LOG_LEVEL=DEBUG|INFO|…
+    log_json: bool = _get("LOG_JSON", "0").lower() in ("1", "true", "yes")
+    log_level: str = _get("LOG_LEVEL", "INFO") or "INFO"
+    # When set, all /api routes require Authorization: Bearer <token> except /api/health*. Disabled by default (local dev).
+    api_bearer_token: str = _get("KALSHI_API_BEARER_TOKEN", "")
+    # Optional OS keychain: if KALSHI_USE_KEYRING=1 and PEM/path are empty, load PEM from keyring (requires `pip install keyring`).
+    kalshi_use_keyring: bool = _get("KALSHI_USE_KEYRING", "0").lower() in ("1", "true", "yes")
+    kalshi_keyring_service: str = _get("KALSHI_KEYRING_SERVICE", "kalshibot")
+    kalshi_keyring_username: str = _get("KALSHI_KEYRING_USERNAME", "KALSHI_PRIVATE_KEY_PEM")
     # JSONL logs: signals, trades, optional equity; under repo or absolute path.
     data_log_dir: str = _get("DATA_LOG_DIR", str(_REPO_ROOT / "data" / "logs"))
     data_logging_enabled: bool = _get("DATA_LOGGING", "1").lower() not in ("0", "false", "no", "")

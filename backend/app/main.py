@@ -19,6 +19,11 @@ from fastapi.responses import StreamingResponse
 
 from . import state
 from .api_models import BotConfigPayload, merge_lab_branch_patch, normalize_rules_list
+from .core.logging import (
+    RequestContextMiddleware,
+    configure_logging,
+    reset_uvicorn_loggers_to_root,
+)
 from .branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
@@ -45,6 +50,7 @@ from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import expand_partial_lab_branch
 from .optimizer.promotion import lab_a_promotion_report
 from .optimizer_claude import pulse_chart_baseline
+from .middleware import ApiBearerAuthMiddleware, SecurityHeadersMiddleware
 from .routers import health as health_routes
 from .routers import optimizer_routes, public_root
 from .settings_env import env, kalshi_credentials_report
@@ -63,6 +69,8 @@ from .state import (
     stop_event,
 )
 
+# structlog: stdlib ``logging.getLogger`` + uvicorn share ``ProcessorFormatter``; dev = colored, LOG_JSON=1 = one line JSON
+configure_logging()
 
 logger = logging.getLogger("kalshibot.api")
 
@@ -567,6 +575,7 @@ def _lab_thought_stream(
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    reset_uvicorn_loggers_to_root()
     state.stop_event.clear()
     state.app_started_at_iso = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0).isoformat()
     state.bg_task = asyncio.create_task(dual_engine_loop(state.ENGINES, state.stop_event))
@@ -587,6 +596,9 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Kalshi Bot", lifespan=_app_lifespan)
 
+app.add_middleware(SecurityHeadersMiddleware)
+if env.api_bearer_token:
+    app.add_middleware(ApiBearerAuthMiddleware, token=env.api_bearer_token)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
@@ -594,6 +606,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Last added = outermost: request_id + structlog context for all HTTP handlers
+app.add_middleware(RequestContextMiddleware)
 
 app.include_router(public_root.router)
 app.include_router(health_routes.router)

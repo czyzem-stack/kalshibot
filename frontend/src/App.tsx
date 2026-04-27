@@ -26,6 +26,7 @@ import SettingsOverlay from "./SettingsOverlay";
 import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
 import { BranchHeroMarquee, BranchHeroSnapshotHeader } from "./BranchMarketTickers";
 import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
+import { withApiAuth } from "./apiAuth";
 
 type AnyObj = Record<string, any>;
 
@@ -45,7 +46,7 @@ function branchLabelForTradeToast(branch: unknown): string {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(path);
+  const r = await fetch(path, withApiAuth());
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return (await r.json()) as T;
 }
@@ -57,11 +58,14 @@ async function apiPut(path: string, body: AnyObj) {
     u.searchParams.set("confirm", "YES");
     url = u.pathname + u.search;
   }
-  const r = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(
+    url,
+    withApiAuth({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
   if (!r.ok) {
     let detail = "";
     try {
@@ -77,11 +81,14 @@ async function apiPut(path: string, body: AnyObj) {
 
 async function apiPutLabBranches(body: AnyObj): Promise<AnyObj> {
   const path = "/api/config/lab-branches";
-  const r = await fetch(path, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(
+    path,
+    withApiAuth({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
   if (!r.ok) {
     let detail = "";
     try {
@@ -96,17 +103,20 @@ async function apiPutLabBranches(body: AnyObj): Promise<AnyObj> {
 }
 
 async function apiPost(path: string) {
-  const r = await fetch(path, { method: "POST" });
+  const r = await fetch(path, withApiAuth({ method: "POST" }));
   if (!r.ok) throw new Error(`${path} ${r.status}`);
   return await r.json();
 }
 
 async function apiPostJson(path: string, body: AnyObj = {}): Promise<AnyObj> {
-  const r = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(
+    path,
+    withApiAuth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
   if (!r.ok) {
     let detail = "";
     try {
@@ -3012,7 +3022,7 @@ export default function App() {
       let payload: AnyObj | null = null;
       try {
         if (force) setErr(null);
-        const r = await fetch("/api/dashboard", { signal: ac.signal });
+        const r = await fetch("/api/dashboard", withApiAuth({ signal: ac.signal }));
         if (!dashboardPollMountedRef.current) return null;
         if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
         const text = await r.text();
@@ -3117,7 +3127,7 @@ export default function App() {
   const refreshEquityLight = useCallback((): void => {
     void (async () => {
       try {
-        const r = await fetch("/api/dashboard/equity");
+        const r = await fetch("/api/dashboard/equity", withApiAuth());
         if (!r.ok) return;
         const d = (await r.json()) as AnyObj;
         if (!d || typeof d !== "object") return;
@@ -4120,7 +4130,7 @@ export default function App() {
         const t = el?.value?.trim();
         if (t) headers["X-Reset-Token"] = t;
       }
-      const r = await fetch(`/api/data/reset?${q.toString()}`, { method: "POST", headers });
+      const r = await fetch(`/api/data/reset?${q.toString()}`, withApiAuth({ method: "POST", headers }));
       if (!r.ok) throw new Error((await r.text()) || `reset ${r.status}`);
     } catch (e: any) {
       setErr(String(e?.message || e));

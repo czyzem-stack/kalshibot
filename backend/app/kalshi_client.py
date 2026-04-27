@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime as dt
+import importlib
 import random
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,22 @@ async def _backoff_sleep_after_transient_5xx(attempt: int) -> None:
     await asyncio.sleep(min(8.0, 0.4 * (2**attempt) + random.random()))
 
 
+def _private_key_pem_from_keyring() -> str | None:
+    if not env.kalshi_use_keyring:
+        return None
+    try:
+        keyring = importlib.import_module("keyring")
+    except ImportError as e:
+        raise RuntimeError("KALSHI_USE_KEYRING=1 but `keyring` is not installed. Run: pip install keyring") from e
+    get_pw = getattr(keyring, "get_password", None)
+    if not callable(get_pw):
+        raise RuntimeError("keyring.get_password is not available")
+    secret = get_pw(env.kalshi_keyring_service, env.kalshi_keyring_username)
+    if not secret or not str(secret).strip():
+        return None
+    return str(secret).strip()
+
+
 def _load_private_key() -> Any:
     if env.kalshi_private_key_pem:
         pem = env.kalshi_private_key_pem.replace("\\n", "\n").encode()
@@ -84,7 +101,13 @@ def _load_private_key() -> Any:
     if env.kalshi_private_key_path:
         data = Path(env.kalshi_private_key_path).read_bytes()
         return serialization.load_pem_private_key(data, password=None, backend=default_backend())
-    raise RuntimeError("Set KALSHI_PRIVATE_KEY_PEM or KALSHI_PRIVATE_KEY_PATH for authenticated calls.")
+    kr = _private_key_pem_from_keyring()
+    if kr:
+        pem = kr.replace("\\n", "\n").encode()
+        return serialization.load_pem_private_key(pem, password=None, backend=default_backend())
+    raise RuntimeError(
+        "Set KALSHI_PRIVATE_KEY_PEM or KALSHI_PRIVATE_KEY_PATH, or KALSHI_USE_KEYRING=1 with keyring secret stored."
+    )
 
 
 def _sign(private_key: Any, timestamp_ms: str, method: str, sign_path: str) -> str:
