@@ -484,7 +484,7 @@ function clampPatientHoldMin(n: number): number {
   return Math.max(5, Math.min(120, Math.round(s / 5) * 5));
 }
 
-/** Per-branch patient stop-loss: toggle + loss % trigger + min hold (paper sim). */
+/** Per-branch patient stop-loss: toggle + loss % trigger + min hold (paper sim). SETTINGS STREAMLINE — labels only per user request. */
 export function PatientStopLossPanel({
   title,
   busy,
@@ -512,22 +512,18 @@ export function PatientStopLossPanel({
 
   return (
     <details className="panel settings-nested-panel" style={{ marginTop: 16, padding: "12px 14px" }}>
-      <summary className="section-tip" style={{ cursor: "pointer" }} title="Paper sim: close at bid after min hold when fee-aware unrealized P&amp;L % hits the loss trigger.">
-        <strong>Patient Stop-Loss (Loss-Recoup Exits)</strong>
+      <summary style={{ cursor: "pointer" }}>
+        <strong>Patient stop-loss</strong>
         <span className="sub" style={{ marginLeft: 8, fontWeight: 400 }}>
           — {title}
         </span>
       </summary>
-      <p className="sub" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
-        Uses the same Kalshi fee model as swing exits on the <strong>sell</strong> side. Trigger compares net unrealized % vs
-        total entry debit (includes entry fee already in amount).
-      </p>
-      <label className="checkbox section-tip" style={{ border: "none", marginTop: 10 }}>
+      <label className="checkbox" style={{ border: "none", marginTop: 10 }}>
         <input type="checkbox" checked={en} disabled={busy} onChange={(e) => setEn(e.target.checked)} />
-        <span>Enable patient stop-loss</span>
+        <span>Enable</span>
       </label>
       <div className="field" style={{ marginTop: 10, opacity: en ? 1 : 0.5 }}>
-        <label className="section-tip" title="Negative percent vs entry debit; exit when net unrealized (after sell fees) is at or below this.">
+        <label>
           % loss trigger: <strong>{tr.toFixed(1)}%</strong>
         </label>
         <input
@@ -542,8 +538,8 @@ export function PatientStopLossPanel({
         />
       </div>
       <div className="field" style={{ marginTop: 10, opacity: en ? 1 : 0.5 }}>
-        <label className="section-tip" title="Minimum minutes from open before the stop can fire.">
-          Min hold minutes: <strong>{mh}</strong>
+        <label>
+          Min hold (minutes): <strong>{mh}</strong>
         </label>
         <input
           type="range"
@@ -560,7 +556,6 @@ export function PatientStopLossPanel({
         className="primary"
         style={{ marginTop: 12 }}
         disabled={busy}
-        title="Writes enable_patient_stop_loss, stop_loss_trigger_pct, min_hold_minutes_before_stop for this branch."
         onClick={() =>
           void onSave({
             enable_patient_stop_loss: en,
@@ -569,7 +564,7 @@ export function PatientStopLossPanel({
           })
         }
       >
-        Save patient stop-loss ({title})
+        Save ({title})
       </button>
     </details>
   );
