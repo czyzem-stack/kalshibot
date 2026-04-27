@@ -122,7 +122,7 @@ sequenceDiagram
   A-->>V: 200 Dashboard JSON
   V-->>U: hydrate React state (dash non-null, hide loading)
 
-  Note over U,A: Every ~12s: full /api/dashboard again; every ~4s: /api/dashboard/equity merge (no slow mark pass).
+  Note over U,A: About every 12s, full GET /api/dashboard; about every 4s, GET /api/dashboard/equity shallow-merge (no slow mark pass).
 ```
 
 **Frozen loading screen?** The SPA must receive a **valid JSON object** once; use **Network** tab to confirm **`/api/dashboard`** is **200** and not blocked by auth. The UI merges **equity-only** polls into the previous payload so a partial route cannot strip optimizer or breeding fields.
