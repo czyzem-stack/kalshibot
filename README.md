@@ -6,7 +6,7 @@ It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys),
 
 **Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Optimizer visualizations](#optimizer-visualizations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
 
-**Version:** `v0.0` baseline. Release notes now live in [`CHANGELOG.md`](CHANGELOG.md), and the current version marker is tracked in [`VERSION`](VERSION).
+**Version:** `v0.0` baseline in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables and **no** extra advanced-metrics panel on the dashboard; power users read **`GET /api/optimizer/status`** instead.
 
 **Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
@@ -82,6 +82,8 @@ The **Optimizer** column is **read-only telemetry** for the internal and optiona
 | **Optimizer Thinking (radar)** | A **Recharts** spider / radar: **six** axes, each **0–100** after server-side normalization so you can compare branches on one scale. Typical spokes: **fitness** (composite replay score), **acceptance** (mutant acceptance %), **mutation** (dial and tier rolled into one view), **stop‑loss safety** (replay stop burden), **equity momentum** (Lab A $/h slope from snapshots), and **streak (inverted)** so **higher = better** (low red-stress). Colored **bands** = **Live + Lab A–D**; **Lab A** is the primary “staging” readout. **Double-click** the chart to open a large modal with a tabular **detail** block and the same series—**Esc** closes. If a branch is cold or lacks data, a spoke can sit in the **mid-50s** or look flat until fresh settles and snapshots exist. |
 | **Mutation row** (under the radar) | A compact **tier** label (**Light** / **Medium** / **Strong** — driven by the same acceptance bands as health), the **effective mutation scale** (0–1 internal blend of tier and `mutation_aggressiveness`), and a **horizontal “Dial (0–1)”** bar showing persisted **`mutation_aggressiveness`**. This replaces the old single-line “key internal metrics…” caption: it is the at-a-glance **exploration pressure** readout. |
 | **Lab pulse** | A scrolling line of short **engine / optimizer** hints (e.g. open sim, return vs basis, last optimizer note). Sourced from dashboard `lab_thoughts` / `optimizer_activity` slices—useful for “what happened last tick” without opening Settings. |
+
+**Advanced replay metrics (v0.1):** Sharpe/Sortino/Calmar-style signals, Kelly-style fractions, slippage and drawdown guardrails feed **internal fitness** only. They are **not** exposed on the main **Optimizer** card or under `optimizer_activity` in **`GET /api/dashboard`**. For `advanced_metrics_last`, `proposal_history`, and a trimmed trace, call **`GET /api/optimizer/status`** (read-only).
 
 ### How it connects to the backend
 
@@ -289,9 +291,12 @@ If the scheduler is off and there is no API key, the optimizer still records **i
 
 ### Optimizer upgrade v0.1
 
-- `backend/app/optimizer_claude.py` computes an advanced replay score with Sharpe, Sortino, Calmar, profit factor, expectancy, Kelly fraction, drawdown tolerance guards, and regime-aware weighting (fixed internal weights; no extra env knobs).
-- Optional observability: `GET /api/optimizer/status` returns proposal history, internal trace, and latest advanced metrics for power users.
-- Lab A remains the only auto-apply target for persisted mutations; other labs stay manual as in v0.0.
+- `backend/app/optimizer_claude.py` computes an advanced replay score with Sharpe, Sortino, Calmar, profit factor, expectancy, Kelly fraction, drawdown tolerance guards, and regime-aware weighting. Weights and thresholds are **fixed in code** (same numeric defaults as the former optional env tuners); there is **no** `OPTIMIZER_*` surface in [`.env.example`](.env.example) or `EnvSettings`.
+- **Claude** still uses structured JSON (`backend/app/optimizer/schemas.py`) with held-out / backtest-style gates where applicable; internal **`proposal_history`** and **`advanced_metrics_last`** persist in `cfg["optimizer"]` for audit and the status route.
+- **Dashboard:** unchanged shape for `optimizer_activity` versus v0.0—no `optimizer_advanced_metrics` key on the full dashboard payload.
+- **`PUT /api/optimizer/config`** accepts the same high-level optimizer keys as before v0.1; it does **not** accept v0.1-only tuning keys (A/B envelope, per-field replay weights, slippage bps, etc.).
+- Optional observability: **`GET /api/optimizer/status`** returns proposal history, internal trace, and latest advanced metrics for automation or debugging.
+- **Lab A** remains the only auto-apply target for persisted mutations; Labs B/C/D stay reference-only for auto-persist, as in v0.0.
 
 ---
 
@@ -562,7 +567,7 @@ Representative routes:
 - `GET /api/trades`, `GET /api/signals` — Recent activity.
 - `GET /api/history/{table}`, `GET /api/history/export.csv` — Historical tables and CSV export.
 - `POST /api/data/reset` — Reset trading data (protect with `DATA_RESET_TOKEN` in production contexts).
-- Optimizer: `GET /api/optimizer/recommendations`, `PUT /api/optimizer/config`, `POST /api/optimizer/run`, and related routes. Status snapshots consumed by the dashboard (mutation dial, best fitness, acceptance) come through the same **`/api/dashboard`** and dedicated optimizer endpoints—if the radar looks **flat/50s**, the API may still be warming up or a branch has no settled trades yet.
+- Optimizer: `GET /api/optimizer/recommendations`, `PUT /api/optimizer/config`, `POST /api/optimizer/run`, `POST /api/optimizer/force-internal-mutation`, and **`GET /api/optimizer/status`** (v0.1: `advanced_metrics_last`, `proposal_history`, trace caps). Radar / mutation dial / acceptance for the UI come from **`GET /api/dashboard`** (and equity split routes)—not from `/api/optimizer/status`. If the radar looks **flat/50s**, the API may still be warming up or a branch has no settled trades yet.
 - `POST /api/config/validate-rules` — validate a `rules` array without saving.
 - **`POST /api/config/promote-lab-a-to-live`** — gated PnL compare vs B/C/D, optional `ack_live=APPLY_LIVE` in real mode (see [Promoting Lab A to Live](#promoting-lab-a-to-live)).
 - **OpenAPI** — `GET` parameters like `?confirm=YES` and JSON bodies for toggles are documented in **`/docs`**; when debugging 400s, read the `detail` string in the response body (FastAPI’s error shape).
