@@ -123,9 +123,26 @@ async def optimizer_force_internal_mutation() -> dict[str, Any]:
     return await force_internal_mutation_once(state.store)
 
 
+def _labs_breeding_child_status_row(c: dict) -> dict:
+    """Trim child payloads for ``GET /api/optimizer/status`` (full genomes stay in persisted config)."""
+    lab = c.get("lab") if isinstance(c.get("lab"), dict) else {}
+    return {
+        "id": c.get("id"),
+        "parent": c.get("parent"),
+        "born_at": c.get("born_at"),
+        "replay_fitness": c.get("replay_fitness"),
+        "traits": c.get("traits") if isinstance(c.get("traits"), dict) else {},
+        "rules_n": len(lab.get("rules") or []) if isinstance(lab.get("rules"), list) else 0,
+        "balance_fraction_per_window": lab.get("balance_fraction_per_window"),
+        "window_minutes": lab.get("window_minutes"),
+        "paper_balance_cents": lab.get("paper_balance_cents"),
+    }
+
+
 @router.get("/status")
 async def optimizer_status() -> OptimizerStatusResponse:
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (advanced users only).
+    # HELP CLEANUP — thorough & professional: status payload is the read-only observability surface (includes compact internal logs).
     cfg = await state.store.load_config()
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     return {
@@ -139,6 +156,13 @@ async def optimizer_status() -> OptimizerStatusResponse:
         "last_error": str(oc.get("last_error") or ""),
         "next_tick_preview": str(oc.get("next_tick_preview") or "")[:1200],
         "proposal_history": [x for x in (oc.get("proposal_history") or []) if isinstance(x, dict)][:50],
+        # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+        "labs_breeding_log": [x for x in (oc.get("labs_breeding_log") or []) if isinstance(x, dict)][:64],
+        "labs_breeding_children": [
+            _labs_breeding_child_status_row(x) for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)
+        ][:10],
+        "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
+        "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:10],
         "internal_optimizer_trace": [x for x in (oc.get("internal_optimizer_trace") or []) if isinstance(x, dict)][:30],
         "advanced_metrics_last": dict(oc.get("advanced_metrics_last") or {}),
         "acceptance_rate_pct": float(oc.get("acceptance_rate_pct") or 0.0),

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# LABS BREEDING v0.1 (Lab A staging/adopts + B/C/D breed + competitive children) — caps and cadence live in
+# ``branch_config`` / ``lab_breeding`` (not env).
+
 import os
 from dataclasses import dataclass
 from pathlib import Path

@@ -42,6 +42,9 @@ engine_lab_c: TradingEngine | None = None
 engine_lab_d: TradingEngine | None = None
 ENGINES: dict[str, TradingEngine] = {}
 
+# LABS BREEDING v0.1 (Lab A staging/adopts + B/C/D breed + competitive children) — handled in ``run_optimizer_once`` /
+# ``lab_breeding``, not on engine singletons.
+
 stop_event = asyncio.Event()
 # PHASE 2: set after pre-warm (and WS ticker seed); dual_engine_loop awaits this so ticks never race ahead of cache fill.
 startup_complete = asyncio.Event()

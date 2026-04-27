@@ -9,6 +9,12 @@ BRANCH_LAB_B = "lab_b"
 BRANCH_LAB_C = "lab_c"
 BRANCH_LAB_D = "lab_d"
 BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+# Breeding parents only (Lab A is staging / adoption — see ``lab_breeding``).
+BRANCH_BREEDERS = (BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+# LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+# Internal virtual offspring queue (not SQLite branches); lineage audit cap matches this pool.
+LAB_BREEDING_MAX_VIRTUAL_POOL = 10
+LAB_BREEDING_INTERNAL_MAX_SLOTS = 10
 
 # Protected flag: when True, the Live engine uses paper / simulated order flow. Canonical JSON key;
 # `simulate` is still written for backward compatibility and mirrors this value.

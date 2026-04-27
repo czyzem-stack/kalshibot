@@ -1,4 +1,5 @@
 // SETTINGS STREAMLINE — cleaned information architecture per user request
+// HELP CLEANUP — thorough & professional (tooltips, onboarding copy, Optimizer context).
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -25,6 +26,7 @@ type SettingsTab =
   | "optimizer"
   | "fees_sim"
   | "data";
+/** SQLite lab branches A–D (simulation). Breeding is backend-only — no extra UI tabs. */
 type LabBranchKey = "a" | "b" | "c" | "d";
 
 /** Local display for optimizer trace ``at`` ISO timestamps. */
@@ -40,7 +42,7 @@ function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: 
   const p = `lab_${which}`;
   const defFrac = which === "a" ? 0.055 : which === "b" ? 0.06 : which === "c" ? 0.1 : 0.13;
   const defWin = which === "a" ? 15 : which === "b" ? 12 : which === "c" ? 10 : 10;
-  const labTitle = which === "a" ? "A (staging)" : which === "b" ? "B (conservative)" : which === "c" ? "C (aggressive)" : "D (wild)";
+  const labTitle = which === "a" ? "A" : which === "b" ? "B" : which === "c" ? "C" : "D";
   return (
     <div>
       <strong style={{ fontSize: 12 }}>Lab {labTitle}</strong>
@@ -90,7 +92,7 @@ function LabBranchPanel({
 }) {
   const p = `lab_${branch}`;
   const resetKey = branch === "a" ? "lab_a" : branch === "b" ? "lab_b" : branch === "c" ? "lab_c" : "lab_d";
-  const title = branch === "a" ? "Lab A (staging)" : branch === "b" ? "Lab B (conservative)" : branch === "c" ? "Lab C (aggressive)" : "Lab D";
+  const title = branch === "a" ? "Lab A" : branch === "b" ? "Lab B" : branch === "c" ? "Lab C" : "Lab D";
   const resetConfirm =
     branch === "a"
       ? "Reset Lab A data only? Removes SQLite signals, trades, and equity snapshots for Lab A (including legacy sim_lab). Live and other labs are kept."
@@ -107,7 +109,7 @@ function LabBranchPanel({
     >
       <h3 style={{ margin: 0 }}>{title}</h3>
       <p className="sub" style={{ marginTop: 6, marginBottom: 0, fontSize: 11 }}>
-        Sizing fields are in <strong>Simulation labs</strong> above. Optimizer auto-writes target Lab A only.
+        Paper simulation branch. Rules and sizing apply only to this lab; Live is unchanged.
       </p>
       <label className="checkbox" style={{ border: "none", marginTop: 10 }}>
         <input id={`${p}_auto_reset_failure`} type="checkbox" defaultChecked={Boolean(lab.auto_reset_paper_on_tick_failure)} disabled={busy} />
@@ -361,9 +363,21 @@ export default function SettingsOverlay({
 
   const activeLabObj = activeLab === "a" ? labA : activeLab === "b" ? labB : activeLab === "c" ? labC : labD;
   const saveActiveLabRules =
-    activeLab === "a" ? onSaveLabARules : activeLab === "b" ? onSaveLabBRules : activeLab === "c" ? onSaveLabCRules : onSaveLabDRules;
+    activeLab === "a"
+      ? onSaveLabARules
+      : activeLab === "b"
+        ? onSaveLabBRules
+        : activeLab === "c"
+          ? onSaveLabCRules
+          : onSaveLabDRules;
   const saveActiveLabSliders =
-    activeLab === "a" ? onSaveLabAFromSliders : activeLab === "b" ? onSaveLabBFromSliders : activeLab === "c" ? onSaveLabCFromSliders : onSaveLabDFromSliders;
+    activeLab === "a"
+      ? onSaveLabAFromSliders
+      : activeLab === "b"
+        ? onSaveLabBFromSliders
+        : activeLab === "c"
+          ? onSaveLabCFromSliders
+          : onSaveLabDFromSliders;
 
   if (!open) return null;
 
@@ -441,7 +455,7 @@ export default function SettingsOverlay({
               type="button"
               className="primary"
               disabled={busy}
-              title="Fetch /api/dashboard now (auto every ~8s)."
+              title="Pull the latest dashboard payload now (dashboard also refreshes on its own)."
               onClick={() => void onRefresh()}
             >
               Refresh now
@@ -449,24 +463,30 @@ export default function SettingsOverlay({
             <button
               type="button"
               disabled={busy}
-              title="Explore saved historical rows and export CSV."
+              title="Open history: browse stored rows and export CSV where supported."
               onClick={() => void onOpenHistory()}
             >
               History
             </button>
-            <button type="button" className="primary" disabled={busy} title="Live engine loop." onClick={() => void onToggleLive()}>
+            <button type="button" className="primary" disabled={busy} title="Start or stop the Live trading loop (paper or real per config)." onClick={() => void onToggleLive()}>
               Turn Live {liveEngineOn ? "off" : "on"}
             </button>
-            <button type="button" className="primary" disabled={busy} title="Lab A - staging paper engine." onClick={() => void onToggleLabA()}>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              title="Lab A: paper simulation engine."
+              onClick={() => void onToggleLabA()}
+            >
               Turn A {labEngineAOn ? "off" : "on"}
             </button>
-            <button type="button" className="primary" disabled={busy} title="Lab B - conservative reference arm." onClick={() => void onToggleLabB()}>
+            <button type="button" className="primary" disabled={busy} title="Lab B: paper simulation." onClick={() => void onToggleLabB()}>
               Turn B {labEngineBOn ? "off" : "on"}
             </button>
-            <button type="button" className="primary" disabled={busy} title="Lab C - aggressive reference arm." onClick={() => void onToggleLabC()}>
+            <button type="button" className="primary" disabled={busy} title="Lab C: paper simulation." onClick={() => void onToggleLabC()}>
               Turn C {labEngineCOn ? "off" : "on"}
             </button>
-            <button type="button" className="primary" disabled={busy} title="Lab D - wild reference arm." onClick={() => void onToggleLabD()}>
+            <button type="button" className="primary" disabled={busy} title="Lab D: paper simulation." onClick={() => void onToggleLabD()}>
               Turn D {labEngineDOn ? "off" : "on"}
             </button>
             <button
@@ -478,8 +498,8 @@ export default function SettingsOverlay({
               All +$100
             </button>
           </div>
-          <div className="hero-meta" style={{ marginTop: 10 }} title="Kalshi REST host and environment loaded by the backend from .env.">
-            <span className="env-pill" title="Base URL the backend uses for Kalshi (demo vs prod).">
+          <div className="hero-meta" style={{ marginTop: 10 }} title="Kalshi REST target and environment come from the backend .env.">
+            <span className="env-pill" title="REST base URL the backend uses (demo vs production).">
               API: <code>{kalshi?.api_base ? String(kalshi.api_base).replace("https://", "") : "—"}</code>
             </span>
             <span className="env-pill" title="KALSHI_ENV value (e.g. demo vs production).">
@@ -498,15 +518,15 @@ export default function SettingsOverlay({
           <div
             className="panel settings-nested-panel section-tip"
             style={{ marginTop: 12, marginBottom: 0, padding: "12px 14px" }}
-            title="Stored in this browser only (localStorage). Controls the header ticker and the Live / Lab balance tile."
+            title="Browser-only (localStorage): header ticker speed and the Live/Lab balance snapshot column."
           >
             <h3 style={{ margin: 0, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)" }}>
               Hero ticker & balance tile
             </h3>
             <p className="sub" style={{ marginTop: 6, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-              Marquee speed; the right column shows a fixed five-row snapshot (Live + Lab A–D with $ and return). Stored in this browser only.
+              Adjust marquee speed. The hero column shows a five-row snapshot (Live + Labs A–D: balance and return). Preferences stay in this browser only.
             </p>
-            <div className="field" style={{ marginBottom: 0 }} title="Multiplier for how fast the combined branch line scrolls (drag / throw still works).">
+            <div className="field" style={{ marginBottom: 0 }} title="Scroll speed multiplier for the combined branch ticker (drag and momentum still apply).">
               <label htmlFor="hero_marquee_speed_mult">
                 Marquee scroll speed: <strong>{heroMarqueeSpeedMult.toFixed(2)}×</strong>
               </label>
@@ -523,7 +543,7 @@ export default function SettingsOverlay({
             <div
               className="field"
               style={{ marginTop: 14, marginBottom: 0 }}
-              title="When enabled: show trade open/close cards in the bottom-right stack (Live or sim). When off: only trade rows are hidden—Optimizer and other non-trade toasts can still appear. All stack cards auto-dismiss after ~10–15s. Stored in this browser only (localStorage)."
+              title="Show trade open/close toasts in the bottom-right stack (Live or sim). When off, trade cards are hidden; optimizer and other notices can still appear. Cards auto-dismiss after a short delay. Browser-only."
             >
               <label className="section-tip" style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
                 <input
@@ -532,7 +552,7 @@ export default function SettingsOverlay({
                   onChange={(e) => onTradePopupToastsEnabledChange(e.target.checked)}
                 />
                 <span>
-                  Trade open / settle toasts <span className="sub">(bottom-right; Optimizer uses the same area)</span>
+                  Trade open / settle toasts <span className="sub">(bottom-right; optimizer notices may share this stack)</span>
                 </span>
               </label>
             </div>
@@ -545,7 +565,7 @@ export default function SettingsOverlay({
           <label
             htmlFor="yes_sub_filter"
             className="section-tip"
-            title="Leave blank to allow both Up and Down. Type up or down (substring match) to limit direction."
+            title="Optional. Substring match on market subtitle to bias Up vs Down; leave blank for both."
           >
             Only if YES title contains
           </label>
@@ -569,7 +589,7 @@ export default function SettingsOverlay({
           <label
             htmlFor="exclude_sub_filter"
             className="section-tip"
-            title="Comma-separated substrings (case-insensitive). Matched rows are skipped for trading (not just display). Leave empty on Kalshi demo where subtitles often contain TBD. On prod, add tokens like tbd only if you want to skip unpriced lines."
+            title="Comma-separated substrings (case-insensitive). Matching markets are skipped for trading, not just hidden in the UI. Leave empty unless you need to filter noisy subtitles."
           >
             Skip if YES title contains (comma-separated)
           </label>
@@ -629,7 +649,7 @@ export default function SettingsOverlay({
         <div className="panel settings-nested-panel" style={{ marginTop: 16, padding: "12px 14px" }}>
           <h3 style={{ margin: 0 }}>Live branch data</h3>
           <p className="sub" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
-            Wipes SQLite signals, trades, and equity for branch <code>live</code> only. In real-money mode you must type <code>RESET_LIVE</code>.
+            Removes signals, trades, and equity snapshots for <code>live</code> only. With real-money enabled, you must confirm with <code>RESET_LIVE</code>.
           </p>
           <label className="checkbox section-tip" style={{ border: "none", marginTop: 8 }}>
             <input id="reset_backup_live" type="checkbox" defaultChecked disabled={busy} />
@@ -640,7 +660,7 @@ export default function SettingsOverlay({
             className="primary"
             style={{ marginTop: 10, borderColor: "#6b2a2a", background: "linear-gradient(180deg,#2a1520,#1a0f18)" }}
             disabled={busy}
-            title="Deletes signals, trades, and equity snapshots where branch is live only."
+            title="Delete Live-branch signals, trades, and equity snapshots in SQLite (labs unchanged)."
             onClick={() => {
               const el = document.getElementById("reset_backup_live") as HTMLInputElement | null;
               const backup = el ? el.checked : true;
@@ -708,7 +728,7 @@ export default function SettingsOverlay({
               onSave={(patch) => void onSavePatientStopLossLive(patch)}
             />
             <PatientStopLossPanel
-              title="Lab A (staging)"
+              title="Lab A — staging / adoption (paper sim)"
               busy={busy}
               enable={Boolean(labA.enable_patient_stop_loss ?? true)}
               triggerPct={Number(labA.stop_loss_trigger_pct ?? -6)}
@@ -716,7 +736,7 @@ export default function SettingsOverlay({
               onSave={(patch) => void onSavePatientStopLossLab("a", patch)}
             />
             <PatientStopLossPanel
-              title="Lab B (conservative)"
+              title="Lab B (paper sim)"
               busy={busy}
               enable={Boolean(labB.enable_patient_stop_loss ?? true)}
               triggerPct={Number(labB.stop_loss_trigger_pct ?? -8)}
@@ -724,7 +744,7 @@ export default function SettingsOverlay({
               onSave={(patch) => void onSavePatientStopLossLab("b", patch)}
             />
             <PatientStopLossPanel
-              title="Lab C (aggressive)"
+              title="Lab C (paper sim)"
               busy={busy}
               enable={Boolean(labC.enable_patient_stop_loss ?? true)}
               triggerPct={Number(labC.stop_loss_trigger_pct ?? -12)}
@@ -732,7 +752,7 @@ export default function SettingsOverlay({
               onSave={(patch) => void onSavePatientStopLossLab("c", patch)}
             />
             <PatientStopLossPanel
-              title="Lab D"
+              title="Lab D (paper sim)"
               busy={busy}
               enable={Boolean(labD.enable_patient_stop_loss ?? true)}
               triggerPct={Number(labD.stop_loss_trigger_pct ?? -7)}
@@ -758,9 +778,9 @@ export default function SettingsOverlay({
           >
             <h2 style={{ marginTop: 0 }}>Simulation labs</h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-              Lab A = staging (optimizer writes here). B/C/D = reference arms. Use <strong>Save all labs</strong> or per-lab save for sizing + auto-reset flags.
+              Four independent paper branches (A–D). Sizing and rules are per lab; use <strong>Save all labs</strong> or per-lab saves. Live trading is unaffected.
             </p>
-            <div className="chart-tabs" role="tablist" aria-label="Lab branch" style={{ marginTop: 12 }}>
+            <div className="chart-tabs" role="tablist" aria-label="Simulation labs A through D" style={{ marginTop: 12 }}>
               {sizingTabs.map((t) => (
                 <button
                   key={t.id}
@@ -782,14 +802,14 @@ export default function SettingsOverlay({
             </div>
             {showCombinedLabReset ? (
               <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
-                <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="Optional SQLite wipe, then merge the bankroll/sizing numbers above in one request.">
-                  Reset lab data + apply sizing (A / B / C / D)
+                <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="Optionally wipe selected lab SQLite data, then apply the sizing row in one request.">
+                  Reset lab data + apply sizing (A–D)
                 </h3>
                 <p className="sub" style={{ marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-                  Same scope as the per-lab reset buttons below, but you can wipe selected branches and push the sizing row above in one step.
+                  Combines optional branch reset with the bankroll fields above—same scope as per-lab resets, fewer clicks.
                 </p>
                 <div className="field">
-                  <label htmlFor="bulk_lab_reset" className="section-tip" title="Runs before applying lab_* patches from the sizing row.">
+                  <label htmlFor="bulk_lab_reset" className="section-tip" title="If not &quot;No reset&quot;, wipe runs before lab_* fields are written.">
                     Reset lab trading data first
                   </label>
                   <select id="bulk_lab_reset" defaultValue="none" disabled={busy}>
@@ -810,7 +830,7 @@ export default function SettingsOverlay({
                   type="button"
                   className="primary"
                   disabled={busy || optimizerSaving}
-                  title="PUT /api/config/lab-branches — applies bankroll/sizing (and lab toggles) from this row without wiping data."
+                  title="PUT /api/config/lab-branches: persist bankroll and sizing from this row (no wipe unless selected above)."
                   onClick={() => {
                     const parseC = (id: string, fallback: number) => {
                       const el = document.getElementById(id) as HTMLInputElement | null;
@@ -966,8 +986,8 @@ export default function SettingsOverlay({
           <div className="panel settings-nested-panel" style={{ marginTop: 16, padding: "12px 14px" }}>
             <h2 style={{ marginTop: 0 }}>Optimizer</h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-              Duel vs independent mode; adaptive pulse targets <strong>Lab A</strong>. Lab sizing: <strong>Simulation labs</strong> tab (also shown here
-              when you open Optimizer).
+              Choose <strong>duel</strong> or <strong>independent</strong> context; adaptive pulses apply to <strong>Lab A</strong>. Sizing lives under <strong>Simulation labs</strong> (also available when
+              this tab is open). Advanced diagnostics (traces, internal logs) are available via <code>GET /api/optimizer/status</code>.
             </p>
             <div className="field">
               <label>Mode</label>
@@ -1005,11 +1025,11 @@ export default function SettingsOverlay({
               <span>Enable adaptive threshold/time auto-correction</span>
             </label>
             <div className="sub" style={{ margin: "-4px 0 8px 26px", fontSize: 11, lineHeight: 1.45, color: "var(--muted)" }}>
-              Internal pulse (loss-streak tighten, optional win-path ease, Lab A bet fraction) runs on the optimizer interval even when scheduled runs are off.
+              Internal pulse (loss-streak tighten, optional win-path easing, Lab A bet fraction) follows the optimizer interval even when scheduled full runs are off.
             </div>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_lab_a_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.lab_a_enabled ?? true)} disabled={busy} />
-              <span>Lab A staging (adaptive + bet applies here)</span>
+              <span>Lab A (adaptive + bet pulse applies here)</span>
             </label>
             <label className="checkbox" style={{ border: "none" }}>
               <input id="opt_lab_b_enabled" type="checkbox" defaultChecked={Boolean(optimizerCfg?.lab_b_enabled ?? true)} disabled={busy} />
@@ -1026,7 +1046,7 @@ export default function SettingsOverlay({
             <div className="field">
               <label>Lab A style</label>
               <select id="opt_lab_a_style" defaultValue={String(optimizerCfg?.lab_a_style || "blend")}>
-                <option value="blend">Blend (staging)</option>
+                <option value="blend">Blend</option>
                 <option value="conservative">Conservative</option>
                 <option value="aggressive">Aggressive</option>
               </select>
@@ -1141,14 +1161,14 @@ export default function SettingsOverlay({
                 defaultChecked={Boolean(optimizerCfg?.adaptive_skip_backtest_gate ?? false)}
                 disabled={busy}
               />
-              <span title="When backtesting is on, still allow adaptive threshold moves even if replay PnL does not improve (use when the replay gate blocks all changes during a drawdown).">
+              <span title="When backtesting is enabled, still allow adaptive threshold moves if replay does not beat baseline. Use sparingly during deep drawdowns—widens the safety gate.">
                 Allow adaptive changes when replay does not beat baseline (risky)
               </span>
             </label>
             <button
               className="primary"
               disabled={busy || optimizerSaving}
-              title="Persist optimizer / adaptive tuning fields to the backend."
+              title="Save optimizer and adaptive tuning fields to the server."
               onClick={() =>
                 void onSaveOptimizerConfig({
                   enabled: Boolean((document.getElementById("opt_enabled") as HTMLInputElement | null)?.checked),
@@ -1200,7 +1220,7 @@ export default function SettingsOverlay({
                 type="button"
                 className="primary"
                 disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
-                title="POST /api/optimizer/force-internal-mutation — one internal mutant cycle; replay + fitness gate; bypasses scheduler. Same as the “force” button on the dashboard Optimizer card. Does not post exchange orders by itself."
+                title="POST /api/optimizer/force-internal-mutation: one internal mutant cycle with replay + fitness gate; bypasses the scheduler. Same as the dashboard force control. Does not place exchange orders."
                 onClick={() =>
                   void (async () => {
                     if (!onForceInternalMutationNow) return;
@@ -1216,7 +1236,7 @@ export default function SettingsOverlay({
                 {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
               </button>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
-                Runs internal rule/parameter mutation + replay fitness gate (bypasses scheduler)
+                Runs one internal rule and parameter mutation with the same replay fitness gate as scheduled ticks. Also advances any due internal lab-evolution housekeeping on this call.
               </p>
             </div>
             <div style={{ marginTop: 20 }}>
@@ -1232,16 +1252,16 @@ export default function SettingsOverlay({
                   lineHeight: 1.3,
                 }}
               >
-                <div title="Number of decisions recorded in the trace (last 20 window).">
+                <div title="Rows in the rolling trace window (last 20).">
                   Cycles: <strong>{optimizerTraceStats.cycles}</strong>
                 </div>
-                <div title="Share of trace rows marked accepted; same basis as the dashboard health badge (when filled).">
-                  Accpt%: <strong>{optimizerTraceStats.rate.toFixed(1)}%</strong>
+                <div title="Share of trace rows marked accepted (same basis as the dashboard health badge when populated).">
+                  Accept %: <strong>{optimizerTraceStats.rate.toFixed(1)}%</strong>
                 </div>
-                <div title="Fitness score on the most recent trace row (if any).">
+                <div title="Fitness score from the newest trace row, if present.">
                   Last: <strong>{optimizerTraceStats.lastScore == null ? "—" : optimizerTraceStats.lastScore.toFixed(3)}</strong>
                 </div>
-                <div title="Linear trend of score across trace rows, divided by the number of steps (rough slope per cycle).">
+                <div title="Average score change per step across the window (rough momentum).">
                   Trend/c: <strong>
                     {optimizerTraceStats.avgTrend >= 0 ? "+" : ""}
                     {optimizerTraceStats.avgTrend.toFixed(3)}
@@ -1297,7 +1317,7 @@ export default function SettingsOverlay({
               <div
                 className="sub"
                 style={{ marginTop: 8, maxHeight: 160, overflowY: "auto", fontSize: 10, lineHeight: 1.4 }}
-                title="One line per stored trace row (newest first). Stop metrics come from the Lab A replay used for that cycle."
+                title="Newest-first trace lines. Stop metrics use the Lab A replay for that cycle."
               >
                 {optimizerTraceRows.map((r, i) => {
                   const sn = Number(r?.stop_loss_exits_n ?? 0) || 0;
@@ -1352,28 +1372,28 @@ export default function SettingsOverlay({
 
         {showData ? (
           <>
-        <h2 className="section-tip" style={{ marginTop: 28 }} title="On-disk logs and wiping the local trade database.">
+        <h2 className="section-tip" style={{ marginTop: 28 }} title="SQLite paths, JSONL streams, and full reset options.">
           Data & backups
         </h2>
-        <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }} title="Paths from the backend /api/dashboard storage field.">
+        <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }} title="Paths mirror the storage object from GET /api/dashboard.">
           <strong>SQLite</strong>:{" "}
-          <code style={{ wordBreak: "break-all" }} title="Main bot database.">
+          <code style={{ wordBreak: "break-all" }} title="Primary SQLite database for signals, trades, equity, and config.">
             {String(dash?.storage?.sqlite_path ?? "—")}
           </code>
           <br />
           <strong>JSONL logs</strong>:{" "}
-          <code style={{ wordBreak: "break-all" }} title="Daily files under streams signals/, trades/, system/.">
+          <code style={{ wordBreak: "break-all" }} title="Daily JSONL streams (signals, trades, system, etc.).">
             {String(dash?.storage?.data_log_dir ?? "—")}
           </code>
           {dash?.storage?.data_reset_token_configured ? (
             <>
               <br />
-              <span className="sub" title="Reset API requires X-Reset-Token header matching .env.">
-                <strong>Reset token</strong> is set in <code>.env</code> — enter it below (sent only to your backend) or clear{" "}
-                <code>DATA_RESET_TOKEN</code> for open reset.
+              <span className="sub" title="POST /api/data/reset expects header X-Reset-Token when DATA_RESET_TOKEN is set.">
+                <strong>Reset token</strong> is configured in <code>.env</code>. Enter it below for guarded resets, or remove <code>DATA_RESET_TOKEN</code> to
+                disable the header check.
               </span>
               <div className="field" style={{ marginTop: 10 }}>
-                <label htmlFor="reset_token_field" className="section-tip" title="Matches DATA_RESET_TOKEN in backend .env.">
+                <label htmlFor="reset_token_field" className="section-tip" title="Must match DATA_RESET_TOKEN from the backend environment.">
                   Reset token
                 </label>
                 <input
@@ -1387,12 +1407,12 @@ export default function SettingsOverlay({
             </>
           ) : null}
         </p>
-        <label className="checkbox section-tip" style={{ border: "none", marginTop: 8 }} title="Writes backups under data/logs/exports before deleting rows.">
+        <label className="checkbox section-tip" style={{ border: "none", marginTop: 8 }} title="When enabled, export SQLite and table JSONL backups before destructive deletes.">
           <input id="reset_backup" type="checkbox" defaultChecked disabled={busy} />
           <span>Before reset: copy SQLite + table JSONL exports</span>
         </label>
         <div className="field" style={{ marginTop: 10 }}>
-          <label htmlFor="reset_uniform_paper_cents" className="section-tip" title="Optional. After wipe, sets the same paper_balance_cents on Live + Labs A–D.">
+          <label htmlFor="reset_uniform_paper_cents" className="section-tip" title="After wipe, optionally set identical paper_balance_cents on Live (if paper) and Labs A–D.">
             Same starting paper balance after reset (cents)
           </label>
           <input

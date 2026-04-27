@@ -145,6 +145,7 @@ class DashboardResponse(TypedDict, total=False):
 
 
 class OptimizerStatusResponse(TypedDict, total=False):
+    # HELP CLEANUP — thorough & professional: contract for GET /api/optimizer/status (read-only diagnostics).
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
     enabled: bool
     adaptive_enabled: bool
@@ -156,6 +157,12 @@ class OptimizerStatusResponse(TypedDict, total=False):
     last_error: str
     next_tick_preview: str
     proposal_history: list[dict[str, Any]]
+    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible (observability via status only)
+    # Rows may include toast_id / toast_family for ephemeral dashboard toasts (labs breeding).
+    labs_breeding_log: list[dict[str, Any]]
+    labs_breeding_children: list[dict[str, Any]]
+    labs_breeding_death_chamber: list[dict[str, Any]]
+    labs_breeding_lineage_history: list[dict[str, Any]]
     internal_optimizer_trace: list[dict[str, Any]]
     advanced_metrics_last: dict[str, Any]
     acceptance_rate_pct: float

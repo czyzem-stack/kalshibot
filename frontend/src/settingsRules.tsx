@@ -1,3 +1,4 @@
+// HELP CLEANUP — thorough & professional (inline guidance for rules, fees, and sim controls).
 import { useEffect, useState } from "react";
 
 type AnyObj = Record<string, any>;
@@ -100,7 +101,7 @@ export function RuleExperimentHints({
       <h2
         className="section-tip"
         style={{ marginTop: 0 }}
-        title="Heuristic suggestions only, not advice. NONE under an asset = no band fits implied YES + time — widen bands or shift ranges. Sim lab stays paper."
+        title="Heuristic hints only—not trading advice. NONE under an asset means no band fit the latest implied YES and time window; widen or shift bands. Applies to paper sims."
       >
         Rule band experiments
       </h2>
@@ -111,7 +112,7 @@ export function RuleExperimentHints({
             type="button"
             className="primary"
             disabled={busy}
-            title="Replace rule slot #1 with a band centered on the latest cross-asset snapshot (still 3 bands total)."
+            title="Replace rule slot #1 with a band centered on the latest cross-asset snapshot (still three YES bands)."
             onClick={() => onApply(padRulesToThree([{ ...dyn }]))}
           >
             Apply snapshot band → rule #1
@@ -124,7 +125,7 @@ export function RuleExperimentHints({
             <button
               type="button"
               disabled={busy}
-              title="Replace your three rule bands with this preset (saved to server on apply via parent save)."
+              title="Replace the three YES bands with this preset; parent save persists to the server."
               onClick={() => onApply(padRulesToThree((p.rules || []) as AnyObj[]))}
             >
               Apply preset: {String(p.label || p.id)}
@@ -162,7 +163,7 @@ export function NoBandsSliders({
     <div style={{ marginTop: 16 }}>
       <h2
         className="section-tip"
-        title="Up to three NO bands: min/max apply to implied NO (1 − implied YES mid). Save merges with your YES bands and any rules beyond the first three per side."
+        title="Up to three NO bands using implied NO (derived from the YES book). Save merges with YES bands and preserves rules beyond the first three per side."
       >
         NO rule bands (sliders)
       </h2>

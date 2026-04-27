@@ -27,6 +27,7 @@ from .engine import _calculate_net_unrealized_pct_after_fees, rule_matches
 from .optimizer.fitness import composite_fitness_score, is_statistically_better
 from .optimizer.weighted_edge import calculate_weighted_edge, synthetic_orderbook_for_replay
 from .optimizer.schemas import ClaudeOptimizerResponse, parse_claude_optimizer_json
+from .lab_breeding import maybe_breed_dead_labs, maybe_soft_cull_lab_branches, run_lab_breeding_ga_cycle
 from .settings_env import env
 
 if TYPE_CHECKING:
@@ -126,6 +127,12 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("last_paper_loser_swap_at", "")
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (internal proposal log only).
     out.setdefault("proposal_history", [])
+    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+    out.setdefault("labs_breeding_log", [])
+    out.setdefault("labs_breeding_children", [])
+    out.setdefault("labs_breeding_death_chamber", [])
+    out.setdefault("labs_breeding_lineage_history", [])
+    out.setdefault("labs_breeding_last_generation_iso", "")
     # Regime-level EWMA of composite ``score_dollars`` and observation counts; decayed every optimizer tick
     # so older telemetry fades (meta-learning, no user tuning).
     out.setdefault(
@@ -3186,6 +3193,94 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
 
+    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+    try:
+        breed_rows = await maybe_breed_dead_labs(
+            store,
+            cfg,
+            oc,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch={
+                BRANCH_LAB_A: tr_a,
+                BRANCH_LAB_B: tr_b,
+                BRANCH_LAB_C: tr_c,
+                BRANCH_LAB_D: tr_d,
+            },
+            signals_by_branch={
+                BRANCH_LAB_A: sg_a,
+                BRANCH_LAB_B: sg_b,
+                BRANCH_LAB_C: sg_c,
+                BRANCH_LAB_D: sg_d,
+            },
+            replay_bundle=_replay_fitness_bundle,
+            open_kw=_replay_open_kw,
+        )
+        soft_rows = await maybe_soft_cull_lab_branches(
+            store,
+            cfg,
+            oc,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch={
+                BRANCH_LAB_A: tr_a,
+                BRANCH_LAB_B: tr_b,
+                BRANCH_LAB_C: tr_c,
+                BRANCH_LAB_D: tr_d,
+            },
+            signals_by_branch={
+                BRANCH_LAB_A: sg_a,
+                BRANCH_LAB_B: sg_b,
+                BRANCH_LAB_C: sg_c,
+                BRANCH_LAB_D: sg_d,
+            },
+            replay_bundle=_replay_fitness_bundle,
+            open_kw=_replay_open_kw,
+        )
+        ga_rows = await run_lab_breeding_ga_cycle(
+            store,
+            cfg,
+            oc,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch={
+                BRANCH_LAB_A: tr_a,
+                BRANCH_LAB_B: tr_b,
+                BRANCH_LAB_C: tr_c,
+                BRANCH_LAB_D: tr_d,
+            },
+            signals_by_branch={
+                BRANCH_LAB_A: sg_a,
+                BRANCH_LAB_B: sg_b,
+                BRANCH_LAB_C: sg_c,
+                BRANCH_LAB_D: sg_d,
+            },
+            replay_bundle=_replay_fitness_bundle,
+            open_kw=_replay_open_kw,
+        )
+        if breed_rows or soft_rows or ga_rows:
+            cfg["optimizer"] = oc
+            await store.save_config(
+                cfg,
+                history_branch="global",
+                history_changed_by="optimizer_lab_breeding",
+                history_reason="labs_breeding_ga_or_equity",
+            )
+            cfg = await store.load_config()
+            oc = _norm_opt_cfg(_opt_cfg(cfg))
+            tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    except Exception as e:
+        logger.warning("labs breeding tick skipped: %s", e)
+
     st_a_prev = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a_prev, end_iso)
     prof_n = sum(1 for t in st_a_prev if int(t.get("pnl_cents") or 0) > 0)
@@ -3487,6 +3582,95 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
     sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+
+    # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+    try:
+        breed_rows = await maybe_breed_dead_labs(
+            store,
+            cfg,
+            oc,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch={
+                BRANCH_LAB_A: tr_a,
+                BRANCH_LAB_B: tr_b,
+                BRANCH_LAB_C: tr_c,
+                BRANCH_LAB_D: tr_d,
+            },
+            signals_by_branch={
+                BRANCH_LAB_A: sg_a,
+                BRANCH_LAB_B: sg_b,
+                BRANCH_LAB_C: sg_c,
+                BRANCH_LAB_D: sg_d,
+            },
+            replay_bundle=_replay_fitness_bundle,
+            open_kw=_replay_open_kw,
+        )
+        soft_rows = await maybe_soft_cull_lab_branches(
+            store,
+            cfg,
+            oc,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch={
+                BRANCH_LAB_A: tr_a,
+                BRANCH_LAB_B: tr_b,
+                BRANCH_LAB_C: tr_c,
+                BRANCH_LAB_D: tr_d,
+            },
+            signals_by_branch={
+                BRANCH_LAB_A: sg_a,
+                BRANCH_LAB_B: sg_b,
+                BRANCH_LAB_C: sg_c,
+                BRANCH_LAB_D: sg_d,
+            },
+            replay_bundle=_replay_fitness_bundle,
+            open_kw=_replay_open_kw,
+        )
+        ga_rows = await run_lab_breeding_ga_cycle(
+            store,
+            cfg,
+            oc,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch={
+                BRANCH_LAB_A: tr_a,
+                BRANCH_LAB_B: tr_b,
+                BRANCH_LAB_C: tr_c,
+                BRANCH_LAB_D: tr_d,
+            },
+            signals_by_branch={
+                BRANCH_LAB_A: sg_a,
+                BRANCH_LAB_B: sg_b,
+                BRANCH_LAB_C: sg_c,
+                BRANCH_LAB_D: sg_d,
+            },
+            replay_bundle=_replay_fitness_bundle,
+            open_kw=_replay_open_kw,
+        )
+        if breed_rows or soft_rows or ga_rows:
+            cfg["optimizer"] = oc
+            await store.save_config(
+                cfg,
+                history_branch="global",
+                history_changed_by="optimizer_lab_breeding",
+                history_reason="labs_breeding_ga_or_equity",
+            )
+            cfg = await store.load_config()
+            oc = _norm_opt_cfg(_opt_cfg(cfg))
+            tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+            sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+    except Exception as e:
+        logger.warning("labs breeding tick skipped (forced mutation): %s", e)
+
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]

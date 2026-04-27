@@ -2326,6 +2326,57 @@ function tradeToastRowKey(t: AnyObj): string {
   return `row:${ca}|${tk}|${side}|${amt}|${mode}`;
 }
 
+const LABS_BREEDING_TOAST_SEEN_KEY = "kalshibot_labs_breeding_toast_seen_v1";
+
+/** Human label for ``lab_*`` keys in breeding log rows. */
+function labsBreedingLabLabel(branchRaw: unknown): string {
+  const s = String(branchRaw || "").trim().toLowerCase();
+  if (s === "lab_a" || s === "a") return "Lab A";
+  if (s === "lab_b" || s === "b") return "Lab B";
+  if (s === "lab_c" || s === "c") return "Lab C";
+  if (s === "lab_d" || s === "d") return "Lab D";
+  if (s.startsWith("lab_")) return s.replace("lab_", "Lab ").toUpperCase().replace("LAB ", "Lab ");
+  return s ? s : "Lab";
+}
+
+// LABS BREEDING v0.1 — special toasts for birth and death/cull
+function labsBreedingToastFromLogRow(row: AnyObj): { tone: "green" | "yellow" | "red"; segments: { tier: "green" | "yellow" | "red"; text: string }[] } | null {
+  const tid = String(row?.toast_id || "").trim();
+  const family = String(row?.toast_family || "").trim();
+  if (!tid || !family) return null;
+  if (family === "birth") {
+    const parent = labsBreedingLabLabel(row.parent);
+    const text = `New child born from ${parent} — strong traits inherited.`;
+    return { tone: "green", segments: [{ tier: "green", text }] };
+  }
+  if (family === "sad") {
+    const reason = String(row?.reason || "").trim();
+    const via = String(row?.via || "").trim();
+    const victim = labsBreedingLabLabel(row.victim);
+    const viaPhrase =
+      via === "child"
+        ? "replaced by a stronger virtual offspring"
+        : via === "breed"
+          ? "replaced after a fresh crossover"
+          : "retired to make room for fitter genomes";
+    if (reason === "child_pool_cull") {
+      const text = "A virtual offspring left the pool (natural selection) — stronger profiles keep the slots.";
+      return { tone: "yellow", segments: [{ tier: "yellow", text }] };
+    }
+    if (reason === "hard_death") {
+      const text = `${victim} has been put to bed (zero equity) — ${viaPhrase}.`;
+      return { tone: "red", segments: [{ tier: "red", text }] };
+    }
+    if (reason === "soft_cull") {
+      const text = `${victim} has been put to bed (underperformed peers) — ${viaPhrase}.`;
+      return { tone: "yellow", segments: [{ tier: "yellow", text }] };
+    }
+    const text = `${victim} has been put to bed — ${viaPhrase}.`;
+    return { tone: "yellow", segments: [{ tier: "yellow", text }] };
+  }
+  return null;
+}
+
 /** Union dashboard + poll rows by stable key so new trades on ``recent_trades`` are not dropped when /api/trades is non-empty but stale. */
 function mergeTradeRowsForToastEffect(dashRows: unknown, pollRows: AnyObj[] | null): AnyObj[] {
   const byKey = new Map<string, AnyObj>();
@@ -2965,6 +3016,9 @@ export default function App() {
   const seenOptimizerEventIds = useRef<Set<string>>(new Set());
   const dismissedOptimizerEventIds = useRef<Set<string>>(new Set());
   const optimizerHistoryBootstrapped = useRef(false);
+  /** ``toast_id`` values from ``labs_breeding_log`` already shown (or present at first dashboard load). */
+  const labsBreedingToastSeenRef = useRef<Set<string>>(new Set());
+  const labsBreedingToastBootstrappedRef = useRef(false);
   const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c" | "d">("live");
   const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d">("live");
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
@@ -3237,6 +3291,8 @@ export default function App() {
   const TOAST_AUTOCLOSE_MAX_MS = 15_000;
   /** ``optimizer_suggested_action`` toasts: always 10s (separate from trade toasts' random 10–15s). */
   const OPTIMIZER_SUGGESTED_TOAST_MS = 10_000;
+  // LABS BREEDING v0.1 — special toasts for birth and death/cull
+  const LABS_BREEDING_TOAST_MS = 11_000;
 
   useEffect(() => {
     const activeIds = new Set<string>();
@@ -3246,9 +3302,12 @@ export default function App() {
       activeIds.add(id);
       if (toastAutoDismissTimeoutsRef.current.has(id)) continue;
       const isSuggested = id.startsWith("optimizer-suggested-");
+      const isLabsBreedingToast = id.startsWith("labs-breeding-toast-");
       const delayMs = isSuggested
         ? OPTIMIZER_SUGGESTED_TOAST_MS
-        : TOAST_AUTOCLOSE_MIN_MS + Math.floor(Math.random() * Math.max(0, TOAST_AUTOCLOSE_MAX_MS - TOAST_AUTOCLOSE_MIN_MS + 1));
+        : isLabsBreedingToast
+          ? LABS_BREEDING_TOAST_MS
+          : TOAST_AUTOCLOSE_MIN_MS + Math.floor(Math.random() * Math.max(0, TOAST_AUTOCLOSE_MAX_MS - TOAST_AUTOCLOSE_MIN_MS + 1));
       const tid = window.setTimeout(() => {
         toastAutoDismissTimeoutsRef.current.delete(id);
         setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== id));
@@ -3437,6 +3496,16 @@ export default function App() {
           }
         }
       }
+      const rawLabsSeen = window.sessionStorage.getItem(LABS_BREEDING_TOAST_SEEN_KEY);
+      if (rawLabsSeen) {
+        const arr = JSON.parse(rawLabsSeen);
+        if (Array.isArray(arr)) {
+          for (const id of arr) {
+            const s = String(id || "");
+            if (s) labsBreedingToastSeenRef.current.add(s);
+          }
+        }
+      }
     } catch {
       // Ignore storage parsing errors.
     }
@@ -3556,6 +3625,76 @@ export default function App() {
       return merged.slice(0, 28);
     });
   }, [optimizerStatus]);
+
+  useEffect(() => {
+    if (!dash) return;
+    const oc = ((dash.config || {}) as AnyObj)?.optimizer;
+    const log = Array.isArray(oc?.labs_breeding_log) ? (oc.labs_breeding_log as AnyObj[]) : [];
+    if (!labsBreedingToastBootstrappedRef.current) {
+      for (const row of log) {
+        const tid = String(row?.toast_id || "").trim();
+        if (tid) labsBreedingToastSeenRef.current.add(tid);
+      }
+      labsBreedingToastBootstrappedRef.current = true;
+      try {
+        window.sessionStorage.setItem(
+          LABS_BREEDING_TOAST_SEEN_KEY,
+          JSON.stringify(Array.from(labsBreedingToastSeenRef.current).slice(-220)),
+        );
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const fresh: AnyObj[] = [];
+    for (const row of log) {
+      const tid = String(row?.toast_id || "").trim();
+      if (!tid || labsBreedingToastSeenRef.current.has(tid)) continue;
+      labsBreedingToastSeenRef.current.add(tid);
+      fresh.push(row);
+    }
+    if (!fresh.length) return;
+    try {
+      window.sessionStorage.setItem(
+        LABS_BREEDING_TOAST_SEEN_KEY,
+        JSON.stringify(Array.from(labsBreedingToastSeenRef.current).slice(-220)),
+      );
+    } catch {
+      /* ignore */
+    }
+    const chronological = [...fresh].reverse();
+    const toAdd: AnyObj[] = [];
+    for (const row of chronological) {
+      const formatted = labsBreedingToastFromLogRow(row);
+      if (!formatted) continue;
+      const tid = String(row.toast_id || "").trim();
+      if (!tid) continue;
+      toAdd.push({
+        id: `labs-breeding-toast-${tid}`,
+        title: "Labs",
+        tone: formatted.tone,
+        segments: formatted.segments,
+        created_at: new Date().toISOString(),
+      });
+    }
+    if (!toAdd.length) return;
+    setOptimizerNotifs((prevN) => {
+      const byId = new Map<string, AnyObj>();
+      for (const n of prevN) {
+        const pid = String(n.id || "");
+        if (dismissedTradeToastIdsRef.current.has(pid)) continue;
+        byId.set(pid, n);
+      }
+      for (const n of toAdd) {
+        const nid = String(n.id || "");
+        if (dismissedTradeToastIdsRef.current.has(nid)) continue;
+        byId.set(nid, n);
+      }
+      const merged = Array.from(byId.values());
+      merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+      return merged.slice(0, 28);
+    });
+  }, [dash]);
 
   const promoteLabAToLive = async () => {
     const pnlA = Number(metricsLabA.total_pnl_dollars ?? 0);
