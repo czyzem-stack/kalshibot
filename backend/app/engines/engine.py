@@ -3,6 +3,7 @@
 import asyncio
 import datetime as dt
 import json
+import logging
 import math
 import re
 import uuid
@@ -36,6 +37,10 @@ from ..kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kals
 from ..kalshi_client import KalshiClient
 from ..optimizer import maybe_auto_optimize
 from ..persistence import Store, _data_log
+from ..settings_env import env
+from ..types_kalshi import MarketRow
+
+logger = logging.getLogger("kalshibot.engine")
 
 
 def utc_now() -> dt.datetime:
@@ -62,7 +67,9 @@ def window_id_for(now: dt.datetime, window_minutes: int) -> str:
 
 
 # Per-asset trade cap: 15-minute resolution keyed off contract ``close_time`` (falls back to wall clock if missing).
-STUDY_TRADE_WINDOW_MINUTES = 15
+STUDY_TRADE_WINDOW_MINUTES = int(env.engine_study_trade_window_minutes)
+
+# ─── HELPERS: time, prices, and rule geometry ─────────────────────────────────────────
 
 
 def _study_cap_key(*, asset_id: str, ticker: str, close_time_iso: str, study_wall_wid: str) -> str:
@@ -620,11 +627,17 @@ class EngineState:
     asset_snapshots: dict[str, dict[str, Any]] | None = None
 
 
+# ─── HELPERS: engine state + tick orchestration ───────────────────────────────────────
 class TradingEngine:
-    def __init__(self, store: Store, branch: str = BRANCH_LIVE) -> None:
+    # PHASE 4: keep ``client`` optional for backward safety; prefer shared injection from ``state.require_kalshi()``.
+    def __init__(self, store: Store, branch: str = BRANCH_LIVE, *, client: KalshiClient | None = None) -> None:
         self.store = store
         self.branch = branch
-        self.client = KalshiClient()
+        if client is None:
+            logger.warning("PHASE 4: TradingEngine(%s) created without injected shared KalshiClient; falling back to new client", branch)
+            self.client = KalshiClient()
+        else:
+            self.client = client
         self.state = EngineState()
         self._seen_keys: set[str] = set()
         self._last_window_id: str | None = None
@@ -656,7 +669,13 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     if not cfg:
         return
 
-    window_minutes = int(cfg.get("window_minutes") or 15)
+    first_branch_tick = engine._tick_count == 0
+    # PHASE 3: env-backed caps preserve defaults while making tuning explicit.
+    ob_enrich_cap = int(env.engine_orderbook_enrich_first_tick_cap) if (KalshiClient.prewarm_complete and first_branch_tick) else int(env.engine_orderbook_enrich_steady_cap)
+
+    # PHASE 4: default comes from typed settings while preserving behavior (still overridable in cfg).
+    # PHASE FINAL: typed env-backed default, preserving prior fallback value (15).
+    window_minutes = int(cfg.get("window_minutes") or env.default_window_minutes)
     wid = window_id_for(now, window_minutes)
     if engine._last_window_id != wid:
         engine._seen_keys.clear()
@@ -676,10 +695,11 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     if _is_lab_branch(branch):
         lab_key = _lab_key_for_branch(branch) or "lab_a"
         lab = full_cfg.get(lab_key) or {}
-        balance_cents = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
+        # PHASE FINAL: typed default from settings_env (same fallback as before).
+        balance_cents = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
     elif trade_mode == "simulate" or bool(cfg.get("_simulate_orders")):
         # Live branch paper sim: stake against configured bankroll only (not exchange balance).
-        balance_cents = int(cfg.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
+        balance_cents = int(cfg.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
     else:
         try:
             bal = await engine.client.get_private("/portfolio/balance")
@@ -722,7 +742,7 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
         markets = list(data.get("markets") or [])
         scanned += len(markets)
         trace.append(f"asset {asset_id} series={series}: fetched {len(markets)} open markets")
-        ob_n = await enrich_markets_with_orderbooks(engine.client, markets, now, max_fetches=20)
+        ob_n = await enrich_markets_with_orderbooks(engine.client, markets, now, max_fetches=ob_enrich_cap)
         if ob_n:
             trace.append(f"asset {asset_id} series={series}: orderbook backfill improved {ob_n} row(s)")
         dev_floor = dev_sim_yes_bypass_threshold(cfg)
@@ -806,6 +826,8 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
 
     await _maybe_auto_reset_lab_paper_on_tick_failure(engine, full_cfg)
 
+    engine._tick_count += 1
+
 
 async def _maybe_auto_reset_lab_paper_on_tick_failure(
     engine: TradingEngine, full_cfg: dict[str, Any]
@@ -835,7 +857,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         roll = await engine.store.dashboard_branch_trade_rollups(br_engine, "simulate")
         settled_pnl = int(roll.get("total_pnl_cents") or 0)
         open_committed = int(roll.get("open_committed_cents") or 0)
-        paper = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000)
+        paper = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
         equity_cents = paper + settled_pnl - open_committed
         bust = equity_cents <= 0
 
@@ -1090,7 +1112,7 @@ def pick_asset_snapshot(
 
 async def maybe_backfill_headline_orderbook(
     client: KalshiClient,
-    markets: list[Any],
+    markets: list[MarketRow | dict[str, Any]],
     pre_snap: dict[str, Any],
     trace: list[str],
     *,
@@ -1137,6 +1159,7 @@ async def maybe_backfill_headline_orderbook(
     return True
 
 
+# ─── HELPERS: trade execution path (sim/live) ─────────────────────────────────────────
 async def handle_market(
     engine: TradingEngine,
     *,
@@ -1331,9 +1354,9 @@ async def handle_market(
             )
             return None
 
-    window_minutes = int(cfg.get("window_minutes") or 15)
+    window_minutes = int(cfg.get("window_minutes") or env.default_window_minutes)
     spent = await spent_in_window(engine.store, window_id, trade_mode, window_minutes, branch)
-    fraction = float(cfg.get("balance_fraction_per_window") or 0.03)
+    fraction = float(cfg.get("balance_fraction_per_window") or env.default_balance_fraction_per_window)
     stake_cents = consecutive_stake_cents(balance_cents, spent, fraction)
     open_committed_cents = await engine.store.open_committed_cents_for_branch_mode(branch, trade_mode)
     free_cash_cents = max(0, int(balance_cents) - int(open_committed_cents))
@@ -1364,7 +1387,7 @@ async def handle_market(
         return None
 
     max_contracts = stake_cents / per_contract_cents if per_contract_cents else 0
-    min_c = int(cfg.get("min_contracts") or 1)
+    min_c = int(cfg.get("min_contracts") or env.default_min_contracts)
     fee_model = paper_fee_model_from_cfg(cfg)
     fee_mult = kalshi_fee_multiplier_from_cfg(cfg)
     kalshi_maker = fee_model == "kalshi_maker"
@@ -1646,6 +1669,7 @@ async def log_signal(
     )
 
 
+# ─── HELPERS: settlement, MTM, and exit management ────────────────────────────────────
 def market_dict_from_public_response(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
@@ -2161,7 +2185,7 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
     branch = engine.branch
     cfg = merge_branch_config(full_cfg, branch)
     try:
-        timeout_min = float(cfg.get("auto_close_open_sim_minutes") or full_cfg.get("auto_close_open_sim_minutes") or 75)
+        timeout_min = float(cfg.get("auto_close_open_sim_minutes") or full_cfg.get("auto_close_open_sim_minutes") or env.default_auto_close_open_sim_minutes)
     except (TypeError, ValueError):
         timeout_min = 75.0
     if timeout_min <= 0:
@@ -2411,7 +2435,7 @@ async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | N
         if _is_lab_branch(branch):
             paper = lab_paper_equity_start_cents(full_cfg, branch)
         else:
-            paper = int(full_cfg.get("paper_balance_cents") or 500_000)
+            paper = int(full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
         equity = paper + settled_pnl - open_committed
         mode = "simulate"
         open_rows = await engine.store.open_sim_trades_for_branch(branch)

@@ -11,7 +11,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,13 +43,14 @@ from .engine import (
     exclude_subtitle_parts_from_cfg,
     snapshot_equity,
 )
-from .kalshi_client import KalshiClient
+from .kalshi_client import KalshiClient, new_shared_http_client, prewarm_open_markets_for_config
+from .kalshi_ws import kalshi_ws_task_group_runner
 from .kalshi_portfolio import fetch_portfolio_snapshot
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import expand_partial_lab_branch
 from .optimizer.promotion import lab_a_promotion_report
-from .optimizer_claude import pulse_chart_baseline
+from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
 from .middleware import ApiBearerAuthMiddleware, SecurityHeadersMiddleware
 from .routers import health as health_routes
 from .routers import optimizer_routes, public_root
@@ -57,16 +58,23 @@ from .settings_env import env, kalshi_credentials_report
 from .state import (
     DASHBOARD_ORDERBOOK_CACHE,
     DASHBOARD_ORDERBOOK_CACHE_TTL_S,
-    ENGINES,
     REPO_ROOT,
-    engine_lab_a,
-    engine_lab_b,
-    engine_lab_c,
-    engine_lab_d,
-    engine_live,
+    init_runtime_engines,
+    require_kalshi,
     storage_dict,
     store,
     stop_event,
+)
+from .types_api import (
+    AccountResponse,
+    DashboardOpenPositionsResponse,
+    DashboardOrderbooksResponse,
+    DashboardRecentTradesResponse,
+    DashboardResponse,
+    EngineStatusBlock,
+    EngineStatusResponse,
+    MarketPulseResponse,
+    MarketsPreviewResponse,
 )
 
 # structlog: stdlib ``logging.getLogger`` + uvicorn share ``ProcessorFormatter``; dev = colored, LOG_JSON=1 = one line JSON
@@ -98,7 +106,7 @@ def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
     return f"ch-{h}"
 
 
-def _engine_status_block(engine: TradingEngine, *, engine_running: bool, simulate_orders: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+def _engine_status_block(engine: TradingEngine, *, engine_running: bool, simulate_orders: bool, extra: dict[str, Any] | None = None) -> EngineStatusBlock:
     out = {
         "engine_running": bool(engine_running),
         "simulate_orders": bool(simulate_orders),
@@ -575,23 +583,100 @@ def _lab_thought_stream(
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    t0 = time.perf_counter()
+    prof = bool(env.profile_startup)
+    restore_ttl_task: asyncio.Task[None] | None = None
+    if prof:
+        logger.info("kalshibot_startup_begin")
+
+    def _log_phase(name: str) -> None:
+        if prof:
+            logger.info("kalshibot_startup phase=%s total_ms=%.1f", name, (time.perf_counter() - t0) * 1000.0)
+
     reset_uvicorn_loggers_to_root()
     state.stop_event.clear()
+    state.startup_complete.clear()
+    state.kalshi_ws_task = None
     state.app_started_at_iso = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0).isoformat()
+
+    # One shared httpx connection pool (no per-request ``AsyncClient()`` construction).
+    state.http_client = new_shared_http_client()
+    kc = KalshiClient(http_client=state.http_client)
+    state.shared_kalshi = kc
+    KalshiClient.apply_cold_start_cache_ttls(
+        open_markets=float(env.kalshi_cold_start_cache_ttl_s),
+        orderbooks=min(60.0, float(env.kalshi_cold_start_cache_ttl_s)),
+        single_market=15.0,
+    )
+    _log_phase("http_client_and_cold_ttls")
+
+    # PHASE 4: inject the process-shared Kalshi client into every TradingEngine.
+    init_runtime_engines(state.require_kalshi())
+    _log_phase("trading_engines")
+
+    # Single batched /markets pre-warm so five branches do not each cold-miss the same series.
+    try:
+        full_cfg = await store.load_config()
+        await prewarm_open_markets_for_config(kc, full_cfg, max_concurrent=int(env.prewarm_max_concurrent))
+    except Exception as e:
+        logger.warning("prewarm_open_markets skipped: %s", e)
+    _log_phase("prewarm_open_markets")
+
+    # PHASE 2: strict sequence — engines exist, shared client + cold TTLs, then pre-warm; only then tickers for WS + startup gate.
+    try:
+        KalshiClient.seed_ws_market_tickers(max_tickers=int(env.kalshi_ws_max_markets))
+    except Exception as e:
+        logger.warning("seed_ws_market_tickers skipped: %s", e)
+    state.startup_complete.set()
+    _log_phase("startup_complete")
+
+    async def _restore_cache_ttls_after_delay() -> None:
+        try:
+            await asyncio.sleep(float(env.startup_restore_ttls_delay_s))
+            KalshiClient.apply_steady_state_cache_ttls()
+            if prof:
+                logger.info("kalshibot_startup steady_state_ttls_restored")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
+    restore_ttl_task = asyncio.create_task(_restore_cache_ttls_after_delay())
+
+    # PHASE 2: background work only after pre-warm and startup_complete (dual_engine_loop also awaits the event).
     state.bg_task = asyncio.create_task(dual_engine_loop(state.ENGINES, state.stop_event))
     state.optimizer_task = asyncio.create_task(_optimizer_loop(state.stop_event))
+    if env.kalshi_ws_enabled:
+        state.kalshi_ws_task = asyncio.create_task(kalshi_ws_task_group_runner(kc, state.stop_event))
+        _log_phase("kalshi_ws_task")
+    if prof:
+        logger.info("kalshibot_startup_ready total_ms=%.1f", (time.perf_counter() - t0) * 1000.0)
     try:
         yield
     finally:
+        if restore_ttl_task is not None:
+            restore_ttl_task.cancel()
+            try:
+                await restore_ttl_task
+            except (asyncio.CancelledError, Exception):
+                pass
         state.stop_event.set()
-        tasks = [t for t in (state.bg_task, state.optimizer_task) if t is not None]
+        tasks = [t for t in (state.bg_task, state.optimizer_task, state.kalshi_ws_task) if t is not None]
         for t in tasks:
             t.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         state.bg_task = None
         state.optimizer_task = None
+        state.kalshi_ws_task = None
         state.app_started_at_iso = None
+        if state.http_client is not None:
+            await state.http_client.aclose()
+        state.http_client = None
+        # Close lazy-owned client in ``require_kalshi`` path; shared pool already closed above.
+        if state.shared_kalshi is not None and getattr(state.shared_kalshi, "_own_http", False):
+            await state.shared_kalshi.aclose()
+        state.shared_kalshi = None
 
 
 app = FastAPI(title="Kalshi Bot", lifespan=_app_lifespan)
@@ -643,7 +728,7 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
         k = m.get(s)
         order = (k,) if k else ()
     for br in order:
-        eng = ENGINES.get(br)
+        eng = state.ENGINES.get(br)
         if not eng:
             continue
         try:
@@ -655,13 +740,13 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
 def _clear_engine_mem_after_reset(branch_scope: str) -> None:
     """Clear in-memory tick snapshots for engines touched by a data reset."""
     if branch_scope == "all":
-        keys = list(ENGINES.keys())
+        keys = list(state.ENGINES.keys())
     else:
         m = {"live": BRANCH_LIVE, "lab_a": BRANCH_LAB_A, "lab_b": BRANCH_LAB_B, "lab_c": BRANCH_LAB_C, "lab_d": BRANCH_LAB_D}
         k = m.get(branch_scope)
         keys = [k] if k else []
     for key in keys:
-        eng = ENGINES.get(key)
+        eng = state.ENGINES.get(key)
         if not eng:
             continue
         eng.state.asset_snapshots = {}
@@ -1052,7 +1137,7 @@ async def add_labs_paper_bankroll(body: dict[str, Any] = Body(default_factory=di
 
 
 @app.get("/api/engine/status")
-async def engine_status() -> dict[str, Any]:
+async def engine_status() -> EngineStatusResponse:
     cfg = await store.load_config()
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
@@ -1060,31 +1145,31 @@ async def engine_status() -> dict[str, Any]:
     lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     return {
         "live": _engine_status_block(
-            engine_live,
+            state.engine_live,
             engine_running=bool(cfg.get("engine_running")),
             simulate_orders=live_paper_trading_enabled(cfg),
             extra={"simulate": live_paper_trading_enabled(cfg)},
         ),
         "lab_a": _engine_status_block(
-            engine_lab_a,
+            state.engine_lab_a,
             engine_running=bool(lab_a.get("engine_running")),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_a.get("auto_optimize")), "optimizer_note": lab_a.get("optimizer_note")},
         ),
         "lab_b": _engine_status_block(
-            engine_lab_b,
+            state.engine_lab_b,
             engine_running=bool(lab_b.get("engine_running")),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_b.get("auto_optimize")), "optimizer_note": lab_b.get("optimizer_note")},
         ),
         "lab_c": _engine_status_block(
-            engine_lab_c,
+            state.engine_lab_c,
             engine_running=bool(lab_c.get("engine_running")),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_c.get("auto_optimize")), "optimizer_note": lab_c.get("optimizer_note")},
         ),
         "lab_d": _engine_status_block(
-            engine_lab_d,
+            state.engine_lab_d,
             engine_running=bool(lab_d.get("engine_running")),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_d.get("auto_optimize")), "optimizer_note": lab_d.get("optimizer_note")},
@@ -1093,8 +1178,8 @@ async def engine_status() -> dict[str, Any]:
 
 
 @app.get("/api/account")
-async def account() -> dict[str, Any]:
-    client = KalshiClient()
+async def account() -> AccountResponse:
+    client = require_kalshi()
     snap = await fetch_portfolio_snapshot(client)
     return {
         "balance": snap["balance"],
@@ -1110,21 +1195,22 @@ async def account() -> dict[str, Any]:
 async def markets_pulse(
     branch: str = Query("live"),
     include_unpriced: bool = Query(False),
-) -> dict[str, Any]:
+) -> MarketPulseResponse:
     b = str(branch or "live").strip().lower()
     if b == "sim_lab":
         b = BRANCH_LAB_A
     if b not in (BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D):
         b = BRANCH_LIVE
-    return await fetch_market_pulse(store, branch=b, include_unpriced=include_unpriced)
+    # PHASE 3.1: typed contract only; payload remains identical.
+    return cast(MarketPulseResponse, await fetch_market_pulse(store, branch=b, include_unpriced=include_unpriced))
 
 
 @app.get("/api/markets/preview")
 async def markets_preview(
     series_ticker: str,
     include_unpriced: bool = Query(False, description="If true, include rows whose YES subtitle matches exclude_* (e.g. TBD)."),
-) -> dict[str, Any]:
-    client = KalshiClient()
+) -> MarketsPreviewResponse:
+    client = require_kalshi()
     data = await client.get_public(
         "/markets",
         {"series_ticker": series_ticker, "status": "open", "limit": "50"},
@@ -1326,7 +1412,7 @@ def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: st
     return n
 
 
-async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
+async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     """
     Assemble the full dashboard JSON. When ``with_marks`` is False, skip the parallel
     ``_refresh_paper_mtm_from_marks`` Kalshi calls (faster; use ``GET /api/dashboard/equity`` for polling).
@@ -1379,7 +1465,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
     lab_c_engine_on = bool(lab_c.get("engine_running")) if isinstance(lab_c, dict) else False
     lab_d_engine_on = bool(lab_d.get("engine_running")) if isinstance(lab_d, dict) else False
 
-    client = KalshiClient()
+    client = require_kalshi()
     public_ok = False
     public_err: str | None = None
     try:
@@ -1473,7 +1559,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
         if simulate_live:
             mtm_tasks.append(
                 _refresh_paper_mtm_from_marks(
-                    engine_live,
+                    state.engine_live,
                     paper_start_cents=int(cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS),
                     roll=roll_live,
                     out_metrics=metrics_live,
@@ -1482,25 +1568,25 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
         mtm_tasks.extend(
             [
                 _refresh_paper_mtm_from_marks(
-                    engine_lab_a,
+                    state.engine_lab_a,
                     paper_start_cents=lab_paper_basis_a,
                     roll=roll_lab_a,
                     out_metrics=metrics_lab_a,
                 ),
                 _refresh_paper_mtm_from_marks(
-                    engine_lab_b,
+                    state.engine_lab_b,
                     paper_start_cents=lab_paper_basis_b,
                     roll=roll_lab_b,
                     out_metrics=metrics_lab_b,
                 ),
                 _refresh_paper_mtm_from_marks(
-                    engine_lab_c,
+                    state.engine_lab_c,
                     paper_start_cents=lab_paper_basis_c,
                     roll=roll_lab_c,
                     out_metrics=metrics_lab_c,
                 ),
                 _refresh_paper_mtm_from_marks(
-                    engine_lab_d,
+                    state.engine_lab_d,
                     paper_start_cents=lab_paper_basis_d,
                     roll=roll_lab_d,
                     out_metrics=metrics_lab_d,
@@ -1618,57 +1704,57 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
             "live": {
                 "engine_running": live_engine_on,
                 "simulate_orders": bool(eff_live.get("_simulate_orders")) if eff_live else simulate_live,
-                "last_tick_at": engine_live.state.last_tick_at,
-                "last_error": engine_live.state.last_error,
-                "markets_scanned": engine_live.state.markets_scanned,
-                "last_tick_trace": engine_live.state.last_tick_trace,
+                "last_tick_at": state.engine_live.state.last_tick_at,
+                "last_error": state.engine_live.state.last_error,
+                "markets_scanned": state.engine_live.state.markets_scanned,
+                "last_tick_trace": state.engine_live.state.last_tick_trace,
             },
             "lab_a": {
                 "engine_running": lab_a_engine_on,
                 "simulate_orders": bool(eff_lab_a.get("_simulate_orders")) if eff_lab_a else True,
-                "last_tick_at": engine_lab_a.state.last_tick_at,
-                "last_error": engine_lab_a.state.last_error,
-                "markets_scanned": engine_lab_a.state.markets_scanned,
-                "last_tick_trace": engine_lab_a.state.last_tick_trace,
+                "last_tick_at": state.engine_lab_a.state.last_tick_at,
+                "last_error": state.engine_lab_a.state.last_error,
+                "markets_scanned": state.engine_lab_a.state.markets_scanned,
+                "last_tick_trace": state.engine_lab_a.state.last_tick_trace,
             },
             "lab_b": {
                 "engine_running": lab_b_engine_on,
                 "simulate_orders": bool(eff_lab_b.get("_simulate_orders")) if eff_lab_b else True,
-                "last_tick_at": engine_lab_b.state.last_tick_at,
-                "last_error": engine_lab_b.state.last_error,
-                "markets_scanned": engine_lab_b.state.markets_scanned,
-                "last_tick_trace": engine_lab_b.state.last_tick_trace,
+                "last_tick_at": state.engine_lab_b.state.last_tick_at,
+                "last_error": state.engine_lab_b.state.last_error,
+                "markets_scanned": state.engine_lab_b.state.markets_scanned,
+                "last_tick_trace": state.engine_lab_b.state.last_tick_trace,
             },
             "lab_c": {
                 "engine_running": lab_c_engine_on,
                 "simulate_orders": bool(eff_lab_c.get("_simulate_orders")) if eff_lab_c else True,
-                "last_tick_at": engine_lab_c.state.last_tick_at,
-                "last_error": engine_lab_c.state.last_error,
-                "markets_scanned": engine_lab_c.state.markets_scanned,
-                "last_tick_trace": engine_lab_c.state.last_tick_trace,
+                "last_tick_at": state.engine_lab_c.state.last_tick_at,
+                "last_error": state.engine_lab_c.state.last_error,
+                "markets_scanned": state.engine_lab_c.state.markets_scanned,
+                "last_tick_trace": state.engine_lab_c.state.last_tick_trace,
             },
             "lab_d": {
                 "engine_running": lab_d_engine_on,
                 "simulate_orders": bool(eff_lab_d.get("_simulate_orders")) if eff_lab_d else True,
-                "last_tick_at": engine_lab_d.state.last_tick_at,
-                "last_error": engine_lab_d.state.last_error,
-                "markets_scanned": engine_lab_d.state.markets_scanned,
-                "last_tick_trace": engine_lab_d.state.last_tick_trace,
+                "last_tick_at": state.engine_lab_d.state.last_tick_at,
+                "last_error": state.engine_lab_d.state.last_error,
+                "markets_scanned": state.engine_lab_d.state.markets_scanned,
+                "last_tick_trace": state.engine_lab_d.state.last_tick_trace,
             },
         },
         "asset_snapshots": {
-            "live": engine_live.state.asset_snapshots or {},
-            "lab_a": engine_lab_a.state.asset_snapshots or {},
-            "lab_b": engine_lab_b.state.asset_snapshots or {},
-            "lab_c": engine_lab_c.state.asset_snapshots or {},
-            "lab_d": engine_lab_d.state.asset_snapshots or {},
+            "live": state.engine_live.state.asset_snapshots or {},
+            "lab_a": state.engine_lab_a.state.asset_snapshots or {},
+            "lab_b": state.engine_lab_b.state.asset_snapshots or {},
+            "lab_c": state.engine_lab_c.state.asset_snapshots or {},
+            "lab_d": state.engine_lab_d.state.asset_snapshots or {},
         },
         "rule_suggestions": rule_suggestions_from_snapshots(
-            engine_live.state.asset_snapshots or {},
-            engine_lab_a.state.asset_snapshots or {},
-            engine_lab_b.state.asset_snapshots or {},
-            engine_lab_c.state.asset_snapshots or {},
-            engine_lab_d.state.asset_snapshots or {},
+            state.engine_live.state.asset_snapshots or {},
+            state.engine_lab_a.state.asset_snapshots or {},
+            state.engine_lab_b.state.asset_snapshots or {},
+            state.engine_lab_c.state.asset_snapshots or {},
+            state.engine_lab_d.state.asset_snapshots or {},
         ),
         "metrics": {
             "mode": mode_live,
@@ -1731,12 +1817,12 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
 
 
 @app.get("/api/dashboard")
-async def dashboard() -> dict[str, Any]:
+async def dashboard() -> DashboardResponse:
     return await _compose_dashboard_base(with_marks=True)
 
 
 @app.get("/api/dashboard/equity")
-async def dashboard_equity() -> dict[str, Any]:
+async def dashboard_equity() -> DashboardResponse:
     """
     Same structure as ``/api/dashboard`` but skips the slow Kalshi mark-refresh pass; intended for
     more frequent client polling. Live MTM in ``metrics*`` may be stale between full refreshes.
@@ -1745,7 +1831,7 @@ async def dashboard_equity() -> dict[str, Any]:
 
 
 @app.get("/api/dashboard/recent_trades")
-async def dashboard_recent_trades() -> dict[str, Any]:
+async def dashboard_recent_trades() -> DashboardRecentTradesResponse:
     """Recent ``signals`` / ``trades`` slices (lighter than a full dashboard round-trip)."""
     trades = await store.recent_trades(limit=500)
     signals = await store.recent_signals(limit=500)
@@ -1758,12 +1844,12 @@ async def dashboard_recent_trades() -> dict[str, Any]:
 
 
 @app.get("/api/dashboard/open_positions")
-async def dashboard_open_positions() -> dict[str, Any]:
+async def dashboard_open_positions() -> DashboardOpenPositionsResponse:
     """
     Account snapshot, Kalshi private positions, and per-branch sim opens used for the Holdings grid.
     """
     cfg = await store.load_config()
-    client = KalshiClient()
+    client = require_kalshi()
     portfolio = await fetch_portfolio_snapshot(client)
     kalshi_pos_list = [p for p in (portfolio.get("positions") or []) if isinstance(p, dict)]
     sim_open_live, sim_open_lab_a, sim_open_lab_b, sim_open_lab_c, sim_open_lab_d = await asyncio.gather(
@@ -1789,7 +1875,7 @@ async def dashboard_open_positions() -> dict[str, Any]:
 
 
 @app.get("/api/dashboard/orderbooks")
-async def dashboard_orderbooks() -> dict[str, Any]:
+async def dashboard_orderbooks() -> DashboardOrderbooksResponse:
     """
     Last refreshed paper MTM / mark-derived metrics (cached ~5s from the most recent full dashboard run
     with ``with_marks=True``). Triggers a full mark pass when the cache is stale.

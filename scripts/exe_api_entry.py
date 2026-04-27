@@ -13,6 +13,8 @@ def main() -> None:
         port = int(port_raw)
     except ValueError:
         port = 8765
+    if os.environ.get("KALSHI_PROFILE_STARTUP", "0").lower() in ("1", "true", "yes"):
+        print("KALSHI_PROFILE_STARTUP=1: watch kalshibot.api logs for phase timings (kalshibot_startup …)")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

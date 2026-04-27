@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import logging
+import time
 
+from .. import state
 from ..alert_webhook import post_branch_error_alerts
 from ..branch_config import (
     BRANCH_LAB_A,
@@ -14,6 +16,7 @@ from ..branch_config import (
     BRANCH_LIVE,
     live_paper_trading_enabled,
 )
+from ..kalshi_client import KalshiClient
 from ..optimizer import maybe_auto_optimize
 from ..persistence import _data_log
 from .engine import (
@@ -26,17 +29,25 @@ from .engine import (
     tick_once,
     utc_now,
 )
+from ..settings_env import env
+
+logger = logging.getLogger("kalshibot.dual_engine")
 
 
-async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -> None:
+async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asyncio.Event) -> None:
+    # PHASE 2: never run a tick until lifespan finished pre-warm + WS subscription list seed (see main._app_lifespan).
+    await state.startup_complete.wait()
     tick = 0
     prev_engine_alert: dict[str, str | None] = {}
+    _last_tick_log_mono: float = 0.0
     while not stop_event.is_set():
+        _tick_t0 = time.perf_counter()
         eng_live = engines[BRANCH_LIVE]
         full_cfg = await eng_live.store.load_config()
         cfg = full_cfg
         try:
-            poll_candidates: list[float] = [float(cfg.get("poll_seconds") or 8)]
+            # PHASE FINAL: env-backed poll default preserves prior 8s behavior when config omits poll_seconds.
+            poll_candidates: list[float] = [float(cfg.get("poll_seconds") or env.default_poll_seconds)]
             branch_order = [BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D]
             lab_conf = {
                 BRANCH_LAB_A: cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {},
@@ -52,14 +63,17 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
             n_settled: dict[str, int] = {}
             n_swing: dict[str, int] = {}
             n_timeout: dict[str, int] = {}
-            for br in branch_order:
+
+            # PHASE 2: settle / swing / timeout per branch in parallel (same error handling as sequential).
+            async def _branch_settle_cycle(br: str) -> tuple[str, int, int, int]:
                 eng = engines.get(br)
                 if not eng:
-                    continue
+                    return br, 0, 0, 0
                 try:
-                    n_settled[br] = await settle_simulated_trades(eng, full_cfg=full_cfg)
-                    n_swing[br] = await maybe_swing_exit_open_sim_trades(eng, cfg)
-                    n_timeout[br] = await maybe_timeout_close_open_sim_trades(eng, full_cfg=full_cfg)
+                    ns = await settle_simulated_trades(eng, full_cfg=full_cfg)
+                    nw = await maybe_swing_exit_open_sim_trades(eng, cfg)
+                    nt = await maybe_timeout_close_open_sim_trades(eng, full_cfg=full_cfg)
+                    return br, ns, nw, nt
                 except Exception as e:
                     err = str(e)
                     _data_log(
@@ -67,6 +81,16 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                         {"event": "dual_engine_settle_swing_error", "branch": br, "error": err[:800], "at": iso(utc_now())},
                     )
                     eng.state.last_error = err[:500]
+                    return br, 0, 0, 0
+
+            _rows = await asyncio.gather(*[_branch_settle_cycle(br) for br in branch_order], return_exceptions=True)
+            for _r in _rows:
+                if isinstance(_r, BaseException):
+                    continue
+                br, ns, nw, nt = _r  # type: ignore[misc]
+                n_settled[br] = ns
+                n_swing[br] = nw
+                n_timeout[br] = nt
 
             if cfg.get("engine_running"):
                 el = engines[BRANCH_LIVE]
@@ -105,7 +129,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                             if eng_lab:
                                 eng_lab.state.last_error = err[:500]
                     if lab_stagger_armed:
-                        await asyncio.sleep(0.45)
+                        await asyncio.sleep(env.dual_engine_lab_tick_stagger_s)
                     eng_tick = engines.get(br)
                     if eng_tick:
                         try:
@@ -197,6 +221,24 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                 await post_branch_error_alerts(engines, prev_errors=prev_engine_alert)
             except Exception:
                 pass
+            # PHASE 2: periodic tick wall-clock log (off when KALSHI_LOG_TICK_INTERVAL_S=0).
+            _ival = float(env.kalshi_log_tick_interval_s or 0.0)
+            if _ival > 0:
+                _now = time.monotonic()
+                if _now - _last_tick_log_mono >= _ival:
+                    _last_tick_log_mono = _now
+                    _h = KalshiClient.orderbook_cache_hits
+                    _m = KalshiClient.orderbook_cache_misses
+                    _tot = _h + _m
+                    _hr = (100.0 * _h / _tot) if _tot else 0.0
+                    logger.info(
+                        "dual_engine_tick_ms=%.1f tick=%s ws_connected=%s ws_ob_writes=%s ob_cache_hit_pct=%.1f",
+                        (time.perf_counter() - _tick_t0) * 1000.0,
+                        tick,
+                        KalshiClient.ws_connected,
+                        KalshiClient.ws_orderbook_cache_writes,
+                        _hr,
+                    )
         except Exception as e:
             err = str(e)
             _data_log(
@@ -212,7 +254,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: Any) -
                 pass
 
         # Reuse config loaded at loop start — avoids a second SQLite read every poll interval.
-        poll_live = float(full_cfg.get("poll_seconds") or 8)
+        poll_live = float(full_cfg.get("poll_seconds") or env.default_poll_seconds)
         poll_lab_a = float(((full_cfg.get("lab_a") or {}) if isinstance(full_cfg.get("lab_a"), dict) else {}).get("poll_seconds") or poll_live)
         poll_lab_b = float(((full_cfg.get("lab_b") or {}) if isinstance(full_cfg.get("lab_b"), dict) else {}).get("poll_seconds") or poll_live)
         poll_lab_c = float(((full_cfg.get("lab_c") or {}) if isinstance(full_cfg.get("lab_c"), dict) else {}).get("poll_seconds") or poll_live)

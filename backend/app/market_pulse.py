@@ -76,7 +76,12 @@ async def fetch_market_pulse(
     stake_first = consecutive_stake_cents(paper_cents, 0, fraction)
     min_c = int(eff.get("min_contracts") or 1)
 
-    cli = client or KalshiClient()
+    if client is not None:
+        cli = client
+    else:
+        from . import state
+
+        cli = state.require_kalshi()
     rows: list[dict[str, Any]] = []
 
     assets = eff.get("assets") or {}

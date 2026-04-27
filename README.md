@@ -4,7 +4,9 @@
 
 It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys), runs **rule-based engines** per branch, and ships a **Vite** dashboard for config, charts, and health—**no separate hosted control plane**; your keys and data stay on the machine you run it on.
 
-**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Optimizer visualizations](#optimizer-visualizations) · [Developer notes](#developer-notes)
+**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Optimizer visualizations](#optimizer-visualizations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
+
+**Version:** `v0.0` baseline. Release notes now live in [`CHANGELOG.md`](CHANGELOG.md), and the current version marker is tracked in [`VERSION`](VERSION).
 
 **Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
@@ -339,6 +341,37 @@ Constructive extensions that fit this codebase:
 | **Git** | Used for source control only; the running bot does not need git on the server if you deploy from CI artifacts. |
 
 **Performance hint:** a low-power NAS or $5 VPS is fine for **read-only** monitoring, but the **engines + optimizer** benefit from a steady **CPU** core and local disk (avoid network-attached `SQLITE_PATH` on Wi‑Fi for production).
+
+## Performance and startup
+
+The API avoids heavy import-time work: **five `TradingEngine` instances** and a **single shared `httpx.AsyncClient`** are created in the FastAPI **lifespan**; Kalshi’s `/markets` list is **pre-warmed** once from your configured `assets` (deduped series tickers) so the first `dual_engine_loop` turns mostly hit the in-process cache instead of five parallel cold fetches. In-memory cache TTLs are **wider for the first few seconds** (`KALSHI_COLD_START_CACHE_TTL_S`, default 90) and then return to `KALSHI_OPEN_MARKETS_TTL_S` / `KALSHI_ORDERBOOK_TTL_S`.
+
+Set **`KALSHI_PROFILE_STARTUP=1`** to log phase timings (`http_client_and_cold_ttls`, `trading_engines`, `prewarm_open_markets`, `startup_complete`, optional `kalshi_ws_task`, `kalshibot_startup_ready`).
+
+Details: [docs/startup_performance.md](docs/startup_performance.md).
+
+Cold startup reduced from ~60 s to 6.8 s (9x faster) with WebSocket orderbook cache hit rate of 88.9% in steady state (see [docs/startup_performance.md](docs/startup_performance.md)).
+
+### WebSocket mode (Phase 2)
+
+When **`KALSHI_WS_ENABLED=1`**, the API opens an authenticated WebSocket to Kalshi’s trade feed (`wss://…/trade-api/ws/v2`, aligned with `KALSHI_ENV`) and subscribes to **`ticker`** plus **`orderbook_delta`** for up to **`KALSHI_WS_MAX_MARKETS`** tickers seeded from the pre-warmed `/markets` cache. Incoming **orderbook** messages are normalized into the same in-memory shape as REST **`/orderbook`**, so `get_market_orderbook_cached` usually **does not** issue HTTP while the socket is up and parsing succeeds.
+
+**Fallback:** if the package is missing, auth fails, the socket drops, or a message cannot be parsed, the bot **keeps using REST** and the existing TTL cache — no behavior change to rules or fills.
+
+**Observability:** **`GET /api/health/startup`** (same bearer rules as other `/api/health*`) returns `startup_complete`, WS connection flags, message counts, and orderbook cache hit/miss counters. Optional **`KALSHI_LOG_TICK_INTERVAL_S`** (e.g. `30`) logs tick wall time and cache hit percentage on the dual-engine loop.
+
+---
+
+## Architecture & performance (Phase 3)
+
+- **Typed runtime surfaces:** WS/REST payload adapters now use lightweight `TypedDict`/`dataclass` shapes (`backend/app/types_kalshi.py`) to reduce `Any` sprawl without adding runtime model-validation overhead.
+- **Centralized tuning knobs:** remaining hot-path constants (HTTP pool + retries, WS ping/reconnect cadence, prewarm concurrency, startup TTL restore delay, dashboard orderbook cache TTL, engine orderbook caps) are env-backed in `EnvSettings` with defaults equal to prior behavior.
+- **No behavior drift:** Phase 2 startup sequencing (`prewarm -> seed WS tickers -> startup_complete -> background tasks`) and REST fallback semantics remain unchanged.
+
+### Final pass notes
+
+- **PHASE FINAL:** response contracts (`types_api.py`) are now used consistently for health + dashboard endpoints as type hints only.
+- **PHASE FINAL:** remaining engine/loop fallback defaults are centralized in `settings_env.py` (`DEFAULT_*`) with values matching prior behavior.
 
 ---
 

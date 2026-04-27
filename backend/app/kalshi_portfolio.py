@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from .kalshi_client import KalshiClient
@@ -15,13 +16,23 @@ async def fetch_portfolio_snapshot(client: KalshiClient) -> dict[str, Any]:
     orders: list[Any] = []
     errors: list[str] = []
 
-    try:
-        balance = await client.get_private("/portfolio/balance")
-    except Exception as e:
-        errors.append(f"balance: {e}")
+    # Run three independent private reads in parallel; behavior/output shape remains identical.
+    bal_r, pos_r, ord_r = await asyncio.gather(
+        client.get_private("/portfolio/balance"),
+        client.get_private("/portfolio/positions", {"limit": "200"}),
+        client.get_private("/portfolio/orders", {"status": "resting", "limit": "200"}),
+        return_exceptions=True,
+    )
 
-    try:
-        pos = await client.get_private("/portfolio/positions", {"limit": "200"})
+    if isinstance(bal_r, Exception):
+        errors.append(f"balance: {bal_r}")
+    elif isinstance(bal_r, dict):
+        balance = bal_r
+
+    if isinstance(pos_r, Exception):
+        errors.append(f"positions: {pos_r}")
+    else:
+        pos = pos_r
         if isinstance(pos, dict):
             raw = pos.get("market_positions") or pos.get("positions")
             if isinstance(raw, list):
@@ -45,19 +56,17 @@ async def fetch_portfolio_snapshot(client: KalshiClient) -> dict[str, Any]:
                     )
         elif isinstance(pos, list):
             positions = pos
-    except Exception as e:
-        errors.append(f"positions: {e}")
 
-    try:
-        ord_data = await client.get_private("/portfolio/orders", {"status": "resting", "limit": "200"})
+    if isinstance(ord_r, Exception):
+        errors.append(f"orders: {ord_r}")
+    else:
+        ord_data = ord_r
         if isinstance(ord_data, dict):
             raw_o = ord_data.get("orders")
             if isinstance(raw_o, list):
                 orders = raw_o
         elif isinstance(ord_data, list):
             orders = ord_data
-    except Exception as e:
-        errors.append(f"orders: {e}")
 
     return {
         "balance": balance,
