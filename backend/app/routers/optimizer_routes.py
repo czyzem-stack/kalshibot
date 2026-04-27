@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
+from ..types_api import OptimizerStatusResponse
 
 router = APIRouter(prefix="/api/optimizer", tags=["optimizer"])
 logger = logging.getLogger("kalshibot.api")
@@ -120,3 +121,25 @@ async def optimizer_force_internal_mutation() -> dict[str, Any]:
     """Force one internal mutant cycle (bypasses scheduler cadence)."""
     logger.info("forced internal mutation requested via API")
     return await force_internal_mutation_once(state.store)
+
+
+@router.get("/status")
+async def optimizer_status() -> OptimizerStatusResponse:
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (advanced users only).
+    cfg = await state.store.load_config()
+    oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    return {
+        "enabled": bool(oc.get("enabled")),
+        "adaptive_enabled": bool(oc.get("adaptive_enabled", True)),
+        "model": str(oc.get("model") or "internal"),
+        "optimizer_cycle_count": int(oc.get("optimizer_cycle_count") or 0),
+        "pulse_eval_count": int(oc.get("pulse_eval_count") or 0),
+        "last_run_at": str(oc.get("last_run_at") or ""),
+        "last_status": str(oc.get("last_status") or ""),
+        "last_error": str(oc.get("last_error") or ""),
+        "next_tick_preview": str(oc.get("next_tick_preview") or "")[:1200],
+        "proposal_history": [x for x in (oc.get("proposal_history") or []) if isinstance(x, dict)][:50],
+        "internal_optimizer_trace": [x for x in (oc.get("internal_optimizer_trace") or []) if isinstance(x, dict)][:30],
+        "advanced_metrics_last": dict(oc.get("advanced_metrics_last") or {}),
+        "acceptance_rate_pct": float(oc.get("acceptance_rate_pct") or 0.0),
+    }

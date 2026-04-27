@@ -1799,6 +1799,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             lab_c_engine_on=lab_c_engine_on,
             lab_d_engine_on=lab_d_engine_on,
         ),
+        # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (no advanced_metrics on dashboard).
         "optimizer_activity": {
             "change_history": ch_slim,
             "runs": runs_slim,

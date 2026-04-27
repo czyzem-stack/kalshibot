@@ -3,7 +3,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import math
 import random
+from statistics import mean, pstdev
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -34,6 +36,18 @@ logger = logging.getLogger("kalshibot.optimizer")
 
 # After Claude rule deltas, reject if list grows beyond this (API ``normalize_rules_list`` allows up to 48).
 MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS = 30
+
+# OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (fixed internal replay weights).
+_ADV_SHARPE_W = 2.5
+_ADV_SORTINO_W = 1.5
+_ADV_CALMAR_W = 1.2
+_ADV_PROFIT_FACTOR_W = 1.1
+_ADV_EXPECTANCY_W = 1.0
+_ADV_DRAWDOWN_PENALTY_W = 2.2
+_ADV_KELLY_W = 0.8
+_ADV_MIN_TRADES = 8
+_ADV_SLIPPAGE_BPS = 3.0
+_ADV_MAX_DD_TOLERANCE_PCT = 35.0
 
 
 def _utc_now() -> dt.datetime:
@@ -110,6 +124,8 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("regime_paper_loser_pinned_until", "")
     out.setdefault("paper_loser_radical_next", False)
     out.setdefault("last_paper_loser_swap_at", "")
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (internal proposal log only).
+    out.setdefault("proposal_history", [])
     # Regime-level EWMA of composite ``score_dollars`` and observation counts; decayed every optimizer tick
     # so older telemetry fades (meta-learning, no user tuning).
     out.setdefault(
@@ -435,6 +451,52 @@ def _replay_fitness_bundle(
     replay_end_time: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Replay plus composite fitness (drawdown / vol / Sharpe blend)."""
+    # OPTIMIZER UPGRADE v0.1
+    def _safe_ratio(num: float, den: float) -> float:
+        if den == 0.0:
+            return 0.0
+        return num / den
+
+    def _std(vals: list[float]) -> float:
+        if len(vals) < 2:
+            return 0.0
+        try:
+            return float(pstdev(vals))
+        except Exception:
+            return 0.0
+
+    def _downside_std(vals: list[float]) -> float:
+        neg = [v for v in vals if v < 0.0]
+        if len(neg) < 2:
+            return 0.0
+        try:
+            return float(pstdev(neg))
+        except Exception:
+            return 0.0
+
+    def _regime_from_probs(sig_desc: list[dict[str, Any]]) -> str:
+        probs: list[float] = []
+        for s in sig_desc[:160]:
+            p = _safe_float(s.get("implied_prob"), -1.0)
+            if 0.0 <= p <= 1.0:
+                probs.append(p)
+        if len(probs) < 8:
+            return "low_vol"
+        vol = _std(probs)
+        trend = probs[-1] - probs[0]
+        if vol >= 0.11:
+            return "high_vol"
+        if abs(trend) >= 0.18:
+            return "event_risk"
+        return "low_vol"
+
+    def _regime_weights(regime: str) -> tuple[float, float]:
+        if regime == "high_vol":
+            return 1.15, 1.35
+        if regime == "event_risk":
+            return 1.05, 1.45
+        return 1.0, 1.0
+
     d = replay_under_rules_detail(
         settled[:max_rows],
         rules,
@@ -452,7 +514,69 @@ def _replay_fitness_bundle(
         cumulative_equity_cents=d["cumulative_equity_cents"],
         per_trade_pnl_cents=d["per_trade_pnl_cents_chrono"],
     )
-    return {**d, **fit}
+    pnl_cents = [int(x) for x in d["per_trade_pnl_cents_chrono"]]
+    pnl_d = [x / 100.0 for x in pnl_cents]
+    wins = [x for x in pnl_d if x > 0.0]
+    losses = [x for x in pnl_d if x < 0.0]
+    gross_win = sum(wins)
+    gross_loss = abs(sum(losses))
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (gross_win if gross_win > 0 else 0.0)
+    expectancy = float(mean(pnl_d)) if pnl_d else 0.0
+    stdev = _std(pnl_d)
+    downside = _downside_std(pnl_d)
+    sharpe = _safe_ratio(expectancy, stdev) if stdev > 0 else 0.0
+    sortino = _safe_ratio(expectancy, downside) if downside > 0 else sharpe
+    mdd_d = float(fit.get("max_drawdown_dollars") or 0.0)
+    calmar = _safe_ratio(float(fit.get("pnl_dollars") or 0.0), mdd_d) if mdd_d > 0 else 0.0
+    win_rate = _safe_ratio(float(len(wins)), float(max(1, len(pnl_d))))
+    avg_win = _safe_ratio(gross_win, float(len(wins))) if wins else 0.0
+    avg_loss = _safe_ratio(gross_loss, float(len(losses))) if losses else 0.0
+    b = _safe_ratio(avg_win, avg_loss) if avg_loss > 0 else 0.0
+    kelly_fraction = max(0.0, min(1.0, win_rate - ((1.0 - win_rate) / b))) if b > 0 else 0.0
+    regime = _regime_from_probs(signals_desc)
+    reg_gain, reg_risk = _regime_weights(regime)
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
+    slip_bps = max(0.0, float(_ADV_SLIPPAGE_BPS))
+    slippage_penalty_dollars = (abs(sum(pnl_d)) * slip_bps) / 10000.0
+    min_trades = max(1, int(_ADV_MIN_TRADES))
+    sample_penalty = 0.0 if len(pnl_d) >= min_trades else float(min_trades - len(pnl_d)) * 0.35
+    mdd_tolerance_pct = max(1.0, float(_ADV_MAX_DD_TOLERANCE_PCT))
+    max_drawdown_pct = 0.0
+    if d["cumulative_equity_cents"]:
+        peak = max([int(x) for x in d["cumulative_equity_cents"]] + [1])
+        max_drawdown_pct = (float(mdd_d * 100.0) / max(1.0, float(peak / 100.0))) * 100.0
+    drawdown_tolerance_breach = max_drawdown_pct > mdd_tolerance_pct
+    advanced_score = (
+        reg_gain * float(_ADV_SHARPE_W) * sharpe
+        + reg_gain * float(_ADV_SORTINO_W) * sortino
+        + reg_gain * float(_ADV_CALMAR_W) * calmar
+        + reg_gain * float(_ADV_PROFIT_FACTOR_W) * profit_factor
+        + reg_gain * float(_ADV_EXPECTANCY_W) * expectancy
+        + reg_gain * float(_ADV_KELLY_W) * kelly_fraction
+        - reg_risk * float(_ADV_DRAWDOWN_PENALTY_W) * mdd_d
+        - slippage_penalty_dollars
+        - sample_penalty
+    )
+    blended_score = float(fit.get("score_dollars") or 0.0) + advanced_score
+    return {
+        **d,
+        **fit,
+        "advanced_metrics": {
+            "regime": regime,
+            "sharpe": float(sharpe),
+            "sortino": float(sortino),
+            "calmar": float(calmar),
+            "profit_factor": float(profit_factor),
+            "expectancy_dollars": float(expectancy),
+            "kelly_fraction": float(kelly_fraction),
+            "slippage_penalty_dollars": float(slippage_penalty_dollars),
+            "sample_penalty_dollars": float(sample_penalty),
+            "max_drawdown_pct": float(max_drawdown_pct),
+            "max_drawdown_tolerance_pct": float(mdd_tolerance_pct),
+            "drawdown_tolerance_breach": bool(drawdown_tolerance_breach),
+        },
+        "score_dollars": float(blended_score),
+    }
 
 
 def _open_sim_rows(trades: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -1840,13 +1964,19 @@ def _set_next_tick_preview(
     b_style = str(oc.get("lab_b_style") or "conservative").strip()
     c_style = str(oc.get("lab_c_style") or "aggressive").strip()
     d_style = str(oc.get("lab_d_style") or "wild").strip()
+    adv = oc.get("advanced_metrics_last") if isinstance(oc.get("advanced_metrics_last"), dict) else {}
+    adv_sharpe = _safe_float(adv.get("sharpe"), 0.0)
+    adv_dd = _safe_float(adv.get("max_drawdown_pct"), 0.0)
+    adv_reg = str(adv.get("regime") or "n/a")
     base = (
         f"Next tick: Lab A has {lab_settled_n} settled (≥{profitable_n} wins in guard window). "
         f"Internal pulse watches up to {trig} losses entered near ≥{floor}% implied YES—tighten rules when replay-PnL improves. "
         f"Bet fraction is ~{frac:.2%}/window. Adaptive={'on' if adapt else 'off'}, Claude scheduler={'on' if sched else 'off'}. "
         f"B/C/D same lookback (reference arms; pulse does not persist their rules/bets): "
         f"B {'on' if b_on else 'off'} ({b_style}, {nb} settled), C {'on' if c_on else 'off'} ({c_style}, {nc} settled), "
-        f"D {'on' if d_on else 'off'} ({d_style}, {nd} settled). Claude sees all four labs; adaptive writes Lab A only."
+        f"D {'on' if d_on else 'off'} ({d_style}, {nd} settled). "
+        f"Latest replay regime={adv_reg}, Sharpe≈{adv_sharpe:.2f}, maxDD≈{adv_dd:.1f}%. "
+        f"Claude sees all four labs; adaptive writes Lab A only."
     )
     oc["next_tick_preview"] = base[:900]
 
@@ -2328,6 +2458,8 @@ def _internal_mutate_rules_and_params(
     )
     meta["score_before"] = float(base_fb["score_dollars"])
     eff, tier_label = _compute_mutation_scale(oc)
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
+    eff = max(0.06, min(1.75, eff))
     was_plr = bool(oc.get("paper_loser_radical_next", False))
     rad0 = _radical_exploration_active(oc) or was_plr
     if rad0:
@@ -2412,6 +2544,9 @@ def _internal_mutate_rules_and_params(
         **rk_m,
     )
     meta["score_after"] = float(prop_fb["score_dollars"])
+    if _drawdown_guard_violation(prop_fb):
+        meta["reject_reason"] = "drawdown_tolerance_breach"
+        return None, meta
     if meta["score_after"] <= meta["score_before"]:
         meta["reject_reason"] = "fitness_not_improved"
         return None, meta
@@ -2780,6 +2915,10 @@ def apply_claude_rule_changes(
     )
     meta["score_before"] = float(base_fb["score_dollars"])
     meta["score_after"] = float(prop_fb["score_dollars"])
+    if _drawdown_guard_violation(prop_fb):
+        meta["reject_reason"] = "drawdown_tolerance_breach"
+        meta["advanced_metrics"] = prop_fb.get("advanced_metrics")
+        return [], meta
 
     def _tail_fb(
         st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str, tr_all: list[dict[str, Any]] | None
@@ -2867,6 +3006,39 @@ def _append_claude_trace(oc: dict[str, Any], entry: dict[str, Any]) -> None:
     oc["claude_proposals_trace"] = [entry, *rows][:10]
 
 
+def _drawdown_guard_violation(fb: dict[str, Any]) -> bool:
+    # OPTIMIZER UPGRADE v0.1: never accept proposals above max drawdown tolerance.
+    adv = fb.get("advanced_metrics") if isinstance(fb.get("advanced_metrics"), dict) else {}
+    return bool(adv.get("drawdown_tolerance_breach"))
+
+
+def _append_proposal_history(
+    oc: dict[str, Any],
+    *,
+    at_iso: str,
+    source: str,
+    accepted: bool,
+    score_before: float | None,
+    score_after: float | None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    # OPTIMIZER UPGRADE v0.1: persist proposal simulation lifecycle for auditability.
+    prev = oc.get("proposal_history")
+    rows = prev if isinstance(prev, list) else []
+    entry: dict[str, Any] = {
+        "id": uuid4().hex,
+        "at": at_iso,
+        "source": source,
+        "accepted": bool(accepted),
+        "simulated_score_before": score_before,
+        "simulated_score_after": score_after,
+        "actual_score_after": float(oc.get("best_fitness_score_7d") or 0.0),
+    }
+    if isinstance(details, dict) and details:
+        entry["details"] = details
+    oc["proposal_history"] = [entry, *rows][:120]
+
+
 def _build_claude_system_prompt(*, mutant_run: bool, regime_hint: str) -> str:
     diversity = (
         "Every few runs, deliberately explore a **new rule family** (e.g. NO-side convexity, late-window YES snipes, "
@@ -2892,6 +3064,9 @@ def _build_claude_system_prompt(*, mutant_run: bool, regime_hint: str) -> str:
         "- **Correlation traps:** multiple rules hitting the same outcome type can over-concentrate; diversify bands.\n"
         f"- **Regime snapshot:** {regime_hint}\n"
         f"{diversity}\n{mutant}\n"
+        "Think through the proposal quality internally, but output only strict JSON.\n"
+        "Few-shot exemplar 1: {\"summary\":\"tighten high-vol floors\",\"rule_operations\":[{\"op\":\"patch\",\"rule_name\":\"High Vol Band\",\"rule\":{\"min_prob\":0.62}}],\"held_out_simulation\":{\"expected_sharpe\":0.44,\"expected_max_drawdown_pct\":12.8,\"sample_size\":38}}\n"
+        "Few-shot exemplar 2: {\"summary\":\"add NO convexity hedge\",\"rule_operations\":[{\"op\":\"add\",\"rule\":{\"name\":\"NO hedge\",\"side\":\"no\",\"min_prob\":0.58,\"max_prob\":0.8,\"min_minutes_left\":8,\"max_minutes_left\":75}}],\"held_out_simulation\":{\"expected_sharpe\":0.52,\"expected_max_drawdown_pct\":10.3,\"sample_size\":41}}\n"
         "Output **only** a single JSON object matching the user payload `output_schema` (no markdown fences). "
         "You may emit `rule_operations` (add/patch/delete) for **lab_a only**, `lab_parameter_patch` for Lab A scalars, "
         "and `recommendations` with field=`balance_fraction_per_window` and target=`lab_a` for sizing. "
@@ -2964,6 +3139,12 @@ def _build_payload(
             ],
             "trend_notes": ["string"],
             "propose_new_rule_family": "boolean — set true when exploring a structurally new banding idea",
+            "held_out_simulation": {
+                "expected_sharpe": "float",
+                "expected_max_drawdown_pct": "float",
+                "expected_profit_factor": "float",
+                "sample_size": "int",
+            },
         },
     }
 
@@ -2991,6 +3172,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         oc["optimizer_cycle_count"] = int(oc.get("optimizer_cycle_count") or 0) + 1
     except (TypeError, ValueError):
         oc["optimizer_cycle_count"] = 1
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (no persisted A/B envelope).
     mutant_run = int(oc.get("optimizer_cycle_count") or 0) % 8 == 0
     oc["last_mutant_cycle"] = bool(mutant_run)
 
@@ -3062,6 +3244,23 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         tr_c=tr_c,
         tr_d=tr_d,
     )
+    if mutant_run:
+        _append_proposal_history(
+            oc,
+            at_iso=end_iso,
+            source="internal_mutation",
+            accepted=bool(mutation_meta.get("accepted")),
+            score_before=(
+                float(mutation_meta["score_before"]) if mutation_meta.get("score_before") is not None else None
+            ),
+            score_after=(
+                float(mutation_meta["score_after"]) if mutation_meta.get("score_after") is not None else None
+            ),
+            details={
+                "reject_reason": str(mutation_meta.get("reject_reason") or ""),
+                "mutant_run": bool(mutation_meta.get("mutant_run")),
+            },
+        )
     if changes:
         hist = oc.get("change_history")
         old_hist = hist if isinstance(hist, list) else []
@@ -3086,6 +3285,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
     oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
     oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
+    oc["advanced_metrics_last"] = rb_lab.get("advanced_metrics") if isinstance(rb_lab.get("advanced_metrics"), dict) else {}
     ar_now = str(lab_tr.get("active_regime") or "low_vol")
     # Meta-learning: decay + EWMA of composite score per (logical) Lab A regime; also streaks for cleanup.
     _regime_update_meta_and_streaks(

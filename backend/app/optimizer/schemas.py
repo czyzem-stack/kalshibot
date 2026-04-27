@@ -51,6 +51,7 @@ class ClaudeOptimizerResponse(BaseModel):
     recommendations: list[BetRecommendation] = Field(default_factory=list)
     trend_notes: list[str] = Field(default_factory=list)
     propose_new_rule_family: bool = False
+    held_out_simulation: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("recommendations", mode="before")
     @classmethod

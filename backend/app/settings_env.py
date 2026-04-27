@@ -167,6 +167,7 @@ class EnvSettings:
     default_min_contracts: int = _get_int("DEFAULT_MIN_CONTRACTS", 1, min_value=1)
     default_paper_balance_cents: int = _get_int("DEFAULT_PAPER_BALANCE_CENTS", 500_000, min_value=0)
     default_auto_close_open_sim_minutes: float = _get_float("DEFAULT_AUTO_CLOSE_OPEN_SIM_MINUTES", 75.0, min_value=0.0)
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (replay weights live in optimizer_claude).
 
     @property
     def base_rest_url(self) -> str:
