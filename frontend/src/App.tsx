@@ -5216,6 +5216,16 @@ export default function App() {
             Branch performance
           </h2>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <DashBranchBreedingPill
+              breedingStripStatus={breedingStripStatus}
+              breedingStripError={breedingStripError}
+              onNavigateToBreedingTree={() => {
+                setOptimizerDashboardView("tree");
+                window.requestAnimationFrame(() => {
+                  document.getElementById("dash-heading-optimizer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                });
+              }}
+            />
             <button
               type="button"
               className="primary dash-panel-btn"
@@ -7275,6 +7285,70 @@ function EngineTickTrace({ title, lines }: { title: string; lines: unknown }) {
         {arr.join("\n")}
       </pre>
     </div>
+  );
+}
+
+/** Compact breeding snapshot on Branch performance (same ``GET /api/optimizer/status`` poll as Optimizer card strip). */
+function DashBranchBreedingPill({
+  breedingStripStatus,
+  breedingStripError,
+  onNavigateToBreedingTree,
+}: {
+  breedingStripStatus: AnyObj | null;
+  breedingStripError: string | null;
+  onNavigateToBreedingTree: () => void;
+}) {
+  const title =
+    "Labs Breeding v0.1 — GET /api/optimizer/status (~45s refresh). Same counts as the Optimizer card Breeding row. Click to scroll to Optimizer and open the Tree tab.";
+  if (breedingStripError) {
+    return (
+      <button
+        type="button"
+        className="dash-branch-breeding-pill dash-branch-breeding-pill--error"
+        title={title}
+        aria-label={`Breeding status error. Open Optimizer Tree tab.`}
+        onClick={onNavigateToBreedingTree}
+      >
+        <span className="dash-branch-breeding-pill__text">
+          <strong>Breeding</strong> — error
+        </span>
+      </button>
+    );
+  }
+  const poolN = Array.isArray(breedingStripStatus?.labs_breeding_children)
+    ? (breedingStripStatus!.labs_breeding_children as unknown[]).length
+    : null;
+  const dcN = Array.isArray(breedingStripStatus?.labs_breeding_death_chamber)
+    ? (breedingStripStatus!.labs_breeding_death_chamber as unknown[]).length
+    : null;
+  const schedOff = Boolean(breedingStripStatus && breedingStripStatus.enabled === false);
+  return (
+    <button
+      type="button"
+      className="dash-branch-breeding-pill"
+      title={title}
+      aria-label={
+        breedingStripStatus
+          ? `Breeding: ${poolN ?? "unknown"} in pool, ${dcN ?? "unknown"} in death chamber. Opens Optimizer Tree tab.`
+          : "Breeding status loading. Opens Optimizer Tree tab."
+      }
+      onClick={onNavigateToBreedingTree}
+    >
+      <span className="dash-branch-breeding-pill__text">
+        <strong>Breeding</strong>
+        {breedingStripStatus ? (
+          <>
+            {": "}
+            {poolN != null ? `${poolN} in pool` : "—"}
+            <span className="dash-branch-breeding-pill__sep"> · </span>
+            {dcN != null ? `${dcN} in death chamber` : "—"}
+            {schedOff ? <span className="dash-branch-breeding-pill__sched"> · scheduler off</span> : null}
+          </>
+        ) : (
+          ": …"
+        )}
+      </span>
+    </button>
   );
 }
 

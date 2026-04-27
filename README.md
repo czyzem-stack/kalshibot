@@ -2,11 +2,13 @@
 
 > **What this is (one sentence):** a **self-hosted** Kalshi trading stack—**FastAPI** + **React**—that polls markets, matches **JSON probability/time rules**, records fills in **SQLite**, and runs **Live** and **four paper labs** in parallel, with an optional **optimizer loop** (internal tuning plus optional **Claude**) that reads all labs but only **auto-persists** sizing-style changes for **Lab A** under guardrails. **Labs Breeding v0.1** adds up to **six** parallel **child** paper branches (`lab_child_1`…`lab_child_6`) with real engines in the dual loop, breeder-driven genomes, adoption/replacement from the pool, and a **Breeder** dashboard mode (personality radar from **`GET /api/optimizer/status`**).
 
+**If you are new here:** think of **Live + Lab A–D** as the five branches you see in **Branch performance** and **Equity**. The **Optimizer** card is a separate “lab bench”: internal tuning radar, then **Breeder** (personality) and **Tree** (lineage / pool / culls / log) for breeding—all fed by **`GET /api/dashboard`** or **`GET /api/optimizer/status`** depending on the tab. Child labs (`lab_child_1`…) do **not** get their own row in Branch performance; watch them via the **Breeding** pill on Branch performance, the **Breeding** row on the Optimizer card, and **Tree**.
+
 It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys), runs **rule-based engines** per branch, and ships a **Vite** dashboard for config, charts, and health—**no separate hosted control plane**; your keys and data stay on the machine you run it on.
 
-**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Quick Start – Breeding Mode](#quick-start--breeding-mode-one-page-checklist) · [Configuration](#configuration) · [API overview](#api-overview) · [Operator flows (diagrams)](#operator-flows-sequences-and-visuals) · [Dashboard (UI map)](#dashboard-ui-map) · [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) · [Optimizer visualizations](#optimizer-visualizations) · [Production readiness & limitations](#production-readiness--known-limitations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
+**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Quick Start – Breeding Mode](#quick-start--breeding-mode-one-page-checklist) · [Monitoring Breeding](#monitoring-breeding) · [Configuration](#configuration) · [API overview](#api-overview) · [Operator flows (diagrams)](#operator-flows-sequences-and-visuals) · [Dashboard (UI map)](#dashboard-ui-map) · [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) · [Optimizer visualizations](#optimizer-visualizations) · [Production readiness & limitations](#production-readiness--known-limitations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
 
-**Version:** `v0.3` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md) (**v0.3** adds Optimizer-card breeding strip + **Tree** tab, `config_history.audit_meta` on Live paper-off with `confirm=YES`, and README clarity). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). **Labs Breeding v0.1** ships in the same tree (child lab engines, `lab_breeding.py`, dashboard **Breeder** view). There are **no** new `OPTIMIZER_*` environment variables and **no** extra advanced-metrics panel on the default Optimizer card; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
+**Version:** `v0.4` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). **v0.3** shipped Optimizer-card breeding strip + **Tree** tab, **`config_history.audit_meta`** on Live paper-off with `confirm=YES`, and README clarity. **v0.4** is documentation polish plus a compact **Breeding** pill on Branch performance (same status poll). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). There are **no** new `OPTIMIZER_*` environment variables; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
 
 **Default workflow:** work on the **`develop`** branch for changes, then merge to **`main`** for release; both should track `origin` the same way if you use a two-branch flow. The UI is a single **Vite** SPA: hot reload in dev, **`npm run build`** for `frontend/dist/`; the API is stateful (SQLite, engine loops) so always restart uvicorn when changing **Python** engine or persistence code.
 
@@ -19,25 +21,63 @@ This project is **operator-grade self-hosted software**, not a hosted SaaS with 
 | Area | Current state | What to expect |
 |------|----------------|----------------|
 | **Auth** | Optional API bearer / local use | No built-in RBAC; treat the API like root on your box. |
-| **Child labs (breeding)** | Real engines on `lab_child_1`…`lab_child_6`; **no** separate Branch performance tiles | Use the **Breeding** strip on the **Optimizer** card (polls `GET /api/optimizer/status`; click → **Tree** tab) and **Breeder** / **Tree** modes on the same card. Status lists are **capped** (children / death chamber / log) for payload size. |
+| **Child labs (breeding)** | Real engines on `lab_child_1`…`lab_child_6`; **no** per-child tiles on **Branch performance** (only Live + Lab A–D) | Child activity is **fully visible** in the dashboard via the **Breeding** pill next to **Branch performance** (summary + jump to **Tree**), the **Breeding** row on the **Optimizer** card, and **Breeder** / **Tree** footer tabs—all driven by **`GET /api/optimizer/status`** (~45s poll in the UI). Lists are **capped** for payload size. |
 | **Fees in breeding fitness** | Replay bundle uses the same **paper fee model** flags as the main optimizer (`include_fees_in_score` → per-branch replay). | This follows **Kalshibot’s** sim fee helpers (quadratic / bps / none), **not** a byte-for-byte copy of Kalshi’s live fee schedule. See [Fee modeling in breeding fitness](#fee-modeling-in-breeding-fitness) and comments in `lab_breeding.py`. |
 | **Personality radar** | **Derived** 0–100 mood axes from traits + sizing | **Not** exchange truth; for comparing arms at a glance only. |
 | **Tests** | `test_engine_money_path.py`, `test_engine_rules.py`, and integration-style API tests | Breeding-specific **integration** coverage is lighter than engine core; new tests focus on **rule guards** and **money-path** gates breeding relies on. |
 | **Config audit** | `config_history` + optional `audit_meta` | High-risk toggles (e.g. **Live paper off** with `confirm=YES`) attach IP / User-Agent / request snapshot. Other saves still log full JSON only. |
 
-**Monitoring in production:** ship **structured logs** (already JSON-friendly in places), scrape **`GET /api/health`**, watch **SQLite growth** under `data/`, and keep **backups** of `bot.sqlite3` before risky resets. For breeding churn, tail **`GET /api/optimizer/status`** or watch the dashboard strip rather than inferring from parent labs alone.
+**Monitoring in production:** ship **structured logs** (already JSON-friendly in places), scrape **`GET /api/health`**, watch **SQLite growth** under `data/`, and keep **backups** of `bot.sqlite3` before risky resets. For breeding churn, use the dashboard surfaces in **[Monitoring Breeding](#monitoring-breeding)** or tail **`GET /api/optimizer/status`**—do not infer child health from parent **Lab B–D** tiles alone.
 
 ## Quick Start – Breeding Mode (one-page checklist)
 
-Use this when you already have the stack running (see [Quick start (Windows)](#quick-start-windows)) and want **Labs Breeding v0.1** observable without reading every source file first.
+Use this when the API and UI already load (see [Quick start (Windows)](#quick-start-windows)) and you want **Labs Breeding v0.1** visible without reading source first.
 
-1. **Enable the optimizer scheduler** — Open **Settings (⚙) → Optimizer** tab. Turn **“Enable scheduled optimizer loop”** on (persists `optimizer.enabled: true` in `bot_config` JSON). Breeding **generation ticks ride the same scheduler family** as internal pulse / optional Claude (`run_optimizer_once` → `lab_breeding.py`); there is **no** second daemon.
-2. **Keep parent labs B–D engines useful** — Breeders are **B, C, D**; they need signals and settles to score. Lab **A** is **staging / adoption only** (it does not mint children).
-3. **Wait one generation window** — Default **`LAB_BREEDING_GENERATION_INTERVAL` = 30 minutes** between automatic generation passes (wall clock in `lab_breeding.py`). First boot may show empty pools until the interval elapses and the optimizer tick runs.
-4. **Read the Breeding strip** — On the **Optimizer** card, the **Breeding** row under the title shows **pool size** and **death chamber** count from `GET /api/optimizer/status` (~45s refresh). Click it to open the **Tree** tab (lineage / pool / culls / log) on the same card.
-5. **Understand adoption vs Live** — Strong children may be **adopted into Lab A** under code gates (minimum settled trades, fitness). **Promote Lab A → Live** remains the **only** UI path to copy overlays onto Live and still requires **settled PnL ordering + confirms** when not in paper.
-6. **Death chamber & cooldown** — **Hard** zero-equity style deaths can refill slots **immediately**. **Soft cull** and **adoption** respect a **5-minute** `labs_breeding_replace_cooldown_until` to reduce churn.
-7. **Fees** — Toggle **“Include fees in adaptive replay score”** in Optimizer settings; breeding fitness calls the same replay path with `include_fees_in_score` (see README fee section below).
+### A. Exact click-paths (2 minutes)
+
+| Step | Where to click | What you should see |
+|------|----------------|---------------------|
+| 1 | **Settings (⚙)** (top bar, right of optimizer health dot) | Settings overlay opens. |
+| 2 | Settings overlay → **Optimizer** section (tab or scroll to that form) | Optimizer scheduler form. |
+| 3 | Toggle **“Enable scheduled optimizer loop”** → **Save optimizer settings** (bottom of that tab) | `optimizer.enabled: true` persisted; close Settings. |
+| 4 | Main dashboard → **Branch performance** card (left column, top) | Live / Lab A–D tabs; optional **Breeding: …** pill on the **same title row** (summary from `GET /api/optimizer/status`). |
+| 5 | Scroll to **Optimizer** card (below Branch performance in the left column) | Title **Optimizer**; **Breeding** row under the title; footer **Optimizer \| Breeder \| Tree**. |
+| 6 | Footer → **Breeder** | Twelve-axis personality radar (loads from `GET /api/optimizer/status`; may show a brief spinner on first fetch). |
+| 7 | Footer → **Tree** | Sub-tabs **Lineage / Children / Cullings / Log**; scrollable list. |
+| 8 | **Breeding** row on Optimizer card **or** Branch performance pill | Both jump to **Tree** and scroll the Optimizer card into view. |
+
+### B. Checklist (what must be true)
+
+1. **Scheduler on** — Same as table step 3. Breeding runs inside **`run_optimizer_once`** (`lab_breeding.py`); **no** second daemon.
+2. **Parent labs B–D useful** — Breeders are **B, C, D**; they need signals and settles to score. **Lab A** is **staging / adoption only** (does not mint children).
+3. **Engines on** — At least one parent lab engine should be running so the dual loop produces data to score (see Kalshi status banner if public feed is OK).
+
+### C. First 30–60 minutes (what to expect)
+
+| Time | Expect |
+|------|--------|
+| **0–5 min** | **Breeding** pill and Optimizer **Breeding** row may show **“loading…”** or **0 in pool** until the first **`GET /api/optimizer/status`** poll returns. **Tree** may say “no lineage rows yet”—normal before the first breeding actions. |
+| **5–30 min** | If `optimizer.enabled` is true and engines tick, internal mutations may appear in toasts; breeding **generation** still waits for **`LAB_BREEDING_GENERATION_INTERVAL`** (default **30 minutes** between passes in `lab_breeding.py`). |
+| **30–60 min** | After at least one generation window, pool / death chamber counts may move; **Tree → Lineage** or **Log** may show events. Personality radar (**Breeder**) updates with the same status payload. |
+| **If nothing moves** | Confirm **Settings → Optimizer → scheduler** saved; confirm **Lab B/C/D** engines and rules; check **`labs_breeding_last_generation_iso`** / errors in **`GET /api/optimizer/status`** (or UI error text on Breeder fetch). |
+
+### D. Safety reminders (unchanged behavior)
+
+1. **Adoption vs Live** — Strong children may be **adopted into Lab A** under code gates. **Promote Lab A → Live** is still the **only** UI path to copy overlays onto Live (settled PnL ordering + confirms when not in paper).
+2. **Death chamber & cooldown** — **Hard** deaths can refill slots **immediately**. **Soft cull** and **adoption** use **`labs_breeding_replace_cooldown_until`** (~**5 minutes**) to limit churn.
+3. **Fees** — **Settings → Optimizer → “Include fees in adaptive replay score”** feeds the same replay path breeding uses (`include_fees_in_score`); see [Fee modeling](#fee-modeling-in-breeding-fitness) and the **paper vs live** table below.
+
+## Monitoring Breeding
+
+Use these three surfaces together; they reuse the same **`GET /api/optimizer/status`** snapshot in the browser (poll ~45s).
+
+| Surface | Location | Purpose |
+|---------|----------|---------|
+| **Breeding pill** | **Branch performance** card — same row as the **Branch performance** title | Compact **pool / death chamber** counts; **click** → scrolls to **Optimizer** and opens **Tree**. |
+| **Breeding row** | **Optimizer** card — directly under the **Optimizer** title | Longer summary text; **click** → **Tree** tab on the same card. |
+| **Breeder / Tree** | **Optimizer** card — footer toggles | **Breeder** = twelve-axis radar. **Tree** = lineage, pool, culls, log sub-tabs. |
+
+**Toasts:** breeding-related log lines may include **`toast_id` / `toast_family`** hints for short-lived bottom-corner toasts (throttled). They are **not** a full audit trail—use **`config_history`** for real config changes and **`labs_breeding_log`** / **Tree** for narrative.
 
 ---
 
@@ -73,6 +113,8 @@ Exact numbers live in `default_bot_config()` and your SQLite config; the table r
 
 **Purpose.** Paper-only **genetic-style** experimentation alongside the visible labs: breeders produce child genomes into up to **six** parallel child branches (`lab_child_1`…`lab_child_6`); **Lab A** may **adopt** strong children under code gates. This does **not** change **who may be promoted to Live** (**Lab A only**, with existing PnL + confirm gates) or any **real-money** path.
 
+**Beginner mental model.** **Branch performance** = money and activity for **Live + Lab A–D** only. **Optimizer card** = tuning + breeding telemetry: default **Optimizer** tab (six-axis “thinking” radar from dashboard slices), **Breeder** tab (twelve-axis mood radar from status), **Tree** tab (human-readable lineage / pool / culls / log from the same status). **Child** engines run in the background; you watch them through **[Monitoring Breeding](#monitoring-breeding)**, not through extra tiles on Branch performance.
+
 ### Optimizer and breeding — how they work together
 
 | Layer | Role |
@@ -103,7 +145,14 @@ Breeding compares arms using **`_fitness_for_branch`** / **`_replay_metrics_for_
 
 **Approximation vs Kalshi live:** Kalshi’s production fee schedule can include **maker/taker**, **quadratic** components, and **contract-count** nuances that evolve. Kalshibot’s replay uses the **configured** sim model (e.g. quadratic curve + optional flat bps) so experiments are **repeatable** and fast. Treat breeding fitness as **ranking paper genomes under one consistent model**, not as a guarantee of post-fee edge on the exchange.
 
-**Primary files:** `backend/app/lab_breeding.py`, `backend/app/branch_config.py`, `backend/app/optimizer_claude.py`, `backend/app/engines/dual_engine_loop.py`, `backend/app/routers/optimizer_routes.py`, `backend/app/types_api.py` (response shape), `frontend/src/App.tsx` (Optimizer / Breeder / Tree + breeding strip on the Optimizer card).
+| Topic | **Kalshibot paper / replay** (breeding fitness & optimizer replay when `include_fees_in_score` is on) | **Kalshi live trading** |
+|-------|--|--|
+| **What it models** | Entry/exit friction for **sim fills** using `paper_fee_model` (`none` \| `quadratic` \| `bps`) and optional `paper_fee_bps` on the **branch overlay** | Exchange **maker/taker** and schedule rules as published by Kalshi; can change over time |
+| **Goal** | Same fee math for **optimizer**, **breeding child ranking**, and **paper branches** so comparisons are apples-to-apples inside the bot | Minimize **real** fees and slippage on the exchange |
+| **Calibration** | **Tunable** in Settings / JSON—tighten or loosen to stress-test genomes | **Not** mirrored byte-for-byte; live fills use Kalshi’s actual fee application in real mode |
+| **Operator takeaway** | Use breeding fitness to **order** child genomes under **your** configured sim; validate Live outcomes separately with exchange reports | Use Kalshi’s fee docs when sizing real edge |
+
+**Primary files:** `backend/app/lab_breeding.py`, `backend/app/branch_config.py`, `backend/app/optimizer_claude.py`, `backend/app/engines/dual_engine_loop.py`, `backend/app/routers/optimizer_routes.py`, `backend/app/types_api.py` (response shape), `frontend/src/App.tsx` (Optimizer / Breeder / Tree + breeding strip on the Optimizer card + Branch performance breeding pill).
 
 ---
 
