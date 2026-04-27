@@ -1319,24 +1319,38 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
     """
     cfg = await store.load_config()
     mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
-    # Pull enough rows for the dashboard to filter by branch in the UI (recent slice was mostly one branch).
-    trades = await store.recent_trades(limit=500)
-    signals = await store.recent_signals(limit=500)
-    snaps_live = await store.equity_series(limit=2000, branch=BRANCH_LIVE)
-    snaps_lab_a = await store.equity_series(limit=2000, branch=BRANCH_LAB_A)
-    snaps_lab_b = await store.equity_series(limit=2000, branch=BRANCH_LAB_B)
-    snaps_lab_c = await store.equity_series(limit=2000, branch=BRANCH_LAB_C)
-    snaps_lab_d = await store.equity_series(limit=2000, branch=BRANCH_LAB_D)
-
-    roll_live = await store.dashboard_branch_trade_rollups(BRANCH_LIVE, mode_live)
+    # I/O in parallel: sequential awaits here plus ~55s MTM easily exceeded the browser 90s budget.
+    (
+        trades,
+        signals,
+        snaps_live,
+        snaps_lab_a,
+        snaps_lab_b,
+        snaps_lab_c,
+        snaps_lab_d,
+        roll_live,
+        roll_lab_a,
+        roll_lab_b,
+        roll_lab_c,
+        roll_lab_d,
+    ) = await asyncio.gather(
+        store.recent_trades(limit=500),
+        store.recent_signals(limit=500),
+        store.equity_series(limit=2000, branch=BRANCH_LIVE),
+        store.equity_series(limit=2000, branch=BRANCH_LAB_A),
+        store.equity_series(limit=2000, branch=BRANCH_LAB_B),
+        store.equity_series(limit=2000, branch=BRANCH_LAB_C),
+        store.equity_series(limit=2000, branch=BRANCH_LAB_D),
+        store.dashboard_branch_trade_rollups(BRANCH_LIVE, mode_live),
+        store.dashboard_branch_trade_rollups(BRANCH_LAB_A, "simulate"),
+        store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate"),
+        store.dashboard_branch_trade_rollups(BRANCH_LAB_C, "simulate"),
+        store.dashboard_branch_trade_rollups(BRANCH_LAB_D, "simulate"),
+    )
     metrics_live = _metrics_from_trade_rollup(roll_live, BRANCH_LIVE)
-    roll_lab_a = await store.dashboard_branch_trade_rollups(BRANCH_LAB_A, "simulate")
     metrics_lab_a = _metrics_from_trade_rollup(roll_lab_a, BRANCH_LAB_A)
-    roll_lab_b = await store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate")
     metrics_lab_b = _metrics_from_trade_rollup(roll_lab_b, BRANCH_LAB_B)
-    roll_lab_c = await store.dashboard_branch_trade_rollups(BRANCH_LAB_C, "simulate")
     metrics_lab_c = _metrics_from_trade_rollup(roll_lab_c, BRANCH_LAB_C)
-    roll_lab_d = await store.dashboard_branch_trade_rollups(BRANCH_LAB_D, "simulate")
     metrics_lab_d = _metrics_from_trade_rollup(roll_lab_d, BRANCH_LAB_D)
 
     not_traded = [s for s in signals if not int(s.get("executed") or 0)]
@@ -1355,13 +1369,25 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
     public_ok = False
     public_err: str | None = None
     try:
-        probe = await client.get_public("/markets", {"limit": "1"})
-        public_ok = True
-        _ = probe
+        probe_coro = client.get_public("/markets", {"limit": "1"})
+        port_coro = fetch_portfolio_snapshot(client)
+        _probe, portfolio = await asyncio.gather(probe_coro, port_coro, return_exceptions=True)
+        if isinstance(_probe, Exception):
+            public_err = str(_probe)
+        else:
+            public_ok = True
+        if isinstance(portfolio, Exception):
+            portfolio = {
+                "balance": None,
+                "positions": [],
+                "orders": [],
+                "position_count": 0,
+                "resting_order_count": 0,
+                "error": f"portfolio: {portfolio}",
+            }
     except Exception as e:
         public_err = str(e)
-
-    portfolio = await fetch_portfolio_snapshot(client)
+        portfolio = await fetch_portfolio_snapshot(client)
     bal_json = portfolio["balance"]
     private_err: str | None = None
     if bal_json is None:
@@ -1469,10 +1495,10 @@ async def _compose_dashboard_base(*, with_marks: bool) -> dict[str, Any]:
         )
         if mtm_tasks:
             try:
-                await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=55.0)
+                await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=50.0)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "dashboard MTM refresh hit 55s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
+                    "dashboard MTM refresh hit 50s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
                 )
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None

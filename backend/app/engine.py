@@ -1741,17 +1741,16 @@ async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows
             continue
         by_ticker.setdefault(tk, []).append(t)
 
-    # Parallelize with a cap: sequential per-ticker calls (each up to the HTTP client timeout) made
-    # /api/dashboard easy to exceed the browser's ~90s fetch budget when many open sims exist.
-    sem = asyncio.Semaphore(12)
+    # Parallelize with a cap; cross-branch MTM also dedupes GET /markets/{t} in KalshiClient for ~2.5s.
+    sem = asyncio.Semaphore(8)
 
     async def mark_one(ticker: str, rows: list[dict[str, Any]]) -> int:
         async with sem:
             sub = 0
             try:
                 data = await asyncio.wait_for(
-                    engine.client.get_public(_public_market_path(ticker)),
-                    timeout=6.0,
+                    engine.client.get_market_json_by_ticker_cached(ticker),
+                    timeout=4.5,
                 )
             except Exception:
                 return 0

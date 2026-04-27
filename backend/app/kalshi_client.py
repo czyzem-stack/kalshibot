@@ -102,8 +102,11 @@ class KalshiClient:
 
     _open_markets_cache: dict[str, tuple[float, Any]] = {}
     _orderbook_cache: dict[str, tuple[float, Any]] = {}
+    # GET /markets/{ticker} — short TTL: five parallel MTM passes often repeat the same tickers.
+    _single_market_cache: dict[str, tuple[float, Any]] = {}
     OPEN_MARKETS_CACHE_TTL = 10.0
     ORDERBOOK_CACHE_TTL = 10.0
+    SINGLE_MARKET_CACHE_TTL_S = 2.5
     # Limit concurrent signed (private) calls across all engine instances + dashboard.
     _private_call_sem = asyncio.Semaphore(3)
 
@@ -145,6 +148,25 @@ class KalshiClient:
                 r.raise_for_status()
                 return r.json()
         raise RuntimeError("get_public: exhausted retries")
+
+    async def get_market_json_by_ticker_cached(self, ticker: str) -> Any:
+        """GET /markets/{ticker} (full market row) with a short in-process dedupe for dashboard MTM."""
+        import time as _time
+
+        tk = str(ticker or "").strip()
+        if not tk:
+            raise ValueError("ticker required")
+        now = _time.monotonic()
+        hit = KalshiClient._single_market_cache.get(tk)
+        if hit and (now - hit[0]) < KalshiClient.SINGLE_MARKET_CACHE_TTL_S:
+            return hit[1]
+        path = f"/markets/{quote(tk, safe='')}"
+        data = await self.get_public(path)
+        KalshiClient._single_market_cache[tk] = (now, data)
+        if len(KalshiClient._single_market_cache) > 400:
+            for k in list(KalshiClient._single_market_cache.keys())[:200]:
+                KalshiClient._single_market_cache.pop(k, None)
+        return data
 
     async def get_open_markets_cached(
         self,
