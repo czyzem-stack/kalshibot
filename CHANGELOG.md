@@ -2,6 +2,11 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.08 - `all_labs` reset includes Live (SQLite + charts) - 2026-04-28
+
+- **API:** `POST /api/data/reset?branch=all_labs` and `PUT /api/config/lab-branches` with `reset_data=all_labs` now also delete **Live** signals, trades, and `equity_snapshots` (previously only Labs A–D, so the Live branch chart still showed old history). Equity snapshot re-seed after reset includes **Live** first.
+- **UI:** Settings bulk reset copy updated: **“Reset Live + all labs (A–D)**” and matching confirm text.
+
 ## v0.4.07 - Local develop + main only (drop test worktree stack) - 2026-04-27
 
 - **Scripts:** Remove optional third stack: delete **`setup-test-worktree.ps1`**, **`bootstrap-test-worktree.ps1`**, **`launch-test-sidecar.ps1`**. **`launch_local.ps1`** and **`update_all_worktrees.ps1`** only handle **develop** + **main** (Vite **5174** + **5173**, APIs **8765** + **8770**). **`-SkipTestSidecar`**, **`-TestWorktreePath`**, and **`KALSHIBOT_TEST_WORKTREE`** are no longer used.

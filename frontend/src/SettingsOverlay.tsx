@@ -797,7 +797,7 @@ export default function SettingsOverlay({
           >
             <h2 style={{ marginTop: 0 }}>Simulation labs</h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-              Four independent paper branches (A–D). Sizing and rules are per lab; use <strong>Save all labs</strong> or per-lab saves. Live trading is unaffected.
+              Four independent paper branches (A–D). Sizing and rules are per lab; use <strong>Save all labs</strong> or per-lab saves. The <strong>Reset Live + all labs</strong> panel below wipes <strong>Live + A–D</strong> sim history in SQLite; per-lab saves alone do not delete history.
             </p>
             <div
               className="panel settings-nested-panel"
@@ -808,11 +808,11 @@ export default function SettingsOverlay({
                 background: "rgba(24, 12, 20, 0.35)",
               }}
             >
-              <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="POST /api/data/reset?branch=all_labs">
-                Reset all labs (A–D) + paper balance
+              <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="POST /api/data/reset?branch=all_labs (Live + labs A–D)">
+                Reset Live + all labs (A–D) + paper balance
               </h3>
               <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
-                Wipes <strong>only</strong> Lab A–D signals, trades, and equity snapshots in SQLite (Live history is kept). If you set a cent amount below, the API also sets that same{" "}
+                Wipes <strong>Live + Lab A–D</strong> signals, trades, and equity snapshots in SQLite (and clears in-memory engine dedupe for those branches). If you set a cent amount below, the API also sets that same{" "}
                 <code>paper_balance_cents</code> on <strong>Live paper</strong> and <strong>every lab key in config</strong> (including breeding child slots) and clears per-lab lifetime basis fields so charts start from the new seed.
               </p>
               {dash?.storage?.data_reset_token_configured ? (
@@ -837,7 +837,7 @@ export default function SettingsOverlay({
                   defaultValue={String(Number(labA?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500_000))}
                 />
                 <div className="sub" style={{ marginTop: 4, fontSize: 11, opacity: 0.88 }}>
-                  Example: <code>10000</code> = $100.00 each where applied. Clear the field to reset lab data only without changing bankroll fields.
+                  Example: <code>10000</code> = $100.00 each where applied. Clear the field to wipe history without changing bankroll fields in config.
                 </div>
               </div>
               <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
@@ -867,10 +867,10 @@ export default function SettingsOverlay({
                   const balHint =
                     uniformCents != null
                       ? `Then Live + all lab config slots will be set to ${uniformCents} cents paper (and lifetime bases cleared).`
-                      : "Config bankroll fields are left unchanged (only SQLite lab rows are deleted).";
+                      : "Config bankroll fields are left unchanged (only Live + lab SQLite trading rows are deleted).";
                   if (
                     !window.confirm(
-                      `Reset ALL simulation lab trading data (Labs A, B, C, D)? This cannot be undone. ${balHint}\n\nLive branch SQLite rows are NOT deleted.`,
+                      `Reset Live + Lab A–D trading data (SQLite signals/trades/equity for each)? This cannot be undone. ${balHint}`,
                     )
                   ) {
                     return;
@@ -878,7 +878,7 @@ export default function SettingsOverlay({
                   void onResetTradingData("all_labs", backup, uniformCents);
                 }}
               >
-                Reset all labs (A–D)
+                Reset Live + labs (A–D)
               </button>
             </div>
             <div className="chart-tabs" role="tablist" aria-label="Simulation labs A through D" style={{ marginTop: 12 }}>

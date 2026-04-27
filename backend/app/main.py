@@ -727,7 +727,8 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
     if s == "all":
         order = (BRANCH_LIVE, BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
     elif s == "all_labs":
-        order = (*BRANCH_LABS, *BRANCH_CHILD_LABS)
+        # Bulk "all labs" reset also clears **Live** trading history (same action in Settings).
+        order = (BRANCH_LIVE, *BRANCH_LABS, *BRANCH_CHILD_LABS)
     elif s in ("both", "lab_both", "a+b"):
         order = (BRANCH_LAB_A, BRANCH_LAB_B)
     else:
@@ -812,7 +813,7 @@ async def data_reset(
     backup: bool = Query(True, description="Copy sqlite + JSONL table dumps before delete"),
     branch: str = Query(
         "all",
-        description="all | all_labs | live | lab_a | lab_b | lab_c | lab_d — scope of DELETE on signals/trades/equity_snapshots",
+        description="all | all_labs (Live + A–D) | live | lab_a | lab_b | lab_c | lab_d — scope of DELETE on signals/trades/equity_snapshots",
     ),
     uniform_paper_balance_cents: int | None = Query(
         None,
@@ -823,9 +824,10 @@ async def data_reset(
     Wipe **signals**, **trades**, and **equity_snapshots** (all rows, or one branch). ``bot_config`` is kept.
     Optional env ``DATA_RESET_TOKEN``: then require header ``X-Reset-Token`` matching it.
 
-    When ``branch`` is ``all`` or ``all_labs`` and ``uniform_paper_balance_cents`` is set, Live paper and each lab's
-    ``paper_balance_cents`` are updated to that value after the wipe (same starting bankroll everywhere), using a
-    single locked read-modify-write so ``optimizer`` and the rest of ``bot_config`` are not clobbered by a stale snapshot.
+    ``branch`` = **all_labs**: deletes trading rows for **Live** and **lab_a–lab_d** (not only labs). When
+    ``uniform_paper_balance_cents`` is set, Live paper and each lab's ``paper_balance_cents`` are updated to that
+    value after the wipe, using a single locked read-modify-write so ``optimizer`` and the rest of ``bot_config``
+    are not clobbered by a stale snapshot.
     """
     if str(confirm).lower() not in ("yes", "true", "1", "y"):
         raise HTTPException(
@@ -854,8 +856,11 @@ async def data_reset(
             await store.reset_trading_data(backup=False, branch="lab_b")
             await store.reset_trading_data(backup=False, branch="lab_c")
             await store.reset_trading_data(backup=False, branch="lab_d")
+            _clear_engine_mem_after_reset("live")
+            await store.reset_trading_data(backup=False, branch="live")
             for br2 in ("lab_a", "lab_b", "lab_c", "lab_d"):
                 _clear_engine_mem_after_reset(br2)
+            _clear_engine_mem_after_reset("live")
             out = dict(out)
             out["branch"] = "all_labs"
             await _seed_equity_snapshots_after_reset("all_labs")
@@ -981,7 +986,7 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     """
     Merge ``lab_a`` / ``lab_b`` / ``lab_c`` / ``lab_d`` without the general ``BotConfigPayload`` shape.
 
-    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``lab_c`` | ``lab_d`` | ``both`` (A+B) | ``all_labs`` (A+B+C+D).
+    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``lab_c`` | ``lab_d`` | ``both`` (A+B) | ``all_labs`` (Live + A–D; trading rows for Live and all four labs).
     ``backup`` (default true) is passed to the first wipe in a multi-branch reset.
     """
     reset = str(body.get("reset_data") or "none").strip().lower()
@@ -993,8 +998,11 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
         await store.reset_trading_data(backup=False, branch="lab_b")
         await store.reset_trading_data(backup=False, branch="lab_c")
         await store.reset_trading_data(backup=False, branch="lab_d")
+        _clear_engine_mem_after_reset("live")
+        await store.reset_trading_data(backup=False, branch="live")
         for br in ("lab_a", "lab_b", "lab_c", "lab_d"):
             _clear_engine_mem_after_reset(br)
+        _clear_engine_mem_after_reset("live")
         await _seed_equity_snapshots_after_reset("all_labs")
     elif reset == "both":
         _clear_engine_mem_after_reset("lab_a")
