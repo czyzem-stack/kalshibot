@@ -761,8 +761,43 @@ input[type="number"] {
 }
 
 .dash-optimizer-panel .branch-brain-inline--optimizer-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* Shared bounding box for Optimizer vs Breeder so tab switches do not jump the card. */
+.dash-optimizer-panel__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: clamp(560px, 56vh, 700px);
+  display: flex;
+  flex-direction: column;
+}
+
+.dash-optimizer-panel__body > .branch-brain-optimizer-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dash-optimizer-panel__chart-skeleton {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-height: 440px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid rgba(55, 65, 100, 0.45);
+  background: rgba(12, 18, 38, 0.35);
+}
+
+.dash-optimizer-panel__chart-skeleton--error {
+  padding: 16px;
+  text-align: center;
 }
 
 .dash-optimizer-panel__mode-footer {
@@ -776,7 +811,7 @@ input[type="number"] {
 }
 
 .dash-breeder-radar-loading {
-  min-height: 280px;
+  /* min-height comes from .dash-optimizer-panel__chart-skeleton when combined */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1155,6 +1190,10 @@ input[type="number"] {
   flex-direction: column;
   gap: 0;
   min-width: 0;
+}
+
+.branch-brain-optimizer-stack--dashboard {
+  gap: 10px;
 }
 
 /* Radar angle labels: allow dimension text to sit in margin without SVG clip */
@@ -3151,8 +3190,12 @@ button[title].section-tip {
 }
 
 /* Optimizer report overlay (single panel, no corner toast duplicate) */
+.panel.panel--optimizer-report {
+  isolation: isolate;
+}
+
 .optimizer-report {
-  max-width: min(100%, 640px);
+  max-width: 100%;
   padding-right: 2px;
 }
 

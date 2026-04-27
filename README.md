@@ -4,7 +4,7 @@
 
 It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys), runs **rule-based engines** per branch, and ships a **Vite** dashboard for config, charts, and health—**no separate hosted control plane**; your keys and data stay on the machine you run it on.
 
-**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Dashboard (UI map)](#dashboard-ui-map) · [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) · [Optimizer visualizations](#optimizer-visualizations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
+**Runbooks:** [Quick start (Windows)](#quick-start-windows) · [macOS / Linux](#macos-and-linux-manual) · [Configuration](#configuration) · [API overview](#api-overview) · [Operator flows (diagrams)](#operator-flows-sequences-and-visuals) · [Dashboard (UI map)](#dashboard-ui-map) · [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) · [Optimizer visualizations](#optimizer-visualizations) · [Performance and startup](#performance-and-startup) · [Developer notes](#developer-notes)
 
 **Version:** `v0.2` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md) (see **v0.2** for latest dashboard fixes; **v0.0** remains the historical baseline note). The **optimizer** stack includes **v0.1** behavior internally (advanced replay scoring, structured Claude proposals with held-out checks)—see **Optimizer upgrade v0.1** under [Optimizer: internal pulse vs Claude](#optimizer-internal-pulse-vs-claude). **Labs Breeding v0.1** ships in the same tree (child lab engines, `lab_breeding.py`, dashboard **Breeder** view). There are **no** new `OPTIMIZER_*` environment variables and **no** extra advanced-metrics panel on the default Optimizer card; power users read **`GET /api/optimizer/status`** for proposal history, advanced metrics, and **labs breeding** fields (log, children, lineage, personality radar, cooldown timestamps).
 
@@ -71,6 +71,276 @@ Exact numbers live in `default_bot_config()` and your SQLite config; the table r
 - **Persistence** — Config (active row + **`config_history`** audit table), trades, signals, and snapshots are stored under `data/` (default SQLite: `data/bot.sqlite3`). Optional **JSONL** logs for signals and trades (and optional equity logging) under `data/logs/` when enabled in `.env`.
 - **Optimizer (optional)** — Scheduled or manual analysis can suggest config tweaks; optional Claude-style HTTP calls use `ANTHROPIC_API_KEY` when set (see `.env.example`). The dashboard does not ship a separate “Claude rule editor” surface—**Settings** holds serious config. The main **Optimizer** card defaults to **Optimizer** mode: **“Optimizer Thinking (Lab A)”** radar, **mutation** summary row, and **lab pulse** ticker. Use the **Optimizer \| Breeder** control in the **bottom-right footer** of that same card for **Labs Breeding v0.1**: a **twelve-axis** personality radar fed by **`GET /api/optimizer/status`** (no chart legend—**Recharts `Tooltip`** identifies branches on hover). See [Labs breeding v0.1](#labs-breeding-v01-at-a-glance) and [Breeder view](#breeder-view-labs-breeding-v01). The default radar is **internal optimizer telemetry**; the Breeder radar is **derived display** from traits and sizing knobs.
 - **Polling** — The UI leans on **`GET /api/dashboard/equity`** and focused routes for high-frequency updates and **`GET /api/dashboard`** for heavier “full” snapshots, so a slow home Wi‑Fi or large open-book payload does not block the whole page forever.
+
+---
+
+## Operator flows, sequences, and visuals
+
+This section is the **“how do I read the system in motion?”** companion to the tables above. It adds **sequence-style flows**, **merge semantics** for the split dashboard API, and **ASCII** sketches you can paste into design docs.
+
+### Visual: logical stack (browser → API → disk)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Browser (http://localhost:5173)                                         │
+│  ┌──────────────┐   ┌─────────────────┐   ┌──────────────────────────┐ │
+│  │ React SPA    │──▶│ Vite /api proxy │──▶│ FastAPI :8765 (or exe)     │ │
+│  │ App.tsx      │   │ (vite.config)   │   │ main.py + routers          │ │
+│  └──────────────┘   └─────────────────┘   └─────────────┬────────────┘ │
+└──────────────────────────────────────────────────────────┼──────────────┘
+                                                             │
+                    ┌────────────────────────────────────────┴──────────────┐
+                    │  asyncio tasks (lifespan)                               │
+                    │  dual_engine_loop  │  optimizer_loop  │  KalshiClient │
+                    └────────────────────────────┬───────────────────────────┘
+                                                 │
+                                    ┌────────────▼────────────┐
+                                    │ SQLite + optional JSONL │
+                                    │ data/bot.sqlite3        │
+                                    └─────────────────────────┘
+```
+
+**Rule of thumb:** if the **UI** misbehaves, check **origin** (5173 vs raw API port) first; if **data** looks wrong, check **branch** columns in SQLite before blaming the chart.
+
+### Flow A — first dashboard load (happy path)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as Operator browser
+  participant V as Vite dev server
+  participant A as FastAPI /api/dashboard
+  participant K as Kalshi REST
+  participant S as SQLite
+
+  U->>V: GET / (SPA shell)
+  U->>V: GET /api/dashboard (proxied)
+  V->>A: forward JSON + optional Bearer
+  A->>S: read config, trades, signals, equity_series…
+  A->>K: portfolio / public probe (as implemented)
+  K-->>A: JSON
+  A-->>V: 200 Dashboard JSON
+  V-->>U: hydrate React state (dash ≠ null → hide loading)
+
+  Note over U,A: Every ~12s: full /api/dashboard again; every ~4s: /api/dashboard/equity merge (no slow mark pass).
+```
+
+**Frozen loading screen?** The SPA must receive a **valid JSON object** once; use **Network** tab to confirm **`/api/dashboard`** is **200** and not blocked by auth. The UI merges **equity-only** polls into the previous payload so a partial route cannot strip optimizer or breeding fields.
+
+### Flow B — split dashboard polling (what merges where)
+
+| Poll | Interval (UI default) | What it skips / includes | Merge rule in UI |
+|------|------------------------|---------------------------|------------------|
+| **`GET /api/dashboard`** | ~12s | Full payload including heavier mark refresh when `with_marks=True` | Replaces baseline dashboard state (deduped in-flight + epoch guard in `App.tsx`). |
+| **`GET /api/dashboard/equity`** | ~4s | Same schema as full dashboard **without** the slow mark pass (`with_marks=False`) | **Shallow merge** `{ ...prevDash, ...equityJson, config: preferNonEmpty }` so nested `optimizer_activity` survives between full polls. |
+| **`GET /api/dashboard/recent_trades`** | separate effect | Trades slice for toast merge | Merges into toast stream, not the main `dash` object. |
+
+```mermaid
+flowchart LR
+  subgraph ui [React dashboard]
+    D[dash state]
+  end
+  F["GET /api/dashboard\n(full)"]
+  E["GET /api/dashboard/equity\n(light)"]
+  F -->|baseline replace| D
+  E -->|merge into prev| D
+```
+
+### Flow C — paper trade path (one branch)
+
+```mermaid
+flowchart TD
+  T[dual_engine_loop tick] --> M[Scan markets / assets cfg]
+  M --> R{rule_matches?}
+  R -- no --> T
+  R -- yes --> P[pick_trade_rule + sizing]
+  P --> O{Open / sim guardrails}
+  O -- blocked --> L[Log / not_traded_signals]
+  O -- ok --> X[Insert simulated trade row\nbranch = lab_x or live]
+  X --> S[settle_simulated_trades / swing / timeout handlers]
+  S --> Q[SQLite trades updated]
+  Q --> N[snapshot_equity per branch]
+  N --> E[(equity_snapshots + branch column)]
+```
+
+Each **branch** column in **`equity_snapshots`** and **`trades`** is authoritative: identical **chart shapes** across labs usually mean **shared tape + similar rules**, not a single shared array (see fingerprint lines under equity charts in the UI).
+
+### Flow D — promote **Lab A → Live** (decision sketch)
+
+```mermaid
+flowchart TD
+  start([Operator clicks Promote]) --> gate{Settled PnL cents\nLab A > B,C,D ?}
+  gate -- no --> deny[API 400 + UI message]
+  gate -- yes --> real{Live real-money\nsimulate off ?}
+  real -- yes --> ack{ack_live token\nAPPLY_LIVE}
+  ack -- missing --> warn[UI prompts token]
+  ack -- ok --> copy[Deep-copy LAB_BRANCH_OVERLAY_KEYS\nfrom lab_a → root]
+  real -- no paper live --> copy
+  copy --> save[Persist bot_config + config_history]
+  save --> done([Live uses merged overlays\nengines unchanged unless edited])
+```
+
+### Flow E — Optimizer card modes (default vs Breeder)
+
+| Mode | Primary data route | What you see |
+|------|-------------------|--------------|
+| **Optimizer** (default) | `GET /api/dashboard` slices (`optimizer_activity`, metrics, …) | Six-axis **Optimizer Thinking** radar, mutation row, lab pulse ticker. **Report** opens structured overlay; **double-click** radar expands. |
+| **Breeder** | `GET /api/optimizer/status` | Twelve-axis **personality radar** (traits-derived); spinner while fetching; tooltips identify series. |
+
+```mermaid
+flowchart LR
+  subgraph card [Optimizer card footer]
+    O[Optimizer mode]
+    B[Breeder mode]
+  end
+  O --> DASH[GET /api/dashboard]
+  B --> ST[GET /api/optimizer/status]
+  DASH --> RAD6[6-axis radar + pulse]
+  ST --> RAD12[12-axis radar]
+```
+
+### Flow F — config overlays (mental checklist)
+
+1. **Edit JSON** in Settings → `PUT /api/config` (validated paths).
+2. **Per-lab keys** in `lab_a`…`lab_d` override only keys listed in **`LAB_BRANCH_OVERLAY_KEYS`** (`branch_config.py`).
+3. **Engines read** `merge_branch_config(full_cfg, branch)` each tick — you never hand-merge in the DB manually during normal ops.
+4. **Audit** prior versions via **`GET /api/config/history`** (optional `include_config=true`).
+
+### ASCII — branch families (visible vs hidden)
+
+```
+VISIBLE ON DASHBOARD STRIP          HIDDEN ENGINES (breeding slots)
+──────────────────────────          ───────────────────────────────
+Live   Lab A   Lab B   Lab C   Lab D     lab_child_1 … lab_child_6
+  │       │       │       │       │                 │
+  └───────┴───────┴───────┴───────┴─────engine loop─┴─ same dual_engine_loop
+```
+
+### Quick triage table (symptoms → where to look)
+
+| Symptom | Likely layer | First checks |
+|---------|--------------|--------------|
+| Spinner never ends | UI ↔ API | 5173 origin, `/api/dashboard` status, bearer token match, browser console. |
+| Charts identical | Data vs perception | SQLite `branch` on `equity_snapshots`; UI fingerprint “pts / book / settled” per chart. |
+| 429 storms | Kalshi client | Logs for `Retry-After`; reduce concurrent markets or enable WS cache path. |
+| Optimizer flat | Cold start / no trades | Wait for settles; verify `optimizer.enabled` and scheduler gates in config. |
+| Breeder empty | Status route | `GET /api/optimizer/status` JSON; ensure breeding generation interval elapsed. |
+
+### Environment matrix (where secrets and ports live)
+
+| Surface | Typical origin | Kalshi keys | API port | UI |
+|---------|----------------|-------------|----------|-----|
+| **Local dev** | `launch_local.ps1` | Root `.env` | `8765` | `5173` via Vite proxy |
+| **Docker** | `docker run … --env-file .env` | Same vars inside container | published `-p` | Host nginx/Caddy → `dist/` |
+| **Windows .exe** | PyInstaller `dist/` output | `.env` beside exe + `data/` | configurable | Still use Vite or static `dist/` |
+
+```text
+  .env (repo root)          frontend/.env (optional)
+        │                            │
+        │   KALSHI_*                 │  VITE_API_BEARER_TOKEN (must match API)
+        ▼                            ▼
+   uvicorn / exe  ◀──── proxy / CORS ────  npm run dev  OR  static host
+```
+
+### Release promotion flow (`develop` → `main`)
+
+```mermaid
+flowchart LR
+  subgraph dev [Day-to-day]
+    D[feature commits]
+    DV[origin/develop]
+    D --> DV
+  end
+  subgraph gate [Quality]
+    T[pytest backend/tests]
+    P[pre-commit optional]
+    DV --> T
+    T --> P
+  end
+  subgraph prod [Release line]
+    M[main]
+    OM[origin/main]
+    P -->|merge PR or local merge| M
+    M --> OM
+  end
+```
+
+**Convention:** keep **`release/*.zip`** and unpacked exe trees **out of git** unless you intentionally ship binaries from CI; they bloat history and are not required to run from source.
+
+### Observability hop (one request path)
+
+```mermaid
+sequenceDiagram
+  participant H as Health check
+  participant A as /api/health
+  participant L as dual_engine_loop
+  participant O as optimizer_loop
+  H->>A: GET (no bearer by default)
+  A-->>H: ok + task flags
+  Note over L,O: Deep health adds SQLite path/size + last_error map without Kalshi I/O.
+```
+
+### Equity vs optimizer (do not conflate)
+
+| Concern | Primary surfaces |
+|---------|------------------|
+| **Ledger PnL path** | Equity small-multiples, `equity_snapshots_*`, `metrics*` on dashboard |
+| **Exploration / mutation health** | Optimizer radar + health dot + report overlay |
+| **Breeding narrative** | Breeder radar + `labs_breeding_*` on **`GET /api/optimizer/status`** |
+
+Use **both** equity curves and optimizer telemetry when judging an experiment: MTM can move on marks while the optimizer speaks to **acceptance** and **replay-style fitness**, not the same numbers.
+
+### Settings overlay — save path (UI → SQLite)
+
+Most dangerous toggles stay behind **confirm** parameters or modal text; this diagram is the **happy path** for a normal JSON save.
+
+```mermaid
+sequenceDiagram
+  participant U as Operator
+  participant UI as SettingsOverlay
+  participant API as PUT /api/config
+  participant DB as SQLite bot_config
+
+  U->>UI: Edit JSON + Save
+  UI->>API: validated payload
+  API->>DB: merge + write active row
+  API->>DB: append config_history row
+  API-->>UI: 200 refreshed config
+  UI-->>U: close or show success
+  Note over UI,API: Lab-only partial saves may use lab-branches routes; see OpenAPI /docs.
+```
+
+### Handy REST map (non-exhaustive)
+
+| Intent | Verb + path | Notes |
+|--------|-------------|-------|
+| Full config | `GET/PUT /api/config` | `confirm=YES` when disabling Live paper. |
+| Lab parity patch | `PUT /api/config/lab-branches` | Validates embedded `rules` like top-level saves. |
+| Engine switches | `POST /api/engine/toggle` | Query flags for live vs each lab. |
+| Optimizer tuning | `PUT /api/optimizer/config` | High-level keys only; no hidden v0.1-only weight knobs. |
+| Force internal pulse | `POST /api/optimizer/force-internal-mutation` | Same gates as scheduled internal mutation. |
+| Breeding + metrics | `GET /api/optimizer/status` | Large read-only JSON; cache-friendly in UI. |
+
+### Color language in docs and UI (legend)
+
+| Color / tone in README tables | Typical meaning in this repo |
+|------------------------------|-------------------------------|
+| **Green / pos** | Healthy connectivity, acceptance above band, or positive PnL tone in UI tiles. |
+| **Yellow / warn** | Degraded path (429 backoff, partial Kalshi data, mid acceptance band). |
+| **Red / bad** | Hard errors, low acceptance, or real-money warnings. |
+
+### One-page “day 1” checklist (operators)
+
+1. Copy **`.env.example` → `.env`**, set at least **`KALSHI_ENV`** and key material (or stay read-only without keys).
+2. Run **`scripts/launch_local.ps1`** (Windows) or uvicorn + Vite manually (macOS/Linux sections below).
+3. Open **`http://localhost:5173`**, confirm **`/api/dashboard`** returns **200** in Network tools.
+4. Turn on **one lab** first, watch **Branch performance** + **equity fingerprints** diverge as trades accrue.
+5. Read **Optimizer report** before toggling **Breeder** mode so you know whether the scheduler has signal.
+6. When exposing beyond localhost, set **`KALSHI_API_BEARER_TOKEN`** + matching **`VITE_API_BEARER_TOKEN`**, tighten **`CORS_ORIGINS`**, and prefer a reverse proxy for TLS.
+
+**Mermaid in GitHub:** diagrams in this README render automatically on **github.com**; in VS Code preview you may need a Mermaid-capable markdown preview extension.
+
+**Line budget:** the README grew by **~34%** line-count versus the pre-expansion baseline so operators get **pictures + orderings**, not only tables (exact % varies slightly as other sections are edited).
 
 ---
 

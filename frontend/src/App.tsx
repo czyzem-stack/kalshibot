@@ -477,7 +477,7 @@ function ChartDblClickExpand({
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 1300,
+            zIndex: 1320,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -552,6 +552,7 @@ function BreederPersonalityRadarChart({
           );
         })}
         <Tooltip
+          allowEscapeViewBox={{ x: true, y: true }}
           contentStyle={{
             background: "rgba(20,24,40,.95)",
             border: "1px solid var(--border)",
@@ -585,8 +586,7 @@ function BranchOptimizerVisualizer({
 }) {
   return (
     <div
-      className="branch-brain-optimizer-stack"
-      style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}
+      className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard"
       role="region"
       aria-label="Optimizer: thinking radar, mutation dial, and lab pulse"
     >
@@ -1226,6 +1226,7 @@ function OptimizerMultiBranchRadar({
           )}
         />
         <Tooltip
+          allowEscapeViewBox={{ x: true, y: true }}
           cursor={{ strokeWidth: 1, stroke: "rgba(99, 102, 241, 0.35)" }}
           content={({ active, label, payload }) => {
             if (!active || !payload?.length) return null;
@@ -1707,8 +1708,16 @@ function optimizerNextMovementHero(dash: AnyObj): { title: string; sub: string }
   };
 }
 
+/** Prefer live ``dash.config``; fill from ``fallbackConfig`` when equity polls omit nested config. */
+function mergeDashboardConfigForOptimizer(dash: AnyObj, fallbackConfig: AnyObj | null | undefined): AnyObj {
+  const fb = (fallbackConfig && typeof fallbackConfig === "object" ? fallbackConfig : {}) as AnyObj;
+  const cur = (dash?.config && typeof dash.config === "object" ? dash.config : {}) as AnyObj;
+  return { ...fb, ...cur };
+}
+
 /** Single overlay: movement hero + condensed rollups, schedule, pulse, settlements, UI hints. */
-function optimizerReportOverlayBody(dash: AnyObj): ReactNode {
+function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null | undefined): ReactNode {
+  const mergedCfg = mergeDashboardConfigForOptimizer(dash, fallbackConfig);
   const movement = optimizerNextMovementHero(dash);
   const g = optimizerGateProgress(dash);
   const oa = (dash?.optimizer_activity || {}) as AnyObj;
@@ -1728,7 +1737,7 @@ function optimizerReportOverlayBody(dash: AnyObj): ReactNode {
   const branchCards = branchRollupCardsFromDash(dash);
   const settledPct = g.minTr > 0 ? Math.min(100, (g.settled / g.minTr) * 100) : 0;
   const winsPct = g.minProf > 0 ? Math.min(100, (g.wins / g.minProf) * 100) : 0;
-  const reportStatus = buildOptimizerStatus(dash, (dash?.config || {}) as AnyObj);
+  const reportStatus = buildOptimizerStatus(dash, mergedCfg);
 
   return (
     <div className="optimizer-report optimizer-report--structured">
@@ -2794,6 +2803,7 @@ function EquityDualLineChart({
         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
         <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
         <Tooltip
+          allowEscapeViewBox={{ x: true, y: true }}
           contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
           formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
         />
@@ -3120,19 +3130,23 @@ export default function App() {
   });
   const [equityCompareOpen, setEquityCompareOpen] = useState(false);
   const [equityCompareMode, setEquityCompareMode] = useState<"blended" | "potential">("blended");
-  const [infoPopup, setInfoPopup] = useState<{ title: string; body: ReactNode } | null>(null);
+  const [infoPopup, setInfoPopup] = useState<{ title: string; body: ReactNode; variant?: "optimizerReport" } | null>(null);
   /** Last loaded dashboard JSON — used for optimizer report overlay if current ``dash`` is briefly null. */
   const dashSnapshotRef = useRef<AnyObj | null>(null);
+  /** Last full ``config`` blob from any dashboard response (equity-only polls may drop nested config). */
+  const dashboardConfigFallbackRef = useRef<AnyObj>({});
 
   /**
-   * Dashboard fetch: dedupe in-flight; force aborts. No fetch epoch: React Strict (and effect re-runs) used
-   * to increment an epoch in cleanup, discarding a valid /api/dashboard response and leaving the UI
-   * without data or a fresh poll.
+   * Dashboard fetch: dedupe in-flight; force aborts. ``dashboardFetchEpochRef`` bumps on Strict Mode
+   * cleanup, superseding a stale request, and forced refresh so an older ``/api/dashboard`` response
+   * cannot call ``setDash`` / ``setErr`` after a newer run has started.
    */
   const dashboardAbortRef = useRef<AbortController | null>(null);
   const dashboardInFlightRef = useRef<Promise<AnyObj | null> | null>(null);
   const dashboardInFlightStartedAtRef = useRef(0);
-  const dashboardPollMountedRef = useRef(true);
+  /** False until the dashboard poll effect runs — avoids treating the tree as mounted before listeners are ready. */
+  const dashboardPollMountedRef = useRef(false);
+  const dashboardFetchEpochRef = useRef(0);
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
     const inFlight = dashboardInFlightRef.current;
@@ -3147,11 +3161,14 @@ export default function App() {
       dashboardAbortRef.current?.abort();
       dashboardInFlightRef.current = null;
       dashboardInFlightStartedAtRef.current = 0;
+      dashboardFetchEpochRef.current += 1;
     }
     if (force) {
+      dashboardFetchEpochRef.current += 1;
       dashboardAbortRef.current?.abort();
     }
     const req = (async (): Promise<AnyObj | null> => {
+      const epochAtStart = dashboardFetchEpochRef.current;
       const ac = new AbortController();
       dashboardAbortRef.current = ac;
       const maxMs = DASHBOARD_REQUEST_TIMEOUT_MS;
@@ -3165,9 +3182,11 @@ export default function App() {
         if (force) setErr(null);
         const r = await fetch("/api/dashboard", withApiAuth({ signal: ac.signal }));
         if (!dashboardPollMountedRef.current) return null;
+        if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
         const text = await r.text();
         if (!dashboardPollMountedRef.current) return null;
+        if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         const d: AnyObj = (() => {
           try {
             return JSON.parse(text) as AnyObj;
@@ -3176,11 +3195,13 @@ export default function App() {
           }
         })();
         if (!dashboardPollMountedRef.current) return null;
+        if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         setErr(null);
         setDash(d);
         payload = d;
       } catch (e: any) {
         if (!dashboardPollMountedRef.current) return null;
+        if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         const msg = String(e?.message || e);
         const aborted =
           String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
@@ -3271,10 +3292,11 @@ export default function App() {
         const r = await fetch("/api/dashboard/equity", withApiAuth());
         if (!r.ok) return;
         const d = (await r.json()) as AnyObj;
-        if (!d || typeof d !== "object") return;
+        if (!d || typeof d !== "object" || Array.isArray(d)) return;
         setDash((prev) => {
           if (!prev) return prev;
-          return { ...d, config: d.config && typeof d.config === "object" ? d.config : prev.config };
+          // Merge so a partial or slim future payload cannot wipe fields the UI still needs (equity per branch, optimizer, etc.).
+          return { ...prev, ...d, config: d.config && typeof d.config === "object" ? d.config : prev.config };
         });
       } catch {
         /* ignore */
@@ -3297,6 +3319,12 @@ export default function App() {
       window.clearInterval(idEq);
       dashboardPollMountedRef.current = false;
       dashboardAbortRef.current?.abort();
+      // Strict Mode (or tab background): abort leaves the old promise in ``dashboardInFlightRef`` until it
+      // settles. A remount's ``refresh()`` would then dedupe against that "fresh" promise and never start a
+      // new fetch — ``dash`` stays null and the loading screen never clears until the 12s poll fires.
+      dashboardInFlightRef.current = null;
+      dashboardInFlightStartedAtRef.current = 0;
+      dashboardFetchEpochRef.current += 1;
     };
   }, []);
 
@@ -3355,6 +3383,22 @@ export default function App() {
   useEffect(() => {
     if (dash) dashSnapshotRef.current = dash as AnyObj;
   }, [dash]);
+
+  useEffect(() => {
+    const c = dash?.config;
+    if (c && typeof c === "object" && Object.keys(c as AnyObj).length > 0) {
+      dashboardConfigFallbackRef.current = c as AnyObj;
+    }
+  }, [dash?.config]);
+
+  useEffect(() => {
+    if (!infoPopup) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setInfoPopup(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [infoPopup]);
 
   useEffect(() => {
     if (tradePopupToastsEnabled) return;
@@ -3644,7 +3688,8 @@ export default function App() {
     if (!source) return;
     setInfoPopup({
       title: "Optimizer report",
-      body: optimizerReportOverlayBody(source),
+      body: optimizerReportOverlayBody(source, dashboardConfigFallbackRef.current),
+      variant: "optimizerReport",
     });
   }, [dash]);
 
@@ -4856,7 +4901,7 @@ export default function App() {
                 <button
                   type="button"
                   className="primary dash-panel-btn"
-                  disabled={busy}
+                  disabled={!dash && !dashSnapshotRef.current}
                   title="Open Optimizer report: run metrics (cycle, last, accept %, fit, pulse), gate progress, schedule, branch rollups, change history, pulse log."
                   onClick={openOptimizerReportOverlay}
                 >
@@ -4876,56 +4921,78 @@ export default function App() {
                 </button>
               </div>
             </div>
-            {optimizerDashboardView === "breeder" ? (
-              <div className="branch-brain-optimizer-breeder" style={{ marginTop: 12 }}>
-                {breederStatusLoading ? (
-                  <div
-                    className="dash-breeder-radar-loading"
-                    role="status"
-                    aria-live="polite"
-                    aria-busy="true"
-                    aria-label="Loading breeder radar"
-                  />
-                ) : breederStatusError ? (
-                  <p className="sub" style={{ marginTop: 8, color: "#f87171" }} role="alert">
-                    {breederStatusError}
-                  </p>
-                ) : (
-                  <ChartDblClickExpand
-                    className="branch-brain-optimizer-breeder__zoom"
-                    title="Breeder personality (Labs A–D + children)"
-                    defaultHeight={400}
-                    expandedHeight={720}
-                    expandedPanelMaxWidth="min(1100px, 99vw)"
-                    expandedTitleFontSize={20}
-                    expandedDetailFontSize={12}
-                    expandedTipFontSize={10}
-                    hint="Double-click to enlarge. Twelve mood axes from GET /api/optimizer/status; thicker stroke = engine running."
-                    detail={
-                      <p className="sub" style={{ margin: 0 }}>
-                        Read-only <code>labs_breeding_personality_radar</code>. Hover the chart for branch values. Lab A promotion and
-                        adoption paths stay gated on the server.
+            <div className="dash-optimizer-panel__body">
+              {optimizerDashboardView === "breeder" ? (
+                <div
+                  className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard"
+                  role="region"
+                  aria-label="Breeder personality radar"
+                >
+                  {breederStatusLoading ? (
+                    <div
+                      className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading"
+                      role="status"
+                      aria-live="polite"
+                      aria-busy="true"
+                      aria-label="Loading breeder radar"
+                    />
+                  ) : breederStatusError ? (
+                    <div className="dash-optimizer-panel__chart-skeleton dash-optimizer-panel__chart-skeleton--error">
+                      <p className="sub" style={{ margin: 0, color: "#f87171" }} role="alert">
+                        {breederStatusError}
                       </p>
-                    }
-                    render={({ h }) => (
-                      <div style={{ width: "100%", height: h, marginTop: 4 }}>
-                        <BreederPersonalityRadarChart rows={breederRadarRows} series={breederRadarSeries} height={h} />
-                      </div>
-                    )}
-                  />
-                )}
-              </div>
-            ) : (
-              <BranchOptimizerVisualizer
-                labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
-                radar={optimizerThinkingRadarBundle}
-                mutationStatus={{
-                  tierLabel: optimizerStatus.mutationTierLabel,
-                  effectiveMutationScale: optimizerStatus.effectiveMutationScale,
-                  mutationDial: optimizerStatus.mutationDial,
-                }}
-              />
-            )}
+                    </div>
+                  ) : (
+                    <div
+                      className="branch-brain-optimizer-radar-outer"
+                      style={{ width: "100%", minWidth: 0, textAlign: "center" as const }}
+                    >
+                      <ChartDblClickExpand
+                        className="branch-brain-optimizer-radar__zoom"
+                        title="Breeder personality (Labs A–D + children)"
+                        defaultHeight={440}
+                        expandedHeight={720}
+                        expandedPanelMaxWidth="min(1100px, 99vw)"
+                        expandedTitleFontSize={20}
+                        expandedDetailFontSize={12}
+                        expandedTipFontSize={10}
+                        hint="Double-click to enlarge. Twelve mood axes from GET /api/optimizer/status; thicker stroke = engine running."
+                        detail={
+                          <p className="sub" style={{ margin: 0 }}>
+                            Read-only <code>labs_breeding_personality_radar</code>. Hover the chart for branch values. Lab A promotion
+                            and adoption paths stay gated on the server.
+                          </p>
+                        }
+                        render={({ h }) => (
+                          <div
+                            style={{
+                              width: "100%",
+                              maxWidth: "100%",
+                              height: h,
+                              minHeight: 120,
+                              margin: "0 auto",
+                              overflow: "visible",
+                            }}
+                          >
+                            <BreederPersonalityRadarChart rows={breederRadarRows} series={breederRadarSeries} height={h} />
+                          </div>
+                        )}
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <BranchOptimizerVisualizer
+                  labThoughts={(dash?.lab_thoughts ?? dash?.optimizer_activity?.lab_thoughts) as AnyObj | undefined}
+                  radar={optimizerThinkingRadarBundle}
+                  mutationStatus={{
+                    tierLabel: optimizerStatus.mutationTierLabel,
+                    effectiveMutationScale: optimizerStatus.effectiveMutationScale,
+                    mutationDial: optimizerStatus.mutationDial,
+                  }}
+                />
+              )}
+            </div>
           </div>
           {/* LABS BREEDING v0.1 — Optimizer/Breeder toggle bottom-right of card (radar uses Tooltip only; no chart legend). */}
           <div className="dash-optimizer-panel__mode-footer">
@@ -5033,7 +5100,10 @@ export default function App() {
                           no trades in that branch. (2) Dashed &gt; solid persistently: material open positions marked above cost, or
                           stale mark not caught up. (3) Dashed &lt; solid: marks below cost, or a bug in mid; compare “Assets to watch” for
                           broken quotes. (4) Mismatch with Branch performance: performance tiles are one instant; these charts are
-                          time-series—always compare the same branch tab and the same time window mentally.
+                          time-series—always compare the same branch tab and the same time window mentally. (5) Lab curves that{" "}
+                          <em>look</em> like clones but sit at different dollar levels: each chart uses its own snapshot series and book
+                          rollups—check the line under each title (pts / book / settled). Shared rules + the same market tape often
+                          produce very similar <em>shapes</em> at different bankrolls.
                         </p>
                         <p>
                           <strong>How to work with the rest of the UI.</strong> After a trade, expect dashed to move first, solid to move on
@@ -5078,6 +5148,9 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
                 {activityBranchTabLabel("live")}
               </h3>
+              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
+                {snaps.length} pts · book {fmtMoney(Number(metrics.current_equity_dollars ?? 0))} · {Number(metrics.settled_trades ?? 0)} settled
+              </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
@@ -5096,6 +5169,9 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_a")}
               </h3>
+              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
+                {equitySnapsLabA.length} pts · book {fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))} · {Number(metricsLabA.settled_trades ?? 0)} settled
+              </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
@@ -5114,6 +5190,9 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_b")}
               </h3>
+              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_b.">
+                {equitySnapsLabB.length} pts · book {fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))} · {Number(metricsLabB.settled_trades ?? 0)} settled
+              </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
@@ -5132,6 +5211,9 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_c")}
               </h3>
+              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_c.">
+                {equitySnapsLabC.length} pts · book {fmtMoney(Number(metricsLabC.current_equity_dollars ?? 0))} · {Number(metricsLabC.settled_trades ?? 0)} settled
+              </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
@@ -5150,6 +5232,9 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_d")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_d")}
               </h3>
+              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_d.">
+                {equitySnapsLabD.length} pts · book {fmtMoney(Number(metricsLabD.current_equity_dollars ?? 0))} · {Number(metricsLabD.settled_trades ?? 0)} settled
+              </p>
               <div className="chart chart--equity-stack" title="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()}`}
@@ -6130,7 +6215,11 @@ export default function App() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
                         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
                         <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
-                        <Tooltip contentStyle={{ background: "#0b1228", border: "1px solid #243055" }} formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]} />
+                        <Tooltip
+                          allowEscapeViewBox={{ x: true, y: true }}
+                          contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
+                          formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
+                        />
                         <Legend
                           verticalAlign="bottom"
                           height={28}
@@ -6209,7 +6298,7 @@ export default function App() {
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 1200,
+            zIndex: infoPopup.variant === "optimizerReport" ? 1400 : 1200,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -6219,8 +6308,13 @@ export default function App() {
           onClick={() => setInfoPopup(null)}
         >
           <div
-            className="panel"
-            style={{ width: "min(760px, 96vw)", maxHeight: "min(78vh, 760px)", overflow: "auto", padding: "14px 16px" }}
+            className={`panel${infoPopup.variant === "optimizerReport" ? " panel--optimizer-report" : ""}`}
+            style={{
+              width: infoPopup.variant === "optimizerReport" ? "min(1024px, 98vw)" : "min(760px, 96vw)",
+              maxHeight: infoPopup.variant === "optimizerReport" ? "min(92vh, 1200px)" : "min(78vh, 760px)",
+              overflow: "auto",
+              padding: "14px 16px",
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
