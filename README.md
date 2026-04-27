@@ -109,20 +109,21 @@ sequenceDiagram
   autonumber
   participant U as Operator browser
   participant V as Vite dev server
-  participant A as FastAPI /api/dashboard
+  participant A as FastAPI dashboard route
   participant K as Kalshi REST
   participant S as SQLite
 
-  U->>V: GET / (SPA shell)
-  U->>V: GET /api/dashboard (proxied)
-  V->>A: forward JSON + optional Bearer
-  A->>S: read config, trades, signals, equity_series…
-  A->>K: portfolio / public probe (as implemented)
+  U->>V: load SPA shell
+  U->>V: request dashboard JSON proxied
+  V->>A: forward JSON and optional Bearer
+  A->>S: read config trades signals equity series
+  A->>K: portfolio and public probe
   K-->>A: JSON
   A-->>V: 200 Dashboard JSON
-  V-->>U: hydrate React state (dash non-null, hide loading)
+  V-->>U: hydrate React dash and hide loading
 
-  Note over U,A: About every 12s, full GET /api/dashboard; about every 4s, GET /api/dashboard/equity shallow-merge (no slow mark pass).
+  Note over U,A: Full dashboard poll about every twelve seconds.
+  Note over U,A: Light equity poll about every four seconds merges into prior dash without slow marks.
 ```
 
 **Frozen loading screen?** The SPA must receive a **valid JSON object** once; use **Network** tab to confirm **`/api/dashboard`** is **200** and not blocked by auth. The UI merges **equity-only** polls into the previous payload so a partial route cannot strip optimizer or breeding fields.
@@ -272,12 +273,12 @@ flowchart LR
 ```mermaid
 sequenceDiagram
   participant H as Health check
-  participant A as /api/health
+  participant A as health HTTP route
   participant L as dual_engine_loop
   participant O as optimizer_loop
-  H->>A: GET (no bearer by default)
-  A-->>H: ok + task flags
-  Note over L,O: Deep health adds SQLite path/size + last_error map without Kalshi I/O.
+  H->>A: GET no bearer by default
+  A-->>H: ok and task flags
+  Note over L,O: Deep health adds SQLite path size and last error map without Kalshi IO.
 ```
 
 ### Equity vs optimizer (do not conflate)
@@ -298,16 +299,16 @@ Most dangerous toggles stay behind **confirm** parameters or modal text; this di
 sequenceDiagram
   participant U as Operator
   participant UI as SettingsOverlay
-  participant API as PUT /api/config
+  participant API as config PUT endpoint
   participant DB as SQLite bot_config
 
-  U->>UI: Edit JSON + Save
+  U->>UI: edit JSON then save
   UI->>API: validated payload
-  API->>DB: merge + write active row
-  API->>DB: append config_history row
+  API->>DB: merge and write active row
+  API->>DB: append config history row
   API-->>UI: 200 refreshed config
   UI-->>U: close or show success
-  Note over UI,API: Lab-only partial saves may use lab-branches routes; see OpenAPI /docs.
+  Note over UI,API: Lab-only saves may use lab-branches routes. See OpenAPI docs route in server.
 ```
 
 ### Handy REST map (non-exhaustive)
