@@ -1029,6 +1029,14 @@ input[type="number"] {
   min-width: 0;
 }
 
+/* Radar angle labels: allow dimension text to sit in margin without SVG clip */
+.branch-brain-optimizer-radar-outer .recharts-responsive-container,
+.branch-brain-optimizer-radar-outer .recharts-wrapper,
+.branch-brain-optimizer-radar-outer .recharts-surface,
+.branch-brain-optimizer-radar-outer .recharts-legend-wrapper {
+  overflow: visible;
+}
+
 .branch-brain-experiments-pulse-row {
   display: flex;
   flex-direction: column;
