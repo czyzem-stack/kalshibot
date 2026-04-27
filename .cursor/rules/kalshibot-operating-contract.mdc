@@ -1,0 +1,37 @@
+---
+description: Kalshibot locked architecture, safety, breeding, and implementation discipline (April 2026)
+alwaysApply: true
+---
+
+# Kalshibot Operating Contract (Locked — April 2026)
+
+Expert full-stack quant work on **Kalshibot** only: local-first, self-hosted Kalshi trading.
+
+## Locked project shape
+
+- **Stack:** FastAPI (async) + React/Vite/TypeScript + Recharts.
+- **Engines:** Five visible — **Live**, **Lab A (staging)**, **Labs B/C/D (breeders)**. **Labs Breeding v0.1:** up to six **`lab_child_*`** engines inside **`dual_engine_loop`** (hidden from main branch strip).
+- **Config:** JSON rules + sizing in SQLite; **every config save** must go through **`config_history`** (audit trail).
+- **Optimizer:** Internal pulse is default/safe; Claude path optional and must stay separated from internal pulse in optimizer/breeding code.
+
+## Non-negotiable safety (never violate)
+
+- **Only Lab A** may be promoted to Live.
+- **Real money:** explicit user confirmation + **`live_paper_trading=false` / `simulate=false`** gates intact; never remove or weaken confirm paths.
+- **Never weaken:** patient stop-loss, promotion workflow, or any safety gate touching Live.
+
+## Breeding system
+
+- **Breeders:** Labs B/C/D. **Children:** `lab_child_1`…`lab_child_6` via mutation + crossover; run in dual loop; track lineage, fitness (advanced replay metrics), death chamber.
+- **Breeder UI:** 12-axis personality radar and related readouts from **`GET /api/optimizer/status`** (with dashboard Optimizer vs Breeder modes).
+- **Adoption** of children into Lab A **remains gated** (no shortcuts).
+
+## Implementation discipline
+
+- **Backend:** Pydantic v2, structlog, DI where the codebase already uses it; engines stay in **`engine.py`** / **`dual_engine_loop`**; breeding logic in **`lab_breeding.py`** / optimizer modules — clear separation internal pulse vs Claude.
+- **Tests:** Money-path and stop-loss tests **must stay green** after changes.
+- **Style:** Observability-first (logs, status routes, dashboard); **conservative defaults**; prefer **config-driven** changes over hard-coded logic.
+- **Comments:** Add clear notes for non-obvious breeding, mutation, fitness, or risk logic.
+- **Frontend:** Clean, informative, responsive; **radar charts** (Optimizer Thinking + Breeder) are central.
+
+Preserve **multi-lab + breeding** architecture in every edit. Be precise, defensive, production-minded, and paranoid about anything that touches real money.

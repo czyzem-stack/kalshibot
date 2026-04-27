@@ -440,6 +440,15 @@ function ChartDblClickExpand({
   render: (o: { h: number }) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const shellRef = useRef<HTMLDivElement>(null);
+  /** Recharts SVG often stops dblclick bubbling; capture on the shell still sees events from descendants. */
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    const onDbl = () => setOpen(true);
+    el.addEventListener("dblclick", onDbl, true);
+    return () => el.removeEventListener("dblclick", onDbl, true);
+  }, []);
   useEffect(() => {
     if (!open) return;
     const onK = (e: KeyboardEvent) => {
@@ -451,8 +460,8 @@ function ChartDblClickExpand({
   return (
     <>
       <div
+        ref={shellRef}
         role="presentation"
-        onDoubleClick={() => setOpen(true)}
         className={className}
         title={hint}
         style={{ cursor: "zoom-in" }}
@@ -504,6 +513,55 @@ function ChartDblClickExpand({
         </div>
       ) : null}
     </>
+  );
+}
+
+const BREEDER_RADAR_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"];
+
+/** Labs Breeding v0.1 — twelve-axis personality radar (shared inline + expand overlay). */
+function BreederPersonalityRadarChart({
+  rows,
+  series,
+  height,
+}: {
+  rows: AnyObj[];
+  series: AnyObj[];
+  height: number;
+}) {
+  const hh = height > 0 ? height : 200;
+  return (
+    <ResponsiveContainer width="100%" height={hh}>
+      <RadarChart cx="50%" cy="52%" outerRadius="68%" data={rows}>
+        <PolarGrid stroke="var(--border)" />
+        <PolarAngleAxis dataKey="subject" tick={{ fill: "var(--muted)", fontSize: 9 }} />
+        <PolarRadiusAxis angle={18} domain={[0, 100]} tick={{ fill: "var(--muted)", fontSize: 8 }} tickCount={5} />
+        {series.map((s, i) => {
+          const col = BREEDER_RADAR_COLORS[i % BREEDER_RADAR_COLORS.length];
+          const on = Boolean(s.engine_running);
+          return (
+            <Radar
+              key={String(s.key ?? i)}
+              name={String(s.label ?? s.key ?? "")}
+              dataKey={String(s.key)}
+              stroke={col}
+              fill={col}
+              fillOpacity={on ? 0.22 : 0.07}
+              strokeWidth={on ? 2.2 : 1}
+              isAnimationActive={false}
+            />
+          );
+        })}
+        <Tooltip
+          contentStyle={{
+            background: "rgba(20,24,40,.95)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            fontSize: 11,
+          }}
+          formatter={(v: number | string) => [`${typeof v === "number" ? v.toFixed(0) : v}`, ""]}
+        />
+      </RadarChart>
+    </ResponsiveContainer>
   );
 }
 
@@ -4833,45 +4891,28 @@ export default function App() {
                     {breederStatusError}
                   </p>
                 ) : (
-                  <div style={{ width: "100%", height: 400, marginTop: 4 }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RadarChart cx="50%" cy="52%" outerRadius="68%" data={breederRadarRows}>
-                        <PolarGrid stroke="var(--border)" />
-                        <PolarAngleAxis dataKey="subject" tick={{ fill: "var(--muted)", fontSize: 9 }} />
-                        <PolarRadiusAxis
-                          angle={18}
-                          domain={[0, 100]}
-                          tick={{ fill: "var(--muted)", fontSize: 8 }}
-                          tickCount={5}
-                        />
-                        {breederRadarSeries.map((s, i) => {
-                          const col = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"][i % 10];
-                          const on = Boolean(s.engine_running);
-                          return (
-                            <Radar
-                              key={String(s.key ?? i)}
-                              name={String(s.label ?? s.key ?? "")}
-                              dataKey={String(s.key)}
-                              stroke={col}
-                              fill={col}
-                              fillOpacity={on ? 0.22 : 0.07}
-                              strokeWidth={on ? 2.2 : 1}
-                              isAnimationActive={false}
-                            />
-                          );
-                        })}
-                        <Tooltip
-                          contentStyle={{
-                            background: "rgba(20,24,40,.95)",
-                            border: "1px solid var(--border)",
-                            borderRadius: 8,
-                            fontSize: 11,
-                          }}
-                          formatter={(v: number | string) => [`${typeof v === "number" ? v.toFixed(0) : v}`, ""]}
-                        />
-                      </RadarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <ChartDblClickExpand
+                    className="branch-brain-optimizer-breeder__zoom"
+                    title="Breeder personality (Labs A–D + children)"
+                    defaultHeight={400}
+                    expandedHeight={720}
+                    expandedPanelMaxWidth="min(1100px, 99vw)"
+                    expandedTitleFontSize={20}
+                    expandedDetailFontSize={12}
+                    expandedTipFontSize={10}
+                    hint="Double-click to enlarge. Twelve mood axes from GET /api/optimizer/status; thicker stroke = engine running."
+                    detail={
+                      <p className="sub" style={{ margin: 0 }}>
+                        Read-only <code>labs_breeding_personality_radar</code>. Hover the chart for branch values. Lab A promotion and
+                        adoption paths stay gated on the server.
+                      </p>
+                    }
+                    render={({ h }) => (
+                      <div style={{ width: "100%", height: h, marginTop: 4 }}>
+                        <BreederPersonalityRadarChart rows={breederRadarRows} series={breederRadarSeries} height={h} />
+                      </div>
+                    )}
+                  />
                 )}
               </div>
             ) : (
