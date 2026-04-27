@@ -1971,8 +1971,9 @@ function optimizerBriefInfoBody(): ReactNode {
         <strong>Action buttons in the title row.</strong> <strong>force</strong> runs the same “internal mutation + replay gate” as
         <code>POST /api/optimizer/force-internal-mutation</code> and bypasses the normal scheduler; it does not by itself post exchange
         orders. The same action exists in <strong>Settings → Optimizer</strong> for convenience. <strong>report</strong> opens the full
-        overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form
-        explainer.
+        overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
+        <strong>Optimizer / Breeder</strong> is a segmented control at the <strong>bottom-right of this card</strong> (Breeder = 12-axis
+        personality radar from <code>GET /api/optimizer/status</code>).
       </p>
       <p>
         <strong>Experiments chart.</strong> Each line is a branch path from a common window start. Crossovers usually mean different fills,
@@ -3023,7 +3024,7 @@ export default function App() {
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
-  /** LABS BREEDING v0.1 — prominent Optimizer/Breeder toggle in header (fixed visibility); default Optimizer. */
+  /** LABS BREEDING v0.1 — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
   const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
   const [breederStatusLoading, setBreederStatusLoading] = useState(false);
@@ -4747,8 +4748,11 @@ export default function App() {
       </div>
 
       <div className="dash-split-card dash-optimizer-panel">
-        <section className="dash-section dash-section--split-card" aria-labelledby="dash-heading-optimizer">
-          <div className="branch-brain-inline">
+        <section
+          className="dash-section dash-section--split-card dash-optimizer-panel__section"
+          aria-labelledby="dash-heading-optimizer"
+        >
+          <div className="branch-brain-inline branch-brain-inline--optimizer-stack">
             <div className="branch-brain-inline__head">
               <h2 id="dash-heading-optimizer" className="dash-section__title" style={{ margin: 0 }}>
                 Optimizer
@@ -4763,28 +4767,7 @@ export default function App() {
                   "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
                 }
               />
-              {/* LABS BREEDING v0.1 — prominent Optimizer/Breeder toggle in header (fixed visibility) */}
               <div className="dash-optimizer-actions">
-                <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer or Breeder view">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={optimizerDashboardView === "optimizer"}
-                    className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "optimizer" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
-                    onClick={() => setOptimizerDashboardView("optimizer")}
-                  >
-                    Optimizer
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={optimizerDashboardView === "breeder"}
-                    className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "breeder" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
-                    onClick={() => setOptimizerDashboardView("breeder")}
-                  >
-                    Breeder
-                  </button>
-                </div>
                 <button
                   type="button"
                   className="primary dash-panel-btn"
@@ -4827,7 +4810,7 @@ export default function App() {
                   title={
                     "This card: multi-branch thinking radar, mutation bar under the chart, then Lab pulse ticker. " +
                     "Suggested-action text is not inline here—it may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
-                    "force / report: same row as this button. Pulse empty → check engine toggles and Account, not just this card."
+                    "force / report: same row as this button; Optimizer/Breeder toggle is at the bottom-right of this card. Pulse empty → check engine toggles and Account, not just this card."
                   }
                   onClick={() => setInfoPopup({ title: "Optimizer", body: optimizerBriefInfoBody() })}
                 >
@@ -4837,108 +4820,58 @@ export default function App() {
             </div>
             {optimizerDashboardView === "breeder" ? (
               <div className="branch-brain-optimizer-breeder" style={{ marginTop: 12 }}>
-                <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
-                  Twelve mood axes (Labs A–D + child engines) from internal breeding traits and sizing. Read-only — same
-                  source as <code>GET /api/optimizer/status</code>.
-                </p>
                 {breederStatusLoading ? (
-                  <p className="sub" style={{ marginTop: 8 }}>
-                    Loading radar…
-                  </p>
+                  <div
+                    className="dash-breeder-radar-loading"
+                    role="status"
+                    aria-live="polite"
+                    aria-busy="true"
+                    aria-label="Loading breeder radar"
+                  />
                 ) : breederStatusError ? (
                   <p className="sub" style={{ marginTop: 8, color: "#f87171" }} role="alert">
                     {breederStatusError}
                   </p>
                 ) : (
-                  <>
-                    <div style={{ width: "100%", height: 400, marginTop: 4 }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <RadarChart cx="50%" cy="52%" outerRadius="68%" data={breederRadarRows}>
-                          <PolarGrid stroke="var(--border)" />
-                          <PolarAngleAxis dataKey="subject" tick={{ fill: "var(--muted)", fontSize: 9 }} />
-                          <PolarRadiusAxis
-                            angle={18}
-                            domain={[0, 100]}
-                            tick={{ fill: "var(--muted)", fontSize: 8 }}
-                            tickCount={5}
-                          />
-                          {breederRadarSeries.map((s, i) => {
-                            const col = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"][i % 10];
-                            const on = Boolean(s.engine_running);
-                            return (
-                              <Radar
-                                key={String(s.key ?? i)}
-                                name={String(s.label ?? s.key ?? "")}
-                                dataKey={String(s.key)}
-                                stroke={col}
-                                fill={col}
-                                fillOpacity={on ? 0.22 : 0.07}
-                                strokeWidth={on ? 2.2 : 1}
-                                isAnimationActive={false}
-                              />
-                            );
-                          })}
-                          <Legend wrapperStyle={{ fontSize: 11 }} iconType="circle" />
-                          <Tooltip
-                            contentStyle={{
-                              background: "rgba(20,24,40,.95)",
-                              border: "1px solid var(--border)",
-                              borderRadius: 8,
-                              fontSize: 11,
-                            }}
-                            formatter={(v: number | string) => [`${typeof v === "number" ? v.toFixed(0) : v}`, ""]}
-                          />
-                        </RadarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-                        gap: 8,
-                        marginTop: 12,
-                        fontSize: 11,
-                        lineHeight: 1.45,
-                        color: "var(--muted)",
-                      }}
-                    >
-                      <div>
-                        Last breeding tick:{" "}
-                        <strong style={{ color: "var(--text)" }}>
-                          {breederStatusPayload?.labs_breeding_last_generation_iso
-                            ? fmtIsoLocal(String(breederStatusPayload.labs_breeding_last_generation_iso), false)
-                            : "—"}
-                        </strong>
-                      </div>
-                      <div>
-                        Replace cooldown:{" "}
-                        <strong style={{ color: "var(--text)" }}>
-                          {breederStatusPayload?.labs_breeding_replace_cooldown_until
-                            ? fmtIsoLocal(String(breederStatusPayload.labs_breeding_replace_cooldown_until), false)
-                            : "—"}
-                        </strong>
-                      </div>
-                      <div>
-                        Pool children:{" "}
-                        <strong style={{ color: "var(--text)" }}>
-                          {Array.isArray(breederStatusPayload?.labs_breeding_children)
-                            ? breederStatusPayload!.labs_breeding_children.length
-                            : 0}
-                        </strong>
-                      </div>
-                      <div>
-                        Lineage rows:{" "}
-                        <strong style={{ color: "var(--text)" }}>
-                          {Array.isArray(breederStatusPayload?.labs_breeding_lineage_history)
-                            ? breederStatusPayload!.labs_breeding_lineage_history.length
-                            : 0}
-                        </strong>
-                      </div>
-                    </div>
-                    <p className="sub" style={{ marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
-                      Thicker strokes = engine running on that branch.
-                    </p>
-                  </>
+                  <div style={{ width: "100%", height: 400, marginTop: 4 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RadarChart cx="50%" cy="52%" outerRadius="68%" data={breederRadarRows}>
+                        <PolarGrid stroke="var(--border)" />
+                        <PolarAngleAxis dataKey="subject" tick={{ fill: "var(--muted)", fontSize: 9 }} />
+                        <PolarRadiusAxis
+                          angle={18}
+                          domain={[0, 100]}
+                          tick={{ fill: "var(--muted)", fontSize: 8 }}
+                          tickCount={5}
+                        />
+                        {breederRadarSeries.map((s, i) => {
+                          const col = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"][i % 10];
+                          const on = Boolean(s.engine_running);
+                          return (
+                            <Radar
+                              key={String(s.key ?? i)}
+                              name={String(s.label ?? s.key ?? "")}
+                              dataKey={String(s.key)}
+                              stroke={col}
+                              fill={col}
+                              fillOpacity={on ? 0.22 : 0.07}
+                              strokeWidth={on ? 2.2 : 1}
+                              isAnimationActive={false}
+                            />
+                          );
+                        })}
+                        <Tooltip
+                          contentStyle={{
+                            background: "rgba(20,24,40,.95)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 8,
+                            fontSize: 11,
+                          }}
+                          formatter={(v: number | string) => [`${typeof v === "number" ? v.toFixed(0) : v}`, ""]}
+                        />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  </div>
                 )}
               </div>
             ) : (
@@ -4952,6 +4885,29 @@ export default function App() {
                 }}
               />
             )}
+          </div>
+          {/* LABS BREEDING v0.1 — Optimizer/Breeder toggle bottom-right of card (radar uses Tooltip only; no chart legend). */}
+          <div className="dash-optimizer-panel__mode-footer">
+            <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer or Breeder view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={optimizerDashboardView === "optimizer"}
+                className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "optimizer" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
+                onClick={() => setOptimizerDashboardView("optimizer")}
+              >
+                Optimizer
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={optimizerDashboardView === "breeder"}
+                className={`dash-optimizer-mode-toggle__segment${optimizerDashboardView === "breeder" ? " dash-optimizer-mode-toggle__segment--active" : ""}`}
+                onClick={() => setOptimizerDashboardView("breeder")}
+              >
+                Breeder
+              </button>
+            </div>
           </div>
         </section>
       </div>

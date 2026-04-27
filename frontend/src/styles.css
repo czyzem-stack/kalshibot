@@ -752,7 +752,52 @@ input[type="number"] {
   margin-bottom: 0;
 }
 
-/* LABS BREEDING v0.1 — prominent Optimizer/Breeder toggle in header (fixed visibility) */
+/* LABS BREEDING v0.1 — optimizer card stacks body + mode toggle footer */
+.dash-optimizer-panel__section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.dash-optimizer-panel .branch-brain-inline--optimizer-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dash-optimizer-panel__mode-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(100, 120, 180, 0.22);
+}
+
+.dash-breeder-radar-loading {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dash-breeder-radar-loading::after {
+  content: "";
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border);
+  border-top-color: rgba(110, 231, 255, 0.85);
+  border-radius: 50%;
+  animation: dash-breeder-spin 0.65s linear infinite;
+}
+
+@keyframes dash-breeder-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .dash-optimizer-panel .branch-brain-inline__head {
   flex-wrap: nowrap;
   gap: 10px;
