@@ -81,6 +81,8 @@ from .types_api import (
 
 # structlog: stdlib ``logging.getLogger`` + uvicorn share ``ProcessorFormatter``; dev = colored, LOG_JSON=1 = one line JSON
 configure_logging()
+# Set once: ``optimizer_loop`` is idle (no scheduled optimizer, no adaptive, no child-lab breeding).
+_optimizer_all_idle_logged: bool = False
 
 logger = logging.getLogger("kalshibot.api")
 
@@ -124,14 +126,19 @@ def _engine_status_block(engine: TradingEngine, *, engine_running: bool, simulat
 
 
 async def _optimizer_loop(stop: asyncio.Event) -> None:
+    # Two “testing” paths (see ``architecture-breeding`` rule, ``dual_engine_loop`` docstring, ``run_optimizer_once``):
+    # (1) **Visible paper** — ``dual_engine_loop`` ticks Live + Lab A–D (and child labs) so the dashboard PnL reflects rules.
+    # (2) **Child-lab breeding** — B/C/D GA, hard-death, soft cull, adoption: driven by ``optimizer.breeding_enabled`` +
+    #   ``run_optimizer_once`` / ``_run_breeding_only_tick``; independent of ``enabled``/``adaptive_enabled``.
     while not stop.is_set():
         try:
             cfg = await store.load_config()
             oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
             enabled = bool(oc.get("enabled"))
             adaptive_on = bool(oc.get("adaptive_enabled", True))
+            breeding_on = bool(oc.get("breeding_enabled", True))
             interval_m = max(5, min(24 * 60, int(oc.get("interval_minutes") or 20)))
-            if enabled or adaptive_on:
+            if enabled or adaptive_on or breeding_on:
                 try:
                     await run_optimizer_once(store, force=False)
                 except Exception as e:
@@ -143,6 +150,14 @@ async def _optimizer_loop(stop: asyncio.Event) -> None:
                     cur["optimizer"] = oo
                     await store.save_config(
                         cur, history_branch="global", history_changed_by="optimizer", history_reason="last_run_error"
+                    )
+            else:
+                global _optimizer_all_idle_logged
+                if not _optimizer_all_idle_logged:
+                    _optimizer_all_idle_logged = True
+                    logger.warning(
+                        "optimizer loop idle: enabled=false, adaptive_enabled=false, breeding_enabled=false — "
+                        "no Lab A scheduler/adaptive and no child-lab breeding; set at least one flag to true (grep=optimizer_loop_idle)"
                     )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=float(interval_m * 60))
@@ -785,6 +800,7 @@ def _clear_engine_mem_after_reset(branch_scope: str) -> None:
         eng._study_asset_fired.clear()
         eng._study_cap_logged.clear()
         eng._sim_asset_budget_fired.clear()
+        eng._sim_transient_skip_logged.clear()
 
 
 _MAX_UNIFORM_PAPER_BALANCE_CENTS = 100_000_000
@@ -1485,8 +1501,11 @@ def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: st
 
 async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     """
-    Assemble the full dashboard JSON. When ``with_marks`` is False, skip the parallel
-    ``_refresh_paper_mtm_from_marks`` Kalshi calls (faster; use ``GET /api/dashboard/equity`` for polling).
+    Assemble the full dashboard JSON. When ``with_marks`` is False, the same
+    ``_refresh_paper_mtm_from_marks`` work runs with a configurable timeout
+    (``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``, default ~22s) so ``GET /api/dashboard/equity``
+    can still update paper MTM between full ~12s refreshes; on timeout, metrics fall back to
+    snapshot-based values from ``_enrich_strategy_metrics`` (flat MTM vs book until the next full poll).
     """
     cfg = await store.load_config()
     mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
@@ -1635,55 +1654,71 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     )
     _inject_last_snap_mtm_minus_equity(metrics_lab_d, snaps_lab_d)
 
-    # Paper MTM on tiles + chart tail: only when ``with_marks`` (full dashboard). The equity
-    # fast path (``with_marks=False``) must not *construct* coroutines here, or they are never
-    # scheduled and Python warns "coroutine was never awaited".
-    if with_marks:
-        mtm_tasks: list[Any] = []
-        if simulate_live:
-            mtm_tasks.append(
-                _refresh_paper_mtm_from_marks(
-                    state.engine_live,
-                    paper_start_cents=int(cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS),
-                    roll=roll_live,
-                    out_metrics=metrics_live,
-                )
+    # Paper MTM on tiles + chart tail: recompute from Kalshi mids. Full dashboard can wait 50s;
+    # the fast ``/api/dashboard/equity`` poll (``with_marks=False``) uses a short cap so the UI
+    # can refresh chart tails more often than the 12s full round-trip without stalling the client.
+    mtm_tasks: list[Any] = []
+    if simulate_live:
+        mtm_tasks.append(
+            _refresh_paper_mtm_from_marks(
+                state.engine_live,
+                paper_start_cents=int(cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS),
+                roll=roll_live,
+                out_metrics=metrics_live,
             )
-        mtm_tasks.extend(
-            [
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_a,
-                    paper_start_cents=lab_paper_basis_a,
-                    roll=roll_lab_a,
-                    out_metrics=metrics_lab_a,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_b,
-                    paper_start_cents=lab_paper_basis_b,
-                    roll=roll_lab_b,
-                    out_metrics=metrics_lab_b,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_c,
-                    paper_start_cents=lab_paper_basis_c,
-                    roll=roll_lab_c,
-                    out_metrics=metrics_lab_c,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_d,
-                    paper_start_cents=lab_paper_basis_d,
-                    roll=roll_lab_d,
-                    out_metrics=metrics_lab_d,
-                ),
-            ]
         )
-        if mtm_tasks:
-            try:
-                await asyncio.wait_for(asyncio.gather(*mtm_tasks), timeout=50.0)
-            except asyncio.TimeoutError:
+    mtm_tasks.extend(
+        [
+            _refresh_paper_mtm_from_marks(
+                state.engine_lab_a,
+                paper_start_cents=lab_paper_basis_a,
+                roll=roll_lab_a,
+                out_metrics=metrics_lab_a,
+            ),
+            _refresh_paper_mtm_from_marks(
+                state.engine_lab_b,
+                paper_start_cents=lab_paper_basis_b,
+                roll=roll_lab_b,
+                out_metrics=metrics_lab_b,
+            ),
+            _refresh_paper_mtm_from_marks(
+                state.engine_lab_c,
+                paper_start_cents=lab_paper_basis_c,
+                roll=roll_lab_c,
+                out_metrics=metrics_lab_c,
+            ),
+            _refresh_paper_mtm_from_marks(
+                state.engine_lab_d,
+                paper_start_cents=lab_paper_basis_d,
+                roll=roll_lab_d,
+                out_metrics=metrics_lab_d,
+            ),
+        ]
+    )
+    # ``/api/dashboard/equity`` can opt out of this batch via env (DASHBOARD_FAST_PAPER_MTM=0) to test or reduce load; full ``/api/dashboard`` always runs it.
+    if mtm_tasks and (with_marks or env.dashboard_fast_paper_mtm):
+        mtm_timeout = 50.0 if with_marks else float(env.dashboard_fast_mtm_gather_timeout_s)
+        try:
+            mtm_res = await asyncio.wait_for(
+                asyncio.gather(*mtm_tasks, return_exceptions=True),
+                timeout=mtm_timeout,
+            )
+            for idx, r in enumerate(mtm_res or []):
+                if isinstance(r, Exception):
+                    logger.debug("paper MTM subtask %d failed: %s", idx, r)
+        except asyncio.TimeoutError:
+            if with_marks:
                 logger.warning(
                     "dashboard MTM refresh hit 50s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
                 )
+            else:
+                logger.warning(
+                    "dashboard fast MTM refresh hit %.1fs cap — charts may flatline MTM vs book until next full /api/dashboard (raise DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S or reduce open sims).",
+                    mtm_timeout,
+                )
+            # Fast path timeout: leave ``metrics*`` on snapshot-based values from _enrich_strategy_metrics (stale vs live marks).
+        except Exception as e:
+            logger.warning("dashboard paper MTM batch failed: %s", e)
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
@@ -1914,8 +1949,9 @@ async def dashboard() -> DashboardResponse:
 @app.get("/api/dashboard/equity")
 async def dashboard_equity() -> DashboardResponse:
     """
-    Same structure as ``/api/dashboard`` but skips the slow Kalshi mark-refresh pass; intended for
-    more frequent client polling. Live MTM in ``metrics*`` may be stale between full refreshes.
+    Same structure as ``/api/dashboard`` but with a 5s cap on the paper mark-refresh pass (vs 50s
+    for the full route). ``metrics*`` still get live mids when the gather finishes in time; if not,
+    they match snapshot-based values until the next poll or a full ``/api/dashboard`` run.
     """
     return await _compose_dashboard_base(with_marks=False)
 

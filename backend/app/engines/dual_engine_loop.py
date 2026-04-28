@@ -1,4 +1,9 @@
-"""Polling loop: Live + Labs A–D + invisible breeding child branches (settle, tick, snapshot, optional auto-optimize)."""
+"""Visible paper / live tick: Live + Lab A–D + child ``lab_child_*`` branches (settle, tick, snapshot, optional auto-optimize).
+
+**Not** the same subsystem as B/C/D **child-lab GA** in ``lab_breeding``/``optimizer_claude``—see
+``.cursor/rules/architecture-breeding.md``. Charts and Branch performance here reflect per-tick rule matching; breeding
+uses replay over history on the optimizer interval.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from ..branch_config import (
     BRANCH_CHILD_LABS,
     BRANCH_LABS,
     BRANCH_LIVE,
+    _coerce_engine_running_flag,
     live_paper_trading_enabled,
 )
 from ..kalshi_client import KalshiClient
@@ -34,10 +40,18 @@ logger = logging.getLogger("kalshibot.dual_engine")
 
 
 def _lab_branch_tick_enabled(br: str, lc: dict[str, Any]) -> bool:
-    """Parent labs require ``engine_running``; child ``lab_child_*`` slots default on unless explicitly ``false``."""
+    """
+    Must match :func:`merge_branch_config` / :func:`tick_once` — the old ``bool(…)`` on ``engine_running`` treated
+    string ``"false"`` and other non-bool values as *on*, so the dual loop could call ``tick_once`` (no merged config)
+    and still run ``snapshot_equity``, producing a flat or misleading equity curve.
+    """
     if br in BRANCH_CHILD_LABS:
-        return lc.get("engine_running") is not False
-    return bool(lc.get("engine_running"))
+        if not isinstance(lc, dict):
+            return True
+        return _coerce_engine_running_flag(lc.get("engine_running"), default_if_missing=True)
+    if not isinstance(lc, dict):
+        return False
+    return _coerce_engine_running_flag(lc.get("engine_running"), default_if_missing=False)
 
 
 async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asyncio.Event) -> None:
@@ -64,10 +78,6 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                     poll_candidates.append(float(bcfg.get("poll_seconds") or poll_candidates[0]))
             poll = max(poll_candidates)
 
-            n_settled: dict[str, int] = {}
-            n_swing: dict[str, int] = {}
-            n_timeout: dict[str, int] = {}
-
             # PHASE 2: settle / swing / timeout per branch in parallel (same error handling as sequential).
             async def _branch_settle_cycle(br: str) -> tuple[str, int, int, int]:
                 eng = engines.get(br)
@@ -87,16 +97,10 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                     eng.state.last_error = err[:500]
                     return br, 0, 0, 0
 
-            _rows = await asyncio.gather(*[_branch_settle_cycle(br) for br in branch_order], return_exceptions=True)
-            for _r in _rows:
-                if isinstance(_r, BaseException):
-                    continue
-                br, ns, nw, nt = _r  # type: ignore[misc]
-                n_settled[br] = ns
-                n_swing[br] = nw
-                n_timeout[br] = nt
+            # ``return_exceptions=True`` — per-branch errors already set ``eng.state.last_error`` in ``_branch_settle_cycle``.
+            await asyncio.gather(*[_branch_settle_cycle(br) for br in branch_order], return_exceptions=True)
 
-            if cfg.get("engine_running"):
+            if _coerce_engine_running_flag(cfg.get("engine_running"), default_if_missing=False):
                 el = engines[BRANCH_LIVE]
                 try:
                     await tick_once(el, full_cfg=full_cfg)
@@ -155,30 +159,27 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             tick += 1
             snap_period = tick % 5 == 0
             simulate_live = live_paper_trading_enabled(cfg)
-            # Paper equity is derived from SQLite only — snapshot often so the chart matches settled/open counts.
-            # Live real mode still snapshots only every 5 ticks while the engine runs (balance API).
+            # Live paper: snapshot **every** loop (same as labs) so the equity/MTM chart is not 5× visually stale
+            # vs Lab A–D in quiet markets. (Previously gated on every 5th tick or Live settle/swing — looked "frozen".)
+            # Live **real** money: still throttle balance/portfolio fetches to every 5 ticks while the engine is on.
             if simulate_live:
-                if (
-                    snap_period
-                    or n_settled.get(BRANCH_LIVE, 0) > 0
-                    or n_swing.get(BRANCH_LIVE, 0) > 0
-                    or n_timeout.get(BRANCH_LIVE, 0) > 0
-                ):
-                    try:
-                        await snapshot_equity(eng_live, full_cfg=full_cfg)
-                    except Exception as e:
-                        err = str(e)
-                        _data_log(
-                            "system",
-                            {
-                                "event": "dual_engine_snapshot_error",
-                                "branch": BRANCH_LIVE,
-                                "error": err[:800],
-                                "at": iso(utc_now()),
-                            },
-                        )
-                        eng_live.state.last_error = err[:500]
-            elif snap_period and cfg.get("engine_running"):
+                try:
+                    await snapshot_equity(eng_live, full_cfg=full_cfg)
+                except Exception as e:
+                    err = str(e)
+                    _data_log(
+                        "system",
+                        {
+                            "event": "dual_engine_snapshot_error",
+                            "branch": BRANCH_LIVE,
+                            "error": err[:800],
+                            "at": iso(utc_now()),
+                        },
+                    )
+                    eng_live.state.last_error = err[:500]
+            elif snap_period and _coerce_engine_running_flag(
+                cfg.get("engine_running"), default_if_missing=False
+            ):
                 try:
                     await snapshot_equity(eng_live, full_cfg=full_cfg)
                 except Exception as e:

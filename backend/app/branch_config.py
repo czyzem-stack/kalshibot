@@ -181,10 +181,35 @@ def pulse_effective_config(full_cfg: dict[str, Any], branch: str) -> dict[str, A
     return out
 
 
+def _coerce_engine_running_flag(
+    raw: Any,
+    *,
+    default_if_missing: bool,
+) -> bool:
+    """
+    Config may store a bool, 0/1, or string from clients. A missing key uses ``default_if_missing``
+    (Live/parent lab: off; ``lab_child_*`` without key: on — see ``merge_branch_config``).
+    """
+    if raw is None:
+        return default_if_missing
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return raw != 0
+    s = str(raw).strip().lower()
+    if s in ("", "0", "false", "no", "off", "null", "none"):
+        return False
+    if s in ("1", "true", "yes", "on"):
+        return True
+    return bool(s)
+
+
 def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any] | None:
     """Build effective config for one engine branch. Returns None if that branch should not run."""
     if branch == BRANCH_LIVE:
-        if not full_cfg.get("engine_running"):
+        if not _coerce_engine_running_flag(
+            full_cfg.get("engine_running"), default_if_missing=False
+        ):
             return None
         out = dict(full_cfg)
         out["_branch"] = BRANCH_LIVE
@@ -202,9 +227,14 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
         if lab_key in BRANCH_CHILD_LABS:
             if not isinstance(lab, dict):
                 lab = {}
-            if lab.get("engine_running") is False:
+            if not _coerce_engine_running_flag(
+                lab.get("engine_running"), default_if_missing=True
+            ):
                 return None
-        elif not isinstance(lab, dict) or not lab.get("engine_running"):
+        elif not isinstance(lab, dict) or not _coerce_engine_running_flag(
+            lab.get("engine_running") if isinstance(lab, dict) else None,
+            default_if_missing=False,
+        ):
             return None
         out = dict(full_cfg)
         for k in LAB_BRANCH_OVERLAY_KEYS:

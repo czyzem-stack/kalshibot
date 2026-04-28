@@ -181,6 +181,11 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("labs_breeding_lineage_history", [])
     out.setdefault("labs_breeding_last_generation_iso", "")
     out.setdefault("labs_breeding_replace_cooldown_until", "")
+    # When false, the GA (pool / children / culls) does not run. Independent of ``enabled`` and ``adaptive_enabled``:
+    # the optimizer loop can still call ``_run_breeding_only`` when the latter two are off (see main._optimizer_loop).
+    out.setdefault("breeding_enabled", True)
+    out.setdefault("breeding_last_run_at", "")
+    out.setdefault("breeding_last_summary", "")
     # Regime-level EWMA of composite ``score_dollars`` and observation counts; decayed every optimizer tick
     # so older telemetry fades (meta-learning, no user tuning).
     out.setdefault(
@@ -3204,60 +3209,47 @@ def _build_payload(
     }
 
 
-async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, Any]:
-    cfg = await store.load_config()
-    oc = _norm_opt_cfg(_opt_cfg(cfg))
-    sched = bool(oc.get("enabled"))
-    adaptive_on = bool(oc.get("adaptive_enabled", True))
-    if not force and not sched and not adaptive_on:
-        return {"ok": False, "skipped": True, "reason": "optimizer_disabled"}
-    lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
-    max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
-    end = _utc_now()
-    start = end - dt.timedelta(hours=lookback_h)
-    start_iso = _iso(start)
-    end_iso = _iso(end)
-    # Monotonic tick for dashboard "second hand" (each optimizer evaluation, including no-op pulses).
-    try:
-        oc["pulse_eval_count"] = int(oc.get("pulse_eval_count") or 0) + 1
-    except (TypeError, ValueError):
-        oc["pulse_eval_count"] = 1
-    oc["last_pulse_eval_at"] = end_iso
-    try:
-        oc["optimizer_cycle_count"] = int(oc.get("optimizer_cycle_count") or 0) + 1
-    except (TypeError, ValueError):
-        oc["optimizer_cycle_count"] = 1
-    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (no persisted A/B envelope).
-    mutant_run = int(oc.get("optimizer_cycle_count") or 0) % 8 == 0
-    oc["last_mutant_cycle"] = bool(mutant_run)
-
-    # Paper labs only (no live rows).
-    tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-
-    trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
-        store,
-        start_iso=start_iso,
-        end_iso=end_iso,
-        max_rows=max_rows,
-        tr_a=tr_a,
-        tr_b=tr_b,
-        tr_c=tr_c,
-        tr_d=tr_d,
-        sg_a=sg_a,
-        sg_b=sg_b,
-        sg_c=sg_c,
-        sg_d=sg_d,
+async def _load_sim_paper_labs(
+    store: "Store", *, start_iso: str, end_iso: str, max_rows: int
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Trades+signals for Lab A–D paper only (``mode=simulate``) — used by optimizer + lab breeding paths."""
+    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await asyncio.gather(
+        store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
     )
+    return tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d
 
-    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
-    # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+
+async def _run_labs_breeding_mutation_pipeline(
+    store: "Store",
+    cfg: dict[str, Any],
+    oc: dict[str, Any],
+    *,
+    start_iso: str,
+    end_iso: str,
+    max_rows: int,
+    trades_by_branch_lb: dict[str, list[dict[str, Any]]],
+    signals_by_branch_lb: dict[str, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """
+    B/C/D breeding block: hard-death backfill, optional soft cull, GA + adoption. Mutates ``cfg``/``oc``; saves when
+    any row list is non-empty. Returns (breed_rows, soft_cull_rows, ga_rows, did_persist).
+    """
     try:
         breed_rows = await maybe_breed_dead_labs(
             store,
@@ -3294,26 +3286,183 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             replay_bundle=_replay_fitness_bundle,
             open_kw=_replay_open_kw,
         )
-        if breed_rows or soft_rows or ga_rows:
-            cfg["optimizer"] = oc
-            await store.save_config(
-                cfg,
-                history_branch="global",
-                history_changed_by="optimizer_lab_breeding",
-                history_reason="labs_breeding_ga_or_equity",
-            )
+    except Exception as e:
+        logger.warning("[breeding] block_error err=%s grep=breeding_block", e, exc_info=True)
+        return [], [], [], False
+    if breed_rows or soft_rows or ga_rows:
+        cfg["optimizer"] = oc
+        await store.save_config(
+            cfg,
+            history_branch="global",
+            history_changed_by="optimizer_lab_breeding",
+            history_reason="labs_breeding_ga_or_equity",
+        )
+        return breed_rows, soft_rows, ga_rows, True
+    return breed_rows, soft_rows, ga_rows, False
+
+
+async def _run_breeding_only_tick(store: "Store") -> dict[str, Any]:
+    """
+    Child-lab GA / replacement only. Does **not** bump ``optimizer_cycle_count`` or run Lab A adaptive pulse — use when
+    ``enabled`` and ``adaptive_enabled`` are both off but ``breeding_enabled`` is on (path B in ``architecture-breeding``).
+    """
+    cfg = await store.load_config()
+    oc = _norm_opt_cfg(_opt_cfg(cfg))
+    if not bool(oc.get("breeding_enabled", True)):
+        logger.info(
+            "[breeding] tick_skip reason=breeding_enabled_false grep=breeding_skip (set optimizer.breeding_enabled)"
+        )
+        return {"ok": True, "skipped": True, "reason": "breeding_disabled", "mode": "breeding_only"}
+    lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
+    max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
+    end = _utc_now()
+    end_iso = _iso(end)
+    start = end - dt.timedelta(hours=lookback_h)
+    start_iso = _iso(start)
+    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows)
+    trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+        store,
+        start_iso=start_iso,
+        end_iso=end_iso,
+        max_rows=max_rows,
+        tr_a=tr_a,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        tr_d=tr_d,
+        sg_a=sg_a,
+        sg_b=sg_b,
+        sg_c=sg_c,
+        sg_d=sg_d,
+    )
+    breed_rows, soft_rows, ga_rows, _did = await _run_labs_breeding_mutation_pipeline(
+        store,
+        cfg,
+        oc,
+        start_iso=start_iso,
+        end_iso=end_iso,
+        max_rows=max_rows,
+        trades_by_branch_lb=trades_by_branch_lb,
+        signals_by_branch_lb=signals_by_branch_lb,
+    )
+    if _did:
+        cfg = await store.load_config()
+        oc = _norm_opt_cfg(_opt_cfg(cfg))
+    summary = f"breed={len(breed_rows)} soft_cull={len(soft_rows)} ga_events={len(ga_rows)}"
+    oc["breeding_last_run_at"] = end_iso
+    oc["breeding_last_summary"] = summary
+    cfg["optimizer"] = oc
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="breeding_only",
+        history_reason="breeding_interval_telemetry",
+    )
+    logger.info(
+        "[breeding] gen_summary mode=breeding_only %s win_start=%s win_end=%s grep=breeding_gen",
+        summary,
+        start_iso,
+        end_iso,
+    )
+    return {
+        "ok": True,
+        "mode": "breeding_only",
+        "window_start": start_iso,
+        "window_end": end_iso,
+        "breed_n": len(breed_rows),
+        "soft_cull_n": len(soft_rows),
+        "ga_events_n": len(ga_rows),
+        "summary": summary,
+    }
+
+
+async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, Any]:
+    """
+    Scheduler-driven optimizer tick: **path A** = Lab A adaptive, internal mutation, pulses, traces (needs ``enabled``
+    and/or ``adaptive_enabled`` or ``force``). **Path B** = B/C/D child-lab breeding can run on this tick when
+    ``breeding_enabled`` even if the scheduler and adaptive are off (handled via ``_run_breeding_only_tick`` at the
+    start). Visible paper trading for B–D is driven by ``dual_engine_loop``, not by this function.
+    """
+    cfg = await store.load_config()
+    oc = _norm_opt_cfg(_opt_cfg(cfg))
+    sched = bool(oc.get("enabled"))
+    adaptive_on = bool(oc.get("adaptive_enabled", True))
+    breeding_on = bool(oc.get("breeding_enabled", True))
+    if not force and not sched and not adaptive_on:
+        if breeding_on:
+            return await _run_breeding_only_tick(store)
+        logger.info(
+            "[breeding] tick_skip reason=optimizer_all_off breeding_enabled=%s — enable breeding, scheduler, or adaptive; grep=breeding_skip",
+            breeding_on,
+        )
+        return {"ok": False, "skipped": True, "reason": "optimizer_disabled"}
+    lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
+    max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
+    end = _utc_now()
+    start = end - dt.timedelta(hours=lookback_h)
+    start_iso = _iso(start)
+    end_iso = _iso(end)
+    # Monotonic tick for dashboard "second hand" (each optimizer evaluation, including no-op pulses).
+    try:
+        oc["pulse_eval_count"] = int(oc.get("pulse_eval_count") or 0) + 1
+    except (TypeError, ValueError):
+        oc["pulse_eval_count"] = 1
+    oc["last_pulse_eval_at"] = end_iso
+    try:
+        oc["optimizer_cycle_count"] = int(oc.get("optimizer_cycle_count") or 0) + 1
+    except (TypeError, ValueError):
+        oc["optimizer_cycle_count"] = 1
+    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (no persisted A/B envelope).
+    mutant_run = int(oc.get("optimizer_cycle_count") or 0) % 8 == 0
+    oc["last_mutant_cycle"] = bool(mutant_run)
+
+    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+        store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
+    )
+
+    breed_rows: list[dict[str, Any]] = []
+    soft_rows: list[dict[str, Any]] = []
+    ga_rows: list[dict[str, Any]] = []
+    if breeding_on:
+        trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+            store,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            tr_a=tr_a,
+            tr_b=tr_b,
+            tr_c=tr_c,
+            tr_d=tr_d,
+            sg_a=sg_a,
+            sg_b=sg_b,
+            sg_c=sg_c,
+            sg_d=sg_d,
+        )
+        breed_rows, soft_rows, ga_rows, _did = await _run_labs_breeding_mutation_pipeline(
+            store,
+            cfg,
+            oc,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            trades_by_branch_lb=trades_by_branch_lb,
+            signals_by_branch_lb=signals_by_branch_lb,
+        )
+        if _did:
             cfg = await store.load_config()
             oc = _norm_opt_cfg(_opt_cfg(cfg))
-            tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    except Exception as e:
-        logger.warning("labs breeding tick skipped: %s", e)
+            tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+                store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
+            )
+        oc["breeding_last_run_at"] = end_iso
+        oc["breeding_last_summary"] = f"breed={len(breed_rows)} soft_cull={len(soft_rows)} ga_events={len(ga_rows)}"
+        logger.info(
+            "[breeding] gen_summary mode=full_tick %s grep=breeding_gen",
+            oc["breeding_last_summary"],
+        )
+    else:
+        logger.info(
+            "[breeding] full_tick_skip_breeding reason=breeding_enabled_false grep=breeding_skip (optimizer.adaptive.pulse.still run)"
+        )
 
     st_a_prev = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a_prev, end_iso)
@@ -3608,88 +3757,46 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     except (TypeError, ValueError):
         oc["optimizer_cycle_count"] = 1
 
-    tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-
-    trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
-        store,
-        start_iso=start_iso,
-        end_iso=end_iso,
-        max_rows=max_rows,
-        tr_a=tr_a,
-        tr_b=tr_b,
-        tr_c=tr_c,
-        tr_d=tr_d,
-        sg_a=sg_a,
-        sg_b=sg_b,
-        sg_c=sg_c,
-        sg_d=sg_d,
+    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+        store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
     )
 
-    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
-    # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
-    try:
-        breed_rows = await maybe_breed_dead_labs(
+    breeding_on = bool(oc.get("breeding_enabled", True))
+    if breeding_on:
+        trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+            store,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            max_rows=max_rows,
+            tr_a=tr_a,
+            tr_b=tr_b,
+            tr_c=tr_c,
+            tr_d=tr_d,
+            sg_a=sg_a,
+            sg_b=sg_b,
+            sg_c=sg_c,
+            sg_d=sg_d,
+        )
+        _br, _sr, _gr, _did = await _run_labs_breeding_mutation_pipeline(
             store,
             cfg,
             oc,
             start_iso=start_iso,
             end_iso=end_iso,
             max_rows=max_rows,
-            trades_by_branch=trades_by_branch_lb,
-            signals_by_branch=signals_by_branch_lb,
-            replay_bundle=_replay_fitness_bundle,
-            open_kw=_replay_open_kw,
+            trades_by_branch_lb=trades_by_branch_lb,
+            signals_by_branch_lb=signals_by_branch_lb,
         )
-        soft_rows = await maybe_soft_cull_lab_branches(
-            store,
-            cfg,
-            oc,
-            end_iso=end_iso,
-            max_rows=max_rows,
-            trades_by_branch=trades_by_branch_lb,
-            signals_by_branch=signals_by_branch_lb,
-            replay_bundle=_replay_fitness_bundle,
-            open_kw=_replay_open_kw,
-        )
-        ga_rows = await run_lab_breeding_ga_cycle(
-            store,
-            cfg,
-            oc,
-            start_iso=start_iso,
-            end_iso=end_iso,
-            max_rows=max_rows,
-            trades_by_branch=trades_by_branch_lb,
-            signals_by_branch=signals_by_branch_lb,
-            replay_bundle=_replay_fitness_bundle,
-            open_kw=_replay_open_kw,
-        )
-        if breed_rows or soft_rows or ga_rows:
-            cfg["optimizer"] = oc
-            await store.save_config(
-                cfg,
-                history_branch="global",
-                history_changed_by="optimizer_lab_breeding",
-                history_reason="labs_breeding_ga_or_equity",
-            )
+        if _did:
             cfg = await store.load_config()
             oc = _norm_opt_cfg(_opt_cfg(cfg))
-            tr_a = await store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            tr_b = await store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            tr_c = await store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            tr_d = await store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_a = await store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_b = await store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_c = await store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-            sg_d = await store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
-    except Exception as e:
-        logger.warning("labs breeding tick skipped (forced mutation): %s", e)
+            tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+                store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
+            )
+    else:
+        logger.info(
+            "[breeding] force_internal_skip reason=breeding_enabled_false grep=breeding_skip"
+        )
 
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]

@@ -924,6 +924,10 @@ async def maybe_soft_cull_lab_branches(
     """At most one soft-culled slot per optimizer tick (replay underperformance vs peers)."""
     out: list[dict[str, Any]] = []
     if _replacement_cooldown_active(oc, end_iso):
+        logger.info(
+            "[breeding] soft_cull_skip reason=replacement_cooldown until=%s grep=breeding_soft_cull",
+            str(oc.get("labs_breeding_replace_cooldown_until") or "")[:32],
+        )
         return out
     rng = random.Random()
     include_fees = bool(oc.get("include_fees_in_score", True))
@@ -1004,6 +1008,13 @@ async def run_lab_breeding_ga_cycle(
     last_iso = str(oc.get("labs_breeding_last_generation_iso") or "").strip()
     last_dt = _parse_iso_utc(last_iso)
     if last_dt is not None and (now_dt - last_dt) < LAB_BREEDING_GENERATION_INTERVAL:
+        rem = LAB_BREEDING_GENERATION_INTERVAL - (now_dt - last_dt)
+        rem_m = max(0, int(rem.total_seconds() // 60))
+        logger.info(
+            "[breeding] ga_skip reason=ga_generation_cooldown last_gen=%s minutes_until_next~=%d grep=breeding_ga_cooldown",
+            last_iso or "(none)",
+            rem_m,
+        )
         return out_log
 
     rng = random.Random()
@@ -1039,6 +1050,11 @@ async def run_lab_breeding_ga_cycle(
     for parent in BRANCH_BREEDERS:
         eq = await _last_equity_cents(store, parent)
         if eq is None or eq <= 0:
+            logger.info(
+                "[breeding] parent_breed_skip reason=no_or_zero_equity parent=%s eq=%s grep=breeding_parent_equity",
+                parent,
+                "missing" if eq is None else int(eq),
+            )
             continue
         while _pick_child_slot(oc) is None and _sorted_child_pool(oc, cfg):
             pool_tmp = _sorted_child_pool(oc, cfg)

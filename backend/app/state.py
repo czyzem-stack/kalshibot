@@ -44,7 +44,8 @@ engine_lab_d: TradingEngine | None = None
 ENGINES: dict[str, TradingEngine] = {}
 
 # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
-# Breeding/adoption runs in ``run_optimizer_once`` / ``lab_breeding``; child engines live in ``ENGINES`` by branch key.
+# Breeding/adoption runs in ``run_optimizer_once`` / ``_run_breeding_only_tick`` + ``lab_breeding`` (``breeding_enabled``);
+# child engines live in ``ENGINES`` by branch key. Visible paper is ``dual_engine_loop`` — see ``architecture-breeding`` rule.
 
 stop_event = asyncio.Event()
 # PHASE 2: set after pre-warm (and WS ticker seed); dual_engine_loop awaits this so ticks never race ahead of cache fill.

@@ -1,6 +1,7 @@
 """Optimizer read/write endpoints (internal pulse / mutations run in the backend)."""
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from typing import Any
 
@@ -97,6 +98,7 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                 "backtest_proposals",
                 "adaptive_skip_backtest_gate",
                 "optimize_internal_mutations",
+                "breeding_enabled",
             ):
                 nxt[k] = bool(v)
             else:
@@ -124,6 +126,19 @@ async def optimizer_force_internal_mutation() -> dict[str, Any]:
     return await force_internal_mutation_once(state.store)
 
 
+def _breeding_minutes_ago(iso_s: str) -> float | None:
+    s = str(iso_s or "").strip()
+    if not s:
+        return None
+    try:
+        t = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=dt.timezone.utc)
+        return max(0.0, (dt.datetime.now(tz=dt.timezone.utc) - t).total_seconds() / 60.0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _labs_breeding_child_status_row(c: dict) -> dict:
     """Trim child payloads for ``GET /api/optimizer/status`` (full genomes stay in persisted config)."""
     lab = c.get("lab") if isinstance(c.get("lab"), dict) else {}
@@ -146,9 +161,14 @@ async def optimizer_status() -> OptimizerStatusResponse:
     # HELP CLEANUP — thorough & professional: status payload is the read-only observability surface (includes compact internal logs).
     cfg = await state.store.load_config()
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    _bla = str(oc.get("breeding_last_run_at") or "").strip()
     return {
         "enabled": bool(oc.get("enabled")),
         "adaptive_enabled": bool(oc.get("adaptive_enabled", True)),
+        "breeding_enabled": bool(oc.get("breeding_enabled", True)),
+        "breeding_last_run_at": str(oc.get("breeding_last_run_at") or ""),
+        "breeding_last_summary": str(oc.get("breeding_last_summary") or ""),
+        "breeding_last_run_minutes_ago": _breeding_minutes_ago(_bla),
         "model": str(oc.get("model") or "internal"),
         "optimizer_cycle_count": int(oc.get("optimizer_cycle_count") or 0),
         "pulse_eval_count": int(oc.get("pulse_eval_count") or 0),

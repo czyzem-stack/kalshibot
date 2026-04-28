@@ -27,6 +27,11 @@ import HistoricalExplorerOverlay from "./HistoricalExplorerOverlay";
 import { BranchHeroMarquee, BranchHeroSnapshotHeader } from "./BranchMarketTickers";
 import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import { withApiAuth } from "./apiAuth";
+import {
+  DASHBOARD_EQUITY_POLL_MS,
+  DASHBOARD_FULL_POLL_MS,
+  subscribeDashboardCatchUp,
+} from "./dashboardPolling";
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
 
 type AnyObj = Record<string, any>;
@@ -38,6 +43,76 @@ const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
 
 /** Stable empty lab when config has no lab object yet — avoids `new {}` every render breaking PUT payloads. */
 const EMPTY_LAB: AnyObj = Object.freeze({});
+
+/**
+ * SQLite equity series for charts. Skips non-arrays (e.g. ``{}``). With multiple candidates (Lab A + legacy ``sim_lab``),
+ * prefer the first **non-empty** array so ``[]`` does not hide data in the other field.
+ */
+function equitySnapshotsArray(...candidates: unknown[]): AnyObj[] {
+  const arrays: AnyObj[][] = [];
+  for (const c of candidates) {
+    if (Array.isArray(c)) arrays.push(c as AnyObj[]);
+  }
+  const nonempty = arrays.find((a) => a.length > 0);
+  if (nonempty) return nonempty;
+  return arrays[0] ?? [];
+}
+
+const FAST_POLL_EQ_KEYS = [
+  "equity_snapshots",
+  "equity_snapshots_lab_a",
+  "equity_snapshots_lab_b",
+  "equity_snapshots_lab_c",
+  "equity_snapshots_lab_d",
+  "equity_snapshots_sim_lab",
+] as const;
+
+const FAST_POLL_LIST_KEYS = ["recent_trades", "recent_signals", "not_traded_signals"] as const;
+
+const FAST_POLL_METRIC_KEYS = ["metrics", "metrics_lab_a", "metrics_lab_b", "metrics_lab_c", "metrics_lab_d"] as const;
+
+/**
+ * Merge GET /api/dashboard/equity — same as original ``{ ...prev, ...d }`` plus:
+ * - Do not replace equity / trade arrays with ``[]`` or non-arrays (that alone caused wiped charts).
+ * - Shallow-merge metrics blobs so a partial key set cannot drop ``current_mtm_dollars``.
+ * Do **not** strip arbitrary keys from the payload (that froze live tiles / MTM).
+ */
+function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
+  const next: AnyObj = { ...prev, ...incoming };
+  next.config =
+    incoming.config && typeof incoming.config === "object"
+      ? { ...((prev.config && typeof prev.config === "object" ? prev.config : {}) as AnyObj), ...(incoming.config as AnyObj) }
+      : prev.config;
+
+  for (const mk of FAST_POLL_METRIC_KEYS) {
+    const inc = incoming[mk];
+    const old = prev[mk];
+    if (inc && typeof inc === "object" && !Array.isArray(inc) && old && typeof old === "object" && !Array.isArray(old)) {
+      next[mk] = { ...(old as AnyObj), ...(inc as AnyObj) };
+    }
+  }
+
+  for (const k of FAST_POLL_EQ_KEYS) {
+    const inc = incoming[k];
+    const old = prev[k];
+    if (!Array.isArray(inc) && Array.isArray(old)) {
+      next[k] = old;
+      continue;
+    }
+    if (Array.isArray(inc) && Array.isArray(old) && old.length > 0 && inc.length === 0) {
+      next[k] = old;
+    }
+  }
+  for (const k of FAST_POLL_LIST_KEYS) {
+    const inc = incoming[k];
+    const old = prev[k];
+    if (Array.isArray(inc) && Array.isArray(old) && old.length > 0 && inc.length === 0) {
+      next[k] = old;
+    }
+  }
+
+  return next;
+}
 
 function branchLabelForTradeToast(branch: unknown): string {
   const s = String(branch || "live").trim().toLowerCase();
@@ -1330,11 +1405,10 @@ function buildOptimizerStatus(dash: AnyObj | null, cfg: AnyObj) {
   const total = trace.length;
   const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
   const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
-  const eqRows = (
-    dash
-      ? ((dash as AnyObj).equity_snapshots_lab_a || (dash as AnyObj).equity_snapshots_sim_lab || [])
-      : []
-  ) as AnyObj[];
+  const eqRows = equitySnapshotsArray(
+    dash ? (dash as AnyObj).equity_snapshots_lab_a : undefined,
+    dash ? (dash as AnyObj).equity_snapshots_sim_lab : undefined,
+  );
   const chart = eqRows
     .slice(-20)
     .map((r, i) => ({
@@ -2960,6 +3034,27 @@ function labsBreedingToastFromLogRow(row: AnyObj): { tone: "green" | "yellow" | 
   return null;
 }
 
+/** If two sources disagree (e.g. one snapshot still "open" while the other is already settled), keep the more advanced row. */
+function mergeSameKeyTradeForToasts(a: AnyObj, b: AnyObj): AnyObj {
+  const ra = tradeRowLooksResolved(a) ? 1 : 0;
+  const rb = tradeRowLooksResolved(b) ? 1 : 0;
+  if (ra !== rb) {
+    return rb > ra ? b : a;
+  }
+  if (ra === 1) {
+    const ap = a.pnl_cents;
+    const bp = b.pnl_cents;
+    if ((ap == null || ap === "") && bp != null && String(bp).trim() !== "") return b;
+    if ((bp == null || bp === "") && ap != null && String(ap).trim() !== "") return a;
+  }
+  const aid = Number(a.id);
+  const bid = Number(b.id);
+  if (Number.isFinite(aid) && Number.isFinite(bid) && aid !== bid) {
+    return bid > aid ? b : a;
+  }
+  return b;
+}
+
 /** Union dashboard + poll rows by stable key so new trades on ``recent_trades`` are not dropped when /api/trades is non-empty but stale. */
 function mergeTradeRowsForToastEffect(dashRows: unknown, pollRows: AnyObj[] | null): AnyObj[] {
   const byKey = new Map<string, AnyObj>();
@@ -2971,7 +3066,9 @@ function mergeTradeRowsForToastEffect(dashRows: unknown, pollRows: AnyObj[] | nu
   }
   for (const t of fromPoll) {
     const k = tradeToastRowKey(t);
-    if (k) byKey.set(k, t);
+    if (!k) continue;
+    const prev = byKey.get(k);
+    byKey.set(k, prev ? mergeSameKeyTradeForToasts(prev, t) : t);
   }
   return Array.from(byKey.values());
 }
@@ -3106,6 +3203,32 @@ function applyEquityValueScale(rows: EquityChartRow[], scale: EquityValueScale):
   return scaleEquityRowsPctFromWindowStart(rows);
 }
 
+/** One shared $ domain for all lab small-multiples so per-chart “auto” does not make correlated MTM wiggles look like clones. */
+function unionDollarYDomainForLabs(labs: EquityChartRow[][]): [number, number] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const rows of labs) {
+    for (const r of rows) {
+      if (Number.isFinite(r.equity)) {
+        lo = Math.min(lo, r.equity);
+        hi = Math.max(hi, r.equity);
+      }
+      const m = r.mtm != null && Number.isFinite(Number(r.mtm)) ? Number(r.mtm) : r.equity;
+      if (Number.isFinite(m)) {
+        lo = Math.min(lo, m);
+        hi = Math.max(hi, m);
+      }
+    }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [0, 1];
+  if (lo === hi) {
+    lo -= 0.5;
+    hi += 0.5;
+  }
+  const pad = (hi - lo) * 0.04;
+  return [lo - pad, hi + pad];
+}
+
 function mondayUtcKey(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -3215,6 +3338,10 @@ function equitySeriesWithLiveTail(
     const n = Number((snaps[snaps.length - 1] as AnyObj).equity_cents || 0);
     equity = Number.isFinite(n) ? n / 100.0 : null;
   }
+  const cmEarly = metrics?.current_mtm_dollars;
+  if ((equity == null || !Number.isFinite(equity)) && cmEarly != null && Number.isFinite(Number(cmEarly))) {
+    equity = Number(cmEarly);
+  }
   if (equity == null || !Number.isFinite(equity)) return base;
 
   const cm = metrics?.current_mtm_dollars;
@@ -3311,12 +3438,15 @@ function EquityDualLineChart({
   equityStroke,
   mtmStroke,
   yFormat = "dollar",
+  yDomain,
 }: {
   data: EquityChartRow[];
   equityStroke: string;
   mtmStroke: string;
   /** ``pct`` = Y-axis and tooltip show % change from first point in ``data`` (see ``scaleEquityRowsPctFromWindowStart``). */
   yFormat?: "dollar" | "pct";
+  /** When set (e.g. shared across Lab A–D $ charts), Recharts Y domain; omit for per-chart auto scale. */
+  yDomain?: [number, number];
 }) {
   // Recharts ignores null/undefined for Line points — synthesize a numeric series so MTM always draws.
   const plotData = useMemo(
@@ -3335,7 +3465,12 @@ function EquityDualLineChart({
       <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
-        <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} tickFormatter={fmtTick} />
+        <YAxis
+          stroke="#7f8ab5"
+          tick={{ fontSize: 11 }}
+          domain={yDomain ?? ["auto", "auto"]}
+          tickFormatter={fmtTick}
+        />
         <Tooltip
           allowEscapeViewBox={{ x: true, y: true }}
           contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
@@ -3840,8 +3975,7 @@ export default function App() {
         if (!d || typeof d !== "object" || Array.isArray(d)) return;
         setDash((prev) => {
           if (!prev) return prev;
-          // Merge so a partial or slim future payload cannot wipe fields the UI still needs (equity per branch, optimizer, etc.).
-          return { ...prev, ...d, config: d.config && typeof d.config === "object" ? d.config : prev.config };
+          return mergeDashboardFastPoll(prev, d);
         });
       } catch {
         /* ignore */
@@ -3861,9 +3995,15 @@ export default function App() {
   useEffect(() => {
     dashboardPollMountedRef.current = true;
     void refreshRef.current();
-    const idFull = window.setInterval(() => void refreshRef.current(), 12000);
-    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), 4000);
+    const idFull = window.setInterval(() => void refreshRef.current(), DASHBOARD_FULL_POLL_MS);
+    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), DASHBOARD_EQUITY_POLL_MS);
+    // Background tabs throttle timers; editing looked like the “fix” because Vite remount re-ran this effect.
+    const unsubCatchUp = subscribeDashboardCatchUp(() => {
+      refreshEquityLightRef.current();
+      void refreshRef.current();
+    });
     return () => {
+      unsubCatchUp();
       window.clearInterval(idFull);
       window.clearInterval(idEq);
       dashboardPollMountedRef.current = false;
@@ -4480,11 +4620,11 @@ export default function App() {
     }
   };
 
-  const snaps = (dash?.equity_snapshots || []) as AnyObj[];
-  const equitySnapsLabA = (dash?.equity_snapshots_lab_a || dash?.equity_snapshots_sim_lab || []) as AnyObj[];
-  const equitySnapsLabB = (dash?.equity_snapshots_lab_b || []) as AnyObj[];
-  const equitySnapsLabC = (dash?.equity_snapshots_lab_c || []) as AnyObj[];
-  const equitySnapsLabD = (dash?.equity_snapshots_lab_d || []) as AnyObj[];
+  const snaps = equitySnapshotsArray(dash?.equity_snapshots);
+  const equitySnapsLabA = equitySnapshotsArray(dash?.equity_snapshots_lab_a, dash?.equity_snapshots_sim_lab);
+  const equitySnapsLabB = equitySnapshotsArray(dash?.equity_snapshots_lab_b);
+  const equitySnapsLabC = equitySnapshotsArray(dash?.equity_snapshots_lab_c);
+  const equitySnapsLabD = equitySnapshotsArray(dash?.equity_snapshots_lab_d);
 
   const optimizerThinkingRadarBundle = useMemo(() => {
     const m0 = (metrics as AnyObj) || {};
@@ -4631,6 +4771,10 @@ export default function App() {
     () => applyEquityValueScale(chartDataLabDRaw, equityValueScale),
     [chartDataLabDRaw, equityValueScale],
   );
+  const labSharedDollarYDomain = useMemo((): [number, number] | undefined => {
+    if (equityValueScale !== "dollars") return undefined;
+    return unionDollarYDomainForLabs([chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
+  }, [equityValueScale, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
   /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the five small charts for per-branch % view. */
   const equityOverlayData = useMemo(
     () =>
@@ -5260,16 +5404,6 @@ export default function App() {
             Branch performance
           </h2>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <DashBranchBreedingPill
-              breedingStripStatus={breedingStripStatus}
-              breedingStripError={breedingStripError}
-              onNavigateToBreedingTree={() => {
-                setOptimizerDashboardView("tree");
-                window.requestAnimationFrame(() => {
-                  document.getElementById("dash-heading-optimizer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-                });
-              }}
-            />
             <button
               type="button"
               className="primary dash-panel-btn"
@@ -5593,10 +5727,26 @@ export default function App() {
                   {Array.isArray(breedingStripStatus.labs_breeding_death_chamber)
                     ? `${breedingStripStatus.labs_breeding_death_chamber.length} in death chamber`
                     : "—"}
+                  {breedingStripStatus.breeding_enabled === false ? (
+                    <span title="Child-lab GA is off (optimizer.breeding_enabled in config).">
+                      <span className="dash-optimizer-breeding-summary__sep"> · </span>
+                      breeding off
+                    </span>
+                  ) : typeof breedingStripStatus.breeding_last_run_minutes_ago === "number" ? (
+                    <span
+                      title={
+                        "Last time the breeding-only or full optimizer tick updated breeding telemetry (GET /api/optimizer/status: breeding_last_run_at). " +
+                        String(breedingStripStatus.breeding_last_summary || "")
+                      }
+                    >
+                      <span className="dash-optimizer-breeding-summary__sep"> · </span>
+                      last GA tick ~{Math.round(breedingStripStatus.breeding_last_run_minutes_ago)}m ago
+                    </span>
+                  ) : null}
                   {breedingStripStatus.enabled === false ? (
-                    <span title="Optimizer scheduler disabled in config; breeding generation will not advance.">
-                      {" "}
-                      · scheduler off
+                    <span title="Optimizer scheduler disabled; Lab A scheduled pulse and cycle counter do not run. Child-lab breeding can still run if breeding_enabled is on.">
+                      <span className="dash-optimizer-breeding-summary__sep"> · </span>
+                      scheduler off
                     </span>
                   ) : null}
                 </span>
@@ -5852,7 +6002,11 @@ export default function App() {
           >
             {(
               [
-                ["dollars", "$", "Absolute dollars from SQLite snapshots (each lab has its own series)."],
+                [
+                  "dollars",
+                  "$",
+                  "Absolute dollars from SQLite snapshots. Labs A–D share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
+                ],
                 [
                   "pct_change_window",
                   "%Δ",
@@ -5922,6 +6076,7 @@ export default function App() {
                         equityStroke="#a78bfa"
                         mtmStroke="#c4b5fd"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -5949,6 +6104,7 @@ export default function App() {
                         equityStroke="#f59e0b"
                         mtmStroke="#fcd34d"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -5976,6 +6132,7 @@ export default function App() {
                         equityStroke="#f472b6"
                         mtmStroke="#fbcfe8"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6003,6 +6160,7 @@ export default function App() {
                         equityStroke="#fca5a5"
                         mtmStroke="#fecaca"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -7335,70 +7493,6 @@ function EngineTickTrace({ title, lines }: { title: string; lines: unknown }) {
   );
 }
 
-/** Compact breeding snapshot on Branch performance (same ``GET /api/optimizer/status`` poll as Optimizer card strip). */
-function DashBranchBreedingPill({
-  breedingStripStatus,
-  breedingStripError,
-  onNavigateToBreedingTree,
-}: {
-  breedingStripStatus: AnyObj | null;
-  breedingStripError: string | null;
-  onNavigateToBreedingTree: () => void;
-}) {
-  const title =
-    "Labs Breeding v0.1 — GET /api/optimizer/status (~45s refresh). Same counts as the Optimizer card Breeding row. Click to scroll to Optimizer and open the Tree tab.";
-  if (breedingStripError) {
-    return (
-      <button
-        type="button"
-        className="dash-branch-breeding-pill dash-branch-breeding-pill--error"
-        title={title}
-        aria-label={`Breeding status error. Open Optimizer Tree tab.`}
-        onClick={onNavigateToBreedingTree}
-      >
-        <span className="dash-branch-breeding-pill__text">
-          <strong>Breeding</strong> — error
-        </span>
-      </button>
-    );
-  }
-  const poolN = Array.isArray(breedingStripStatus?.labs_breeding_children)
-    ? (breedingStripStatus!.labs_breeding_children as unknown[]).length
-    : null;
-  const dcN = Array.isArray(breedingStripStatus?.labs_breeding_death_chamber)
-    ? (breedingStripStatus!.labs_breeding_death_chamber as unknown[]).length
-    : null;
-  const schedOff = Boolean(breedingStripStatus && breedingStripStatus.enabled === false);
-  return (
-    <button
-      type="button"
-      className="dash-branch-breeding-pill"
-      title={title}
-      aria-label={
-        breedingStripStatus
-          ? `Breeding: ${poolN ?? "unknown"} in pool, ${dcN ?? "unknown"} in death chamber. Opens Optimizer Tree tab.`
-          : "Breeding status loading. Opens Optimizer Tree tab."
-      }
-      onClick={onNavigateToBreedingTree}
-    >
-      <span className="dash-branch-breeding-pill__text">
-        <strong>Breeding</strong>
-        {breedingStripStatus ? (
-          <>
-            {": "}
-            {poolN != null ? `${poolN} in pool` : "—"}
-            <span className="dash-branch-breeding-pill__sep"> · </span>
-            {dcN != null ? `${dcN} in death chamber` : "—"}
-            {schedOff ? <span className="dash-branch-breeding-pill__sched"> · scheduler off</span> : null}
-          </>
-        ) : (
-          ": …"
-        )}
-      </span>
-    </button>
-  );
-}
-
 function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj }) {
   const k = dash?.kalshi as AnyObj | undefined;
   if (!k) return null;
@@ -7494,7 +7588,12 @@ function SignalsTable({
               <td title="Implied probability.">{s.implied_prob == null ? "" : `${Math.round(Number(s.implied_prob) * 100)}%`}</td>
               <td title="Minutes left.">{s.minutes_left == null ? "" : Number(s.minutes_left).toFixed(1)}</td>
               <td title="Executed flag.">{Number(s.executed) ? "yes" : "no"}</td>
-              <td title="Skip reason.">{String(s.skip_reason || "")}</td>
+              <td
+                title={String(s.skip_reason || "Skip reason.")}
+                style={{ maxWidth: 320, whiteSpace: "normal", wordBreak: "break-word" }}
+              >
+                {String(s.skip_reason || "")}
+              </td>
             </tr>
           ))}
         </tbody>

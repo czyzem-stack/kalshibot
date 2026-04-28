@@ -177,6 +177,10 @@ class EnvSettings:
     prewarm_max_concurrent: int = _get_int("KALSHI_PREWARM_MAX_CONCURRENT", 4, min_value=1, max_value=16)
     dual_engine_lab_tick_stagger_s: float = _get_float("KALSHI_LAB_TICK_STAGGER_S", 0.45, min_value=0.0)
     dashboard_orderbook_cache_ttl_s: float = _get_float("DASHBOARD_ORDERBOOK_CACHE_TTL_S", 5.0, min_value=0.5)
+    # If false, ``GET /api/dashboard/equity`` skips the parallel paper mark refresh (saves Kalshi I/O; chart MTM lags between full 12s polls).
+    dashboard_fast_paper_mtm: bool = _get("DASHBOARD_FAST_PAPER_MTM", "1").lower() not in ("0", "false", "no", "off")
+    # Wall-clock cap for **all** paper MTM subtasks on the fast equity poll (Live + Lab A–D in parallel). 5s was too tight and timed out often → flat MTM / overlapped book lines until the full dashboard poll.
+    dashboard_fast_mtm_gather_timeout_s: float = _get_float("DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S", 22.0, min_value=5.0, max_value=120.0)
     engine_study_trade_window_minutes: int = _get_int("ENGINE_STUDY_TRADE_WINDOW_MINUTES", 15, min_value=1)
     engine_orderbook_enrich_first_tick_cap: int = _get_int("ENGINE_ORDERBOOK_ENRICH_FIRST_TICK_CAP", 10, min_value=1)
     engine_orderbook_enrich_steady_cap: int = _get_int("ENGINE_ORDERBOOK_ENRICH_STEADY_CAP", 20, min_value=1)
@@ -187,6 +191,10 @@ class EnvSettings:
     default_min_contracts: int = _get_int("DEFAULT_MIN_CONTRACTS", 1, min_value=1)
     default_paper_balance_cents: int = _get_int("DEFAULT_PAPER_BALANCE_CENTS", 500_000, min_value=0)
     default_auto_close_open_sim_minutes: float = _get_float("DEFAULT_AUTO_CLOSE_OPEN_SIM_MINUTES", 75.0, min_value=0.0)
+    # If settlement never marks the market finalized, close sims this many minutes after the contract's ``close_time`` (unblocks one-open-per-series faster than age-from-open alone).
+    default_auto_close_grace_minutes_after_event_close: float = _get_float(
+        "DEFAULT_AUTO_CLOSE_GRACE_MINUTES_AFTER_EVENT_CLOSE", 8.0, min_value=0.0
+    )
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (replay weights live in optimizer_claude).
 
     @property

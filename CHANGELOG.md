@@ -2,6 +2,12 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.09 - Dashboard catch-up + fast equity MTM timeout + sim settle `amended` - 2026-04-26
+
+- **Frontend:** `frontend/src/dashboardPolling.ts` — on **tab visible**, **`pageshow`**, and **`online`**, immediately refresh **`GET /api/dashboard`** and **`GET /api/dashboard/equity`** so the UI does not stay stale while background tabs throttle `setInterval` (editing via Vite previously looked like the “fix” because Fast Refresh remounted the poll effect).
+- **Backend:** `DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S` (default **22**s, env-clamped) replaces a hard **5s** `asyncio.wait_for` around parallel paper MTM refresh on the fast equity route; timeouts log a warning instead of silently freezing MTM vs book until the next full dashboard poll.
+- **Backend:** `settle_simulated_trades` treats Kalshi **`amended`** (post-dispute re-determination) like other terminal/determined statuses so paper rows settle when the API exposes a yes/no outcome.
+
 ## v0.4.08 - `all_labs` reset includes Live (SQLite + charts) - 2026-04-28
 
 - **API:** `POST /api/data/reset?branch=all_labs` and `PUT /api/config/lab-branches` with `reset_data=all_labs` now also delete **Live** signals, trades, and `equity_snapshots` (previously only Labs A–D, so the Live branch chart still showed old history). Equity snapshot re-seed after reset includes **Live** first.

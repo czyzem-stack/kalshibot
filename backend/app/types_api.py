@@ -167,6 +167,10 @@ class OptimizerStatusResponse(TypedDict, total=False):
     labs_breeding_personality_radar: dict[str, Any]
     labs_breeding_last_generation_iso: str
     labs_breeding_replace_cooldown_until: str
+    breeding_enabled: bool
+    breeding_last_run_at: str
+    breeding_last_summary: str
+    breeding_last_run_minutes_ago: float | None
     internal_optimizer_trace: list[dict[str, Any]]
     advanced_metrics_last: dict[str, Any]
     acceptance_rate_pct: float

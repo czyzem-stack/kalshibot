@@ -369,6 +369,11 @@ def default_bot_config() -> dict[str, Any]:
             "last_run_at": None,
             "last_status": "",
             "last_error": "",
+            # B/C/D child-lab GA + adoption: can run on the optimizer interval even when
+            # ``enabled`` and ``adaptive_enabled`` are false; see ``architecture-breeding`` rule.
+            "breeding_enabled": True,
+            "breeding_last_run_at": "",
+            "breeding_last_summary": "",
         },
     }
 
@@ -1290,6 +1295,32 @@ class Store:
             )
             row = await cur.fetchone()
         return row is not None
+
+    async def first_open_sim_ticker_for_series_prefix(self, branch: str, series_prefix: str) -> str | None:
+        """
+        Newest open-sim row whose market ticker is under this series family (same filter as
+        :meth:`has_open_sim_for_series_prefix`). When non-empty, a new bet in that family is blocked; return the
+        blocking ticker for Activity log / ``skip_reason`` text.
+        """
+        pat = _series_prefix_like_pattern(series_prefix)
+        if not pat:
+            return None
+        async with self._open_db() as db:
+            cur = await db.execute(
+                f"""
+                SELECT TRIM(ticker) FROM trades
+                WHERE {_sql_sim_open_book_predicate(branch)}
+                  AND UPPER(TRIM(ticker)) LIKE ? ESCAPE '\\'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (pat,),
+            )
+            row = await cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        s = str(row[0]).strip()
+        return s or None
 
     async def open_committed_cents_for_branch_mode(self, branch: str, trade_mode: str) -> int:
         """

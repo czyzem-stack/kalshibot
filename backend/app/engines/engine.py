@@ -651,6 +651,9 @@ class TradingEngine:
         # in the same budget window). Series-wide cap is enforced in SQLite: one open sim per ``series_ticker``
         # prefix per branch (see ``insert_sim_trade_single_open_per_ticker``).
         self._sim_asset_budget_fired: set[str] = set()
+        # One log/trace line per budget window for *transient* sim guards (series/ticker already open, atomic race).
+        # Do **not** fold these into ``_seen_keys`` — that blocked retries before re-checking guards after settlement.
+        self._sim_transient_skip_logged: set[str] = set()
 
 
 def _is_lab_branch(branch: str) -> bool:
@@ -666,6 +669,15 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
         full_cfg = await engine.store.load_config()
     cfg = merge_branch_config(full_cfg, engine.branch)
     if not cfg:
+        # Otherwise ``last_tick_trace`` stayed stale and looked like the branch was still scanning markets.
+        br = str(engine.branch)
+        engine.state.markets_scanned = 0
+        engine.state.asset_snapshots = {}
+        engine.state.last_tick_trace = [
+            f"skip {iso(now)} | branch={br} | no merged config — start the engine: "
+            f"Settings / ``engine_running`` (Live) or each lab’s ``engine_running`` must be on. "
+            f"Child ``lab_child_*`` only stop when engine_running is explicitly off."
+        ]
         return
 
     first_branch_tick = engine._tick_count == 0
@@ -679,6 +691,7 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     if engine._last_window_id != wid:
         engine._seen_keys.clear()
         engine._sim_asset_budget_fired.clear()
+        engine._sim_transient_skip_logged.clear()
         engine._last_window_id = wid
 
     study_wid = window_id_for(now, STUDY_TRADE_WINDOW_MINUTES)
@@ -890,6 +903,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         engine._study_asset_fired.clear()
         engine._study_cap_logged.clear()
         engine._sim_asset_budget_fired.clear()
+        engine._sim_transient_skip_logged.clear()
     elif not err and not bust:
         engine._paper_auto_reset_streak_handled = False
 
@@ -1275,31 +1289,47 @@ async def handle_market(
     series_up = str(series_ticker or "").strip().upper()
     simulate = bool(cfg.get("_simulate_orders"))
     if simulate:
-        if series_up and await engine.store.has_open_sim_for_series_prefix(branch, series_up):
-            await log_signal(
-                engine,
-                window_id=window_id,
-                asset_id=asset_id,
-                ticker=ticker,
-                side=trade_side,
-                implied_prob=prob,
-                minutes_left=mins,
-                rule_name=str(matched_rule.get("name") or ""),
-                executed=False,
-                skip_reason="series_has_open_sim",
-                mode=trade_mode,
-                branch=branch,
-                extra={
-                    "series_ticker": series_up,
-                    "ticker": ticker,
-                    "note": "At most one open simulated position per series per branch — settle or exit before opening another contract under this series prefix.",
-                },
+        open_blocker_tk: str | None = None
+        if series_up:
+            open_blocker_tk = await engine.store.first_open_sim_ticker_for_series_prefix(branch, series_up)
+        if open_blocker_tk:
+            logger.info(
+                "[sim_trade_block] skip reason=series_has_open_sim series_family=%s branch=%s new_ticker=%s open_blocker=%s grep=series_open_sim",
+                series_up,
+                branch,
+                str(ticker)[:48],
+                str(open_blocker_tk)[:64],
             )
-            engine._seen_keys.add(dedupe_key)
-            _trace_append(
-                trace,
-                f"  {asset_id} {ticker[:40]}… skip: series {series_up[:24]}… already has an open sim ({branch})",
-            )
+            bt = str(open_blocker_tk)[:100]
+            skip_lbl = f"series_has_open_sim — already open: {bt}"
+            _skip_log_k = f"{window_id}:{dedupe_key}:series_open"
+            if _skip_log_k not in engine._sim_transient_skip_logged:
+                engine._sim_transient_skip_logged.add(_skip_log_k)
+                await log_signal(
+                    engine,
+                    window_id=window_id,
+                    asset_id=asset_id,
+                    ticker=ticker,
+                    side=trade_side,
+                    implied_prob=prob,
+                    minutes_left=mins,
+                    rule_name=str(matched_rule.get("name") or ""),
+                    executed=False,
+                    skip_reason=skip_lbl,
+                    mode=trade_mode,
+                    branch=branch,
+                    extra={
+                        "series_ticker": series_up,
+                        "ticker": ticker,
+                        "open_blocker_ticker": bt,
+                        "note": "At most one open simulated position per series per branch — settle or exit the listed open (or close early) before a new contract in that series.",
+                    },
+                )
+                _trace_append(
+                    trace,
+                    f"  {asset_id} {ticker[:40]}… skip: series {series_up[:24]}… open sim {bt[:36]}… blocks this branch",
+                )
+            # Do not add ``dedupe_key`` to ``_seen_keys`` — blocker can clear mid-window; dedupe would skip retries until ``window_id`` rolls.
             return None
         aid = str(asset_id).strip()
         if aid and aid in engine._sim_asset_budget_fired:
@@ -1328,29 +1358,31 @@ async def handle_market(
             )
             return None
         if ticker.strip() and await engine.store.has_open_sim_for_ticker(branch, trade_mode, ticker):
-            await log_signal(
-                engine,
-                window_id=window_id,
-                asset_id=asset_id,
-                ticker=ticker,
-                side=trade_side,
-                implied_prob=prob,
-                minutes_left=mins,
-                rule_name=str(matched_rule.get("name") or ""),
-                executed=False,
-                skip_reason="ticker_has_open_sim",
-                mode=trade_mode,
-                branch=branch,
-                extra={
-                    "ticker": ticker,
-                    "note": "At most one open simulated ticket per market (exact ticker) per branch until it settles or is closed early.",
-                },
-            )
-            engine._seen_keys.add(dedupe_key)
-            _trace_append(
-                trace,
-                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for this market ({branch})",
-            )
+            _skip_log_k = f"{window_id}:{dedupe_key}:ticker_open"
+            if _skip_log_k not in engine._sim_transient_skip_logged:
+                engine._sim_transient_skip_logged.add(_skip_log_k)
+                await log_signal(
+                    engine,
+                    window_id=window_id,
+                    asset_id=asset_id,
+                    ticker=ticker,
+                    side=trade_side,
+                    implied_prob=prob,
+                    minutes_left=mins,
+                    rule_name=str(matched_rule.get("name") or ""),
+                    executed=False,
+                    skip_reason="ticker_has_open_sim",
+                    mode=trade_mode,
+                    branch=branch,
+                    extra={
+                        "ticker": ticker,
+                        "note": "At most one open simulated ticket per market (exact ticker) per branch until it settles or is closed early.",
+                    },
+                )
+                _trace_append(
+                    trace,
+                    f"  {asset_id} {ticker[:40]}… skip: open sim already exists for this market ({branch})",
+                )
             return None
 
     window_minutes = int(cfg.get("window_minutes") or env.default_window_minutes)
@@ -1493,30 +1525,32 @@ async def handle_market(
         else:
             tid = await engine.store.insert_trade(trade_row)
         if tid is None:
-            await log_signal(
-                engine,
-                window_id=window_id,
-                asset_id=asset_id,
-                ticker=ticker,
-                side=trade_side,
-                implied_prob=prob,
-                minutes_left=mins,
-                rule_name=str(matched_rule.get("name") or ""),
-                executed=False,
-                skip_reason="sim_single_open_guard",
-                mode=trade_mode,
-                branch=branch,
-                extra={
-                    "ticker": ticker,
-                    "series_ticker": series_up or None,
-                    "note": "Insert blocked: another open sim on this series or ticker won the write lock (one per series prefix per branch).",
-                },
-            )
-            engine._seen_keys.add(dedupe_key)
-            _trace_append(
-                trace,
-                f"  {asset_id} {ticker[:40]}… skip: open sim already exists for this market ({branch}, atomic)",
-            )
+            _skip_log_k = f"{window_id}:{dedupe_key}:atomic_guard"
+            if _skip_log_k not in engine._sim_transient_skip_logged:
+                engine._sim_transient_skip_logged.add(_skip_log_k)
+                await log_signal(
+                    engine,
+                    window_id=window_id,
+                    asset_id=asset_id,
+                    ticker=ticker,
+                    side=trade_side,
+                    implied_prob=prob,
+                    minutes_left=mins,
+                    rule_name=str(matched_rule.get("name") or ""),
+                    executed=False,
+                    skip_reason="sim_single_open_guard",
+                    mode=trade_mode,
+                    branch=branch,
+                    extra={
+                        "ticker": ticker,
+                        "series_ticker": series_up or None,
+                        "note": "Insert blocked: another open sim on this series or ticker won the write lock (one per series prefix per branch).",
+                    },
+                )
+                _trace_append(
+                    trace,
+                    f"  {asset_id} {ticker[:40]}… skip: open sim already exists for this market ({branch}, atomic)",
+                )
             return None
         await log_signal(
             engine,
@@ -2178,6 +2212,8 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
     """
     Auto-close stale simulated open rows so one-open-per-series guards cannot stall trading indefinitely.
 
+    Eligible when either (a) row age exceeds ``auto_close_open_sim_minutes``, or (b) contract ``close_time``
+    is more than ``auto_close_grace_minutes_after_event_close`` in the past (Kalshi settlement lag).
     Uses a conservative bid-side close when market data is available; otherwise falls back to entry premium.
     Set ``auto_close_open_sim_minutes`` to <=0 to disable for a branch.
     """
@@ -2189,6 +2225,14 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
         timeout_min = 75.0
     if timeout_min <= 0:
         return 0
+    try:
+        grace_after_close = float(
+            cfg.get("auto_close_grace_minutes_after_event_close")
+            or full_cfg.get("auto_close_grace_minutes_after_event_close")
+            or env.default_auto_close_grace_minutes_after_event_close
+        )
+    except (TypeError, ValueError):
+        grace_after_close = 8.0
     open_rows = await engine.store.open_sim_trades_for_branch(branch)
     if not open_rows:
         return 0
@@ -2208,9 +2252,24 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
             if created_dt.tzinfo is None:
                 created_dt = created_dt.replace(tzinfo=dt.timezone.utc)
             age_min = (now - created_dt.astimezone(dt.timezone.utc)).total_seconds() / 60.0
-            if age_min < timeout_min:
-                continue
+            stale_by_age = age_min >= timeout_min
             ticker = str(t.get("ticker") or "").strip()
+            m_cached: dict[str, Any] | None = None
+            stale_by_event = False
+            if not stale_by_age and grace_after_close > 0 and ticker:
+                try:
+                    data0 = await engine.client.get_public(_public_market_path(ticker))
+                    m_cached = market_dict_from_public_response(data0)
+                    close_time = str(m_cached.get("close_time") or "")
+                    if close_time:
+                        ml = minutes_left(close_time, now)
+                        # minutes_left: negative = this many minutes past the contract's close; close after grace
+                        if ml is not None and ml <= -grace_after_close:
+                            stale_by_event = True
+                except Exception:
+                    m_cached = None
+            if not stale_by_age and not stale_by_event:
+                continue
             if not ticker:
                 continue
             side = str(t.get("side") or "yes").strip().lower()
@@ -2228,8 +2287,11 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
 
             exit_px: float | None = None
             try:
-                data = await engine.client.get_public(_public_market_path(ticker))
-                m = market_dict_from_public_response(data)
+                if m_cached is not None:
+                    m = m_cached
+                else:
+                    data = await engine.client.get_public(_public_market_path(ticker))
+                    m = market_dict_from_public_response(data)
                 yb = dollars_to_float(m.get("yes_bid_dollars"))
                 ya = dollars_to_float(m.get("yes_ask_dollars"))
                 exit_px = exit_bid_for_side_close(m, side, yb, ya)
@@ -2274,6 +2336,10 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
                 {
                     "auto_timeout_close": True,
                     "auto_timeout_minutes": timeout_min,
+                    "auto_timeout_stale_by_event_close": bool(stale_by_event),
+                    "auto_timeout_grace_minutes_after_event_close": (
+                        round(grace_after_close, 2) if stale_by_event else None
+                    ),
                     "auto_timeout_age_minutes": round(age_min, 2),
                     "auto_timeout_exit_bid": exit_px,
                     "paper_fee_model": fee_model,
@@ -2291,11 +2357,18 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
                 extra_json=json.dumps(extra),
             )
             closed_n += 1
-            _engine_trace_note(
-                engine,
-                f"timeout-close {branch} {ticker[:36]}… age={age_min:.1f}m side={side.upper()} "
-                f"exit≈{exit_px:.3f} pnl¢={pnl}",
-            )
+            if stale_by_event and not stale_by_age:
+                _engine_trace_note(
+                    engine,
+                    f"timeout-close {branch} {ticker[:36]}… after_event+{grace_after_close:.0f}m side={side.upper()} "
+                    f"exit≈{exit_px:.3f} pnl¢={pnl}",
+                )
+            else:
+                _engine_trace_note(
+                    engine,
+                    f"timeout-close {branch} {ticker[:36]}… age={age_min:.1f}m side={side.upper()} "
+                    f"exit≈{exit_px:.3f} pnl¢={pnl}",
+                )
         except Exception as e:
             _engine_trace_note(engine, f"timeout-close {branch}: row err {str(e)[:120]}")
             continue
@@ -2331,10 +2404,13 @@ async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, 
                 continue
             m = market_dict_from_public_response(data)
             status = str(m.get("status") or "").strip().lower()
+            # Kalshi lifecycle: ``determined`` → (optional ``disputed`` / ``amended``) → ``finalized``. REST uses
+            # ``finalized`` as terminal; ``amended`` carries a re-set result like ``determined``.
             if status not in (
                 "finalized",
                 "closed",
                 "determined",
+                "amended",
                 "settled",
                 "settlement",
                 "complete",
