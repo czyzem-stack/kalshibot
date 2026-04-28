@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
-from ..lab_breeding import build_labs_breeding_personality_radar
+from ..lab_breeding import LABS_BREEDING_VERSION, build_labs_breeding_personality_radar, build_labs_breeding_tree_snapshot
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
 from ..types_api import OptimizerStatusResponse
@@ -184,6 +184,8 @@ async def optimizer_status() -> OptimizerStatusResponse:
         ][:10],
         "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
         "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:10],
+        "labs_breeding_tree_snapshot": build_labs_breeding_tree_snapshot(oc, cfg),
+        "labs_breeding_version": LABS_BREEDING_VERSION,
         # LABS BREEDING v0.1 — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).
         "labs_breeding_personality_radar": build_labs_breeding_personality_radar(cfg),
         "labs_breeding_last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),

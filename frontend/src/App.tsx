@@ -825,7 +825,7 @@ function BreederPersonalityRadarChart({
   );
 }
 
-type BreedingTreeSubTab = "lineage" | "pool" | "culls" | "log";
+type BreedingTreeSubTab = "family" | "lineage" | "pool" | "culls" | "log";
 
 function _breedingIsoSortKey(s: string): string {
   return String(s || "").trim();
@@ -841,7 +841,12 @@ function BreedingFamilyTreePanel({
   loading: boolean;
   error: string | null;
 }) {
-  const [sub, setSub] = useState<BreedingTreeSubTab>("lineage");
+  const [sub, setSub] = useState<BreedingTreeSubTab>("family");
+  const tree = (status?.labs_breeding_tree_snapshot || {}) as AnyObj;
+  const treeNodes = Array.isArray(tree.nodes) ? (tree.nodes as AnyObj[]) : [];
+  const treeEdges = Array.isArray(tree.edges) ? (tree.edges as AnyObj[]) : [];
+  const treeSummary = (tree.summary || {}) as AnyObj;
+  const treeRecent = Array.isArray(tree.recent_events) ? (tree.recent_events as AnyObj[]) : [];
 
   const lineage = useMemo(() => {
     const raw = Array.isArray(status?.labs_breeding_lineage_history) ? (status!.labs_breeding_lineage_history as AnyObj[]) : [];
@@ -907,6 +912,67 @@ function BreedingFamilyTreePanel({
         className="dash-breeding-tree-scroll"
         style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}
       >
+        {sub === "family" ? (
+          <div>
+            <div className="dash-breeding-tree-node" style={{ marginBottom: 10 }}>
+              <strong>
+                Family tree v{String(status?.labs_breeding_version || tree.version || "0.2")} · generation{" "}
+                {Number(tree.generation_index ?? 0)}
+              </strong>
+              <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                pool {Number(treeSummary.children_in_pool ?? pool.length)} · lineage {Number(treeSummary.lineage_n ?? lineage.length)} ·
+                culls {Number(treeSummary.death_chamber_n ?? culls.length)} · event seq {Number(tree.event_seq ?? 0)}
+              </div>
+            </div>
+            <div className="dash-breeding-tree-node dash-breeding-tree-node--birth" style={{ marginBottom: 10 }}>
+              <strong>Breeder parents</strong>
+              <div className="sub" style={{ marginTop: 6, fontSize: 12 }}>
+                {treeNodes
+                  .filter((n) => String(n.kind || "") === "parent")
+                  .map((n) => String(n.label || n.id || "—"))
+                  .join(" · ") || "—"}
+              </div>
+            </div>
+            {treeNodes
+              .filter((n) => String(n.kind || "") === "child")
+              .map((n, i) => {
+                const nid = String(n.id || "");
+                const parentEdge = treeEdges.find((e) => String(e.to || "") === nid && String(e.kind || "") === "birth");
+                const slotEdge = treeEdges.find((e) => String(e.from || "") === nid && String(e.kind || "") === "assignment");
+                return (
+                  <div key={`${nid}-${i}`}>
+                    {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                    <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
+                      <strong>
+                        {String(n.label || "child")} · {String(n.child_id || "").slice(0, 10)}
+                      </strong>
+                      <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                        {String(parentEdge?.from || n.parent || "—")} → {String(slotEdge?.to || n.slot || "—")}
+                        {n.fitness != null && Number.isFinite(Number(n.fitness)) ? ` · fitness ${Number(n.fitness).toFixed(3)}` : ""}
+                        {n.born_at ? ` · born ${String(n.born_at)}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            {!treeNodes.some((n) => String(n.kind || "") === "child") ? (
+              <p className="sub" style={{ margin: 0 }}>
+                No active children in pool yet for this generation.
+              </p>
+            ) : null}
+            {treeRecent.length ? (
+              <div className="dash-breeding-tree-node" style={{ marginTop: 10 }}>
+                <strong>Recent growth events</strong>
+                <div className="sub" style={{ marginTop: 6, fontSize: 12 }}>
+                  {treeRecent
+                    .slice(0, 8)
+                    .map((e) => `${String(e.kind || "event")}@${String(e.at || "—")}`)
+                    .join(" · ")}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {sub === "lineage" ? (
           lineage.length ? (
             lineage.map((row, i) => {
@@ -1016,6 +1082,7 @@ function BreedingFamilyTreePanel({
   };
 
   const tabs: Array<{ id: BreedingTreeSubTab; label: string }> = [
+    { id: "family", label: "Family" },
     { id: "lineage", label: "Lineage" },
     { id: "pool", label: "Children" },
     { id: "culls", label: "Cullings" },
@@ -3203,32 +3270,6 @@ function applyEquityValueScale(rows: EquityChartRow[], scale: EquityValueScale):
   return scaleEquityRowsPctFromWindowStart(rows);
 }
 
-/** One shared $ domain for all lab small-multiples so per-chart “auto” does not make correlated MTM wiggles look like clones. */
-function unionDollarYDomainForLabs(labs: EquityChartRow[][]): [number, number] {
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const rows of labs) {
-    for (const r of rows) {
-      if (Number.isFinite(r.equity)) {
-        lo = Math.min(lo, r.equity);
-        hi = Math.max(hi, r.equity);
-      }
-      const m = r.mtm != null && Number.isFinite(Number(r.mtm)) ? Number(r.mtm) : r.equity;
-      if (Number.isFinite(m)) {
-        lo = Math.min(lo, m);
-        hi = Math.max(hi, m);
-      }
-    }
-  }
-  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [0, 1];
-  if (lo === hi) {
-    lo -= 0.5;
-    hi += 0.5;
-  }
-  const pad = (hi - lo) * 0.04;
-  return [lo - pad, hi + pad];
-}
-
 function mondayUtcKey(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -4402,25 +4443,31 @@ export default function App() {
   useEffect(() => {
     if (optimizerDashboardView !== "breeder" && optimizerDashboardView !== "tree") return;
     let cancelled = false;
-    // Avoid skeleton flash when switching Breeder ↔ Tree (same API payload).
-    if (!breederStatusPayloadRef.current) setBreederStatusLoading(true);
-    setBreederStatusError(null);
-    void fetch("/api/optimizer/status", withApiAuth())
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<AnyObj>;
-      })
-      .then((j) => {
-        if (!cancelled) setBreederStatusPayload(j);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
-      })
-      .finally(() => {
-        if (!cancelled) setBreederStatusLoading(false);
-      });
+    const tick = () => {
+      // Avoid skeleton flash when switching Breeder ↔ Tree (same API payload).
+      if (!breederStatusPayloadRef.current) setBreederStatusLoading(true);
+      setBreederStatusError(null);
+      void fetch("/api/optimizer/status", withApiAuth())
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json() as Promise<AnyObj>;
+        })
+        .then((j) => {
+          if (!cancelled) setBreederStatusPayload(j);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
+        })
+        .finally(() => {
+          if (!cancelled) setBreederStatusLoading(false);
+        });
+    };
+    tick();
+    // v0.2: keep Tree/Breeder live while tab is open (no stale repeated rows feeling).
+    const id = window.setInterval(tick, 15_000);
     return () => {
       cancelled = true;
+      window.clearInterval(id);
     };
   }, [optimizerDashboardView, breederRefetchNonce]);
 
@@ -4771,10 +4818,6 @@ export default function App() {
     () => applyEquityValueScale(chartDataLabDRaw, equityValueScale),
     [chartDataLabDRaw, equityValueScale],
   );
-  const labSharedDollarYDomain = useMemo((): [number, number] | undefined => {
-    if (equityValueScale !== "dollars") return undefined;
-    return unionDollarYDomainForLabs([chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
-  }, [equityValueScale, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
   /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the five small charts for per-branch % view. */
   const equityOverlayData = useMemo(
     () =>
@@ -6076,7 +6119,6 @@ export default function App() {
                         equityStroke="#a78bfa"
                         mtmStroke="#c4b5fd"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6104,7 +6146,6 @@ export default function App() {
                         equityStroke="#f59e0b"
                         mtmStroke="#fcd34d"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6132,7 +6173,6 @@ export default function App() {
                         equityStroke="#f472b6"
                         mtmStroke="#fbcfe8"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6160,7 +6200,6 @@ export default function App() {
                         equityStroke="#fca5a5"
                         mtmStroke="#fecaca"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}

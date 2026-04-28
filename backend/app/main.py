@@ -879,11 +879,11 @@ async def data_reset(
             _clear_engine_mem_after_reset("live")
             out = dict(out)
             out["branch"] = "all_labs"
-            await _seed_equity_snapshots_after_reset("all_labs")
             if uniform_paper_balance_cents is not None:
                 u = await _apply_uniform_paper_balance_after_scope_reset("all_labs", uniform_paper_balance_cents)
                 if u:
                     out["uniform_paper_balance"] = u
+            await _seed_equity_snapshots_after_reset("all_labs")
             return out
         pre_scope = "all" if br == "all" else br
         _clear_engine_mem_after_reset(pre_scope)
@@ -891,13 +891,13 @@ async def data_reset(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     _clear_engine_mem_after_reset(out.get("branch") or "all")
-    await _seed_equity_snapshots_after_reset(str(out.get("branch") or "all"))
     out_final = dict(out)
     scope_ret = str(out_final.get("branch") or "all")
     if uniform_paper_balance_cents is not None and scope_ret in ("all", "all_labs"):
         u = await _apply_uniform_paper_balance_after_scope_reset(scope_ret, uniform_paper_balance_cents)
         if u:
             out_final["uniform_paper_balance"] = u
+    await _seed_equity_snapshots_after_reset(scope_ret)
     return out_final
 
 

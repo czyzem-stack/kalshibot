@@ -60,6 +60,7 @@ def _signals_sorted_desc(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
 ReplayBundleFn = Callable[..., dict[str, Any]]
 ReplayOpenKwFn = Callable[..., dict[str, Any]]
 
+LABS_BREEDING_VERSION = "0.2"
 LAB_BREEDING_GENERATION_INTERVAL = dt.timedelta(minutes=30)
 REPLACEMENT_COOLDOWN = dt.timedelta(minutes=5)
 MIN_SETTLED_FOR_ADOPTION_COMPARE = 4
@@ -514,6 +515,10 @@ def _breed_child(
 
 
 def append_breeding_log(oc: dict[str, Any], entry: dict[str, Any], cap: int = 64) -> None:
+    seq = int(oc.get("labs_breeding_event_seq") or 0) + 1
+    oc["labs_breeding_event_seq"] = seq
+    if "seq" not in entry:
+        entry["seq"] = seq
     log = oc.get("labs_breeding_log")
     hist = list(log) if isinstance(log, list) else []
     hist.insert(0, entry)
@@ -521,15 +526,106 @@ def append_breeding_log(oc: dict[str, Any], entry: dict[str, Any], cap: int = 64
 
 
 def _append_lineage_history(oc: dict[str, Any], row: dict[str, Any]) -> None:
+    seq = int(oc.get("labs_breeding_event_seq") or 0) + 1
+    oc["labs_breeding_event_seq"] = seq
+    if "seq" not in row:
+        row["seq"] = seq
     h = [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)]
     h.insert(0, row)
     oc["labs_breeding_lineage_history"] = h[:LINEAGE_HISTORY_CAP]
 
 
 def _death_chamber_append(oc: dict[str, Any], row: dict[str, Any]) -> None:
+    seq = int(oc.get("labs_breeding_event_seq") or 0) + 1
+    oc["labs_breeding_event_seq"] = seq
+    if "seq" not in row:
+        row["seq"] = seq
     dc = [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)]
     dc.insert(0, row)
     oc["labs_breeding_death_chamber"] = dc[:DEATH_CHAMBER_CAP]
+
+
+def build_labs_breeding_tree_snapshot(oc: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """
+    v0.2 tree payload for the dashboard.
+    Returns normalized family nodes + edges and recent event summary so the UI can render
+    a stable growth view without guessing from loosely-typed log rows.
+    """
+    children = [x for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)]
+    lineage = [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)]
+    culls = [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)]
+    logs = [x for x in (oc.get("labs_breeding_log") or []) if isinstance(x, dict)]
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    # Parent hubs (visible labs) and child slot hubs.
+    for p in BRANCH_BREEDERS:
+        nodes.append({"id": p, "kind": "parent", "label": p.replace("_", " ").title(), "branch": p})
+    nodes.append({"id": BRANCH_LAB_A, "kind": "staging", "label": "Lab A (adopt)", "branch": BRANCH_LAB_A})
+    for slot in BRANCH_CHILD_LABS:
+        nodes.append({"id": slot, "kind": "slot", "label": slot.replace("_", " ").title(), "branch": slot})
+
+    for c in children:
+        cid = str(c.get("id") or "").strip()
+        if not cid:
+            continue
+        nid = f"child:{cid}"
+        parent = str(c.get("parent") or "").strip().lower()
+        slot = str(c.get("engine_branch") or "").strip().lower()
+        fit = float(c.get("replay_fitness") or 0.0)
+        nodes.append(
+            {
+                "id": nid,
+                "kind": "child",
+                "label": f"{cid[:8]}…",
+                "child_id": cid,
+                "parent": parent,
+                "slot": slot,
+                "born_at": str(c.get("born_at") or ""),
+                "fitness": round(fit, 4),
+                "traits": c.get("traits") if isinstance(c.get("traits"), dict) else {},
+            }
+        )
+        if parent in BRANCH_BREEDERS:
+            edges.append({"from": parent, "to": nid, "kind": "birth"})
+        if slot in BRANCH_CHILD_LABS:
+            edges.append({"from": nid, "to": slot, "kind": "assignment"})
+
+    # Adoption edges (child -> Lab A) from lineage / logs.
+    for row in lineage[:80]:
+        kind = str(row.get("kind") or "").lower()
+        if "adopt" not in kind:
+            continue
+        cid = str(row.get("child_id") or "").strip()
+        if not cid:
+            continue
+        edges.append(
+            {
+                "from": f"child:{cid}",
+                "to": BRANCH_LAB_A,
+                "kind": "adoption",
+                "at": str(row.get("at") or ""),
+                "seq": int(row.get("seq") or 0),
+            }
+        )
+
+    return {
+        "version": LABS_BREEDING_VERSION,
+        "generated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "generation_index": int(oc.get("labs_breeding_generation_index") or 0),
+        "event_seq": int(oc.get("labs_breeding_event_seq") or 0),
+        "summary": {
+            "children_in_pool": len(children),
+            "death_chamber_n": len(culls),
+            "lineage_n": len(lineage),
+            "log_n": len(logs),
+            "last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),
+            "replace_cooldown_until": str(oc.get("labs_breeding_replace_cooldown_until") or ""),
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "recent_events": logs[:24],
+    }
 
 
 def _migrate_legacy_lineages(oc: dict[str, Any], *, end_iso: str) -> None:
@@ -1248,6 +1344,7 @@ async def run_lab_breeding_ga_cycle(
             _record_replacement_cooldown(oc, end_iso)
 
     oc["labs_breeding_last_generation_iso"] = end_iso
+    oc["labs_breeding_generation_index"] = int(oc.get("labs_breeding_generation_index") or 0) + 1
     append_breeding_log(
         oc,
         {
