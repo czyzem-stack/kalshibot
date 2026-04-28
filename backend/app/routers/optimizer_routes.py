@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
-from ..lab_breeding import build_labs_breeding_personality_radar
+from ..lab_breeding import LABS_BREEDING_VERSION, build_labs_breeding_personality_radar, build_labs_breeding_tree_snapshot
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
 from ..types_api import OptimizerStatusResponse
@@ -157,7 +157,7 @@ def _labs_breeding_child_status_row(c: dict) -> dict:
 
 @router.get("/status")
 async def optimizer_status() -> OptimizerStatusResponse:
-    # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request (advanced users only).
+    # OPTIMIZER — keep smart core, remove visible settings per user request (advanced users only).
     # HELP CLEANUP — thorough & professional: status payload is the read-only observability surface (includes compact internal logs).
     cfg = await state.store.load_config()
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
@@ -177,14 +177,16 @@ async def optimizer_status() -> OptimizerStatusResponse:
         "last_error": str(oc.get("last_error") or ""),
         "next_tick_preview": str(oc.get("next_tick_preview") or "")[:1200],
         "proposal_history": [x for x in (oc.get("proposal_history") or []) if isinstance(x, dict)][:50],
-        # LABS BREEDING v0.1 REVAMP — fully automatic, invisible, continuous replacement (4 active slots only)
+        # LABS BREEDING — fully automatic, invisible, continuous replacement (4 active slots only)
         "labs_breeding_log": [x for x in (oc.get("labs_breeding_log") or []) if isinstance(x, dict)][:64],
         "labs_breeding_children": [
             _labs_breeding_child_status_row(x) for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)
         ][:10],
         "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
         "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:10],
-        # LABS BREEDING v0.1 — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).
+        "labs_breeding_tree_snapshot": build_labs_breeding_tree_snapshot(oc, cfg),
+        "labs_breeding_version": LABS_BREEDING_VERSION,
+        # LABS BREEDING — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).
         "labs_breeding_personality_radar": build_labs_breeding_personality_radar(cfg),
         "labs_breeding_last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),
         "labs_breeding_replace_cooldown_until": str(oc.get("labs_breeding_replace_cooldown_until") or ""),

@@ -1,5 +1,4 @@
-# LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
-# LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+# LABS BREEDING — unified project version v0.4.15.0.
 """
 Invisible internal GA for paper labs (no Claude, no UI changes on dashboard).
 
@@ -45,7 +44,7 @@ logger = logging.getLogger("kalshibot.lab_breeding")
 
 
 def _toast_fields(*, family: str, **kwargs: Any) -> dict[str, Any]:
-    # LABS BREEDING v0.1 — birth vs death/cull toasts (only visible “labs” surface)
+    # LABS BREEDING — birth vs death/cull toasts (only visible “labs” surface)
     out: dict[str, Any] = {"toast_id": str(uuid4()), "toast_family": family}
     for k, v in kwargs.items():
         if v is not None and v != "":
@@ -60,6 +59,7 @@ def _signals_sorted_desc(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
 ReplayBundleFn = Callable[..., dict[str, Any]]
 ReplayOpenKwFn = Callable[..., dict[str, Any]]
 
+LABS_BREEDING_VERSION = "0.4.15.0"
 LAB_BREEDING_GENERATION_INTERVAL = dt.timedelta(minutes=30)
 REPLACEMENT_COOLDOWN = dt.timedelta(minutes=5)
 MIN_SETTLED_FOR_ADOPTION_COMPARE = 4
@@ -67,8 +67,10 @@ MIN_SETTLED_FOR_SOFT_CULL = 5
 TRAIT_KEYS = ("aggressiveness", "risk_tolerance", "adaptivity", "exploration", "resilience")
 DEATH_CHAMBER_CAP = 10
 LINEAGE_HISTORY_CAP = 10
+BREEDER_V3_FIT_WEIGHT = 0.77
+BREEDER_V3_RECENT_WEIGHT = 0.23
 
-# LABS BREEDING v0.1 — radar chart + Optimizer/Breeder toggle (12 mood axes; derived from traits + sizing for UI only).
+# LABS BREEDING — radar chart + Optimizer/Breeder toggle (12 mood axes; derived from traits + sizing for UI only).
 MOOD_DIMENSIONS: tuple[tuple[str, str], ...] = (
     ("aggressive", "Aggressive"),
     ("greedy", "Greedy"),
@@ -458,11 +460,159 @@ def _blend_filters(p1: dict[str, Any], p2: dict[str, Any], rng: random.Random) -
     return o
 
 
-def _traits_from_two_parents(cfg: dict[str, Any], pa: str, pb: str, rng: random.Random) -> dict[str, float]:
+def _traits_from_two_parents(
+    cfg: dict[str, Any],
+    pa: str,
+    pb: str,
+    rng: random.Random,
+) -> tuple[dict[str, float], list[str]]:
     t1 = _read_traits(_lab_dict(cfg, pa))
     t2 = _read_traits(_lab_dict(cfg, pb))
     elite = {k: 0.5 * (t1[k] + t2[k]) for k in TRAIT_KEYS}
-    return _competitive_trait_breed(rng, t1, elite)
+    out = _competitive_trait_breed(rng, t1, elite)
+    mutated: list[str] = []
+    for k in TRAIT_KEYS:
+        base = 0.5 * (float(t1.get(k, 0.9)) + float(t2.get(k, 0.9)))
+        if abs(float(out.get(k, 0.9)) - base) >= 0.07:
+            mutated.append(k)
+    return out, mutated
+
+
+def _recent_perf_momentum(settled: list[dict[str, Any]]) -> float:
+    """Small recent-performance signal for breeder tournament scoring."""
+    if not settled:
+        return 0.0
+    tail = settled[-8:]
+    pnl_d = 0.0
+    for t in tail:
+        try:
+            pnl_d += float(t.get("pnl_cents") or 0.0) / 100.0
+        except (TypeError, ValueError):
+            continue
+    # Compact, bounded momentum to avoid dominating replay fitness.
+    return max(-1.0, min(1.0, pnl_d / 60.0))
+
+
+def _norm_by_range(v: float, lo: float, hi: float) -> float:
+    if hi <= lo:
+        return 0.5
+    return max(0.0, min(1.0, (v - lo) / (hi - lo)))
+
+
+def _selection_mode_for_rank(rank: int, rng: random.Random) -> tuple[int, str]:
+    """
+    Tournament mode:
+    - top rank: 70%
+    - second: 20%
+    - random top-3: 10%
+    """
+    r = rng.random()
+    if r < 0.70:
+        return 0, "elite_pick_70"
+    if r < 0.90:
+        return min(1, rank), "runner_up_20"
+    return rng.randint(0, min(2, rank)), "diversity_random_10"
+
+
+def _tournament_select_parent(
+    *,
+    candidates: list[str],
+    fitness_by_br: dict[str, float],
+    settled_by_br: dict[str, list[dict[str, Any]]],
+    rng: random.Random,
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """
+    Parent selection:
+    rank candidates by weighted replay fitness + recent momentum, then select by 70/20/10 rule.
+    Returns selected branch, explainable selection reason, and top-3 ranked entries.
+    """
+    ranked_raw: list[dict[str, Any]] = []
+    for br in candidates:
+        fit = float(fitness_by_br.get(br, 0.0))
+        mom = _recent_perf_momentum(settled_by_br.get(br) or [])
+        ranked_raw.append({"branch": br, "fitness": fit, "momentum": mom})
+    fit_lo = min((x["fitness"] for x in ranked_raw), default=0.0)
+    fit_hi = max((x["fitness"] for x in ranked_raw), default=1.0)
+    mom_lo = min((x["momentum"] for x in ranked_raw), default=-1.0)
+    mom_hi = max((x["momentum"] for x in ranked_raw), default=1.0)
+    for row in ranked_raw:
+        fit_n = _norm_by_range(float(row["fitness"]), fit_lo, fit_hi)
+        mom_n = _norm_by_range(float(row["momentum"]), mom_lo, mom_hi)
+        row["score"] = BREEDER_V3_FIT_WEIGHT * fit_n + BREEDER_V3_RECENT_WEIGHT * mom_n
+    ranked = sorted(ranked_raw, key=lambda x: float(x["score"]), reverse=True)[:3]
+    if not ranked:
+        # Defensive fallback; caller ensures candidates is non-empty.
+        b = candidates[0]
+        return b, "fallback single candidate", [{"branch": b, "fitness": 0.0, "momentum": 0.0, "score": 0.0}]
+    idx, mode = _selection_mode_for_rank(len(ranked) - 1, rng)
+    idx = max(0, min(len(ranked) - 1, idx))
+    picked = ranked[idx]
+    reason = f"{mode}: top-3 tournament by replay fitness + recent momentum"
+    return str(picked["branch"]), reason, ranked
+
+
+def _trait_complementarity_score(cfg: dict[str, Any], pa: str, pb: str) -> float:
+    t1 = _read_traits(_lab_dict(cfg, pa))
+    t2 = _read_traits(_lab_dict(cfg, pb))
+    vals: list[float] = []
+    for k in TRAIT_KEYS:
+        diff = abs(float(t1.get(k, 0.9)) - float(t2.get(k, 0.9)))
+        # Peak complementarity around moderate differences (not identical, not chaotic opposite).
+        score = 1.0 - abs(diff - 0.35) / 0.35
+        vals.append(max(0.0, min(1.0, score)))
+    if not vals:
+        return 50.0
+    return round(100.0 * (sum(vals) / len(vals)), 1)
+
+
+def _has_repeated_similar_culls(oc: dict[str, Any]) -> bool:
+    dc = [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)]
+    if len(dc) < 3:
+        return False
+    reasons = [str(x.get("reason") or "").strip().lower() for x in dc[:5] if str(x.get("reason") or "").strip()]
+    if len(reasons) < 3:
+        return False
+    first = reasons[0]
+    return sum(1 for r in reasons if r == first) >= 3
+
+
+def _trait_badges(traits: dict[str, float], n: int = 2) -> list[str]:
+    human = {
+        "aggressiveness": "Aggressive",
+        "risk_tolerance": "RiskTolerant",
+        "adaptivity": "Adaptive",
+        "exploration": "Exploratory",
+        "resilience": "Resilient",
+    }
+    ranked = sorted(((float(traits.get(k, 0.0)), k) for k in TRAIT_KEYS), key=lambda x: -x[0])
+    return [human.get(k, k) for _, k in ranked[: max(1, n)]]
+
+
+def _breeder_reason_text(
+    *,
+    parent_a: str,
+    parent_b: str,
+    select_reason_a: str,
+    select_reason_b: str,
+    synergy_score: float,
+    repeated_culls: bool,
+    fitness_by_br: dict[str, float],
+) -> tuple[str, str]:
+    fa = float(fitness_by_br.get(parent_a, 0.0))
+    fb = float(fitness_by_br.get(parent_b, 0.0))
+    if repeated_culls:
+        short = "diversity boost after repeated similar culls"
+    elif synergy_score >= 72.0:
+        short = "highest fitness synergy + complementary aggression trait"
+    elif fa > 0 and fb > 0:
+        short = "strong recent lineage momentum"
+    else:
+        short = "balanced replay fitness with diversity guardrails"
+    full = (
+        f"{short} (A={parent_a} fit={fa:.3f}, B={parent_b} fit={fb:.3f}, "
+        f"synergy={synergy_score:.1f}/100; selectA={select_reason_a}; selectB={select_reason_b})"
+    )
+    return short, full
 
 
 def _breed_child(
@@ -473,6 +623,12 @@ def _breed_child(
     cfg: dict[str, Any],
     rng: random.Random,
     competitive_traits: dict[str, float] | None = None,
+    mutated_traits: list[str] | None = None,
+    breeder_reason_short: str = "",
+    breeder_reason_full: str = "",
+    synergy_score: float = 0.0,
+    parent_ids: list[str] | None = None,
+    parent_fitness: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     p1 = _lab_dict(cfg, parent_a)
     p2 = _lab_dict(cfg, parent_b)
@@ -503,17 +659,35 @@ def _breed_child(
         if p1.get("auto_reset_paper_on_tick_failure") != p2.get("auto_reset_paper_on_tick_failure")
         else p1.get("auto_reset_paper_on_tick_failure", False)
     )
-    traits = competitive_traits if competitive_traits is not None else _traits_from_two_parents(cfg, parent_a, parent_b, rng)
+    if competitive_traits is not None:
+        traits = competitive_traits
+    else:
+        traits, auto_mut = _traits_from_two_parents(cfg, parent_a, parent_b, rng)
+        if not mutated_traits:
+            mutated_traits = auto_mut
     _apply_competitive_traits(child, traits)
+    inherited_rules_count = len(child.get("rules") or []) if isinstance(child.get("rules"), list) else 0
     child["_labs_breeding_origin"] = {
         "victim": victim_branch,
         "parents": [parent_a, parent_b],
+        "parent_ids": list(parent_ids or [parent_a, parent_b]),
+        "parent_fitness": dict(parent_fitness or {}),
+        "inherited_rules_count": int(inherited_rules_count),
+        "mutated_traits": list(mutated_traits or []),
+        "breeder_reason": breeder_reason_full or breeder_reason_short,
+        "breeder_reason_short": breeder_reason_short,
+        "synergy_score": float(synergy_score),
+        "fitness_delta_vs_parents": None,  # computed after replay fitness is known
         "gen": rng.randint(1, 999_999),
     }
     return child
 
 
 def append_breeding_log(oc: dict[str, Any], entry: dict[str, Any], cap: int = 64) -> None:
+    seq = int(oc.get("labs_breeding_event_seq") or 0) + 1
+    oc["labs_breeding_event_seq"] = seq
+    if "seq" not in entry:
+        entry["seq"] = seq
     log = oc.get("labs_breeding_log")
     hist = list(log) if isinstance(log, list) else []
     hist.insert(0, entry)
@@ -521,15 +695,163 @@ def append_breeding_log(oc: dict[str, Any], entry: dict[str, Any], cap: int = 64
 
 
 def _append_lineage_history(oc: dict[str, Any], row: dict[str, Any]) -> None:
+    seq = int(oc.get("labs_breeding_event_seq") or 0) + 1
+    oc["labs_breeding_event_seq"] = seq
+    if "seq" not in row:
+        row["seq"] = seq
     h = [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)]
     h.insert(0, row)
     oc["labs_breeding_lineage_history"] = h[:LINEAGE_HISTORY_CAP]
 
 
 def _death_chamber_append(oc: dict[str, Any], row: dict[str, Any]) -> None:
+    seq = int(oc.get("labs_breeding_event_seq") or 0) + 1
+    oc["labs_breeding_event_seq"] = seq
+    if "seq" not in row:
+        row["seq"] = seq
     dc = [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)]
     dc.insert(0, row)
     oc["labs_breeding_death_chamber"] = dc[:DEATH_CHAMBER_CAP]
+
+
+def build_labs_breeding_tree_snapshot(oc: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """
+    Unified-version tree payload for the dashboard.
+    Returns normalized family nodes + edges and recent event summary so the UI can render
+    a stable growth view without guessing from loosely-typed log rows.
+    """
+    children = [x for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)]
+    lineage = [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)]
+    culls = [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)]
+    logs = [x for x in (oc.get("labs_breeding_log") or []) if isinstance(x, dict)]
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+
+    parent_meta: dict[str, dict[str, Any]] = {}
+    for c in children:
+        origin = c.get("origin") if isinstance(c.get("origin"), dict) else {}
+        if not origin and isinstance(c.get("lab"), dict) and isinstance(c["lab"].get("_labs_breeding_origin"), dict):
+            origin = c["lab"]["_labs_breeding_origin"]
+        pids = origin.get("parent_ids") if isinstance(origin.get("parent_ids"), list) else []
+        for p in pids:
+            ps = str(p).strip().lower()
+            if ps in BRANCH_BREEDERS and ps not in parent_meta:
+                parent_meta[ps] = {
+                    "selection_reason": str(origin.get("breeder_reason_short") or origin.get("breeder_reason") or ""),
+                    "selection_reason_full": str(origin.get("breeder_reason") or ""),
+                    "fitness": float((origin.get("parent_fitness") or {}).get(ps, 0.0))
+                    if isinstance(origin.get("parent_fitness"), dict)
+                    else 0.0,
+                }
+
+    # Parent hubs (visible labs) and child slot hubs.
+    for p in BRANCH_BREEDERS:
+        lab = _lab_dict(cfg, p)
+        pf = parent_meta.get(p, {})
+        nodes.append(
+            {
+                "id": p,
+                "kind": "parent",
+                "label": p.replace("_", " ").title(),
+                "branch": p,
+                "fitness": round(float(pf.get("fitness", 0.0)), 4),
+                "selection_reason": str(pf.get("selection_reason") or ""),
+                "selection_reason_full": str(pf.get("selection_reason_full") or ""),
+                "engine_running": bool(lab.get("engine_running")),
+            }
+        )
+    nodes.append({"id": BRANCH_LAB_A, "kind": "staging", "label": "Lab A (adopt)", "branch": BRANCH_LAB_A})
+    for slot in BRANCH_CHILD_LABS:
+        nodes.append({"id": slot, "kind": "slot", "label": slot.replace("_", " ").title(), "branch": slot})
+
+    for c in children:
+        cid = str(c.get("id") or "").strip()
+        if not cid:
+            continue
+        nid = f"child:{cid}"
+        parent = str(c.get("parent") or "").strip().lower()
+        slot = str(c.get("engine_branch") or "").strip().lower()
+        fit = float(c.get("replay_fitness") or 0.0)
+        origin = c.get("origin") if isinstance(c.get("origin"), dict) else {}
+        if not origin and isinstance(c.get("lab"), dict) and isinstance(c["lab"].get("_labs_breeding_origin"), dict):
+            origin = c["lab"]["_labs_breeding_origin"]
+        parent_ids = origin.get("parent_ids") if isinstance(origin.get("parent_ids"), list) else []
+        parent_labels = [str(x).replace("_", " ").title() for x in parent_ids if str(x).strip()]
+        inherited_summary = origin.get("inherited_traits_summary")
+        if not isinstance(inherited_summary, list):
+            traits = c.get("traits") if isinstance(c.get("traits"), dict) else {}
+            inherited_summary = _trait_badges(traits, 2)
+        fit_delta = origin.get("fitness_delta_vs_parents")
+        try:
+            fit_delta_f = float(fit_delta) if fit_delta is not None else 0.0
+        except (TypeError, ValueError):
+            fit_delta_f = 0.0
+        nodes.append(
+            {
+                "id": nid,
+                "kind": "child",
+                "label": f"{cid[:8]}…",
+                "child_id": cid,
+                "parent": parent,
+                "slot": slot,
+                "born_at": str(c.get("born_at") or ""),
+                "fitness": round(fit, 4),
+                "fitness_delta": round(fit_delta_f, 4),
+                "breeder_reason_short": str(origin.get("breeder_reason_short") or origin.get("breeder_reason") or ""),
+                "breeder_reason_full": str(origin.get("breeder_reason") or ""),
+                "synergy_score": float(origin.get("synergy_score") or 0.0),
+                "inherited_traits_summary": inherited_summary[:4],
+                "parent_labels": parent_labels[:2],
+                "parent_ids": parent_ids[:2],
+                "mutated_traits": list(origin.get("mutated_traits") or [])[:6] if isinstance(origin.get("mutated_traits"), list) else [],
+                "inherited_rules_count": int(origin.get("inherited_rules_count") or 0),
+                "traits": c.get("traits") if isinstance(c.get("traits"), dict) else {},
+            }
+        )
+        if parent in BRANCH_BREEDERS:
+            edges.append({"from": parent, "to": nid, "kind": "birth"})
+        for pid in parent_ids[:2]:
+            ps = str(pid).strip().lower()
+            if ps in BRANCH_BREEDERS and ps != parent:
+                edges.append({"from": ps, "to": nid, "kind": "birth"})
+        if slot in BRANCH_CHILD_LABS:
+            edges.append({"from": nid, "to": slot, "kind": "assignment"})
+
+    # Adoption edges (child -> Lab A) from lineage / logs.
+    for row in lineage[:80]:
+        kind = str(row.get("kind") or "").lower()
+        if "adopt" not in kind:
+            continue
+        cid = str(row.get("child_id") or "").strip()
+        if not cid:
+            continue
+        edges.append(
+            {
+                "from": f"child:{cid}",
+                "to": BRANCH_LAB_A,
+                "kind": "adoption",
+                "at": str(row.get("at") or ""),
+                "seq": int(row.get("seq") or 0),
+            }
+        )
+
+    return {
+        "version": LABS_BREEDING_VERSION,
+        "generated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "generation_index": int(oc.get("labs_breeding_generation_index") or 0),
+        "event_seq": int(oc.get("labs_breeding_event_seq") or 0),
+        "summary": {
+            "children_in_pool": len(children),
+            "death_chamber_n": len(culls),
+            "lineage_n": len(lineage),
+            "log_n": len(logs),
+            "last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),
+            "replace_cooldown_until": str(oc.get("labs_breeding_replace_cooldown_until") or ""),
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "recent_events": logs[:24],
+    }
 
 
 def _migrate_legacy_lineages(oc: dict[str, Any], *, end_iso: str) -> None:
@@ -668,76 +990,74 @@ async def _breed_fallback_into_branch(
         return {"kind": log_kind, "victim": victim, "via": "breed_skip"}
     include_fees_b = include_fees
 
+    candidates = _breeder_parent_candidates(victim, pending_dead)
+    if len(candidates) < 2:
+        candidates = [b for b in BRANCH_BREEDERS if b != victim] or list(BRANCH_BREEDERS)
+    settled_by_br: dict[str, list[dict[str, Any]]] = {}
+    fitness_by_br: dict[str, float] = {}
+    for br in candidates:
+        tr = trades_by_branch.get(br) or []
+        st = [t for t in tr if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        settled_by_br[br] = st
+        sg = signals_by_branch.get(br) or []
+        lab_o = _lab_dict(cfg, br)
+        _, rules = _rules_for_lab(cfg, lab_o)
+        fitness_by_br[br] = _fitness_for_branch(
+            settled=st,
+            rules=rules,
+            signals=sg,
+            include_fees=include_fees_b,
+            lab_overlay=lab_o,
+            full_cfg=cfg,
+            branch=br,
+            replay_bundle=replay_bundle,
+            open_kw=open_kw,
+            at_iso=end_iso,
+            trades=tr,
+            max_rows=max_rows,
+        )
+
+    pa, pa_sel_reason, _ = _tournament_select_parent(
+        candidates=candidates,
+        fitness_by_br=fitness_by_br,
+        settled_by_br=settled_by_br,
+        rng=rng,
+    )
+    pb_candidates = [b for b in candidates if b != pa] or [pa]
+    pb, pb_sel_reason, _ = _tournament_select_parent(
+        candidates=pb_candidates,
+        fitness_by_br=fitness_by_br,
+        settled_by_br=settled_by_br,
+        rng=rng,
+    )
+    traits, mutated_traits = _traits_from_two_parents(cfg, pa, pb, rng)
+    synergy_score = _trait_complementarity_score(cfg, pa, pb)
+    reason_short, reason_full = _breeder_reason_text(
+        parent_a=pa,
+        parent_b=pb,
+        select_reason_a=pa_sel_reason,
+        select_reason_b=pb_sel_reason,
+        synergy_score=synergy_score,
+        repeated_culls=_has_repeated_similar_culls(oc),
+        fitness_by_br=fitness_by_br,
+    )
+    child = _breed_child(
+        victim_branch=victim,
+        parent_a=pa,
+        parent_b=pb,
+        cfg=cfg,
+        rng=rng,
+        competitive_traits=traits,
+        mutated_traits=mutated_traits,
+        breeder_reason_short=reason_short,
+        breeder_reason_full=reason_full,
+        synergy_score=synergy_score,
+        parent_ids=[pa, pb],
+        parent_fitness={pa: fitness_by_br.get(pa, 0.0), pb: fitness_by_br.get(pb, 0.0)},
+    )
     if victim == BRANCH_LAB_A:
-        breeders = _breeder_parent_candidates(victim, pending_dead) or list(BRANCH_BREEDERS)
-        scores: list[tuple[float, str]] = []
-        for br in breeders:
-            tr = trades_by_branch.get(br) or []
-            st = [t for t in tr if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-            sg = signals_by_branch.get(br) or []
-            lab_o = _lab_dict(cfg, br)
-            _, rules = _rules_for_lab(cfg, lab_o)
-            sc = _fitness_for_branch(
-                settled=st,
-                rules=rules,
-                signals=sg,
-                include_fees=include_fees_b,
-                lab_overlay=lab_o,
-                full_cfg=cfg,
-                branch=br,
-                replay_bundle=replay_bundle,
-                open_kw=open_kw,
-                at_iso=end_iso,
-                trades=tr,
-                max_rows=max_rows,
-            )
-            scores.append((sc, br))
-        scores.sort(key=lambda x: -x[0])
-        if len(scores) >= 2:
-            pa, pb = scores[0][1], scores[1][1]
-        elif len(scores) == 1:
-            pa = pb = scores[0][1]
-        else:
-            pa, pb = BRANCH_LAB_B, BRANCH_LAB_C
-        traits = _traits_from_two_parents(cfg, pa, pb, rng)
-        child = _breed_child(victim_branch=victim, parent_a=pa, parent_b=pb, cfg=cfg, rng=rng, competitive_traits=traits)
         cfg["lab_a"] = expand_partial_lab_branch("lab_a", dict(child))
     else:
-        candidates = _breeder_parent_candidates(victim, pending_dead)
-        if len(candidates) < 2:
-            candidates = [b for b in BRANCH_BREEDERS if b != victim]
-        scores = []
-        for br in candidates:
-            tr = trades_by_branch.get(br) or []
-            st = [t for t in tr if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-            sg = signals_by_branch.get(br) or []
-            lab_o = _lab_dict(cfg, br)
-            _, rules = _rules_for_lab(cfg, lab_o)
-            sc = _fitness_for_branch(
-                settled=st,
-                rules=rules,
-                signals=sg,
-                include_fees=include_fees_b,
-                lab_overlay=lab_o,
-                full_cfg=cfg,
-                branch=br,
-                replay_bundle=replay_bundle,
-                open_kw=open_kw,
-                at_iso=end_iso,
-                trades=tr,
-                max_rows=max_rows,
-            )
-            scores.append((sc, br))
-        scores.sort(key=lambda x: -x[0])
-        if len(scores) >= 2:
-            pa, pb = scores[0][1], scores[1][1]
-        elif len(scores) == 1:
-            pa = pb = scores[0][1]
-        else:
-            others = [b for b in BRANCH_BREEDERS if b != victim]
-            pa, pb = others[0], others[-1]
-        traits = _traits_from_two_parents(cfg, pa, pb, rng)
-        child = _breed_child(victim_branch=victim, parent_a=pa, parent_b=pb, cfg=cfg, rng=rng, competitive_traits=traits)
         cfg[lk] = expand_partial_lab_branch(lk, dict(child))
 
     try:
@@ -749,6 +1069,10 @@ async def _breed_fallback_into_branch(
         "at": end_iso,
         "victim": victim,
         "via": "breed_crossover",
+        "parents": [pa, pb],
+        "breeder_reason": reason_short,
+        "breeder_reason_full": reason_full,
+        "synergy_score": synergy_score,
         **_toast_fields(family="sad", victim=victim, reason=log_kind, via="breed"),
     }
     append_breeding_log(oc, entry)
@@ -995,7 +1319,7 @@ async def run_lab_breeding_ga_cycle(
     replay_bundle: ReplayBundleFn,
     open_kw: ReplayOpenKwFn,
 ) -> list[dict[str, Any]]:
-    # LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
+    # LABS BREEDING — smarter tournament parenting + explainable lineage metadata.
     """30-minute tick: breeders bind offspring to ``lab_child_*`` engines; pool cap evicts weakest; Lab A may adopt."""
     _ = start_iso
     out_log: list[dict[str, Any]] = []
@@ -1098,15 +1422,43 @@ async def run_lab_breeding_ga_cycle(
         if not slot:
             logger.warning("LABS BREEDING: no free child slot for parent=%s", parent)
             continue
-        mate = _pick_mate(parent, fitness_by_br)
-        traits = _traits_from_two_parents(cfg, parent, mate, rng)
+        candidates = [b for b in BRANCH_BREEDERS if b != parent]
+        pa, pa_sel_reason, _ = _tournament_select_parent(
+            candidates=[parent, *candidates],
+            fitness_by_br=fitness_by_br,
+            settled_by_br=settled_by_br,
+            rng=rng,
+        )
+        pb, pb_sel_reason, _ = _tournament_select_parent(
+            candidates=[b for b in BRANCH_BREEDERS if b != pa] or [pa],
+            fitness_by_br=fitness_by_br,
+            settled_by_br=settled_by_br,
+            rng=rng,
+        )
+        traits, mutated_traits = _traits_from_two_parents(cfg, pa, pb, rng)
+        synergy_score = _trait_complementarity_score(cfg, pa, pb)
+        reason_short, reason_full = _breeder_reason_text(
+            parent_a=pa,
+            parent_b=pb,
+            select_reason_a=pa_sel_reason,
+            select_reason_b=pb_sel_reason,
+            synergy_score=synergy_score,
+            repeated_culls=_has_repeated_similar_culls(oc),
+            fitness_by_br=fitness_by_br,
+        )
         baby_lab = _breed_child(
             victim_branch=parent,
-            parent_a=parent,
-            parent_b=mate,
+            parent_a=pa,
+            parent_b=pb,
             cfg=cfg,
             rng=rng,
             competitive_traits=traits,
+            mutated_traits=mutated_traits,
+            breeder_reason_short=reason_short,
+            breeder_reason_full=reason_full,
+            synergy_score=synergy_score,
+            parent_ids=[pa, pb],
+            parent_fitness={pa: fitness_by_br.get(pa, 0.0), pb: fitness_by_br.get(pb, 0.0)},
         )
         tr_p = trades_by_branch.get(parent) or []
         sg_p = signals_by_branch.get(parent) or []
@@ -1122,6 +1474,14 @@ async def run_lab_breeding_ga_cycle(
             at_iso=end_iso,
             max_rows=max_rows,
         )
+        origin = baby_lab.get("_labs_breeding_origin") if isinstance(baby_lab.get("_labs_breeding_origin"), dict) else {}
+        parent_fit_a = float(fitness_by_br.get(pa, 0.0))
+        parent_fit_b = float(fitness_by_br.get(pb, 0.0))
+        avg_parent_fit = 0.5 * (parent_fit_a + parent_fit_b)
+        fit_delta = float(baby_fit) - avg_parent_fit
+        origin["fitness_delta_vs_parents"] = round(fit_delta, 4)
+        origin["inherited_traits_summary"] = _trait_badges(traits, 3)
+        baby_lab["_labs_breeding_origin"] = origin
         merged_lab = {**baby_lab, "engine_running": True}
         cfg[slot] = expand_partial_lab_branch(slot, merged_lab)
         try:
@@ -1134,10 +1494,19 @@ async def run_lab_breeding_ga_cycle(
             {
                 "id": cid,
                 "parent": parent,
+                "parent_ids": [pa, pb],
+                "parent_labels": [pa.replace("_", " ").title(), pb.replace("_", " ").title()],
                 "born_at": end_iso,
                 "traits": baby_traits,
                 "replay_fitness": baby_fit,
+                "fitness_delta_vs_parents": round(fit_delta, 4),
+                "inherited_rules_count": int((origin.get("inherited_rules_count") or 0)),
+                "mutated_traits": list(origin.get("mutated_traits") or []),
+                "breeder_reason": reason_full,
+                "breeder_reason_short": reason_short,
+                "synergy_score": float(synergy_score),
                 "engine_branch": slot,
+                "origin": copy.deepcopy(origin),
                 "lab": copy.deepcopy(baby_lab),
             }
         )
@@ -1148,8 +1517,15 @@ async def run_lab_breeding_ga_cycle(
                 "kind": "child_born",
                 "at": end_iso,
                 "parent": parent,
+                "parent_ids": [pa, pb],
                 "child_id": cid,
                 "replay_fitness": baby_fit,
+                "fitness_delta_vs_parents": round(fit_delta, 4),
+                "inherited_rules_count": int((origin.get("inherited_rules_count") or 0)),
+                "mutated_traits": list(origin.get("mutated_traits") or []),
+                "breeder_reason": reason_short,
+                "breeder_reason_full": reason_full,
+                "synergy_score": float(synergy_score),
                 "engine_branch": slot,
                 "breeding_traits_phrase": _traits_birth_summary(baby_traits),
             },
@@ -1160,8 +1536,13 @@ async def run_lab_breeding_ga_cycle(
                 "at": end_iso,
                 "kind": "birth",
                 "parent": parent,
+                "parent_ids": [pa, pb],
                 "child_id": cid,
                 "replay_fitness": baby_fit,
+                "fitness_delta_vs_parents": round(fit_delta, 4),
+                "breeder_reason": reason_short,
+                "breeder_reason_full": reason_full,
+                "synergy_score": float(synergy_score),
                 "engine_branch": slot,
             },
         )
@@ -1248,6 +1629,7 @@ async def run_lab_breeding_ga_cycle(
             _record_replacement_cooldown(oc, end_iso)
 
     oc["labs_breeding_last_generation_iso"] = end_iso
+    oc["labs_breeding_generation_index"] = int(oc.get("labs_breeding_generation_index") or 0) + 1
     append_breeding_log(
         oc,
         {

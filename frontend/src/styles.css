@@ -418,6 +418,23 @@ button.primary.dash-panel-btn {
   flex-shrink: 0;
 }
 
+.dash-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dash-panel-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .dashboard-grid-panel__badge {
   font-size: 11px;
   font-weight: 600;
@@ -1244,7 +1261,8 @@ input[type="number"] {
   /* Vertical break between metrics stack and equity; column-gap already separates columns — avoid extra inset so Account lines up with Equity. */
   .dash-split-row__col--equity {
     border-left: 1px solid rgba(56, 68, 110, 0.95);
-    padding-left: 0;
+    /* Keep the divider, but preserve card inset so headings/tabs don't hug the border. */
+    padding-left: 14px;
     margin-left: 0;
   }
 }
@@ -1260,6 +1278,29 @@ input[type="number"] {
 
 .dash-split-panel__tabs {
   margin: 0 0 10px 0;
+}
+
+.dash-equity-controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 10px;
+  margin: 10px 0 10px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.dash-equity-controls-row .dash-equity-panel__tabs {
+  margin: 0;
+  flex-wrap: nowrap;
+  flex: 0 0 auto;
+}
+
+.dash-equity-controls-row .dash-equity-panel__tabs--scale {
+  margin-left: auto;
 }
 
 .dash-equity-panel__legend {
@@ -1292,6 +1333,15 @@ input[type="number"] {
   font-weight: 600;
   color: var(--text);
   line-height: 1.3;
+}
+
+.dash-equity-chart-fp {
+  margin: 2px 0 6px 0;
+  padding-left: 10px;
+  font-size: 10px;
+  line-height: 1.35;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .dash-equity-chart-block:nth-child(2) .dash-equity-branch-head {

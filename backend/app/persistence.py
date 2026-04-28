@@ -1208,9 +1208,26 @@ class Store:
                 ex = json.loads(str(raw or "{}"))
             except Exception:
                 ex = {}
-            total_fee_cents += int(ex.get("entry_fee_cents") or 0)
-            total_fee_cents += int(ex.get("swing_exit_fee_cents") or 0)
-            total_fee_cents += int(ex.get("settlement_exit_fee_cents") or 0)
+            # Count modeled fees across all paper close paths:
+            # - entry (open)
+            # - swing exit
+            # - settlement close
+            # - timeout close
+            # - patient stop-loss close
+            # plus legacy/generic ``exit_fee_cents`` if present.
+            fee_keys = (
+                "entry_fee_cents",
+                "swing_exit_fee_cents",
+                "settlement_exit_fee_cents",
+                "auto_timeout_exit_fee_cents",
+                "patient_stop_loss_exit_fee_cents",
+                "exit_fee_cents",
+            )
+            for fk in fee_keys:
+                try:
+                    total_fee_cents += int(ex.get(fk) or 0)
+                except (TypeError, ValueError):
+                    continue
         return {
             "total_pnl_cents": int(sr.get("total_pnl_cents") or 0),
             "total_fee_cents": max(0, int(total_fee_cents)),

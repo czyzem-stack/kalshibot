@@ -37,3 +37,9 @@ This document explains the **two independent “testing” paths** in Kalshibot 
 - **Scheduler / full vs breeding-only tick:** `backend/app/optimizer_claude.py` (`run_optimizer_once`, `_run_breeding_only_tick`)  
 - **Background task gate:** `backend/app/main.py` (`_optimizer_loop`)  
 - **API:** `GET /api/optimizer/status` (`breeding_enabled`, `breeding_last_run_at`, `breeding_last_summary`, `breeding_last_run_minutes_ago`); `PUT /api/optimizer/config` can set `breeding_enabled`.
+
+## v0.4.15.0 additions (Unified breeder + family tree upgrade)
+
+- **Parent selection is now tournament-based and explainable:** top-3 breeders are ranked by replay fitness + recent momentum, then selected with a 70%/20%/10% elite/diversity split.
+- **Every child carries a "why" story:** pairing emits `breeder_reason`, `breeder_reason_short`, `synergy_score`, `parent_ids`, `mutated_traits`, and `fitness_delta_vs_parents`.
+- **Tree snapshot is now lineage-rich:** `labs_breeding_tree_snapshot` includes parent fitness/reason and child-node summaries suitable for compact hierarchical rendering in the Family tab (who bred whom and why).

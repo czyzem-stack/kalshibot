@@ -672,7 +672,7 @@ function ChartDblClickExpand({
 
 const BREEDER_RADAR_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"];
 
-/** Labs Breeding v0.1 — twelve-axis personality radar (shared inline + expand overlay). */
+/** Labs Breeding — twelve-axis personality radar (shared inline + expand overlay). */
 function BreederPersonalityRadarChart({
   rows,
   series,
@@ -825,13 +825,13 @@ function BreederPersonalityRadarChart({
   );
 }
 
-type BreedingTreeSubTab = "lineage" | "pool" | "culls" | "log";
+type BreedingTreeSubTab = "family" | "lineage" | "pool" | "culls" | "log";
 
 function _breedingIsoSortKey(s: string): string {
   return String(s || "").trim();
 }
 
-/** Labs Breeding v0.1 — family-style timeline from ``GET /api/optimizer/status`` (lineage, pool, culls, log). */
+/** Labs Breeding — family-style timeline from ``GET /api/optimizer/status`` (lineage, pool, culls, log). */
 function BreedingFamilyTreePanel({
   status,
   loading,
@@ -841,7 +841,12 @@ function BreedingFamilyTreePanel({
   loading: boolean;
   error: string | null;
 }) {
-  const [sub, setSub] = useState<BreedingTreeSubTab>("lineage");
+  const [sub, setSub] = useState<BreedingTreeSubTab>("family");
+  const [selectedFamilyNodeId, setSelectedFamilyNodeId] = useState<string>("");
+  const tree = (status?.labs_breeding_tree_snapshot || {}) as AnyObj;
+  const treeNodes = Array.isArray(tree.nodes) ? (tree.nodes as AnyObj[]) : [];
+  const treeSummary = (tree.summary || {}) as AnyObj;
+  const treeRecent = Array.isArray(tree.recent_events) ? (tree.recent_events as AnyObj[]) : [];
 
   const lineage = useMemo(() => {
     const raw = Array.isArray(status?.labs_breeding_lineage_history) ? (status!.labs_breeding_lineage_history as AnyObj[]) : [];
@@ -849,29 +854,30 @@ function BreedingFamilyTreePanel({
       _breedingIsoSortKey(String(b.at || b.culled_at || "")).localeCompare(_breedingIsoSortKey(String(a.at || a.culled_at || ""))),
     );
   }, [status]);
-
-  const pool = useMemo(() => {
-    return Array.isArray(status?.labs_breeding_children) ? (status!.labs_breeding_children as AnyObj[]) : [];
-  }, [status]);
-
+  const pool = useMemo(() => (Array.isArray(status?.labs_breeding_children) ? (status!.labs_breeding_children as AnyObj[]) : []), [status]);
   const culls = useMemo(() => {
     const raw = Array.isArray(status?.labs_breeding_death_chamber) ? (status!.labs_breeding_death_chamber as AnyObj[]) : [];
     return [...raw].sort((a, b) =>
       _breedingIsoSortKey(String(b.culled_at || b.at || "")).localeCompare(_breedingIsoSortKey(String(a.culled_at || a.at || ""))),
     );
   }, [status]);
-
   const log = useMemo(() => {
     const raw = Array.isArray(status?.labs_breeding_log) ? (status!.labs_breeding_log as AnyObj[]) : [];
     return [...raw].sort((a, b) => _breedingIsoSortKey(String(b.at || "")).localeCompare(_breedingIsoSortKey(String(a.at || ""))));
   }, [status]);
 
+  const familyParents = useMemo(() => treeNodes.filter((n) => String(n.kind || "").toLowerCase() === "parent"), [treeNodes]);
+  const familyChildren = useMemo(() => treeNodes.filter((n) => String(n.kind || "").toLowerCase() === "child"), [treeNodes]);
+  const selectedFamilyChild = useMemo(() => {
+    const sid = String(selectedFamilyNodeId || "");
+    if (!sid) return familyChildren[0] || null;
+    return familyChildren.find((n) => String(n.id || "") === sid) || familyChildren[0] || null;
+  }, [selectedFamilyNodeId, familyChildren]);
+
   const nodeClassForKind = (kind: string) => {
     const k = String(kind || "").toLowerCase();
     if (k.includes("adopt")) return "dash-breeding-tree-node dash-breeding-tree-node--adoption";
-    if (k.includes("death") || k.includes("cull") || k.includes("preempt") || k.includes("replace")) {
-      return "dash-breeding-tree-node dash-breeding-tree-node--cull";
-    }
+    if (k.includes("death") || k.includes("cull") || k.includes("preempt") || k.includes("replace")) return "dash-breeding-tree-node dash-breeding-tree-node--cull";
     if (k.includes("birth") || k.includes("born")) return "dash-breeding-tree-node dash-breeding-tree-node--birth";
     return "dash-breeding-tree-node";
   };
@@ -879,143 +885,190 @@ function BreedingFamilyTreePanel({
   const renderInner = (h: number) => {
     if (error) {
       return (
-        <div
-          className="dash-optimizer-panel__chart-skeleton dash-optimizer-panel__chart-skeleton--error"
-          style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}
-        >
-          <p className="sub" style={{ margin: 0, color: "#f87171" }} role="alert">
-            {error}
-          </p>
+        <div className="dash-optimizer-panel__chart-skeleton dash-optimizer-panel__chart-skeleton--error" style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}>
+          <p className="sub" style={{ margin: 0, color: "#f87171" }} role="alert">{error}</p>
         </div>
       );
     }
     if (loading && !status) {
       return (
-        <div
-          className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading"
-          style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-          aria-label="Loading breeding tree"
-        />
+        <div className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading" style={{ minHeight: h, height: h, boxSizing: "border-box" as const }} role="status" aria-live="polite" aria-busy="true" aria-label="Loading breeding tree" />
       );
     }
     const maxH = Math.max(200, Math.min(h, 920));
     return (
-      <div
-        className="dash-breeding-tree-scroll"
-        style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}
-      >
-        {sub === "lineage" ? (
-          lineage.length ? (
-            lineage.map((row, i) => {
-              const kind = String(row.kind || row.type || "event");
-              const at = String(row.at || row.culled_at || "—");
-              const cid = row.child_id != null ? String(row.child_id) : row.id != null ? String(row.id) : "";
-              const shortId = cid.length > 10 ? `${cid.slice(0, 8)}…` : cid;
-              const title = `${kind}${row.slot ? ` · ${row.slot}` : ""}${shortId ? ` · ${shortId}` : ""}`;
-              const fit = row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · fitness ${Number(row.replay_fitness).toFixed(3)}` : "";
-              return (
-                <div key={`${at}-${i}-${kind}`}>
-                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                  <div className={nodeClassForKind(kind)}>
-                    <strong>{title}</strong>
-                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                      {at}
-                      {fit}
-                      {row.parent ? ` · parent ${row.parent}` : ""}
-                      {row.via ? ` · via ${row.via}` : ""}
-                    </div>
+      <div className="dash-breeding-tree-scroll" style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}>
+        {sub === "family" ? (
+          <div>
+            <div className="dash-breeding-tree-node" style={{ marginBottom: 10 }}>
+              <strong>Family tree · generation {Number(tree.generation_index ?? 0)}</strong>
+              <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                pool {Number(treeSummary.children_in_pool ?? pool.length)} · lineage {Number(treeSummary.lineage_n ?? lineage.length)} · culls {Number(treeSummary.death_chamber_n ?? culls.length)} · event seq {Number(tree.event_seq ?? 0)}
+              </div>
+            </div>
+            <div className="dash-breeding-tree-node dash-breeding-tree-node--birth" style={{ marginBottom: 8 }}>
+              <strong>Breeder parents</strong>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6, marginTop: 6 }}>
+                {familyParents.map((p) => (
+                  <div key={String(p.id || p.branch || p.label)} style={{ border: "1px solid rgba(82, 97, 148, 0.65)", borderRadius: 8, padding: "6px 8px", background: "rgba(9, 14, 34, 0.72)" }} title={String(p.selection_reason_full || p.selection_reason || "")}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{String(p.label || p.id || "—")}</div>
+                    <div className="sub" style={{ marginTop: 2, fontSize: 11 }}>fitness {Number(p.fitness ?? 0).toFixed(3)}</div>
                   </div>
+                ))}
+              </div>
+            </div>
+            {familyChildren.length ? (
+              <div style={{ position: "relative", margin: "2px 0 8px", paddingLeft: 8 }}>
+                <div aria-hidden style={{ position: "absolute", left: 5, top: 2, bottom: 2, width: 2, background: "linear-gradient(180deg, rgba(110,231,255,0.45), rgba(110,231,255,0.14))", borderRadius: 2 }} />
+                {familyChildren.map((n, i) => {
+                  const nid = String(n.id || "");
+                  const childId = String(n.child_id || "").trim();
+                  const shortId = childId ? `${childId.slice(0, 8)}…-${childId.slice(-2)}` : String(n.label || "child");
+                  const pLabels = Array.isArray(n.parent_labels) ? (n.parent_labels as AnyObj[]).map((x) => String(x)).filter(Boolean) : [];
+                  const pText = pLabels.length ? pLabels.join(" + ") : String(n.parent || "—");
+                  const fit = Number(n.fitness ?? 0);
+                  const delta = Number(n.fitness_delta ?? 0);
+                  const deltaArrow = delta >= 0 ? "▲" : "▼";
+                  const deltaTone = delta >= 0 ? "#5ef3a9" : "#fca5a5";
+                  const why = String(n.breeder_reason_short || n.breeder_reason_full || "lineage carry-forward");
+                  const traits = Array.isArray(n.inherited_traits_summary) ? (n.inherited_traits_summary as AnyObj[]).map((x) => String(x)).filter(Boolean).slice(0, 3) : [];
+                  const selected = String(selectedFamilyChild?.id || "") === nid;
+                  return (
+                    <div key={`${nid}-${i}`} style={{ position: "relative", marginBottom: 8 }}>
+                      <div aria-hidden style={{ position: "absolute", left: -3, top: 16, width: 10, height: 2, background: "rgba(110,231,255,0.5)", borderRadius: 2 }} />
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFamilyNodeId(nid)}
+                        onDoubleClick={() => setSelectedFamilyNodeId(nid)}
+                        className="dash-breeding-tree-node dash-breeding-tree-node--birth"
+                        style={{ width: "100%", textAlign: "left", margin: 0, borderColor: selected ? "rgba(110,231,255,0.65)" : undefined, boxShadow: selected ? "0 0 0 1px rgba(110,231,255,0.35) inset" : "none" }}
+                        title={String(n.breeder_reason_full || why)}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                          <strong>{shortId}</strong>
+                          <span className="sub" style={{ fontSize: 11 }}>synergy {Number(n.synergy_score ?? 0).toFixed(1)}</span>
+                        </div>
+                        <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>← {pText}</div>
+                        <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>
+                          fitness {fit.toFixed(3)} <span style={{ color: deltaTone, fontWeight: 700 }}>{deltaArrow} {delta >= 0 ? "+" : ""}{delta.toFixed(3)}</span>
+                        </div>
+                        <div className="sub" style={{ marginTop: 3, fontSize: 12, color: "#c9d6f6" }}>{why}</div>
+                        {traits.length ? (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+                            {traits.map((tag, idx) => (
+                              <span key={`${tag}-${idx}`} style={{ fontSize: 10, border: "1px solid rgba(82, 97, 148, 0.7)", borderRadius: 999, padding: "1px 7px", background: "rgba(9, 14, 34, 0.7)", color: "#b9c9ee" }}>{tag}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            {selectedFamilyChild ? (
+              <div className="dash-breeding-tree-node" style={{ marginTop: 6 }}>
+                <strong>Breeding story</strong>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  {String(selectedFamilyChild.breeder_reason_full || selectedFamilyChild.breeder_reason_short || "No story provided")}
                 </div>
-              );
-            })
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>
-              No lineage rows yet. After the optimizer runs with breeding enabled, births, adoptions, and culls append here (newest first).
-            </p>
-          )
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  lineage path: {Array.isArray(selectedFamilyChild.parent_labels) && selectedFamilyChild.parent_labels.length
+                    ? `${selectedFamilyChild.parent_labels.join(" + ")} → ${String(selectedFamilyChild.child_id || selectedFamilyChild.label || "child")} → ${String(selectedFamilyChild.slot || "pool")}`
+                    : `${String(selectedFamilyChild.parent || "parent")} → ${String(selectedFamilyChild.child_id || selectedFamilyChild.label || "child")}`}
+                </div>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  inherited rules {Number(selectedFamilyChild.inherited_rules_count ?? 0)} · mutated traits {Array.isArray(selectedFamilyChild.mutated_traits) && selectedFamilyChild.mutated_traits.length ? selectedFamilyChild.mutated_traits.join(", ") : "none"}
+                </div>
+              </div>
+            ) : null}
+            {!familyChildren.length ? <p className="sub" style={{ margin: 0 }}>No active children in pool yet for this generation.</p> : null}
+            {treeRecent.length ? (
+              <div className="dash-breeding-tree-node" style={{ marginTop: 10 }}>
+                <strong>Recent growth events</strong>
+                <div className="sub" style={{ marginTop: 6, fontSize: 12 }}>
+                  {treeRecent.slice(0, 8).map((e) => `${String(e.kind || "event")}@${String(e.at || "—")}`).join(" · ")}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {sub === "lineage" ? (
+          lineage.length ? lineage.map((row, i) => {
+            const kind = String(row.kind || row.type || "event");
+            const at = String(row.at || row.culled_at || "—");
+            const cid = row.child_id != null ? String(row.child_id) : row.id != null ? String(row.id) : "";
+            const shortId = cid.length > 10 ? `${cid.slice(0, 8)}…` : cid;
+            const title = `${kind}${row.slot ? ` · ${row.slot}` : ""}${shortId ? ` · ${shortId}` : ""}`;
+            const fit = row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · fitness ${Number(row.replay_fitness).toFixed(3)}` : "";
+            return (
+              <div key={`${at}-${i}-${kind}`}>
+                {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                <div className={nodeClassForKind(kind)}>
+                  <strong>{title}</strong>
+                  <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>{at}{fit}{row.parent ? ` · parent ${row.parent}` : ""}{row.via ? ` · via ${row.via}` : ""}</div>
+                </div>
+              </div>
+            );
+          }) : <p className="sub" style={{ margin: 0 }}>No lineage rows yet. After the optimizer runs with breeding enabled, births, adoptions, and culls append here (newest first).</p>
         ) : null}
         {sub === "pool" ? (
-          pool.length ? (
-            pool.map((c, i) => (
-              <div key={String(c.id ?? i)}>
+          pool.length ? pool.map((c, i) => (
+            <div key={String(c.id ?? i)}>
+              {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+              <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
+                <strong>Child {c.id != null ? String(c.id).slice(0, 10) : "—"}</strong>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  parent <strong>{String(c.parent ?? "—")}</strong> · born {String(c.born_at ?? "—")}
+                  {c.replay_fitness != null && Number.isFinite(Number(c.replay_fitness)) ? ` · fitness ${Number(c.replay_fitness).toFixed(3)}` : ""}
+                  {c.engine_branch ? ` · slot ${String(c.engine_branch)}` : ""}{typeof c.rules_n === "number" ? ` · rules ${c.rules_n}` : ""}
+                </div>
+              </div>
+            </div>
+          )) : <p className="sub" style={{ margin: 0 }}>Pool is empty in this status snapshot (children appear after breeder ticks assign genomes).</p>
+        ) : null}
+        {sub === "culls" ? (
+          culls.length ? culls.map((row, i) => {
+            const at = String(row.culled_at || row.at || "—");
+            const reason = String(row.reason || row.kind || "—");
+            return (
+              <div key={`${at}-${i}-${reason}`}>
                 {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
-                  <strong>Child {c.id != null ? String(c.id).slice(0, 10) : "—"}</strong>
+                <div className="dash-breeding-tree-node dash-breeding-tree-node--cull">
+                  <strong>{reason}</strong>
                   <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                    parent <strong>{String(c.parent ?? "—")}</strong>
-                    {" · "}
-                    born {String(c.born_at ?? "—")}
-                    {c.replay_fitness != null && Number.isFinite(Number(c.replay_fitness)) ? ` · fitness ${Number(c.replay_fitness).toFixed(3)}` : ""}
-                    {c.engine_branch ? ` · slot ${String(c.engine_branch)}` : ""}
-                    {typeof c.rules_n === "number" ? ` · rules ${c.rules_n}` : ""}
+                    {at}{row.id != null ? ` · id ${String(row.id).slice(0, 10)}` : ""}{row.parent != null ? ` · parent ${row.parent}` : ""}
+                    {row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · last fitness ${Number(row.replay_fitness).toFixed(3)}` : ""}
                   </div>
                 </div>
               </div>
-            ))
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>
-              Pool is empty in this status snapshot (children appear after breeder ticks assign genomes).
-            </p>
-          )
-        ) : null}
-        {sub === "culls" ? (
-          culls.length ? (
-            culls.map((row, i) => {
-              const at = String(row.culled_at || row.at || "—");
-              const reason = String(row.reason || row.kind || "—");
-              return (
-                <div key={`${at}-${i}-${reason}`}>
-                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                  <div className="dash-breeding-tree-node dash-breeding-tree-node--cull">
-                    <strong>{reason}</strong>
-                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                      {at}
-                      {row.id != null ? ` · id ${String(row.id).slice(0, 10)}` : ""}
-                      {row.parent != null ? ` · parent ${row.parent}` : ""}
-                      {row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness))
-                        ? ` · last fitness ${Number(row.replay_fitness).toFixed(3)}`
-                        : ""}
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>No recent culls in the death-chamber window.</p>
-          )
+            );
+          }) : <p className="sub" style={{ margin: 0 }}>No recent culls in the death-chamber window.</p>
         ) : null}
         {sub === "log" ? (
-          log.length ? (
-            log.map((row, i) => {
-              const kind = String(row.kind || "—");
-              const at = String(row.at || "—");
-              return (
-                <div key={`${at}-${i}-${kind}`}>
-                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                  <div className={nodeClassForKind(kind)}>
-                    <strong>{kind}</strong>
-                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                      {at}
-                      {row.child_id != null ? ` · child ${String(row.child_id).slice(0, 10)}` : ""}
-                      {row.parent != null ? ` · parent ${row.parent}` : ""}
-                      {row.breeding_traits_phrase ? ` · ${String(row.breeding_traits_phrase)}` : ""}
-                    </div>
+          log.length ? log.map((row, i) => {
+            const kind = String(row.kind || "—");
+            const at = String(row.at || "—");
+            return (
+              <div key={`${at}-${i}-${kind}`}>
+                {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                <div className={nodeClassForKind(kind)}>
+                  <strong>{kind}</strong>
+                  <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                    {at}{row.child_id != null ? ` · child ${String(row.child_id).slice(0, 10)}` : ""}{row.parent != null ? ` · parent ${row.parent}` : ""}
+                    {row.breeding_traits_phrase ? ` · ${String(row.breeding_traits_phrase)}` : ""}
                   </div>
                 </div>
-              );
-            })
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>Breeding log is empty for this snapshot.</p>
-          )
+              </div>
+            );
+          }) : <p className="sub" style={{ margin: 0 }}>Breeding log is empty for this snapshot.</p>
         ) : null}
       </div>
     );
   };
 
   const tabs: Array<{ id: BreedingTreeSubTab; label: string }> = [
+    { id: "family", label: "Family" },
     { id: "lineage", label: "Lineage" },
     { id: "pool", label: "Children" },
     { id: "culls", label: "Cullings" },
@@ -1023,40 +1076,27 @@ function BreedingFamilyTreePanel({
   ];
 
   return (
-    <div
-      className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard dash-breeding-tree-panel-root"
-      role="region"
-      aria-label="Breeding family tree"
-    >
+    <div className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard dash-breeding-tree-panel-root" role="region" aria-label="Breeding family tree">
       <div className="chart-tabs dash-breeding-tree-tabs" role="tablist" aria-label="Breeding tree facets">
         {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={sub === t.id}
-            className={`chart-tab ${sub === t.id ? "chart-tab--active" : ""}`}
-            onClick={() => setSub(t.id)}
-          >
+          <button key={t.id} type="button" role="tab" aria-selected={sub === t.id} className={`chart-tab ${sub === t.id ? "chart-tab--active" : ""}`} onClick={() => setSub(t.id)}>
             {t.label}
           </button>
         ))}
       </div>
       <ChartDblClickExpand
         className="branch-brain-optimizer-radar__zoom"
-        title="Breeding lineage and adoptions"
+        title="Family tree — breeder story and lineage"
         defaultHeight={DASH_OPTIMIZER_INLINE_RADAR_H - DASH_OPTIMIZER_TREE_TABS_RESERVE_PX}
         expandedHeight={780}
         expandedPanelMaxWidth="min(1100px, 99vw)"
         {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
         compactOverlay
-        surfaceHint="Double-click to enlarge · same tree in overlay · Esc or backdrop closes."
-        hint="Double-click to enlarge. Hover a trait label or the fill for the same readout as the dashboard. Source: GET /api/optimizer/status."
+        surfaceHint="Double-click to enlarge · full lineage story in overlay · Esc/backdrop closes."
+        hint="Double-click to enlarge. Family tree explains who bred whom and why (tournament reason, synergy, inherited traits, fitness delta)."
         detail={
           <p className="sub" style={{ margin: 0 }}>
-            Tabs above slice the same payload: <strong>Lineage</strong> (append-only history), <strong>Children</strong> (pool trim
-            list), <strong>Cullings</strong> (death chamber), and <strong>Log</strong> (toast-oriented events). Order is newest-first
-            where timestamps exist.
+            In overlay: click a child to inspect its breeding story (reason, parent pairing, synergy score, inherited rules/traits, and fitness delta vs parents). Other tabs remain lineage/children/culls/log from the same status payload.
           </p>
         }
         render={({ h }) => renderInner(h)}
@@ -2976,8 +3016,7 @@ function labsBreedingLabLabel(branchRaw: unknown): string {
   return s ? s : "Lab";
 }
 
-// LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
-// LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+// LABS BREEDING — instant hard death + better toasts + stronger child traits.
 function labsBreedingToastFromLogRow(row: AnyObj): { tone: "green" | "yellow" | "red"; segments: { tier: "green" | "yellow" | "red"; text: string }[] } | null {
   const tid = String(row?.toast_id || "").trim();
   const family = String(row?.toast_family || "").trim();
@@ -3201,32 +3240,6 @@ function scaleEquityRowsPctFromWindowStart(rows: EquityChartRow[]): EquityChartR
 function applyEquityValueScale(rows: EquityChartRow[], scale: EquityValueScale): EquityChartRow[] {
   if (scale === "dollars") return rows;
   return scaleEquityRowsPctFromWindowStart(rows);
-}
-
-/** One shared $ domain for all lab small-multiples so per-chart “auto” does not make correlated MTM wiggles look like clones. */
-function unionDollarYDomainForLabs(labs: EquityChartRow[][]): [number, number] {
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const rows of labs) {
-    for (const r of rows) {
-      if (Number.isFinite(r.equity)) {
-        lo = Math.min(lo, r.equity);
-        hi = Math.max(hi, r.equity);
-      }
-      const m = r.mtm != null && Number.isFinite(Number(r.mtm)) ? Number(r.mtm) : r.equity;
-      if (Number.isFinite(m)) {
-        lo = Math.min(lo, m);
-        hi = Math.max(hi, m);
-      }
-    }
-  }
-  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [0, 1];
-  if (lo === hi) {
-    lo -= 0.5;
-    hi += 0.5;
-  }
-  const pad = (hi - lo) * 0.04;
-  return [lo - pad, hi + pad];
 }
 
 function mondayUtcKey(iso: string): string {
@@ -3460,11 +3473,27 @@ function EquityDualLineChart({
   const fmtY = (v: number) =>
     yFormat === "pct" ? `${Number(v).toFixed(2)}%` : `$${Number(v).toFixed(2)}`;
   const fmtTick = (v: number) => (yFormat === "pct" ? `${Number(v).toFixed(1)}%` : `$${Number(v).toFixed(0)}`);
+  const fmtXTick = (v: unknown) => {
+    const s = String(v ?? "").trim();
+    if (!s) return "";
+    if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
+    const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length >= 3) return `${parts[1]} ${parts[2]}`;
+    if (parts.length === 2) return parts[1];
+    return s.length > 14 ? `${s.slice(0, 14)}...` : s;
+  };
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+      <LineChart data={plotData} margin={{ left: 18, right: 12, top: 8, bottom: 20 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-        <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
+        <XAxis
+          dataKey="t"
+          stroke="#7f8ab5"
+          tick={{ fontSize: 11 }}
+          minTickGap={34}
+          interval="preserveStartEnd"
+          tickFormatter={fmtXTick}
+        />
         <YAxis
           stroke="#7f8ab5"
           tick={{ fontSize: 11 }}
@@ -3475,12 +3504,6 @@ function EquityDualLineChart({
           allowEscapeViewBox={{ x: true, y: true }}
           contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
           formatter={(value: number, name: string) => [fmtY(value), name]}
-        />
-        <Legend
-          verticalAlign="bottom"
-          height={28}
-          wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
-          formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
         />
         <Line
           type="monotone"
@@ -3761,7 +3784,7 @@ export default function App() {
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
-  /** LABS BREEDING v0.1 — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
+  /** LABS BREEDING — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
   const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder" | "tree">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
   const [breederStatusLoading, setBreederStatusLoading] = useState(false);
@@ -4111,7 +4134,7 @@ export default function App() {
   const TOAST_AUTOCLOSE_MAX_MS = 15_000;
   /** ``optimizer_suggested_action`` toasts: always 10s (separate from trade toasts' random 10–15s). */
   const OPTIMIZER_SUGGESTED_TOAST_MS = 10_000;
-  // LABS BREEDING v0.1 — special toasts for birth and death/cull
+  // LABS BREEDING — special toasts for birth and death/cull
   const LABS_BREEDING_TOAST_MS = 11_000;
 
   useEffect(() => {
@@ -4402,25 +4425,31 @@ export default function App() {
   useEffect(() => {
     if (optimizerDashboardView !== "breeder" && optimizerDashboardView !== "tree") return;
     let cancelled = false;
-    // Avoid skeleton flash when switching Breeder ↔ Tree (same API payload).
-    if (!breederStatusPayloadRef.current) setBreederStatusLoading(true);
-    setBreederStatusError(null);
-    void fetch("/api/optimizer/status", withApiAuth())
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json() as Promise<AnyObj>;
-      })
-      .then((j) => {
-        if (!cancelled) setBreederStatusPayload(j);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
-      })
-      .finally(() => {
-        if (!cancelled) setBreederStatusLoading(false);
-      });
+    const tick = () => {
+      // Avoid skeleton flash when switching Breeder ↔ Tree (same API payload).
+      if (!breederStatusPayloadRef.current) setBreederStatusLoading(true);
+      setBreederStatusError(null);
+      void fetch("/api/optimizer/status", withApiAuth())
+        .then(async (r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json() as Promise<AnyObj>;
+        })
+        .then((j) => {
+          if (!cancelled) setBreederStatusPayload(j);
+        })
+        .catch((e: unknown) => {
+          if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
+        })
+        .finally(() => {
+          if (!cancelled) setBreederStatusLoading(false);
+        });
+    };
+    tick();
+    // Keep Tree/Breeder live while tab is open (no stale repeated rows feeling).
+    const id = window.setInterval(tick, 15_000);
     return () => {
       cancelled = true;
+      window.clearInterval(id);
     };
   }, [optimizerDashboardView, breederRefetchNonce]);
 
@@ -4771,10 +4800,6 @@ export default function App() {
     () => applyEquityValueScale(chartDataLabDRaw, equityValueScale),
     [chartDataLabDRaw, equityValueScale],
   );
-  const labSharedDollarYDomain = useMemo((): [number, number] | undefined => {
-    if (equityValueScale !== "dollars") return undefined;
-    return unionDollarYDomainForLabs([chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
-  }, [equityValueScale, chartDataLabA, chartDataLabB, chartDataLabC, chartDataLabD]);
   /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the five small charts for per-branch % view. */
   const equityOverlayData = useMemo(
     () =>
@@ -5399,11 +5424,11 @@ export default function App() {
         <div className="dash-split-row__col dash-split-row__col--metrics dash-split-metrics-stack">
       <div className="dash-split-card">
       <section className="dash-section dash-section--split-card" aria-labelledby="dash-heading-branch-performance">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div className="dash-panel-head">
           <h2 id="dash-heading-branch-performance" className="dash-section__title" style={{ margin: 0 }}>
             Branch performance
           </h2>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div className="dash-panel-head__actions">
             <button
               type="button"
               className="primary dash-panel-btn"
@@ -5701,7 +5726,7 @@ export default function App() {
               type="button"
               className="dash-optimizer-breeding-summary"
               title={
-                "Labs Breeding v0.1 snapshot from GET /api/optimizer/status (refreshes about every 45s). " +
+                "Labs Breeding snapshot from GET /api/optimizer/status (refreshes about every 45s). " +
                 "Pool = labs_breeding_children (capped on server). Death chamber = recent culls. Click to open the Tree tab on this card."
               }
               onClick={() => {
@@ -5834,7 +5859,7 @@ export default function App() {
                 mutationDial: optimizerStatus.mutationDial,
               }}
             />
-          {/* LABS BREEDING v0.1 — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
+          {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
               <button
@@ -5873,7 +5898,7 @@ export default function App() {
         </div>
 
         <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div className="dash-panel-head">
             <h2
               id="dash-heading-equity-curves"
               className="dash-section__title dash-equity-panel__title"
@@ -5882,15 +5907,7 @@ export default function App() {
             >
               Equity curves
             </h2>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
-              <button
-                type="button"
-                className="primary dash-panel-btn"
-                title="Open combined comparison popup with branch toggles."
-                onClick={() => setEquityCompareOpen(true)}
-              >
-                Compare
-              </button>
+            <div className="dash-panel-head__actions">
               <button
                 type="button"
                 className="primary dash-panel-btn"
@@ -5971,68 +5988,77 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
-            {(
-              [
-                ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
-                ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
-                ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
-                ["mm", "M / M", "Last snapshot per UTC calendar month."],
-                ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
-              ] as const
-            ).map(([id, label, tip]) => (
-              <button
-                key={id}
-                type="button"
-                role="tab"
-                aria-selected={equityGranularity === id}
-                className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
-                title={tip}
-                onClick={() => setEquityGranularity(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div
-            className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs dash-equity-panel__tabs--scale"
-            role="tablist"
-            aria-label="Equity Y-axis scale (all branch charts)"
-            style={{ marginTop: 6 }}
-          >
-            {(
-              [
+          <div className="dash-equity-controls-row">
+            <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
+              {(
                 [
-                  "dollars",
-                  "$",
-                  "Absolute dollars from SQLite snapshots. Labs A–D share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
-                ],
-                [
-                  "pct_change_window",
-                  "%Δ",
-                  "% change from the first plotted point in this chart’s window — makes B/C/D divergence visible when bankrolls differ but moves are correlated.",
-                ],
-              ] as const
-            ).map(([id, label, tip]) => (
+                  ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
+                  ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
+                  ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
+                  ["mm", "M / M", "Last snapshot per UTC calendar month."],
+                  ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
+                ] as const
+              ).map(([id, label, tip]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={equityGranularity === id}
+                  className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
+                  title={tip}
+                  onClick={() => setEquityGranularity(id)}
+                >
+                  {label}
+                </button>
+              ))}
               <button
-                key={id}
                 type="button"
-                role="tab"
-                aria-selected={equityValueScale === id}
-                className={`chart-tab ${equityValueScale === id ? "chart-tab--active" : ""}`}
-                title={tip}
-                onClick={() => setEquityValueScale(id)}
+                className="chart-tab"
+                title="Open combined comparison popup with branch toggles."
+                onClick={() => setEquityCompareOpen(true)}
               >
-                {label}
+                Compare
               </button>
-            ))}
+            </div>
+            <div
+              className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs dash-equity-panel__tabs--scale"
+              role="tablist"
+              aria-label="Equity Y-axis scale (all branch charts)"
+            >
+              {(
+                [
+                  [
+                    "dollars",
+                    "$",
+                    "Absolute dollars from SQLite snapshots. Labs A–D share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
+                  ],
+                  [
+                    "pct_change_window",
+                    "%Δ",
+                    "% change from the first plotted point in this chart’s window — makes B/C/D divergence visible when bankrolls differ but moves are correlated.",
+                  ],
+                ] as const
+              ).map(([id, label, tip]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={equityValueScale === id}
+                  className={`chart-tab ${equityValueScale === id ? "chart-tab--active" : ""}`}
+                  title={tip}
+                  onClick={() => setEquityValueScale(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="dash-equity-charts">
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
                 {activityBranchTabLabel("live")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
+              <p className="sub dash-equity-chart-fp" title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
                 {snaps.length} pts · book {fmtMoney(Number(metrics.current_equity_dollars ?? 0))} · {Number(metrics.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6059,7 +6085,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_a")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
                 {equitySnapsLabA.length} pts · book {fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))} · {Number(metricsLabA.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6076,7 +6102,6 @@ export default function App() {
                         equityStroke="#a78bfa"
                         mtmStroke="#c4b5fd"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6087,7 +6112,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_b")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_b.">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_b.">
                 {equitySnapsLabB.length} pts · book {fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))} · {Number(metricsLabB.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6104,7 +6129,6 @@ export default function App() {
                         equityStroke="#f59e0b"
                         mtmStroke="#fcd34d"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6115,7 +6139,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_c")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_c.">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_c.">
                 {equitySnapsLabC.length} pts · book {fmtMoney(Number(metricsLabC.current_equity_dollars ?? 0))} · {Number(metricsLabC.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6132,7 +6156,6 @@ export default function App() {
                         equityStroke="#f472b6"
                         mtmStroke="#fbcfe8"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -6143,7 +6166,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_d")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_d")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_d.">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_d.">
                 {equitySnapsLabD.length} pts · book {fmtMoney(Number(metricsLabD.current_equity_dollars ?? 0))} · {Number(metricsLabD.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6160,7 +6183,6 @@ export default function App() {
                         equityStroke="#fca5a5"
                         mtmStroke="#fecaca"
                         yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
-                        yDomain={labSharedDollarYDomain}
                       />
                     </div>
                   )}
@@ -7129,7 +7151,7 @@ export default function App() {
                 render={({ h }) => (
                   <div style={{ width: "100%", height: h }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={equityOverlayData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+                      <LineChart data={equityOverlayData} margin={{ left: 18, right: 12, top: 8, bottom: 32 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
                         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
                         <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
