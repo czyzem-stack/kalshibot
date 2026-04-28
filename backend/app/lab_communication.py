@@ -1038,6 +1038,39 @@ def think_tank_on_sim_open(
     )
 
 
+def seed_think_tank_breeder_intros_at_startup(engines: dict[str, Any]) -> None:
+    """
+    Publish ``council_intro`` once per breeder if the bus has no line from that lab yet.
+
+    The dual loop ticks labs in order with stagger; **lab_e** might not run for several seconds, so the UI
+    looked like B/C/D only. Seeding after :func:`init_runtime_engines` makes all four voices visible immediately.
+    """
+    bus = get_lab_communication_bus()
+    for br in BRANCH_BREEDERS:
+        if any(str(r.get("lab") or "") == br for r in bus._dq):
+            eng = engines.get(br)
+            if eng is not None:
+                setattr(eng, "_lab_think_tank_intro_done", True)
+            continue
+        eng = engines.get(br)
+        if eng is None:
+            continue
+        setattr(eng, "_lab_think_tank_intro_done", True)
+        vp = _voice_prefix(br)
+        intro = _cap_msg(
+            random.choice(
+                [
+                    f"{vp} hey team—I'm listening.",
+                    f"{vp} online—who wants first?",
+                    f"{vp} B+C+D+E ping me when ready.",
+                    f"{vp} council online—thread me.",
+                ]
+            )
+        )
+        _publish_tracked(eng, bus, br, intro, confidence=0.55, action="council_intro")
+        setattr(eng, "_lab_think_tank_next_pulse_mono", time.monotonic() + random.uniform(*_INTRO_NEXT_STRATEGIC_GAP_S))
+
+
 def finalize_think_tank_tick(
     engine: Any,
     branch: str,

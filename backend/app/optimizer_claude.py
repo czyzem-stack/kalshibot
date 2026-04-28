@@ -2590,10 +2590,11 @@ def _internal_mutate_rules_and_params(
         eff = min(1.75, eff * 2.0)
     if was_plr:
         oc["paper_loser_radical_next"] = False
-        logger.warning("Paper-loser strategy swap: one-shot radical exploration scale (forced).")
+        logger.info("Paper-loser strategy swap: one-shot radical exploration scale (forced).")
     elif rad0:
-        logger.warning(
-            "RADICAL EXPLORATION triggered — deep stuck state (red_streak=%d, low_acc_cycles=%d, acc=%.1f%%)",
+        # Normal recovery mode — not an operator error; avoid warning-level noise in default INFO logs.
+        logger.info(
+            "RADICAL EXPLORATION active — deep stuck state (red_streak=%d, low_acc_cycles=%d, acc=%.1f%%)",
             int(oc.get("optimizer_red_streak_cycles", 0) or 0),
             int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0),
             _safe_float(oc.get("acceptance_rate_pct", 0.0), 0.0),

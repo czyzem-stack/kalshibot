@@ -51,7 +51,7 @@ from .engine import (
 from .kalshi_client import KalshiClient, new_shared_http_client, prewarm_open_markets_for_config
 from .kalshi_ws import kalshi_ws_task_group_runner
 from .kalshi_portfolio import fetch_portfolio_snapshot
-from .lab_communication import get_lab_communication_bus
+from .lab_communication import get_lab_communication_bus, seed_think_tank_breeder_intros_at_startup
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import expand_partial_lab_branch
@@ -652,6 +652,12 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # PHASE 4: inject the process-shared Kalshi client into every TradingEngine.
     init_runtime_engines(state.require_kalshi())
     _log_phase("trading_engines")
+
+    # Breeding Council: all four breeder intros on the bus before the first staggered lab tick (lab_e can be late).
+    try:
+        seed_think_tank_breeder_intros_at_startup(state.ENGINES)
+    except Exception as e:
+        logger.warning("think_tank_intro_seed skipped: %s", e)
 
     # Single batched /markets pre-warm so paper branches do not each cold-miss the same series.
     try:
