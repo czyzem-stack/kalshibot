@@ -2,6 +2,18 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.010 - Lab E full-stack UI + optimizer radar - 2026-04-28
+
+- **Frontend:** Lab **E** wired through **branch performance**, **equity** (six small multiples + compare overlay), **Assets to watch**, **Account** holdings/engine tabs, **optimizer thinking radar** (seven traces), **hero marquee/snapshot**, **Lab pulse**, **ActivityHints** for D/E engines, **promote Lab A→Live** vs B/C/D/E, **Settings** (engines, patient stop, simulation labs bulk save/reset, optimizer Lab E toggles/style/floors), and **help playbook** copy. **`BranchMarketTickers`:** `lab_e` in hero order, norms, positions, compact segments. **`labHiveChat`:** Breeding Council header (“working together”); **`balanceHiveMessagesForTicker`** now round-robins **lab_e** with B/C/D (was omitting E).
+- **Backend:** Lab E metrics/equity/engine/dashboard/API/optimizer paths; **`lab_communication._voice_prefix`** returns **`E:`** for **`lab_e`** (was **`?:`**).
+- **Backend (`persistence.py`):** Breeding Council parents **B/C/D/E** never persist with empty **`rules`** (would override globals and freeze signals): **`_ensure_breeder_labs_have_rules`** copies global rules or injects a loose BTC/ETH-friendly pack. **`default_bot_config`** seeds each breeder with **`rules`**, looser **`no_bet_when_yes_below_pct`**, slightly lower optimizer **yes_floor** / **min_minutes_left** for **B/D/E**, and **`engine_running: true`** on **B–E** so fresh installs tick immediately after restart.
+- **Backend (`engines/engine.py`, `kalshi_client.py`, `market_pulse.py`):** Guard **`/markets`** and balance payloads so a non-**dict** (or bad cache value) never reaches **`.get("markets")`** / **`.get("balance")`** — fixes **`NoneType` … `'get'`** on Lab E and other branches when the API or cache returns an unexpected shape.
+- **Backend (`main.py`):** **`_lab_thought_lines`** treats a missing/non-dict **`metrics`** as **`{}`** so dashboard **`lab_thoughts`** never throws for Lab E.
+- **Backend (`lab_communication.py`):** Extra short **Think Tank** team lines (**E+C** / **B/D** / **Lab A** handoff) in strategic pulses and peer replies.
+- **Backend (`engines/dual_engine_loop.py`):** Module docstring now lists **Lab A–E** (loop already ticked **`lab_e`** via **`BRANCH_LABS`**).
+- **Frontend (`BranchMarketTickers.tsx`):** **`branchHeadlineDollars`** coerces null/invalid **`metrics`** to **`{}`** before reading equity fields.
+- **Frontend (`dashboardPolling.ts`):** Comment documents keeping **`equity_snapshots_lab_*`** / **`metrics_lab_*`** in sync with **`App.tsx`** catch-up keys (includes **`lab_e`**).
+
 ## v0.4.15.009 - Lab Think Tank variety + balance - 2026-04-28
 
 - **Backend (`lab_communication.py`):** Much larger **peer/strategic** template pools; **`_pick_varied`** avoids lines too close to the last **8** bus messages (word-overlap / prefix guard). **`_c_overrepresented`** blocks **C** proactive pulses when C dominates the tail; **`_needs_voice_turn`** boosts **B/D** when quiet or when **C** has run the board. **`_team_peer_reply_line`** expanded dual- and single-peer lines + team tags.

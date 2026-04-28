@@ -1,4 +1,4 @@
-/** Labs B/C/D Breeding Council: poll ``GET /labs/chat`` for Optimizer Think Tank + Settings history. */
+/** Labs B/C/D/E Breeding Council: poll ``GET /labs/chat`` for Optimizer Think Tank + Settings history. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LAB_CHAT_POLL_MS, subscribeDashboardCatchUp } from "./dashboardPolling";
 
@@ -33,15 +33,15 @@ export type LabHiveRow = {
   reply_to?: string;
 };
 
-const TICKER_LABS = ["lab_b", "lab_c", "lab_d"] as const;
+const TICKER_LABS = ["lab_b", "lab_c", "lab_d", "lab_e"] as const;
 
 /**
  * Interleave recent lines per lab (newest-first round-robin). API order is chronological; the deque tail
- * can be mostly one lab when that branch ticks last—this keeps B/C/D visible together on the ticker.
+ * can be mostly one lab when that branch ticks last—this keeps B/C/D/E visible together on the ticker.
  */
 export function balanceHiveMessagesForTicker(rows: LabHiveRow[], limit = 28): LabHiveRow[] {
   type LabId = (typeof TICKER_LABS)[number];
-  const byLab: Record<LabId, LabHiveRow[]> = { lab_b: [], lab_c: [], lab_d: [] };
+  const byLab: Record<LabId, LabHiveRow[]> = { lab_b: [], lab_c: [], lab_d: [], lab_e: [] };
   for (const r of rows) {
     const lab = String(r.lab || "") as LabId;
     if (lab in byLab) byLab[lab].push(r);
@@ -50,6 +50,7 @@ export function balanceHiveMessagesForTicker(rows: LabHiveRow[], limit = 28): La
     lab_b: byLab.lab_b.length - 1,
     lab_c: byLab.lab_c.length - 1,
     lab_d: byLab.lab_d.length - 1,
+    lab_e: byLab.lab_e.length - 1,
   };
   const out: LabHiveRow[] = [];
   while (out.length < limit) {
@@ -129,18 +130,18 @@ export function LabHiveChatSettingsPanel(props: {
   return (
     <div className="lab-hive-chat-settings">
       <div className="lab-hive-chat__head">
-        <h3 style={{ margin: 0 }}>Breeding Council stream</h3>
+        <h3 style={{ margin: 0 }}>Breeding Council • Labs B + C + D + E working together</h3>
         <label className="lab-hive-chat__toggle">
           <input type="checkbox" checked={enabled} onChange={(e) => onToggleEnabled(e.target.checked)} />
           Enable Agent Collaboration
         </label>
       </div>
       <p className="sub" style={{ margin: "6px 0 10px" }}>
-        Shows Labs B/C/D think tank in the Optimizer panel and this transcript. Trading logic is unchanged.
+        Shows Labs B/C/D/E think tank in the Optimizer panel and this transcript. Trading logic is unchanged.
       </p>
       <div className="lab-hive-chat__body" role="log" aria-live="polite">
         {messages.length === 0 ? (
-          <div className="sub lab-hive-chat__empty">Waiting for Labs B, C, and D to publish thoughts…</div>
+          <div className="sub lab-hive-chat__empty">Waiting for Labs B, C, D, and E to publish thoughts…</div>
         ) : (
           <ul className="lab-hive-chat__list">
             {[...messages].reverse().map((m) => (

@@ -19,6 +19,7 @@ from .branch_config import (
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
+    BRANCH_LAB_E,
     BRANCH_LIVE,
 )
 from .kalshi_client import KalshiClient, new_shared_http_client
@@ -41,6 +42,7 @@ engine_lab_a: TradingEngine | None = None
 engine_lab_b: TradingEngine | None = None
 engine_lab_c: TradingEngine | None = None
 engine_lab_d: TradingEngine | None = None
+engine_lab_e: TradingEngine | None = None
 ENGINES: dict[str, TradingEngine] = {}
 
 # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
@@ -82,9 +84,10 @@ def init_runtime_engines(kalshi: KalshiClient | None = None) -> None:
     eb = TradingEngine(store, BRANCH_LAB_B, client=kc)
     ec = TradingEngine(store, BRANCH_LAB_C, client=kc)
     ed = TradingEngine(store, BRANCH_LAB_D, client=kc)
+    ee = TradingEngine(store, BRANCH_LAB_E, client=kc)
     child_engines: dict[str, TradingEngine] = {br: TradingEngine(store, br, client=kc) for br in BRANCH_CHILD_LABS}
-    global engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d
-    engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d = (el, ea, eb, ec, ed)
+    global engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d, engine_lab_e
+    engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d, engine_lab_e = (el, ea, eb, ec, ed, ee)
     # Update in place so importers that bound early to ``ENGINES`` still see engines (if any).
     ENGINES.clear()
     ENGINES.update(
@@ -94,6 +97,7 @@ def init_runtime_engines(kalshi: KalshiClient | None = None) -> None:
             BRANCH_LAB_B: eb,
             BRANCH_LAB_C: ec,
             BRANCH_LAB_D: ed,
+            BRANCH_LAB_E: ee,
             **child_engines,
         }
     )

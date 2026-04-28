@@ -322,11 +322,15 @@ class KalshiClient:
         now = time.monotonic()
         hit = KalshiClient._open_markets_cache.get(key)
         if hit and (now - hit[0]) < KalshiClient.OPEN_MARKETS_CACHE_TTL:
-            return hit[1]
+            prev = hit[1]
+            if isinstance(prev, dict):
+                return prev
         data = await self.get_public(
             "/markets",
             {"series_ticker": series_ticker, "status": "open", "limit": str(limit)},
         )
+        if not isinstance(data, dict):
+            data = {"markets": []}
         KalshiClient._open_markets_cache[key] = (now, data)
         return data
 

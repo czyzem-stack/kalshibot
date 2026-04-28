@@ -8,7 +8,8 @@ BRANCH_LAB_A = "lab_a"
 BRANCH_LAB_B = "lab_b"
 BRANCH_LAB_C = "lab_c"
 BRANCH_LAB_D = "lab_d"
-BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+BRANCH_LAB_E = "lab_e"
+BRANCH_LABS = (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E)
 # LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
 # Six SQLite-backed child branches (invisible to dashboard UI); each has its own TradingEngine (on unless cleared).
 BRANCH_CHILD_1 = "lab_child_1"
@@ -28,7 +29,7 @@ BRANCH_CHILD_LABS = (
 # All paper lab keys in config JSON (parents + breeding children).
 ALL_CFG_LAB_KEYS: tuple[str, ...] = BRANCH_LABS + BRANCH_CHILD_LABS
 # Breeding parents only (Lab A is staging / adoption — see ``lab_breeding``).
-BRANCH_BREEDERS = (BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+BRANCH_BREEDERS = (BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E)
 # One child genome row per slot (each row maps to a real ``lab_child_*`` engine branch).
 LAB_BREEDING_MAX_CHILD_SLOTS = 6
 LAB_BREEDING_INTERNAL_MAX_SLOTS = 10
@@ -115,7 +116,7 @@ def _lab_key_for_branch(branch: str) -> str | None:
 
 def fleet_visible_paper_start_cents(full_cfg: dict[str, Any]) -> int:
     """
-    Sum of paper-equity start bases for **Live** (only when Live is in paper mode) plus **Labs A–D**.
+    Sum of paper-equity start bases for **Live** (only when Live is in paper mode) plus **Labs A–E**.
 
     Used as the dashboard denominator for ``committed_pct_of_fleet_start`` so open premium on one branch
     is shown as a fraction of combined configured paper capital, not only that branch's start.
@@ -382,6 +383,7 @@ _PATIENT_STOP_DEFAULTS: dict[str, tuple[bool, float, int]] = {
     BRANCH_LAB_B: (True, -8.0, 30),
     BRANCH_LAB_C: (True, -12.0, 60),
     BRANCH_LAB_D: (True, -7.0, 25),
+    BRANCH_LAB_E: (True, -8.5, 28),
 }
 for _cb in BRANCH_CHILD_LABS:
     _PATIENT_STOP_DEFAULTS[_cb] = (True, -9.0, 22)
@@ -659,6 +661,7 @@ def build_optimizer_radar_payload(full_cfg: dict[str, Any], opt_blk: dict[str, A
         ("lab_b", BRANCH_LAB_B),
         ("lab_c", BRANCH_LAB_C),
         ("lab_d", BRANCH_LAB_D),
+        ("lab_e", BRANCH_LAB_E),
     ):
         raw = branch_radar_profile(full_cfg, br, opt)
         profiles_raw[slug] = raw

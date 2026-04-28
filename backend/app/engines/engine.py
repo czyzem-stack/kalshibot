@@ -18,6 +18,7 @@ from ..branch_config import (
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
+    BRANCH_LAB_E,
     BRANCH_LIVE,
     _lab_key_for_branch,
     lab_paper_equity_start_cents,
@@ -670,7 +671,7 @@ class TradingEngine:
 
 
 def _is_lab_branch(branch: str) -> bool:
-    return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D)
+    return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E)
 
 
 async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> None:
@@ -731,6 +732,8 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     else:
         try:
             bal = await engine.client.get_private("/portfolio/balance")
+            if not isinstance(bal, dict):
+                bal = {}
             balance_cents = int(bal.get("balance") or 0)
         except Exception as e:
             engine.state.last_error = f"balance: {e}"
@@ -767,6 +770,8 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
             trace.append(f"asset {asset_id} series={series}: FETCH ERROR {e}")
             snapshots[aid] = {"ok": False, "reason": "fetch_error", "note": str(e)[:240]}
             continue
+        if not isinstance(data, dict):
+            data = {}
         markets = list(data.get("markets") or [])
         scanned += len(markets)
         trace.append(f"asset {asset_id} series={series}: fetched {len(markets)} open markets")

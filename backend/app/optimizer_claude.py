@@ -16,6 +16,7 @@ from .branch_config import (
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
+    BRANCH_LAB_E,
     MAX_BALANCE_FRACTION_PER_WINDOW,
     MIN_BALANCE_FRACTION_PER_WINDOW,
     _lab_key_for_branch,
@@ -46,10 +47,12 @@ async def _lab_breeding_trades_signals_maps(
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
     tr_d: list[dict[str, Any]],
+    tr_e: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
     sg_b: list[dict[str, Any]],
     sg_c: list[dict[str, Any]],
     sg_d: list[dict[str, Any]],
+    sg_e: list[dict[str, Any]],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
     """Parents + ``lab_child_*`` paper rows for lab breeding fitness (invisible)."""
     trades_by_branch: dict[str, list[dict[str, Any]]] = {
@@ -57,12 +60,14 @@ async def _lab_breeding_trades_signals_maps(
         BRANCH_LAB_B: tr_b,
         BRANCH_LAB_C: tr_c,
         BRANCH_LAB_D: tr_d,
+        BRANCH_LAB_E: tr_e,
     }
     signals_by_branch: dict[str, list[dict[str, Any]]] = {
         BRANCH_LAB_A: sg_a,
         BRANCH_LAB_B: sg_b,
         BRANCH_LAB_C: sg_c,
         BRANCH_LAB_D: sg_d,
+        BRANCH_LAB_E: sg_e,
     }
     if not BRANCH_CHILD_LABS:
         return trades_by_branch, signals_by_branch
@@ -124,10 +129,12 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("lab_b_enabled", True)
     out.setdefault("lab_c_enabled", True)
     out.setdefault("lab_d_enabled", True)
+    out.setdefault("lab_e_enabled", True)
     out.setdefault("lab_a_style", "blend")
     out.setdefault("lab_b_style", "conservative")
     out.setdefault("lab_c_style", "aggressive")
     out.setdefault("lab_d_style", "wild")
+    out.setdefault("lab_e_style", "balanced")
     out.setdefault("loss_streak_trigger", 1)
     out.setdefault("threshold_step_pct", 2)
     out.setdefault("minute_step", 2)
@@ -242,6 +249,8 @@ def _branch_style(oc: dict[str, Any], branch: str) -> str:
             return "aggressive"
         if branch == BRANCH_LAB_D:
             return "wild"
+        if branch == BRANCH_LAB_E:
+            return "balanced"
         return "blend"
     if branch == BRANCH_LAB_A:
         return str(oc.get("lab_a_style") or "blend").strip().lower()
@@ -249,7 +258,9 @@ def _branch_style(oc: dict[str, Any], branch: str) -> str:
         return str(oc.get("lab_b_style") or "conservative").strip().lower()
     if branch == BRANCH_LAB_C:
         return str(oc.get("lab_c_style") or "aggressive").strip().lower()
-    return str(oc.get("lab_d_style") or "wild").strip().lower()
+    if branch == BRANCH_LAB_D:
+        return str(oc.get("lab_d_style") or "wild").strip().lower()
+    return str(oc.get("lab_e_style") or "balanced").strip().lower()
 
 
 def _index_signals_by_ticker(signals: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -1688,14 +1699,17 @@ def _build_metrics_context(
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
     tr_d: list[dict[str, Any]],
+    tr_e: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
     sg_b: list[dict[str, Any]],
     sg_c: list[dict[str, Any]],
     sg_d: list[dict[str, Any]],
+    sg_e: list[dict[str, Any]],
     eq_a: list[dict[str, Any]],
     eq_b: list[dict[str, Any]],
     eq_c: list[dict[str, Any]],
     eq_d: list[dict[str, Any]],
+    eq_e: list[dict[str, Any]],
     end: dt.datetime,
 ) -> dict[str, Any]:
     include_fees = bool(oc.get("include_fees_in_score", True))
@@ -1704,18 +1718,22 @@ def _build_metrics_context(
     sb = _signals_sorted_desc(sg_b)
     sc = _signals_sorted_desc(sg_c)
     sd = _signals_sorted_desc(sg_d)
+    se = _signals_sorted_desc(sg_e)
     st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
+    lab_e = cfg.get("lab_e") if isinstance(cfg.get("lab_e"), dict) else {}
     _, rules_a = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     _, rules_b = _ensure_lab_rules(cfg, BRANCH_LAB_B)
     _, rules_c = _ensure_lab_rules(cfg, BRANCH_LAB_C)
     _, rules_d = _ensure_lab_rules(cfg, BRANCH_LAB_D)
+    _, rules_e = _ensure_lab_rules(cfg, BRANCH_LAB_E)
     rep_a = _replay_pnl_under_rules(
         st_a, rules_a, sa, include_fees_in_score=include_fees, branch_trading_cfg=lab_a
     )
@@ -1727,6 +1745,9 @@ def _build_metrics_context(
     )
     rep_d = _replay_pnl_under_rules(
         st_d, rules_d, sd, include_fees_in_score=include_fees, branch_trading_cfg=lab_d
+    )
+    rep_e = _replay_pnl_under_rules(
+        st_e, rules_e, se, include_fees_in_score=include_fees, branch_trading_cfg=lab_e
     )
     def _pf_var(rows: list[dict[str, Any]]) -> dict[str, Any]:
         gross_win = sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) > 0)
@@ -1805,6 +1826,21 @@ def _build_metrics_context(
             "regime_last_4h": _regime_volatility(sg_d, hours=4.0, end=end),
             "regime_last_24h": _regime_volatility(sg_d, hours=24.0, end=end),
         },
+        "lab_e": {
+            "settled_trades": len(st_e),
+            "profitable_trades": sum(1 for t in st_e if int(t.get("pnl_cents") or 0) > 0),
+            "balance_fraction_per_window": lab_e.get("balance_fraction_per_window"),
+            "window_minutes": lab_e.get("window_minutes"),
+            "replay_under_current_rules_pnl_cents": rep_e[0],
+            "replay_matched_trades": rep_e[1],
+            "per_rule_stats_48h": _per_rule_stats_48h(st_e, end=end),
+            "profit_factor_and_variance": _pf_var(st_e),
+            "equity_slope_dollars_per_hour": _equity_slope_dollars_per_hour(eq_e),
+            "regime_primary_hours": regime_h,
+            "regime": _regime_volatility(sg_e, hours=regime_h, end=end),
+            "regime_last_4h": _regime_volatility(sg_e, hours=4.0, end=end),
+            "regime_last_24h": _regime_volatility(sg_e, hours=24.0, end=end),
+        },
         "optimizer_guards": {
             "min_trades_for_optimize": oc.get("min_trades_for_optimize"),
             "min_profitable_trades": oc.get("min_profitable_trades"),
@@ -1880,8 +1916,12 @@ def _history_item(
         lab = "Lab B"
     elif branch == BRANCH_LAB_C:
         lab = "Lab C"
-    else:
+    elif branch == BRANCH_LAB_D:
         lab = "Lab D"
+    elif branch == BRANCH_LAB_E:
+        lab = "Lab E"
+    else:
+        lab = "Lab ?"
     before: dict[str, Any] = {"yes_floor_pct": before_floor, "min_minutes_left": before_minm}
     after: dict[str, Any] = {"yes_floor_pct": after_floor, "min_minutes_left": after_minm}
     if before_extra:
@@ -1949,7 +1989,7 @@ def _merge_pulse_trace(oc: dict[str, Any], changes: list[dict[str, Any]]) -> Non
 
 
 def _optimizer_pulse_bc_enrichment(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
-    """Extra ``after`` keys so the dashboard pulse chart can plot Lab B/C/D reference floors and bet fractions."""
+    """Extra ``after`` keys so the dashboard pulse chart can plot Lab B/C/D/E reference floors and bet fractions."""
     def gfrac(lk: str) -> float:
         lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
         try:
@@ -1961,14 +2001,16 @@ def _optimizer_pulse_bc_enrichment(cfg: dict[str, Any], oc: dict[str, Any]) -> d
         "lab_b_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_b_yes_floor_pct"), 55))),
         "lab_c_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_c_yes_floor_pct"), 52))),
         "lab_d_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_d_yes_floor_pct"), 50))),
+        "lab_e_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_e_yes_floor_pct"), 53))),
         "lab_b_balance_fraction": round(gfrac("lab_b"), 4),
         "lab_c_balance_fraction": round(gfrac("lab_c"), 4),
         "lab_d_balance_fraction": round(gfrac("lab_d"), 4),
+        "lab_e_balance_fraction": round(gfrac("lab_e"), 4),
     }
 
 
 def pulse_chart_baseline(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
-    """Current Lab A YES floor + bet fraction and Lab B/C/D reference values (same keys as pulse change_history ``after``)."""
+    """Current Lab A YES floor + bet fraction and Lab B/C/D/E reference values (same keys as pulse change_history ``after``)."""
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     try:
         bf_a = float(lab_a.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
@@ -2005,6 +2047,7 @@ def _set_next_tick_preview(
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
     tr_d: list[dict[str, Any]],
+    tr_e: list[dict[str, Any]],
 ) -> None:
     lab = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     floor = max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57)))
@@ -2018,12 +2061,15 @@ def _set_next_tick_preview(
     nb = _settled_lab_n(tr_b)
     nc = _settled_lab_n(tr_c)
     nd = _settled_lab_n(tr_d)
+    ne = _settled_lab_n(tr_e)
     b_on = bool(oc.get("lab_b_enabled", True))
     c_on = bool(oc.get("lab_c_enabled", True))
     d_on = bool(oc.get("lab_d_enabled", True))
+    e_on = bool(oc.get("lab_e_enabled", True))
     b_style = str(oc.get("lab_b_style") or "conservative").strip()
     c_style = str(oc.get("lab_c_style") or "aggressive").strip()
     d_style = str(oc.get("lab_d_style") or "wild").strip()
+    e_style = str(oc.get("lab_e_style") or "balanced").strip()
     adv = oc.get("advanced_metrics_last") if isinstance(oc.get("advanced_metrics_last"), dict) else {}
     adv_sharpe = _safe_float(adv.get("sharpe"), 0.0)
     adv_dd = _safe_float(adv.get("max_drawdown_pct"), 0.0)
@@ -2032,11 +2078,11 @@ def _set_next_tick_preview(
         f"Next tick: Lab A has {lab_settled_n} settled (≥{profitable_n} wins in guard window). "
         f"Internal pulse watches up to {trig} losses entered near ≥{floor}% implied YES—tighten rules when replay-PnL improves. "
         f"Bet fraction is ~{frac:.2%}/window. Adaptive={'on' if adapt else 'off'}, Claude scheduler={'on' if sched else 'off'}. "
-        f"B/C/D same lookback (reference arms; pulse does not persist their rules/bets): "
+        f"B/C/D/E same lookback (reference arms; pulse does not persist their rules/bets): "
         f"B {'on' if b_on else 'off'} ({b_style}, {nb} settled), C {'on' if c_on else 'off'} ({c_style}, {nc} settled), "
-        f"D {'on' if d_on else 'off'} ({d_style}, {nd} settled). "
+        f"D {'on' if d_on else 'off'} ({d_style}, {nd} settled), E {'on' if e_on else 'off'} ({e_style}, {ne} settled). "
         f"Latest replay regime={adv_reg}, Sharpe≈{adv_sharpe:.2f}, maxDD≈{adv_dd:.1f}%. "
-        f"Claude sees all four labs; adaptive writes Lab A only."
+        f"Claude sees all five labs; adaptive writes Lab A only."
     )
     oc["next_tick_preview"] = base[:900]
 
@@ -2308,6 +2354,7 @@ def _internal_lab_a_bet_pulse(
     tr_b: list[dict[str, Any]],
     tr_c: list[dict[str, Any]],
     tr_d: list[dict[str, Any]],
+    tr_e: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
     eq_a: list[dict[str, Any]],
     at_iso: str,
@@ -2327,13 +2374,15 @@ def _internal_lab_a_bet_pulse(
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    if len(st_a) + len(st_b) + len(st_c) + len(st_d) < min_tr:
+    st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    if len(st_a) + len(st_b) + len(st_c) + len(st_d) + len(st_e) < min_tr:
         return None
     prof = (
         sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_b if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0)
         + sum(1 for t in st_d if int(t.get("pnl_cents") or 0) > 0)
+        + sum(1 for t in st_e if int(t.get("pnl_cents") or 0) > 0)
     )
     if prof < min_prof:
         return None
@@ -2450,7 +2499,19 @@ def _history_bet_item(
     after_f: float,
     after_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    lab = "Lab A" if branch == BRANCH_LAB_A else "Lab B" if branch == BRANCH_LAB_B else "Lab C"
+    lab = (
+        "Lab A"
+        if branch == BRANCH_LAB_A
+        else "Lab B"
+        if branch == BRANCH_LAB_B
+        else "Lab C"
+        if branch == BRANCH_LAB_C
+        else "Lab D"
+        if branch == BRANCH_LAB_D
+        else "Lab E"
+        if branch == BRANCH_LAB_E
+        else "Lab ?"
+    )
     after: dict[str, Any] = {"balance_fraction_per_window": after_f}
     if after_extra:
         after.update(after_extra)
@@ -2475,20 +2536,23 @@ def _internal_mutate_rules_and_params(
     st_b: list[dict[str, Any]],
     st_c: list[dict[str, Any]],
     st_d: list[dict[str, Any]],
+    st_e: list[dict[str, Any]],
     sg_a: list[dict[str, Any]],
     sg_b: list[dict[str, Any]],
     sg_c: list[dict[str, Any]],
     sg_d: list[dict[str, Any]],
+    sg_e: list[dict[str, Any]],
     at_iso: str,
     tr_a: list[dict[str, Any]] | None = None,
     tr_b: list[dict[str, Any]] | None = None,
     tr_c: list[dict[str, Any]] | None = None,
     tr_d: list[dict[str, Any]] | None = None,
+    tr_e: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """
     Internal mutant cycle: deterministic + random perturbations to Lab A rules/sizing.
 
-    Applies only when replay fitness improves and statistical gate vs B/C/D passes.
+    Applies only when replay fitness improves and statistical gate vs B/C/D/E passes.
     Returns ``(history_row_or_none, meta)``.
     """
     meta: dict[str, Any] = {"accepted": False, "mutant_run": True, "reject_reason": ""}
@@ -2629,13 +2693,20 @@ def _internal_mutate_rules_and_params(
     fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B, tr_b)
     fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C, tr_c)
     fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D, tr_d)
+    fb_e = _tail_fb(st_e, sg_e, BRANCH_LAB_E, tr_e)
     a_d = [x / 100.0 for x in prop_fb["per_trade_pnl_cents_chrono"]]
     ctrl_d = (
         [x / 100.0 for x in fb_b["per_trade_pnl_cents_chrono"]]
         + [x / 100.0 for x in fb_c["per_trade_pnl_cents_chrono"]]
         + [x / 100.0 for x in fb_d["per_trade_pnl_cents_chrono"]]
+        + [x / 100.0 for x in fb_e["per_trade_pnl_cents_chrono"]]
     )
-    ctrl_scores = [float(fb_b["score_dollars"]), float(fb_c["score_dollars"]), float(fb_d["score_dollars"])]
+    ctrl_scores = [
+        float(fb_b["score_dollars"]),
+        float(fb_c["score_dollars"]),
+        float(fb_d["score_dollars"]),
+        float(fb_e["score_dollars"]),
+    ]
     stat_ok, stat_detail = is_statistically_better(a_d, ctrl_d, lab_a_score=meta["score_after"], control_scores=ctrl_scores)
     meta["statistical_detail"] = stat_detail
     if not stat_ok:
@@ -3220,19 +3291,23 @@ async def _load_sim_paper_labs(
     list[dict[str, Any]],
     list[dict[str, Any]],
     list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
 ]:
-    """Trades+signals for Lab A–D paper only (``mode=simulate``) — used by optimizer + lab breeding paths."""
-    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await asyncio.gather(
+    """Trades+signals for Lab A–E paper only (``mode=simulate``) — used by optimizer + lab breeding paths."""
+    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await asyncio.gather(
         store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("trades", branch=BRANCH_LAB_E, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
         store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table("signals", branch=BRANCH_LAB_E, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
     )
-    return tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d
+    return tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e
 
 
 async def _run_labs_breeding_mutation_pipeline(
@@ -3319,7 +3394,7 @@ async def _run_breeding_only_tick(store: "Store") -> dict[str, Any]:
     end_iso = _iso(end)
     start = end - dt.timedelta(hours=lookback_h)
     start_iso = _iso(start)
-    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows)
+    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows)
     trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
         store,
         start_iso=start_iso,
@@ -3329,10 +3404,12 @@ async def _run_breeding_only_tick(store: "Store") -> dict[str, Any]:
         tr_b=tr_b,
         tr_c=tr_c,
         tr_d=tr_d,
+        tr_e=tr_e,
         sg_a=sg_a,
         sg_b=sg_b,
         sg_c=sg_c,
         sg_d=sg_d,
+        sg_e=sg_e,
     )
     breed_rows, soft_rows, ga_rows, _did = await _run_labs_breeding_mutation_pipeline(
         store,
@@ -3378,9 +3455,9 @@ async def _run_breeding_only_tick(store: "Store") -> dict[str, Any]:
 async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, Any]:
     """
     Scheduler-driven optimizer tick: **path A** = Lab A adaptive, internal mutation, pulses, traces (needs ``enabled``
-    and/or ``adaptive_enabled`` or ``force``). **Path B** = B/C/D child-lab breeding can run on this tick when
+    and/or ``adaptive_enabled`` or ``force``). **Path B** = B/C/D/E child-lab breeding can run on this tick when
     ``breeding_enabled`` even if the scheduler and adaptive are off (handled via ``_run_breeding_only_tick`` at the
-    start). Visible paper trading for B–D is driven by ``dual_engine_loop``, not by this function.
+    start). Visible paper trading for B–E is driven by ``dual_engine_loop``, not by this function.
     """
     cfg = await store.load_config()
     oc = _norm_opt_cfg(_opt_cfg(cfg))
@@ -3415,7 +3492,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     mutant_run = int(oc.get("optimizer_cycle_count") or 0) % 8 == 0
     oc["last_mutant_cycle"] = bool(mutant_run)
 
-    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
         store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
     )
 
@@ -3432,10 +3509,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             tr_b=tr_b,
             tr_c=tr_c,
             tr_d=tr_d,
+            tr_e=tr_e,
             sg_a=sg_a,
             sg_b=sg_b,
             sg_c=sg_c,
             sg_d=sg_d,
+            sg_e=sg_e,
         )
         breed_rows, soft_rows, ga_rows, _did = await _run_labs_breeding_mutation_pipeline(
             store,
@@ -3450,7 +3529,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         if _did:
             cfg = await store.load_config()
             oc = _norm_opt_cfg(_opt_cfg(cfg))
-            tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+            tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
                 store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
             )
         oc["breeding_last_run_at"] = end_iso
@@ -3482,7 +3561,16 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             changes.append(cw)
     eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
     bi = _internal_lab_a_bet_pulse(
-        cfg=cfg, oc=oc, tr_a=tr_a, tr_b=tr_b, tr_c=tr_c, tr_d=tr_d, sg_a=sg_a, eq_a=eq_a, at_iso=end_iso
+        cfg=cfg,
+        oc=oc,
+        tr_a=tr_a,
+        tr_b=tr_b,
+        tr_c=tr_c,
+        tr_d=tr_d,
+        tr_e=tr_e,
+        sg_a=sg_a,
+        eq_a=eq_a,
+        at_iso=end_iso,
     )
     if bi:
         changes.append(bi)
@@ -3493,6 +3581,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
         st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
         st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
         mut_row, mutation_meta = _internal_mutate_rules_and_params(
             cfg=cfg,
             oc=oc,
@@ -3500,15 +3589,18 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             st_b=st_b,
             st_c=st_c,
             st_d=st_d,
+            st_e=st_e,
             sg_a=sg_a,
             sg_b=sg_b,
             sg_c=sg_c,
             sg_d=sg_d,
+            sg_e=sg_e,
             at_iso=end_iso,
             tr_a=tr_a,
             tr_b=tr_b,
             tr_c=tr_c,
             tr_d=tr_d,
+            tr_e=tr_e,
         )
         if mut_row:
             changes.append(mut_row)
@@ -3521,6 +3613,7 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         tr_b=tr_b,
         tr_c=tr_c,
         tr_d=tr_d,
+        tr_e=tr_e,
     )
     if mutant_run:
         _append_proposal_history(
@@ -3757,7 +3850,7 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     except (TypeError, ValueError):
         oc["optimizer_cycle_count"] = 1
 
-    tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
         store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
     )
 
@@ -3772,10 +3865,12 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
             tr_b=tr_b,
             tr_c=tr_c,
             tr_d=tr_d,
+            tr_e=tr_e,
             sg_a=sg_a,
             sg_b=sg_b,
             sg_c=sg_c,
             sg_d=sg_d,
+            sg_e=sg_e,
         )
         _br, _sr, _gr, _did = await _run_labs_breeding_mutation_pipeline(
             store,
@@ -3790,7 +3885,7 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         if _did:
             cfg = await store.load_config()
             oc = _norm_opt_cfg(_opt_cfg(cfg))
-            tr_a, tr_b, tr_c, tr_d, sg_a, sg_b, sg_c, sg_d = await _load_sim_paper_labs(
+            tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
                 store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
             )
     else:
@@ -3802,6 +3897,7 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
     st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
 
     row, meta = _internal_mutate_rules_and_params(
         cfg=cfg,
@@ -3810,15 +3906,18 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         st_b=st_b,
         st_c=st_c,
         st_d=st_d,
+        st_e=st_e,
         sg_a=sg_a,
         sg_b=sg_b,
         sg_c=sg_c,
         sg_d=sg_d,
+        sg_e=sg_e,
         at_iso=end_iso,
         tr_a=tr_a,
         tr_b=tr_b,
         tr_c=tr_c,
         tr_d=tr_d,
+        tr_e=tr_e,
     )
     if row:
         hist = oc.get("change_history")

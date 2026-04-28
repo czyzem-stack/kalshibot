@@ -1264,6 +1264,11 @@ input[type="number"] {
     /* Keep the divider, but preserve card inset so headings/tabs don't hug the border. */
     padding-left: 14px;
     margin-left: 0;
+    /* Default grid stretch makes this column as tall as the Optimizer stack → empty band under short equity content. */
+    align-self: start;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
   }
 }
 
@@ -1319,6 +1324,8 @@ input[type="number"] {
   flex-direction: column;
   gap: 10px;
   margin-top: 4px;
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .dash-equity-chart-block {
@@ -1354,6 +1361,14 @@ input[type="number"] {
 
 .dash-equity-chart-block:nth-child(4) .dash-equity-branch-head {
   border-left-color: #f472b6;
+}
+
+.dash-equity-chart-block:nth-child(5) .dash-equity-branch-head {
+  border-left-color: #fca5a5;
+}
+
+.dash-equity-chart-block:nth-child(6) .dash-equity-branch-head {
+  border-left-color: #14b8a6;
 }
 
 .chart.chart--equity-stack {
@@ -4060,6 +4075,9 @@ button[title].section-tip {
 .lab-hive-chat__li--lab_d {
   border-left-color: rgba(192, 132, 252, 0.95);
 }
+.lab-hive-chat__li--lab_e {
+  border-left-color: rgba(94, 234, 212, 0.9);
+}
 .lab-hive-chat__meta {
   display: flex;
   align-items: baseline;
@@ -4188,6 +4206,9 @@ button[title].section-tip {
 }
 .lab-think-tank__line--d {
   border-left-color: rgba(167, 139, 250, 0.85);
+}
+.lab-think-tank__line--e {
+  border-left-color: rgba(45, 212, 191, 0.88);
 }
 .lab-think-tank__line--u {
   border-left-color: rgba(148, 163, 184, 0.55);

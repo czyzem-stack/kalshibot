@@ -5,6 +5,7 @@ function labToneClass(lab: string): string {
   if (lab === "lab_b") return "lab-think-tank__line--b";
   if (lab === "lab_c") return "lab-think-tank__line--c";
   if (lab === "lab_d") return "lab-think-tank__line--d";
+  if (lab === "lab_e") return "lab-think-tank__line--e";
   return "lab-think-tank__line--u";
 }
 
@@ -12,6 +13,7 @@ function emojiForLab(lab: string): string {
   if (lab === "lab_b") return "🟡";
   if (lab === "lab_c") return "🔥";
   if (lab === "lab_d") return "🧪";
+  if (lab === "lab_e") return "⚖️";
   return "💬";
 }
 
@@ -19,6 +21,7 @@ function labLetter(lab: string): string {
   if (lab === "lab_b") return "B";
   if (lab === "lab_c") return "C";
   if (lab === "lab_d") return "D";
+  if (lab === "lab_e") return "E";
   return "?";
 }
 
@@ -57,7 +60,7 @@ export default function LabThinkTank({ messages, enabled, dashReady }: Props) {
         <div className="lab-think-tank__viewport" role="log" aria-live="polite">
           {lines.length === 0 ? (
             <p className="sub lab-think-tank__empty">
-              No lines yet — turn on Labs B, C, D engines (paper). Lines appear within a tick or two.
+              No lines yet — turn on Labs B, C, D, E engines (paper). Lines appear within a tick or two.
             </p>
           ) : (
             <ul className="lab-think-tank__log">

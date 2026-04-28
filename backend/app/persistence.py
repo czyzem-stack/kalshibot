@@ -39,6 +39,57 @@ _CATCHALL_MID_RULE: dict[str, Any] = {
     "max_minutes_left": 20.0,
 }
 
+# Shared YES/NO bands for top-level Live + lab defaults (each lab gets its own list copy).
+_TRADING_RULES_BASE: tuple[dict[str, Any], ...] = (
+    {"name": "Low 42-52%", "min_prob": 0.42, "max_prob": 0.52, "min_minutes_left": 6.0, "max_minutes_left": 20.0},
+    {"name": "Mid 55-72%", "min_prob": 0.55, "max_prob": 0.72, "min_minutes_left": 4.0, "max_minutes_left": 18.0},
+    {"name": "High 78-94%", "min_prob": 0.78, "max_prob": 0.94, "min_minutes_left": 3.0, "max_minutes_left": 15.0},
+    {
+        "name": "NO conviction 62-78%",
+        "side": "no",
+        "min_prob": 0.62,
+        "max_prob": 0.78,
+        "min_minutes_left": 3.0,
+        "max_minutes_left": 18.0,
+    },
+)
+
+_BREEDER_PARENT_LABS: tuple[str, ...] = ("lab_b", "lab_c", "lab_d", "lab_e")
+
+
+def _copy_trading_rules_default() -> list[dict[str, Any]]:
+    return [dict(r) for r in _TRADING_RULES_BASE]
+
+
+def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
+    """When global ``rules`` is empty, give breeders a wide BTC/ETH-friendly pack."""
+    return [
+        {"name": "Breeder mid YES", "min_prob": 0.36, "max_prob": 0.82, "min_minutes_left": 1.5, "max_minutes_left": 22.0},
+        {"name": "Breeder low YES", "min_prob": 0.34, "max_prob": 0.54, "min_minutes_left": 1.5, "max_minutes_left": 18.0},
+        {"name": "Breeder high YES", "min_prob": 0.70, "max_prob": 0.95, "min_minutes_left": 1.5, "max_minutes_left": 16.0},
+        {"name": "Breeder NO lane", "side": "no", "min_prob": 0.52, "max_prob": 0.85, "min_minutes_left": 1.5, "max_minutes_left": 20.0},
+    ]
+
+
+def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
+    """
+    Breeding Council labs must never run with ``rules: []`` (no signals). Copy global rules or inject a loose pack.
+    """
+    glob = cfg.get("rules")
+    fallback: list[dict[str, Any]] = []
+    if isinstance(glob, list) and glob:
+        fallback = [dict(r) for r in glob if isinstance(r, dict)]
+    if not fallback:
+        fallback = _breeder_loose_rules_fallback()
+    for lk in _BREEDER_PARENT_LABS:
+        block = cfg.get(lk)
+        if not isinstance(block, dict):
+            continue
+        rules = block.get("rules")
+        if not isinstance(rules, list) or len(rules) == 0:
+            block["rules"] = [dict(r) for r in fallback]
+            cfg[lk] = block
+
 
 def _rules_miss_mid_yes_band(rules: Any) -> bool:
     """True if no rule could match ~60–72% implied YES (common on 15m crypto demo with old defaults)."""
@@ -219,19 +270,7 @@ def default_bot_config() -> dict[str, Any]:
             "bnb": {"enabled": True, "label": "BNB 15m", "series_ticker": "KXBNB15M"},
             "hype": {"enabled": True, "label": "HYPE 15m", "series_ticker": "KXHYPE15M"},
         },
-        "rules": [
-            {"name": "Low 42-52%", "min_prob": 0.42, "max_prob": 0.52, "min_minutes_left": 6.0, "max_minutes_left": 20.0},
-            {"name": "Mid 55-72%", "min_prob": 0.55, "max_prob": 0.72, "min_minutes_left": 4.0, "max_minutes_left": 18.0},
-            {"name": "High 78-94%", "min_prob": 0.78, "max_prob": 0.94, "min_minutes_left": 3.0, "max_minutes_left": 15.0},
-            {
-                "name": "NO conviction 62-78%",
-                "side": "no",
-                "min_prob": 0.62,
-                "max_prob": 0.78,
-                "min_minutes_left": 3.0,
-                "max_minutes_left": 18.0,
-            },
-        ],
+        "rules": _copy_trading_rules_default(),
         "only_yes_subtitle_contains": "",
         "exclude_yes_subtitle_contains": "",
         "no_bet_when_yes_below_pct": 32,
@@ -262,14 +301,16 @@ def default_bot_config() -> dict[str, Any]:
         },
         # Lab B: conservative paper reference (does not apply scheduled optimizer rule changes).
         "lab_b": {
-            "engine_running": False,
+            "engine_running": True,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.0,
             "min_hold_minutes_before_stop": 30,
-            "balance_fraction_per_window": 0.04,
+            "balance_fraction_per_window": 0.055,
             "window_minutes": 18,
+            "no_bet_when_yes_below_pct": 24,
+            "rules": _copy_trading_rules_default(),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -277,7 +318,7 @@ def default_bot_config() -> dict[str, Any]:
         },
         # Lab C: aggressive paper reference (does not apply scheduled optimizer rule changes).
         "lab_c": {
-            "engine_running": False,
+            "engine_running": True,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
             "enable_patient_stop_loss": True,
@@ -285,6 +326,8 @@ def default_bot_config() -> dict[str, Any]:
             "min_hold_minutes_before_stop": 60,
             "balance_fraction_per_window": 0.11,
             "window_minutes": 12,
+            "no_bet_when_yes_below_pct": 28,
+            "rules": _copy_trading_rules_default(),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -292,7 +335,7 @@ def default_bot_config() -> dict[str, Any]:
         },
         # Lab D: wild reference branch; optimizer may use B/C momentum to influence Lab A sizing.
         "lab_d": {
-            "engine_running": False,
+            "engine_running": True,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
             "enable_patient_stop_loss": True,
@@ -300,6 +343,25 @@ def default_bot_config() -> dict[str, Any]:
             "min_hold_minutes_before_stop": 25,
             "balance_fraction_per_window": 0.13,
             "window_minutes": 10,
+            "no_bet_when_yes_below_pct": 22,
+            "rules": _copy_trading_rules_default(),
+            "paper_fee_model": "kalshi_taker",
+            "kalshi_fee_multiplier": 1.0,
+            "paper_fee_bps": 0,
+            "paper_balance_cents": 500_000,
+        },
+        # Lab E: balanced / adaptive breeder (Breeding Council).
+        "lab_e": {
+            "engine_running": True,
+            "auto_optimize": False,
+            "auto_reset_paper_on_tick_failure": False,
+            "enable_patient_stop_loss": True,
+            "stop_loss_trigger_pct": -8.5,
+            "min_hold_minutes_before_stop": 28,
+            "balance_fraction_per_window": 0.095,
+            "window_minutes": 11,
+            "no_bet_when_yes_below_pct": 24,
+            "rules": _copy_trading_rules_default(),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -335,22 +397,26 @@ def default_bot_config() -> dict[str, Any]:
             "lab_b_enabled": True,
             "lab_c_enabled": True,
             "lab_d_enabled": True,
+            "lab_e_enabled": True,
             "lab_a_style": "blend",
             "lab_b_style": "conservative",
             "lab_c_style": "aggressive",
             "lab_d_style": "wild",
+            "lab_e_style": "balanced",
             "loss_streak_trigger": 1,
             "threshold_step_pct": 2,
             "minute_step": 2,
             "max_history": 120,
             "lab_a_yes_floor_pct": 56,
-            "lab_b_yes_floor_pct": 58,
+            "lab_b_yes_floor_pct": 51,
             "lab_c_yes_floor_pct": 52,
-            "lab_d_yes_floor_pct": 50,
+            "lab_d_yes_floor_pct": 48,
+            "lab_e_yes_floor_pct": 50,
             "lab_a_min_minutes_left": 5,
-            "lab_b_min_minutes_left": 6,
+            "lab_b_min_minutes_left": 2,
             "lab_c_min_minutes_left": 3,
             "lab_d_min_minutes_left": 2,
+            "lab_e_min_minutes_left": 2,
             "min_trades_for_optimize": 8,
             "min_profitable_trades": 2,
             "optimize_bet_size": True,
@@ -546,6 +612,14 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": 10,
             "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
         }
+    if "lab_e" not in cfg or not isinstance(cfg.get("lab_e"), dict):
+        cfg["lab_e"] = {
+            "engine_running": False,
+            "auto_optimize": False,
+            "balance_fraction_per_window": 0.095,
+            "window_minutes": 11,
+            "paper_balance_cents": cfg.get("paper_balance_cents") or 500_000,
+        }
     _dchild = default_bot_config()
     for ck in BRANCH_CHILD_LABS:
         if ck not in cfg or not isinstance(cfg.get(ck), dict):
@@ -590,6 +664,7 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Drop legacy mirror key from persisted config (clients use lab_a only).
     if "sim_lab" in cfg:
         del cfg["sim_lab"]
+    _ensure_breeder_labs_have_rules(cfg)
     sync_live_paper_trading_keys(cfg)
     return cfg
 

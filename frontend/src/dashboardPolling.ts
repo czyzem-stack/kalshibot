@@ -4,6 +4,11 @@
  * Browsers throttle ``setInterval`` heavily in background tabs (Chrome often ≥1/min). The UI then looks
  * “frozen” until something forces a remount — e.g. Vite Fast Refresh while editing. Subscribing to
  * visibility / pageshow / online fires an immediate catch-up when the tab is active again.
+ *
+ * **Lab E parity:** fast equity refresh in ``App.tsx`` merges ``FAST_POLL_EQ_KEYS`` /
+ * ``FAST_POLL_METRIC_KEYS`` (includes ``equity_snapshots_lab_e`` and ``metrics_lab_e``). When adding
+ * branches, extend those tuples so partial ``GET /api/dashboard/equity`` payloads never leave Lab E
+ * as ``undefined`` (which caused hero / chart code to hit ``NoneType``-style ``.get`` errors in TS).
  */
 
 export const DASHBOARD_FULL_POLL_MS = 12_000;

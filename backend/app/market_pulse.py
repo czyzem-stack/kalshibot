@@ -105,6 +105,8 @@ async def fetch_market_pulse(
             )
             continue
 
+        if not isinstance(data, dict):
+            data = {}
         markets_list = list(data.get("markets") or [])
         await enrich_markets_with_orderbooks(cli, markets_list, now, max_fetches=20)
 
