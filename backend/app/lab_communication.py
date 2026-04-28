@@ -154,6 +154,66 @@ def _trim_at_words(text: str, max_len: int) -> str:
     return cut.rstrip(" .,;—-")
 
 
+# If the trimmed body ends on one of these tokens, appending a suffix reads like a grammar error
+# (e.g. ``D: yeah that's the`` + ``Ship best…`` from truncating ``that's the tension—heard``).
+_INCOMPLETE_LAST_WORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "if",
+        "i'm",
+        "i'll",
+        "we're",
+        "you're",
+        "they're",
+        "it's",
+        "that's",
+        "my",
+        "your",
+        "our",
+        "their",
+        "its",
+    }
+)
+
+
+def _tail_token_incomplete(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    # Open em-dash clause — never glue a suffix after a hard trim here.
+    if t.endswith("—"):
+        return True
+    parts = t.lower().split()
+    if not parts:
+        return True
+    last = parts[-1].rstrip(".,;:!?…\"'")
+    return last in _INCOMPLETE_LAST_WORDS
+
+
+def _suffix_redundant_with_body(body: str, suffix: str) -> bool:
+    """Skip strategy tails that repeat what the body already said."""
+    bl = (body or "").lower()
+    sl = (suffix or "").lower()
+    if not sl:
+        return True
+    if "lab a" in bl and "lab a" in sl:
+        return True
+    if "b/d" in bl and "b/d" in sl:
+        return True
+    if "e+c" in bl and "e+c" in sl:
+        return True
+    if "tighten" in bl and "tighten" in sl:
+        return True
+    if "genome" in bl and "genome" in sl:
+        return True
+    return False
+
+
 def _merge_dialogue_suffix(body: str, suffix: str, *, max_len: int = _MSG_SOFT_MAX) -> str:
     """
     Append a short team/strategy suffix without chopping the tag mid-phrase.
@@ -167,6 +227,8 @@ def _merge_dialogue_suffix(body: str, suffix: str, *, max_len: int = _MSG_SOFT_M
     sl = s.lower()
     if "team" in bl and sl.startswith("team"):
         return _cap_msg(b, max_len)
+    if _suffix_redundant_with_body(b, s):
+        return _cap_msg(b, max_len)
     if len(s) + 2 >= max_len:
         return _cap_msg(s, max_len)
     budget = max_len - len(s) - 1
@@ -176,12 +238,16 @@ def _merge_dialogue_suffix(body: str, suffix: str, *, max_len: int = _MSG_SOFT_M
         return f"{b} {s}".strip()
     # Never use ``_cap_msg`` on the body here — its ellipsis reads like a sentence end before the suffix.
     core = _trim_at_words(b, budget)
+    if _tail_token_incomplete(core):
+        return _cap_msg(b, max_len)
     out = f"{core} {s}".strip()
     if len(out) <= max_len:
         return out
     # Suffix wins: keep tag, trim body further (still no ellipsis between clauses).
     budget2 = max(12, max_len - len(s) - 1)
     core2 = _trim_at_words(b, budget2)
+    if _tail_token_incomplete(core2):
+        return _cap_msg(b, max_len)
     out2 = f"{core2} {s}".strip()
     return out2 if len(out2) <= max_len else _cap_msg(out2, max_len)
 
@@ -372,15 +438,16 @@ def _team_peer_reply_line(
     blur = _peer_blurb(peer_row, max_len=14)
 
     team_tag = ""
-    if breeding_enabled and random.random() < 0.34:
+    if breeding_enabled and random.random() < 0.22:
+        # Short tails only — long tags + 62-char cap caused ``…that's the`` + ``Ship…`` merge glitches.
         team_tag = random.choice(
             [
-                "Team—strong edge here.",
+                "Team—strong edge.",
                 "Team—breed next.",
-                "Building on that for next child.",
-                "E+C edge strong—next genome.",
-                "B/D—tighten bands here.",
-                "Ship best slant to Lab A next.",
+                "Next child—good lane.",
+                "E+C edge—next genome.",
+                "B/D—tighten bands.",
+                "Nudge best slant to A.",
                 "",
             ]
         ).strip()
@@ -530,7 +597,7 @@ def _team_peer_reply_line(
             f"{voc} interesting—I'm with {nick} here.",
             f"{voc} agree but I'd sand off the edges.",
             f"{voc} oh you went there—let me peek.",
-            f"{voc} yeah that's the tension—heard.",
+            f"{voc} yeah—I hear the tension.",
             f"{voc} remix your point—I'll try softer.",
             f"{voc} what do you think—same worry?",
             f"{voc} too spicy for me—passing light.",
@@ -639,16 +706,16 @@ def _contextual_strategic_pulse(
     reply_to: str | None = str(last_o["id"]) if last_o and last_o.get("id") else None
 
     team = ""
-    if breeding_enabled and random.random() < 0.42:
+    if breeding_enabled and random.random() < 0.28:
         team = random.choice(
             [
-                "Team—strong edge for next child genome.",
-                "Team—strong edge here.",
-                "Team—let's breed this next.",
-                "Team—push best thesis to Lab A next cycle.",
-                "E+C edge strong—next genome.",
-                "B/D—tighten bands here.",
-                "Ship best slant to Lab A next.",
+                "Team—strong edge.",
+                "Team—breed next.",
+                "Next child—good lane.",
+                "Push best thesis to A.",
+                "E+C edge—next genome.",
+                "B/D—tighten bands.",
+                "Nudge best slant to A.",
                 "",
             ]
         ).strip()
