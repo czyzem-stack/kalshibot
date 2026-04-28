@@ -3501,11 +3501,27 @@ function EquityDualLineChart({
   const fmtY = (v: number) =>
     yFormat === "pct" ? `${Number(v).toFixed(2)}%` : `$${Number(v).toFixed(2)}`;
   const fmtTick = (v: number) => (yFormat === "pct" ? `${Number(v).toFixed(1)}%` : `$${Number(v).toFixed(0)}`);
+  const fmtXTick = (v: unknown) => {
+    const s = String(v ?? "").trim();
+    if (!s) return "";
+    if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
+    const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length >= 3) return `${parts[1]} ${parts[2]}`;
+    if (parts.length === 2) return parts[1];
+    return s.length > 14 ? `${s.slice(0, 14)}...` : s;
+  };
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={plotData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+      <LineChart data={plotData} margin={{ left: 18, right: 12, top: 8, bottom: 20 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-        <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} />
+        <XAxis
+          dataKey="t"
+          stroke="#7f8ab5"
+          tick={{ fontSize: 11 }}
+          minTickGap={34}
+          interval="preserveStartEnd"
+          tickFormatter={fmtXTick}
+        />
         <YAxis
           stroke="#7f8ab5"
           tick={{ fontSize: 11 }}
@@ -3516,12 +3532,6 @@ function EquityDualLineChart({
           allowEscapeViewBox={{ x: true, y: true }}
           contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
           formatter={(value: number, name: string) => [fmtY(value), name]}
-        />
-        <Legend
-          verticalAlign="bottom"
-          height={28}
-          wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
-          formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
         />
         <Line
           type="monotone"
@@ -5442,11 +5452,11 @@ export default function App() {
         <div className="dash-split-row__col dash-split-row__col--metrics dash-split-metrics-stack">
       <div className="dash-split-card">
       <section className="dash-section dash-section--split-card" aria-labelledby="dash-heading-branch-performance">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+        <div className="dash-panel-head">
           <h2 id="dash-heading-branch-performance" className="dash-section__title" style={{ margin: 0 }}>
             Branch performance
           </h2>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <div className="dash-panel-head__actions">
             <button
               type="button"
               className="primary dash-panel-btn"
@@ -5916,7 +5926,7 @@ export default function App() {
         </div>
 
         <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <div className="dash-panel-head">
             <h2
               id="dash-heading-equity-curves"
               className="dash-section__title dash-equity-panel__title"
@@ -5925,15 +5935,7 @@ export default function App() {
             >
               Equity curves
             </h2>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
-              <button
-                type="button"
-                className="primary dash-panel-btn"
-                title="Open combined comparison popup with branch toggles."
-                onClick={() => setEquityCompareOpen(true)}
-              >
-                Compare
-              </button>
+            <div className="dash-panel-head__actions">
               <button
                 type="button"
                 className="primary dash-panel-btn"
@@ -6014,68 +6016,77 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
-            {(
-              [
-                ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
-                ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
-                ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
-                ["mm", "M / M", "Last snapshot per UTC calendar month."],
-                ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
-              ] as const
-            ).map(([id, label, tip]) => (
-              <button
-                key={id}
-                type="button"
-                role="tab"
-                aria-selected={equityGranularity === id}
-                className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
-                title={tip}
-                onClick={() => setEquityGranularity(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div
-            className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs dash-equity-panel__tabs--scale"
-            role="tablist"
-            aria-label="Equity Y-axis scale (all branch charts)"
-            style={{ marginTop: 6 }}
-          >
-            {(
-              [
+          <div className="dash-equity-controls-row">
+            <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
+              {(
                 [
-                  "dollars",
-                  "$",
-                  "Absolute dollars from SQLite snapshots. Labs A–D share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
-                ],
-                [
-                  "pct_change_window",
-                  "%Δ",
-                  "% change from the first plotted point in this chart’s window — makes B/C/D divergence visible when bankrolls differ but moves are correlated.",
-                ],
-              ] as const
-            ).map(([id, label, tip]) => (
+                  ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
+                  ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
+                  ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
+                  ["mm", "M / M", "Last snapshot per UTC calendar month."],
+                  ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
+                ] as const
+              ).map(([id, label, tip]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={equityGranularity === id}
+                  className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
+                  title={tip}
+                  onClick={() => setEquityGranularity(id)}
+                >
+                  {label}
+                </button>
+              ))}
               <button
-                key={id}
                 type="button"
-                role="tab"
-                aria-selected={equityValueScale === id}
-                className={`chart-tab ${equityValueScale === id ? "chart-tab--active" : ""}`}
-                title={tip}
-                onClick={() => setEquityValueScale(id)}
+                className="chart-tab"
+                title="Open combined comparison popup with branch toggles."
+                onClick={() => setEquityCompareOpen(true)}
               >
-                {label}
+                Compare
               </button>
-            ))}
+            </div>
+            <div
+              className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs dash-equity-panel__tabs--scale"
+              role="tablist"
+              aria-label="Equity Y-axis scale (all branch charts)"
+            >
+              {(
+                [
+                  [
+                    "dollars",
+                    "$",
+                    "Absolute dollars from SQLite snapshots. Labs A–D share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
+                  ],
+                  [
+                    "pct_change_window",
+                    "%Δ",
+                    "% change from the first plotted point in this chart’s window — makes B/C/D divergence visible when bankrolls differ but moves are correlated.",
+                  ],
+                ] as const
+              ).map(([id, label, tip]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={equityValueScale === id}
+                  className={`chart-tab ${equityValueScale === id ? "chart-tab--active" : ""}`}
+                  title={tip}
+                  onClick={() => setEquityValueScale(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="dash-equity-charts">
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
                 {activityBranchTabLabel("live")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
+              <p className="sub dash-equity-chart-fp" title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
                 {snaps.length} pts · book {fmtMoney(Number(metrics.current_equity_dollars ?? 0))} · {Number(metrics.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6102,7 +6113,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_a")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
                 {equitySnapsLabA.length} pts · book {fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))} · {Number(metricsLabA.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6129,7 +6140,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_b")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_b.">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_b.">
                 {equitySnapsLabB.length} pts · book {fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))} · {Number(metricsLabB.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6156,7 +6167,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_c")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_c.">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_c.">
                 {equitySnapsLabC.length} pts · book {fmtMoney(Number(metricsLabC.current_equity_dollars ?? 0))} · {Number(metricsLabC.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -6183,7 +6194,7 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_d")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_d")}
               </h3>
-              <p className="sub dash-equity-chart-fp" style={{ fontSize: 10, margin: "-2px 0 6px", lineHeight: 1.35 }} title="Series from equity_snapshots_lab_d.">
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_d.">
                 {equitySnapsLabD.length} pts · book {fmtMoney(Number(metricsLabD.current_equity_dollars ?? 0))} · {Number(metricsLabD.settled_trades ?? 0)} settled
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
@@ -7168,7 +7179,7 @@ export default function App() {
                 render={({ h }) => (
                   <div style={{ width: "100%", height: h }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={equityOverlayData} margin={{ left: 6, right: 10, top: 8, bottom: 32 }}>
+                      <LineChart data={equityOverlayData} margin={{ left: 18, right: 12, top: 8, bottom: 32 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
                         <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
                         <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
