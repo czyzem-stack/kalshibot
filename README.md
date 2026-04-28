@@ -1,133 +1,164 @@
-# Kalshibot
+# Kalshibot (Chomp's Diner)
 
-**Self-hosted Kalshi trading stack** — FastAPI + React.
+**Self-hosted Kalshi trading stack** — FastAPI backend + React (Vite) dashboard. Runs on your machine: REST/WebSocket market data, a JSON rule engine, parallel **paper + live** branches, SQLite history, and an optional **optimizer** with explainable **Labs Breeding** and a **Breeding Council** Think Tank (Labs B–E).
 
-Polls Kalshi markets in real time, matches **JSON probability + time-based rules**, executes trades across **Live + four paper labs (A–D)** in parallel, records every fill and signal in **SQLite**, and includes an optional intelligent **optimizer loop** (internal tuning + optional Claude assistance) that only auto-persists safe changes to **Lab A**.
-
----
-
-## Features
-
-- Real-time market data via Kalshi REST + WebSocket
-- Flexible JSON-configurable trading rules per lab
-- **Live trading** + **four independent paper labs** (A, B, C, D)
-- Full trade history, signals, and equity snapshots in SQLite
-- Modern real-time React dashboard with charts, holdings, signals, and health monitoring
-- Optional optimizer loop with internal auto-tuning and Claude integration (guardrails protect Live and non-A labs)
-- Structured logging, health endpoints, and config versioning
-- Easy deployment: Windows .exe, Docker, or Python source
-- Full test suite + GitHub Actions CI
-
-**Current Version:** `v0.4.15.010` (see [`VERSION`](VERSION) and [`CHANGELOG.md`](CHANGELOG.md))
+| | |
+|---|---|
+| **Version** | [`v0.4.15.010`](VERSION) — see [`CHANGELOG.md`](CHANGELOG.md) |
+| **Branches** | `develop` (day-to-day) · `main` (release-aligned) |
+| **Data** | `data/bot.sqlite3` (+ optional JSONL under `data/logs/`) |
 
 ---
 
-## Architecture
+## Why use it
+
+- **One dashboard** for Live + **Lab A** (staging / optimizer target) + **Labs B–E** (breeder reference arms) + **child** `lab_child_*` slots — performance, equity, holdings, signals, optimizer radar.
+- **Rules stay yours** — JSON config + per-lab overrides; optimizer may propose changes; promotion toward Live is deliberate.
+- **Observable** — structured logs, `/api/health`, equity snapshots, trade/signal trails.
+- **No hosted middleman** — API keys and DB never leave the host you run.
+
+---
+
+## Architecture (at a glance)
 
 ```mermaid
-graph TD
-    Kalshi[Kalshi API<br/>REST + WebSocket] <--> Backend[FastAPI Backend]
-    Backend <--> DB[(SQLite<br/>data/bot.sqlite3)]
-    Backend <--> UI[React + Vite Dashboard]
-    Backend --> Engines[Dual Engine Loop<br/>Live + Lab A–D]
-    Engines --> Rules[JSON Rule Engine]
-    Rules --> Optimizer[Optimizer Loop<br/>internal and optional Claude]
-    Optimizer --> Backend
+graph LR
+  K[Kalshi REST + WS] <--> API[FastAPI]
+  API <--> DB[(SQLite)]
+  API <--> UI[React dashboard]
+  API --> LOOP[Dual engine loop]
+  LOOP --> LIVE[Live]
+  LOOP --> A[Lab A]
+  LOOP --> BCDE[Labs B–E + children]
+  LOOP --> RULES[Rule engine + sim fills]
+  OPT[Optimizer + breeding] --> API
+  RULES --> OPT
 ```
 
-## Dual Engine Loop Flow
+- **`dual_engine_loop`** ticks **Live**, **Lab A–E**, and **child** branches (staggered to reduce public API burst).
+- **`lab_communication`** powers the **Think Tank** transcript (`GET /labs/chat`) — short breeder dialogue; separate from GA breeding in `lab_breeding.py`.
+- **Breeding / family tree** — tournament-style parents, synergy metadata, UI tree under Optimizer (see [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md)).
 
-```mermaid
-flowchart LR
-    A[Poll Market Data] --> B[Evaluate Rules<br/>per Lab]
-    B --> C{Signal Generated?}
-    C -- No --> A
-    C -- Yes --> D[Calculate Size<br/>+ Place Order]
-    D --> E[Record Fill + Signal]
-    E --> F[Update Equity & MTM]
-    F --> A
-```
+---
 
-## Operator Flow (High-Level)
+## Branch cheat sheet
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant D as Dashboard
-    participant B as Backend
-    participant K as Kalshi
+| Branch | Role |
+|--------|------|
+| **live** | Production path: paper sim or real Kalshi orders from config. |
+| **lab_a** | Staging / blend; optimizer **may** target Lab A before you promote ideas to Live. |
+| **lab_b** | Conservative breeder reference. |
+| **lab_c** | Aggressive breeder reference. |
+| **lab_d** | High-variance reference. |
+| **lab_e** | Balanced / adaptive fourth breeder (Breeding Council). |
+| **lab_child_*** | Ephemeral GA children (invisible engines by default pattern). |
 
-    U->>D: Edit rules / config
-    D->>B: POST /api/config
-    B->>B: Persist to SQLite
-    B->>K: Poll markets (REST/WS)
-    K-->>B: Market data
-    B->>B: Run dual engine loop
-    B-->>D: Push real-time updates
-    D-->>U: Live charts & status
-```
+---
 
-## Quick Start (Windows – Recommended)
+## Quick start — local development (Windows)
 
-1. Download the latest Windows executable from Releases (or build via `pyinstaller kalshibot-api.spec`)
-2. Run `kalshibot.exe`
-3. Open `http://localhost:8770` in your browser
+PowerShell from the repo root:
 
-macOS / Linux / Docker -> see full instructions in the `docs/` folder.
+1. **Python env**
 
-## Dashboard Overview
+   ```powershell
+   .\scripts\create_venv.ps1
+   ```
 
-The single-page React dashboard gives you:
+2. **Environment** — copy [`.env.example`](.env.example) to `.env`, set Kalshi credentials and any ports (see comments in the file).
 
-- Branch performance comparison (Live + Lab A–D)
-- Real-time equity curves and mark-to-market (MTM)
-- Current holdings and open positions
-- Active signals and rule-match history
-- Optimizer status and tuning radar
-- Live JSON config editor with history
-- Health orbs and system status
+3. **Launch API + Vite** (typical dev stack)
+
+   ```powershell
+   .\scripts\launch_local.ps1
+   ```
+
+4. **Open the UI** — default Vite dev port for this worktree is **`http://127.0.0.1:5174`** (API often **`8765`**; see script output).
+
+macOS/Linux: use the same env file and run the backend module / Vite commands your team uses, or adapt `launch_local.ps1` patterns.
+
+---
+
+## Quick start — packaged API (Windows)
+
+- Build or download the API executable from **Releases** (when published).
+- Run `kalshibot-api.exe` (or your build output); set `KALSHI_BOT_PORT` if you need a non-default port.
+- Serve the built UI from `frontend/dist` with any static host, or open the dev URL you proxy to the API.
+
+---
 
 ## Configuration
 
-Everything is driven by versioned JSON configs:
+- **Runtime config** is stored in SQLite (`bot_config` / merged payloads) and edited from **Settings** in the UI (`PUT`/`POST` under `/api/config` and lab-branch routes).
+- **Environment** (ports, Kalshi base URL, log level, HTTP/WS tuning) lives in **`.env`** — see [`.env.example`](.env.example) and [`backend/app/settings_env.py`](backend/app/settings_env.py).
+- **Backups** — copy `data/bot.sqlite3` regularly; use Settings reset flows carefully in production.
 
-- Per-lab trading rules
-- Sizing logic, risk parameters, fee models
-- Optimizer settings
-- Kalshi API credentials (stored locally only)
+---
 
-Configs are audited and versioned in the database for easy rollback.
+## API highlights
 
-## Runbooks & Documentation
+| Area | Examples |
+|------|-----------|
+| Dashboard | `GET /api/dashboard`, `GET /api/dashboard/equity` |
+| Health | `GET /api/health` |
+| Trades / signals | `GET /api/trades`, signals routes as exposed in `main.py` |
+| Optimizer | `GET /api/optimizer/status`, breeding tree payloads from optimizer routes |
+| Think Tank | `GET /labs/chat` (rolling breeder lines; optional `reply_to` on rows) |
+| Config | `GET/PUT /api/config`, lab branch patches |
 
-- Quick Start - Windows
-- macOS / Linux Setup
-- Configuration Guide
-- API Reference
-- Optimizer Deep Dive
-- Production Readiness & Limitations
+Explore the live OpenAPI docs at **`/docs`** while the server is running.
 
-## Production Notes & Limitations
+---
 
-- Self-hosted only — your keys and data never leave your machine
-- No built-in multi-user authentication (secure your host with firewall/VPN)
-- Regular backups of `data/bot.sqlite3` are strongly recommended
-- Monitor structured logs and the `/api/health` endpoint
+## Frontend (dashboard)
 
-## Tech Stack
+- **Vite + React + TypeScript** in [`frontend/`](frontend/).
+- **Build:** `cd frontend && npm ci && npm run build` → static assets in `frontend/dist/`.
+- **Dev:** `npm run dev` (CORS origins must include your Vite origin; see bootstrap scripts).
 
-- Backend: Python 3, FastAPI, SQLModel, httpx, structlog
-- Frontend: React + TypeScript, Vite, Recharts
-- Database: SQLite
-- Deployment: PyInstaller, Docker
-- Testing: pytest + GitHub Actions
+Notable UI areas: branch performance tabs, **six** equity small-multiples (Live + A–E), hero branch strip, Optimizer + **Lab Think Tank**, Settings (engines per lab, optimizer, resets).
 
-## Developer Notes
+---
 
-- Primary development happens on the `develop` branch
-- Frontend supports hot reload during development
-- Backend requires restart when changing engine or persistence code
-- Pre-commit hooks, Ruff, and type checking are enforced
+## Backend (engine + API)
 
-Questions or contributions? Open an issue or PR on `develop`.
-Happy trading! 🚀
+- **FastAPI** app in [`backend/app/`](backend/app/).
+- **Engines** under [`backend/app/engines/`](backend/app/engines/) — `tick_once`, dual loop, sim settlement, equity snapshots.
+- **Persistence** — [`backend/app/persistence.py`](backend/app/persistence.py) (defaults, migrations, store).
+
+Run tests from repo root (with venv active):
+
+```powershell
+pytest -q
+```
+
+---
+
+## Security & operations
+
+- **Treat the host as the trust boundary** — no built-in multi-user auth; use firewall/VPN where needed.
+- **Keys** — only in `.env` / local secrets; never commit real credentials.
+- **Logs** — JSON logging optional for production aggregators (`LOG_JSON=1`).
+
+---
+
+## Contributing
+
+1. Branch from **`develop`**, open PRs against **`develop`**.
+2. Keep changes focused; match existing style (Ruff/formatters if configured).
+3. Update [`CHANGELOG.md`](CHANGELOG.md) and [`VERSION`](VERSION) when shipping user-visible behavior.
+
+---
+
+## More reading
+
+| Doc | Purpose |
+|-----|---------|
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes |
+| [`README-short.md`](README-short.md) | Ultra-compact pitch |
+| [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md) | Breeding vs dashboard engine concepts |
+| [`docs/startup_performance.md`](docs/startup_performance.md) | Startup / cache tuning notes |
+
+---
+
+*Kalshibot is independent software, not affiliated with Kalshi. Trading involves risk; paper modes exist to experiment without live orders.*
