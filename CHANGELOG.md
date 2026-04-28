@@ -2,6 +2,15 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.0 - Unified versioning + Breeder explainability & Family Tree visualizer upgrade - 2026-04-28
+
+- **Versioning:** Standardized project branding to **v0.4.15.0** across backend/frontend/docs and removed separate breeder/family sub-version labels.
+- **Backend (`lab_breeding.py`):** Labs Breeding uses tournament-style parent selection (top-3 rank, 70% elite / 20% runner-up / 10% diversity pick), explicit **breeder reasons**, and trait-complementarity **synergy_score** for each pairing.
+- **Backend (`lab_breeding.py`):** Child origin metadata is now richer and explainable: `parent_ids`, `parent_fitness`, `inherited_rules_count`, `mutated_traits`, `breeder_reason`, `breeder_reason_short`, `synergy_score`, and `fitness_delta_vs_parents`.
+- **Backend (`lab_breeding.py`):** `build_labs_breeding_tree_snapshot` upgraded with parent fitness/reason fields and child-node story fields (`fitness_delta`, short/full reason, inherited trait summary, parent labels, mutation list), while preserving old DB compatibility and existing caps/cooldowns.
+- **Frontend (`frontend/src/App.tsx`):** Family tab now renders as a compact hierarchical tree (parents row, connector spine, child nodes with parent arrows, fitness delta, "why" summary, trait badges) within the existing panel footprint.
+- **Frontend (`frontend/src/App.tsx`):** Family double-click overlay is now story-focused: selecting a child shows lineage path, full reason text, synergy, inherited rules, and mutated traits so users can see **who bred whom and why** at a glance.
+
 ## v0.4.09 - Dashboard catch-up + fast equity MTM timeout + sim settle `amended` - 2026-04-26
 
 - **Frontend:** `frontend/src/dashboardPolling.ts` — on **tab visible**, **`pageshow`**, and **`online`**, immediately refresh **`GET /api/dashboard`** and **`GET /api/dashboard/equity`** so the UI does not stay stale while background tabs throttle `setInterval` (editing via Vite previously looked like the “fix” because Fast Refresh remounted the poll effect).

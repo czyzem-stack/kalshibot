@@ -672,7 +672,7 @@ function ChartDblClickExpand({
 
 const BREEDER_RADAR_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ec4899", "#06b6d4", "#a855f7", "#eab308", "#14b8a6", "#f97316", "#94a3b8"];
 
-/** Labs Breeding v0.1 — twelve-axis personality radar (shared inline + expand overlay). */
+/** Labs Breeding — twelve-axis personality radar (shared inline + expand overlay). */
 function BreederPersonalityRadarChart({
   rows,
   series,
@@ -831,7 +831,7 @@ function _breedingIsoSortKey(s: string): string {
   return String(s || "").trim();
 }
 
-/** Labs Breeding v0.1 — family-style timeline from ``GET /api/optimizer/status`` (lineage, pool, culls, log). */
+/** Labs Breeding — family-style timeline from ``GET /api/optimizer/status`` (lineage, pool, culls, log). */
 function BreedingFamilyTreePanel({
   status,
   loading,
@@ -842,9 +842,9 @@ function BreedingFamilyTreePanel({
   error: string | null;
 }) {
   const [sub, setSub] = useState<BreedingTreeSubTab>("family");
+  const [selectedFamilyNodeId, setSelectedFamilyNodeId] = useState<string>("");
   const tree = (status?.labs_breeding_tree_snapshot || {}) as AnyObj;
   const treeNodes = Array.isArray(tree.nodes) ? (tree.nodes as AnyObj[]) : [];
-  const treeEdges = Array.isArray(tree.edges) ? (tree.edges as AnyObj[]) : [];
   const treeSummary = (tree.summary || {}) as AnyObj;
   const treeRecent = Array.isArray(tree.recent_events) ? (tree.recent_events as AnyObj[]) : [];
 
@@ -854,29 +854,30 @@ function BreedingFamilyTreePanel({
       _breedingIsoSortKey(String(b.at || b.culled_at || "")).localeCompare(_breedingIsoSortKey(String(a.at || a.culled_at || ""))),
     );
   }, [status]);
-
-  const pool = useMemo(() => {
-    return Array.isArray(status?.labs_breeding_children) ? (status!.labs_breeding_children as AnyObj[]) : [];
-  }, [status]);
-
+  const pool = useMemo(() => (Array.isArray(status?.labs_breeding_children) ? (status!.labs_breeding_children as AnyObj[]) : []), [status]);
   const culls = useMemo(() => {
     const raw = Array.isArray(status?.labs_breeding_death_chamber) ? (status!.labs_breeding_death_chamber as AnyObj[]) : [];
     return [...raw].sort((a, b) =>
       _breedingIsoSortKey(String(b.culled_at || b.at || "")).localeCompare(_breedingIsoSortKey(String(a.culled_at || a.at || ""))),
     );
   }, [status]);
-
   const log = useMemo(() => {
     const raw = Array.isArray(status?.labs_breeding_log) ? (status!.labs_breeding_log as AnyObj[]) : [];
     return [...raw].sort((a, b) => _breedingIsoSortKey(String(b.at || "")).localeCompare(_breedingIsoSortKey(String(a.at || ""))));
   }, [status]);
 
+  const familyParents = useMemo(() => treeNodes.filter((n) => String(n.kind || "").toLowerCase() === "parent"), [treeNodes]);
+  const familyChildren = useMemo(() => treeNodes.filter((n) => String(n.kind || "").toLowerCase() === "child"), [treeNodes]);
+  const selectedFamilyChild = useMemo(() => {
+    const sid = String(selectedFamilyNodeId || "");
+    if (!sid) return familyChildren[0] || null;
+    return familyChildren.find((n) => String(n.id || "") === sid) || familyChildren[0] || null;
+  }, [selectedFamilyNodeId, familyChildren]);
+
   const nodeClassForKind = (kind: string) => {
     const k = String(kind || "").toLowerCase();
     if (k.includes("adopt")) return "dash-breeding-tree-node dash-breeding-tree-node--adoption";
-    if (k.includes("death") || k.includes("cull") || k.includes("preempt") || k.includes("replace")) {
-      return "dash-breeding-tree-node dash-breeding-tree-node--cull";
-    }
+    if (k.includes("death") || k.includes("cull") || k.includes("preempt") || k.includes("replace")) return "dash-breeding-tree-node dash-breeding-tree-node--cull";
     if (k.includes("birth") || k.includes("born")) return "dash-breeding-tree-node dash-breeding-tree-node--birth";
     return "dash-breeding-tree-node";
   };
@@ -884,198 +885,183 @@ function BreedingFamilyTreePanel({
   const renderInner = (h: number) => {
     if (error) {
       return (
-        <div
-          className="dash-optimizer-panel__chart-skeleton dash-optimizer-panel__chart-skeleton--error"
-          style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}
-        >
-          <p className="sub" style={{ margin: 0, color: "#f87171" }} role="alert">
-            {error}
-          </p>
+        <div className="dash-optimizer-panel__chart-skeleton dash-optimizer-panel__chart-skeleton--error" style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}>
+          <p className="sub" style={{ margin: 0, color: "#f87171" }} role="alert">{error}</p>
         </div>
       );
     }
     if (loading && !status) {
       return (
-        <div
-          className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading"
-          style={{ minHeight: h, height: h, boxSizing: "border-box" as const }}
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-          aria-label="Loading breeding tree"
-        />
+        <div className="dash-optimizer-panel__chart-skeleton dash-breeder-radar-loading" style={{ minHeight: h, height: h, boxSizing: "border-box" as const }} role="status" aria-live="polite" aria-busy="true" aria-label="Loading breeding tree" />
       );
     }
     const maxH = Math.max(200, Math.min(h, 920));
     return (
-      <div
-        className="dash-breeding-tree-scroll"
-        style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}
-      >
+      <div className="dash-breeding-tree-scroll" style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}>
         {sub === "family" ? (
           <div>
             <div className="dash-breeding-tree-node" style={{ marginBottom: 10 }}>
-              <strong>
-                Family tree v{String(status?.labs_breeding_version || tree.version || "0.2")} · generation{" "}
-                {Number(tree.generation_index ?? 0)}
-              </strong>
+              <strong>Family tree · generation {Number(tree.generation_index ?? 0)}</strong>
               <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                pool {Number(treeSummary.children_in_pool ?? pool.length)} · lineage {Number(treeSummary.lineage_n ?? lineage.length)} ·
-                culls {Number(treeSummary.death_chamber_n ?? culls.length)} · event seq {Number(tree.event_seq ?? 0)}
+                pool {Number(treeSummary.children_in_pool ?? pool.length)} · lineage {Number(treeSummary.lineage_n ?? lineage.length)} · culls {Number(treeSummary.death_chamber_n ?? culls.length)} · event seq {Number(tree.event_seq ?? 0)}
               </div>
             </div>
-            <div className="dash-breeding-tree-node dash-breeding-tree-node--birth" style={{ marginBottom: 10 }}>
+            <div className="dash-breeding-tree-node dash-breeding-tree-node--birth" style={{ marginBottom: 8 }}>
               <strong>Breeder parents</strong>
-              <div className="sub" style={{ marginTop: 6, fontSize: 12 }}>
-                {treeNodes
-                  .filter((n) => String(n.kind || "") === "parent")
-                  .map((n) => String(n.label || n.id || "—"))
-                  .join(" · ") || "—"}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6, marginTop: 6 }}>
+                {familyParents.map((p) => (
+                  <div key={String(p.id || p.branch || p.label)} style={{ border: "1px solid rgba(82, 97, 148, 0.65)", borderRadius: 8, padding: "6px 8px", background: "rgba(9, 14, 34, 0.72)" }} title={String(p.selection_reason_full || p.selection_reason || "")}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{String(p.label || p.id || "—")}</div>
+                    <div className="sub" style={{ marginTop: 2, fontSize: 11 }}>fitness {Number(p.fitness ?? 0).toFixed(3)}</div>
+                  </div>
+                ))}
               </div>
             </div>
-            {treeNodes
-              .filter((n) => String(n.kind || "") === "child")
-              .map((n, i) => {
-                const nid = String(n.id || "");
-                const parentEdge = treeEdges.find((e) => String(e.to || "") === nid && String(e.kind || "") === "birth");
-                const slotEdge = treeEdges.find((e) => String(e.from || "") === nid && String(e.kind || "") === "assignment");
-                return (
-                  <div key={`${nid}-${i}`}>
-                    {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                    <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
-                      <strong>
-                        {String(n.label || "child")} · {String(n.child_id || "").slice(0, 10)}
-                      </strong>
-                      <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                        {String(parentEdge?.from || n.parent || "—")} → {String(slotEdge?.to || n.slot || "—")}
-                        {n.fitness != null && Number.isFinite(Number(n.fitness)) ? ` · fitness ${Number(n.fitness).toFixed(3)}` : ""}
-                        {n.born_at ? ` · born ${String(n.born_at)}` : ""}
-                      </div>
+            {familyChildren.length ? (
+              <div style={{ position: "relative", margin: "2px 0 8px", paddingLeft: 8 }}>
+                <div aria-hidden style={{ position: "absolute", left: 5, top: 2, bottom: 2, width: 2, background: "linear-gradient(180deg, rgba(110,231,255,0.45), rgba(110,231,255,0.14))", borderRadius: 2 }} />
+                {familyChildren.map((n, i) => {
+                  const nid = String(n.id || "");
+                  const childId = String(n.child_id || "").trim();
+                  const shortId = childId ? `${childId.slice(0, 8)}…-${childId.slice(-2)}` : String(n.label || "child");
+                  const pLabels = Array.isArray(n.parent_labels) ? (n.parent_labels as AnyObj[]).map((x) => String(x)).filter(Boolean) : [];
+                  const pText = pLabels.length ? pLabels.join(" + ") : String(n.parent || "—");
+                  const fit = Number(n.fitness ?? 0);
+                  const delta = Number(n.fitness_delta ?? 0);
+                  const deltaArrow = delta >= 0 ? "▲" : "▼";
+                  const deltaTone = delta >= 0 ? "#5ef3a9" : "#fca5a5";
+                  const why = String(n.breeder_reason_short || n.breeder_reason_full || "lineage carry-forward");
+                  const traits = Array.isArray(n.inherited_traits_summary) ? (n.inherited_traits_summary as AnyObj[]).map((x) => String(x)).filter(Boolean).slice(0, 3) : [];
+                  const selected = String(selectedFamilyChild?.id || "") === nid;
+                  return (
+                    <div key={`${nid}-${i}`} style={{ position: "relative", marginBottom: 8 }}>
+                      <div aria-hidden style={{ position: "absolute", left: -3, top: 16, width: 10, height: 2, background: "rgba(110,231,255,0.5)", borderRadius: 2 }} />
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFamilyNodeId(nid)}
+                        onDoubleClick={() => setSelectedFamilyNodeId(nid)}
+                        className="dash-breeding-tree-node dash-breeding-tree-node--birth"
+                        style={{ width: "100%", textAlign: "left", margin: 0, borderColor: selected ? "rgba(110,231,255,0.65)" : undefined, boxShadow: selected ? "0 0 0 1px rgba(110,231,255,0.35) inset" : "none" }}
+                        title={String(n.breeder_reason_full || why)}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                          <strong>{shortId}</strong>
+                          <span className="sub" style={{ fontSize: 11 }}>synergy {Number(n.synergy_score ?? 0).toFixed(1)}</span>
+                        </div>
+                        <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>← {pText}</div>
+                        <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>
+                          fitness {fit.toFixed(3)} <span style={{ color: deltaTone, fontWeight: 700 }}>{deltaArrow} {delta >= 0 ? "+" : ""}{delta.toFixed(3)}</span>
+                        </div>
+                        <div className="sub" style={{ marginTop: 3, fontSize: 12, color: "#c9d6f6" }}>{why}</div>
+                        {traits.length ? (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+                            {traits.map((tag, idx) => (
+                              <span key={`${tag}-${idx}`} style={{ fontSize: 10, border: "1px solid rgba(82, 97, 148, 0.7)", borderRadius: 999, padding: "1px 7px", background: "rgba(9, 14, 34, 0.7)", color: "#b9c9ee" }}>{tag}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </button>
                     </div>
-                  </div>
-                );
-              })}
-            {!treeNodes.some((n) => String(n.kind || "") === "child") ? (
-              <p className="sub" style={{ margin: 0 }}>
-                No active children in pool yet for this generation.
-              </p>
+                  );
+                })}
+              </div>
             ) : null}
+            {selectedFamilyChild ? (
+              <div className="dash-breeding-tree-node" style={{ marginTop: 6 }}>
+                <strong>Breeding story</strong>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  {String(selectedFamilyChild.breeder_reason_full || selectedFamilyChild.breeder_reason_short || "No story provided")}
+                </div>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  lineage path: {Array.isArray(selectedFamilyChild.parent_labels) && selectedFamilyChild.parent_labels.length
+                    ? `${selectedFamilyChild.parent_labels.join(" + ")} → ${String(selectedFamilyChild.child_id || selectedFamilyChild.label || "child")} → ${String(selectedFamilyChild.slot || "pool")}`
+                    : `${String(selectedFamilyChild.parent || "parent")} → ${String(selectedFamilyChild.child_id || selectedFamilyChild.label || "child")}`}
+                </div>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  inherited rules {Number(selectedFamilyChild.inherited_rules_count ?? 0)} · mutated traits {Array.isArray(selectedFamilyChild.mutated_traits) && selectedFamilyChild.mutated_traits.length ? selectedFamilyChild.mutated_traits.join(", ") : "none"}
+                </div>
+              </div>
+            ) : null}
+            {!familyChildren.length ? <p className="sub" style={{ margin: 0 }}>No active children in pool yet for this generation.</p> : null}
             {treeRecent.length ? (
               <div className="dash-breeding-tree-node" style={{ marginTop: 10 }}>
                 <strong>Recent growth events</strong>
                 <div className="sub" style={{ marginTop: 6, fontSize: 12 }}>
-                  {treeRecent
-                    .slice(0, 8)
-                    .map((e) => `${String(e.kind || "event")}@${String(e.at || "—")}`)
-                    .join(" · ")}
+                  {treeRecent.slice(0, 8).map((e) => `${String(e.kind || "event")}@${String(e.at || "—")}`).join(" · ")}
                 </div>
               </div>
             ) : null}
           </div>
         ) : null}
         {sub === "lineage" ? (
-          lineage.length ? (
-            lineage.map((row, i) => {
-              const kind = String(row.kind || row.type || "event");
-              const at = String(row.at || row.culled_at || "—");
-              const cid = row.child_id != null ? String(row.child_id) : row.id != null ? String(row.id) : "";
-              const shortId = cid.length > 10 ? `${cid.slice(0, 8)}…` : cid;
-              const title = `${kind}${row.slot ? ` · ${row.slot}` : ""}${shortId ? ` · ${shortId}` : ""}`;
-              const fit = row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · fitness ${Number(row.replay_fitness).toFixed(3)}` : "";
-              return (
-                <div key={`${at}-${i}-${kind}`}>
-                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                  <div className={nodeClassForKind(kind)}>
-                    <strong>{title}</strong>
-                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                      {at}
-                      {fit}
-                      {row.parent ? ` · parent ${row.parent}` : ""}
-                      {row.via ? ` · via ${row.via}` : ""}
-                    </div>
-                  </div>
+          lineage.length ? lineage.map((row, i) => {
+            const kind = String(row.kind || row.type || "event");
+            const at = String(row.at || row.culled_at || "—");
+            const cid = row.child_id != null ? String(row.child_id) : row.id != null ? String(row.id) : "";
+            const shortId = cid.length > 10 ? `${cid.slice(0, 8)}…` : cid;
+            const title = `${kind}${row.slot ? ` · ${row.slot}` : ""}${shortId ? ` · ${shortId}` : ""}`;
+            const fit = row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · fitness ${Number(row.replay_fitness).toFixed(3)}` : "";
+            return (
+              <div key={`${at}-${i}-${kind}`}>
+                {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                <div className={nodeClassForKind(kind)}>
+                  <strong>{title}</strong>
+                  <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>{at}{fit}{row.parent ? ` · parent ${row.parent}` : ""}{row.via ? ` · via ${row.via}` : ""}</div>
                 </div>
-              );
-            })
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>
-              No lineage rows yet. After the optimizer runs with breeding enabled, births, adoptions, and culls append here (newest first).
-            </p>
-          )
+              </div>
+            );
+          }) : <p className="sub" style={{ margin: 0 }}>No lineage rows yet. After the optimizer runs with breeding enabled, births, adoptions, and culls append here (newest first).</p>
         ) : null}
         {sub === "pool" ? (
-          pool.length ? (
-            pool.map((c, i) => (
-              <div key={String(c.id ?? i)}>
+          pool.length ? pool.map((c, i) => (
+            <div key={String(c.id ?? i)}>
+              {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+              <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
+                <strong>Child {c.id != null ? String(c.id).slice(0, 10) : "—"}</strong>
+                <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                  parent <strong>{String(c.parent ?? "—")}</strong> · born {String(c.born_at ?? "—")}
+                  {c.replay_fitness != null && Number.isFinite(Number(c.replay_fitness)) ? ` · fitness ${Number(c.replay_fitness).toFixed(3)}` : ""}
+                  {c.engine_branch ? ` · slot ${String(c.engine_branch)}` : ""}{typeof c.rules_n === "number" ? ` · rules ${c.rules_n}` : ""}
+                </div>
+              </div>
+            </div>
+          )) : <p className="sub" style={{ margin: 0 }}>Pool is empty in this status snapshot (children appear after breeder ticks assign genomes).</p>
+        ) : null}
+        {sub === "culls" ? (
+          culls.length ? culls.map((row, i) => {
+            const at = String(row.culled_at || row.at || "—");
+            const reason = String(row.reason || row.kind || "—");
+            return (
+              <div key={`${at}-${i}-${reason}`}>
                 {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                <div className="dash-breeding-tree-node dash-breeding-tree-node--birth">
-                  <strong>Child {c.id != null ? String(c.id).slice(0, 10) : "—"}</strong>
+                <div className="dash-breeding-tree-node dash-breeding-tree-node--cull">
+                  <strong>{reason}</strong>
                   <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                    parent <strong>{String(c.parent ?? "—")}</strong>
-                    {" · "}
-                    born {String(c.born_at ?? "—")}
-                    {c.replay_fitness != null && Number.isFinite(Number(c.replay_fitness)) ? ` · fitness ${Number(c.replay_fitness).toFixed(3)}` : ""}
-                    {c.engine_branch ? ` · slot ${String(c.engine_branch)}` : ""}
-                    {typeof c.rules_n === "number" ? ` · rules ${c.rules_n}` : ""}
+                    {at}{row.id != null ? ` · id ${String(row.id).slice(0, 10)}` : ""}{row.parent != null ? ` · parent ${row.parent}` : ""}
+                    {row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness)) ? ` · last fitness ${Number(row.replay_fitness).toFixed(3)}` : ""}
                   </div>
                 </div>
               </div>
-            ))
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>
-              Pool is empty in this status snapshot (children appear after breeder ticks assign genomes).
-            </p>
-          )
-        ) : null}
-        {sub === "culls" ? (
-          culls.length ? (
-            culls.map((row, i) => {
-              const at = String(row.culled_at || row.at || "—");
-              const reason = String(row.reason || row.kind || "—");
-              return (
-                <div key={`${at}-${i}-${reason}`}>
-                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                  <div className="dash-breeding-tree-node dash-breeding-tree-node--cull">
-                    <strong>{reason}</strong>
-                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                      {at}
-                      {row.id != null ? ` · id ${String(row.id).slice(0, 10)}` : ""}
-                      {row.parent != null ? ` · parent ${row.parent}` : ""}
-                      {row.replay_fitness != null && Number.isFinite(Number(row.replay_fitness))
-                        ? ` · last fitness ${Number(row.replay_fitness).toFixed(3)}`
-                        : ""}
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>No recent culls in the death-chamber window.</p>
-          )
+            );
+          }) : <p className="sub" style={{ margin: 0 }}>No recent culls in the death-chamber window.</p>
         ) : null}
         {sub === "log" ? (
-          log.length ? (
-            log.map((row, i) => {
-              const kind = String(row.kind || "—");
-              const at = String(row.at || "—");
-              return (
-                <div key={`${at}-${i}-${kind}`}>
-                  {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
-                  <div className={nodeClassForKind(kind)}>
-                    <strong>{kind}</strong>
-                    <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
-                      {at}
-                      {row.child_id != null ? ` · child ${String(row.child_id).slice(0, 10)}` : ""}
-                      {row.parent != null ? ` · parent ${row.parent}` : ""}
-                      {row.breeding_traits_phrase ? ` · ${String(row.breeding_traits_phrase)}` : ""}
-                    </div>
+          log.length ? log.map((row, i) => {
+            const kind = String(row.kind || "—");
+            const at = String(row.at || "—");
+            return (
+              <div key={`${at}-${i}-${kind}`}>
+                {i > 0 ? <div className="dash-breeding-tree-connector" aria-hidden /> : null}
+                <div className={nodeClassForKind(kind)}>
+                  <strong>{kind}</strong>
+                  <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+                    {at}{row.child_id != null ? ` · child ${String(row.child_id).slice(0, 10)}` : ""}{row.parent != null ? ` · parent ${row.parent}` : ""}
+                    {row.breeding_traits_phrase ? ` · ${String(row.breeding_traits_phrase)}` : ""}
                   </div>
                 </div>
-              );
-            })
-          ) : (
-            <p className="sub" style={{ margin: 0 }}>Breeding log is empty for this snapshot.</p>
-          )
+              </div>
+            );
+          }) : <p className="sub" style={{ margin: 0 }}>Breeding log is empty for this snapshot.</p>
         ) : null}
       </div>
     );
@@ -1090,40 +1076,27 @@ function BreedingFamilyTreePanel({
   ];
 
   return (
-    <div
-      className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard dash-breeding-tree-panel-root"
-      role="region"
-      aria-label="Breeding family tree"
-    >
+    <div className="branch-brain-optimizer-stack branch-brain-optimizer-stack--dashboard dash-breeding-tree-panel-root" role="region" aria-label="Breeding family tree">
       <div className="chart-tabs dash-breeding-tree-tabs" role="tablist" aria-label="Breeding tree facets">
         {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={sub === t.id}
-            className={`chart-tab ${sub === t.id ? "chart-tab--active" : ""}`}
-            onClick={() => setSub(t.id)}
-          >
+          <button key={t.id} type="button" role="tab" aria-selected={sub === t.id} className={`chart-tab ${sub === t.id ? "chart-tab--active" : ""}`} onClick={() => setSub(t.id)}>
             {t.label}
           </button>
         ))}
       </div>
       <ChartDblClickExpand
         className="branch-brain-optimizer-radar__zoom"
-        title="Breeding lineage and adoptions"
+        title="Family tree — breeder story and lineage"
         defaultHeight={DASH_OPTIMIZER_INLINE_RADAR_H - DASH_OPTIMIZER_TREE_TABS_RESERVE_PX}
         expandedHeight={780}
         expandedPanelMaxWidth="min(1100px, 99vw)"
         {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
         compactOverlay
-        surfaceHint="Double-click to enlarge · same tree in overlay · Esc or backdrop closes."
-        hint="Double-click to enlarge. Hover a trait label or the fill for the same readout as the dashboard. Source: GET /api/optimizer/status."
+        surfaceHint="Double-click to enlarge · full lineage story in overlay · Esc/backdrop closes."
+        hint="Double-click to enlarge. Family tree explains who bred whom and why (tournament reason, synergy, inherited traits, fitness delta)."
         detail={
           <p className="sub" style={{ margin: 0 }}>
-            Tabs above slice the same payload: <strong>Lineage</strong> (append-only history), <strong>Children</strong> (pool trim
-            list), <strong>Cullings</strong> (death chamber), and <strong>Log</strong> (toast-oriented events). Order is newest-first
-            where timestamps exist.
+            In overlay: click a child to inspect its breeding story (reason, parent pairing, synergy score, inherited rules/traits, and fitness delta vs parents). Other tabs remain lineage/children/culls/log from the same status payload.
           </p>
         }
         render={({ h }) => renderInner(h)}
@@ -3043,8 +3016,7 @@ function labsBreedingLabLabel(branchRaw: unknown): string {
   return s ? s : "Lab";
 }
 
-// LABS BREEDING v0.1 POLISH — instant hard death + better toasts + stronger child traits.
-// LABS BREEDING v0.1 IMPROVEMENT — real active children + stronger competitive traits + better toasts.
+// LABS BREEDING — instant hard death + better toasts + stronger child traits.
 function labsBreedingToastFromLogRow(row: AnyObj): { tone: "green" | "yellow" | "red"; segments: { tier: "green" | "yellow" | "red"; text: string }[] } | null {
   const tid = String(row?.toast_id || "").trim();
   const family = String(row?.toast_family || "").trim();
@@ -3812,7 +3784,7 @@ export default function App() {
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
-  /** LABS BREEDING v0.1 — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
+  /** LABS BREEDING — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
   const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder" | "tree">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
   const [breederStatusLoading, setBreederStatusLoading] = useState(false);
@@ -4162,7 +4134,7 @@ export default function App() {
   const TOAST_AUTOCLOSE_MAX_MS = 15_000;
   /** ``optimizer_suggested_action`` toasts: always 10s (separate from trade toasts' random 10–15s). */
   const OPTIMIZER_SUGGESTED_TOAST_MS = 10_000;
-  // LABS BREEDING v0.1 — special toasts for birth and death/cull
+  // LABS BREEDING — special toasts for birth and death/cull
   const LABS_BREEDING_TOAST_MS = 11_000;
 
   useEffect(() => {
@@ -4473,7 +4445,7 @@ export default function App() {
         });
     };
     tick();
-    // v0.2: keep Tree/Breeder live while tab is open (no stale repeated rows feeling).
+    // Keep Tree/Breeder live while tab is open (no stale repeated rows feeling).
     const id = window.setInterval(tick, 15_000);
     return () => {
       cancelled = true;
@@ -5754,7 +5726,7 @@ export default function App() {
               type="button"
               className="dash-optimizer-breeding-summary"
               title={
-                "Labs Breeding v0.1 snapshot from GET /api/optimizer/status (refreshes about every 45s). " +
+                "Labs Breeding snapshot from GET /api/optimizer/status (refreshes about every 45s). " +
                 "Pool = labs_breeding_children (capped on server). Death chamber = recent culls. Click to open the Tree tab on this card."
               }
               onClick={() => {
@@ -5887,7 +5859,7 @@ export default function App() {
                 mutationDial: optimizerStatus.mutationDial,
               }}
             />
-          {/* LABS BREEDING v0.1 — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
+          {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
               <button
