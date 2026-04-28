@@ -1,28 +1,21 @@
 # Kalshibot (Chomp's Diner)
 
-Self-hosted Kalshi trading stack: **FastAPI + React**, with **Live + Lab A-D + up to six child breeding labs** running in parallel on your own machine.
+Self-hosted **Kalshi** stack: **FastAPI + React**, **Live + Lab A–E** (+ optional **child** labs) on your machine — rules, fills, equity, and an **optimizer** with explainable **Labs Breeding** and a **Breeding Council Think Tank** (B–E).
 
-## Why it stands out
-
-- **Unified version:** `v0.4.15.010`
-- **Explainable Breeder:** tournament parent selection (70/20/10), momentum-aware scoring, synergy metadata, and readable child "why" reasons
-- **Family Tree UI:** compact hierarchical tree in the Optimizer panel with parent arrows, deltas, badges, and story drill-down
-- **Risk controls:** patient stop-loss, fee-aware scoring, branch isolation, and Lab A-only promotion path to Live
-
-## What you get
-
-- **Dashboard:** branch performance, equity curves, optimizer radar, breeder telemetry
-- **Persistence:** SQLite (`data/bot.sqlite3`) + optional JSONL logs
-- **API:** `/api/dashboard`, `/api/dashboard/equity`, `/api/optimizer/status`, `/api/config`, and more
+| | |
+|---|---|
+| **Version** | `v0.4.15.010` |
+| **Stand-out** | Breeder tournament + synergy metadata · Family tree UI · Lab E parity · Think Tank dialogue · Lab A–only promotion path to Live |
 
 ## Quick start (Windows)
 
 1. `.\scripts\create_venv.ps1`
-2. Copy `.env.example` to `.env` and set Kalshi credentials
+2. Copy `.env.example` → `.env` (Kalshi keys + ports)
 3. `.\scripts\launch_local.ps1`
-4. Open `http://localhost:5174`
+4. UI → `http://127.0.0.1:5174` (see script for API port)
 
-## Read more
+## Docs
 
-- Full docs: [`README.md`](README.md)
+- Full guide: [`README.md`](README.md)
 - Breeding architecture: [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md)
+- Changelog: [`CHANGELOG.md`](CHANGELOG.md)
