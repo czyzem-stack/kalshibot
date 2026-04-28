@@ -2,6 +2,27 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.006 - Lab Think Tank cadence + visibility fixes - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Loosened proactive share cap / shorter rolling window; **bootstrap phase** (first ~16 bus lines) skips share throttling so messages appear immediately; faster council (**~2–9s**) and strategic (**~8–18s**) gaps; intros schedule the next pulse in **~3–8s** (was tied to the full gap); **`publish_think_tank_break_silence_if_due`** escapes share-cap deadlock so overrepresented labs still speak after ~14s quiet; ranked-market pings no longer double-block on share cap; UI polling interval **2.5s**.
+- **Frontend (`dashboardPolling.ts`, `LabThinkTank.tsx`):** Faster `/labs/chat` polling; clearer empty-state copy when engines haven’t published yet.
+
+## v0.4.15.005 - Lab Think Tank conversational threading - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Rolling **last 4** thread tail drives prompts; strategic pulses **anchor** to another lab’s latest line (`reply_to` UUID); council replies include **`reply_to`**; messages capped **70** chars; council gaps **8–18s**; contextual ranked/sim lines optional **`reply_to`**.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`, `labHiveChat.tsx`):** Optional **`reply_to`** on rows; compact log shows **→** when replying to the **previous visible** line.
+
+## v0.4.15.004 - Lab Think Tank v5 (compact UI + short agent banter) - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Messages capped ~**65–78** chars; pulses **18–35s**; faster council replies (**6–14s** gap); tighter proactive share cap (**0.34**); short intros / ranked pings / sim lines / breeding whispers.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`):** Max **~180px** viewport; latest **8** lines; tight **live-log** rows (emoji + B/C/D + message); removed chat-thread styling.
+
+## v0.4.15.003 - Breeding Council Think Tank (Labs B/C/D in Optimizer) - 2026-04-28
+
+- **Frontend:** Removed header lab ticker; added collapsible **Lab Think Tank** panel under Optimizer (pulse strip) with council transcript UI; Settings toggle renamed **Enable Agent Collaboration** (`LAB_COLLABORATION_STORAGE_KEY`, migrates legacy chat key).
+- **Backend (`lab_communication.py`):** Renamed conceptually to think tank / Breeding Council — slower strategic pulses (~25–50s), council replies, rare ranked-market analysis, sim-open narration; structlog event **`think_tank_message`**; `finalize_think_tank_tick(..., full_cfg=)` reads **`optimizer.breeding_enabled`** for breeding-themed lines without touching `lab_breeding.py`.
+- **Backend (`engines/engine.py`):** Wires think-tank finalize with full config; engine state keys **`_lab_think_tank_*`**.
+
 ## v0.4.15.002 - Lab Agent Chatter v4 (balanced B/C/D + ticker readability) - 2026-04-28
 
 - **Backend (`lab_communication.py`):** Fair rotation (~34% soft cap on proactive lines per lab), chain replies driven by `last_from_other()` with short agree/disagree/build-on copy, heartbeats on **12–28s**, one bootstrap line per lab after restart, single proactive headline per tick, messages capped for marquee length.

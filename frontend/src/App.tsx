@@ -35,7 +35,7 @@ import {
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
 import APP_VERSION_RAW from "../../VERSION?raw";
 import { useLabHiveChat } from "./labHiveChat";
-import LabTicker from "./components/LabTicker";
+import LabThinkTank from "./components/LabThinkTank";
 
 type AnyObj = Record<string, any>;
 
@@ -5428,7 +5428,6 @@ export default function App() {
 
       {dash ? (
         <>
-      <LabTicker messages={labHiveMessages} enabled={labChatEnabled} />
       <KalshiStatusBanner dash={dash} cfg={cfg} />
 
       <div className="dash-main-4grid">
@@ -5870,6 +5869,7 @@ export default function App() {
                 mutationDial: optimizerStatus.mutationDial,
               }}
             />
+            <LabThinkTank messages={labHiveMessages} enabled={labChatEnabled} dashReady={Boolean(dash)} />
           {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">

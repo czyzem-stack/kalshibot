@@ -1,18 +1,24 @@
-/** Labs B/C/D hive chat: poll ``GET /labs/chat`` and expose toggle + history for Settings + ticker. */
+/** Labs B/C/D Breeding Council: poll ``GET /labs/chat`` for Optimizer Think Tank + Settings history. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LAB_CHAT_POLL_MS, subscribeDashboardCatchUp } from "./dashboardPolling";
 
-export const LAB_CHAT_STORAGE_KEY = "kalshibot_lab_chat_enabled_v1";
+export const LAB_COLLABORATION_STORAGE_KEY = "kalshibot_lab_collaboration_enabled_v1";
+/** @deprecated use LAB_COLLABORATION_STORAGE_KEY */
+export const LAB_CHAT_STORAGE_KEY = LAB_COLLABORATION_STORAGE_KEY;
 
-export function readLabChatEnabled(): boolean {
+export function readLabCollaborationEnabled(): boolean {
   try {
-    const v = localStorage.getItem(LAB_CHAT_STORAGE_KEY);
+    let v = localStorage.getItem(LAB_COLLABORATION_STORAGE_KEY);
+    if (v === null) v = localStorage.getItem("kalshibot_lab_chat_enabled_v1");
     if (v === null) return true;
     return v !== "0" && v !== "false";
   } catch {
     return true;
   }
 }
+
+/** @deprecated use readLabCollaborationEnabled */
+export const readLabChatEnabled = readLabCollaborationEnabled;
 
 export type LabHiveRow = {
   id?: string;
@@ -23,6 +29,8 @@ export type LabHiveRow = {
   confidence?: number;
   action?: string;
   kind?: string;
+  /** When set, this line is explicitly threaded to another message id (Think Tank replies). */
+  reply_to?: string;
 };
 
 const TICKER_LABS = ["lab_b", "lab_c", "lab_d"] as const;
@@ -67,14 +75,14 @@ export function useLabHiveChat(dashReady: boolean): {
   setLabChatEnabled: (v: boolean | ((p: boolean) => boolean)) => void;
 } {
   const [messages, setMessages] = useState<LabHiveRow[]>([]);
-  const [labChatEnabled, setLabChatEnabledState] = useState<boolean>(() => readLabChatEnabled());
+  const [labChatEnabled, setLabChatEnabledState] = useState<boolean>(() => readLabCollaborationEnabled());
   const bootstrappedRef = useRef(false);
 
   const setLabChatEnabled = useCallback((v: boolean | ((p: boolean) => boolean)) => {
     setLabChatEnabledState((prev) => {
       const next = typeof v === "function" ? (v as (p: boolean) => boolean)(prev) : v;
       try {
-        localStorage.setItem(LAB_CHAT_STORAGE_KEY, next ? "1" : "0");
+        localStorage.setItem(LAB_COLLABORATION_STORAGE_KEY, next ? "1" : "0");
       } catch {
         /* ignore */
       }
@@ -121,14 +129,14 @@ export function LabHiveChatSettingsPanel(props: {
   return (
     <div className="lab-hive-chat-settings">
       <div className="lab-hive-chat__head">
-        <h3 style={{ margin: 0 }}>Lab Hive Chat</h3>
+        <h3 style={{ margin: 0 }}>Breeding Council stream</h3>
         <label className="lab-hive-chat__toggle">
           <input type="checkbox" checked={enabled} onChange={(e) => onToggleEnabled(e.target.checked)} />
-          Enable Agent Chatter
+          Enable Agent Collaboration
         </label>
       </div>
       <p className="sub" style={{ margin: "6px 0 10px" }}>
-        Controls only the dashboard chatter display (ticker + chat history panel). Trading logic is unchanged.
+        Shows Labs B/C/D think tank in the Optimizer panel and this transcript. Trading logic is unchanged.
       </p>
       <div className="lab-hive-chat__body" role="log" aria-live="polite">
         {messages.length === 0 ? (

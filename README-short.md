@@ -4,7 +4,7 @@ Self-hosted Kalshi trading stack: **FastAPI + React**, with **Live + Lab A-D + u
 
 ## Why it stands out
 
-- **Unified version:** `v0.4.15.002`
+- **Unified version:** `v0.4.15.006`
 - **Explainable Breeder:** tournament parent selection (70/20/10), momentum-aware scoring, synergy metadata, and readable child "why" reasons
 - **Family Tree UI:** compact hierarchical tree in the Optimizer panel with parent arrows, deltas, badges, and story drill-down
 - **Risk controls:** patient stop-loss, fee-aware scoring, branch isolation, and Lab A-only promotion path to Live

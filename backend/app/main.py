@@ -724,7 +724,7 @@ app.include_router(optimizer_routes.router)
 
 @app.get("/labs/chat")
 def labs_chat() -> dict[str, Any]:
-    """Latest in-memory hive messages from Labs B/C/D (dashboard toasts + hive panel)."""
+    """Latest in-memory Breeding Council / think tank messages from Labs B/C/D (Optimizer panel + Settings)."""
     return {"messages": get_lab_communication_bus().recent()}
 
 
