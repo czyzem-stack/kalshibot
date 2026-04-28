@@ -31,7 +31,7 @@ graph TD
     Backend <--> UI[React + Vite Dashboard]
     Backend --> Engines[Dual Engine Loop<br/>Live + Lab A–D]
     Engines --> Rules[JSON Rule Engine]
-    Rules --> Optimizer[Optimizer Loop<br/>(internal + optional Claude)]
+    Rules --> Optimizer[Optimizer Loop<br/>internal and optional Claude]
     Optimizer --> Backend
 ```
 
