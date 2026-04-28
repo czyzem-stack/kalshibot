@@ -50,6 +50,7 @@ from .engine import (
 from .kalshi_client import KalshiClient, new_shared_http_client, prewarm_open_markets_for_config
 from .kalshi_ws import kalshi_ws_task_group_runner
 from .kalshi_portfolio import fetch_portfolio_snapshot
+from .lab_communication import get_lab_communication_bus
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
 from .persistence import expand_partial_lab_branch
@@ -719,6 +720,12 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(public_root.router)
 app.include_router(health_routes.router)
 app.include_router(optimizer_routes.router)
+
+
+@app.get("/labs/chat")
+def labs_chat() -> dict[str, Any]:
+    """Latest in-memory hive messages from Labs B/C/D (dashboard toasts + hive panel)."""
+    return {"messages": get_lab_communication_bus().recent()}
 
 
 @app.post("/api/config/validate-rules")

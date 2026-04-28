@@ -34,6 +34,8 @@ import {
 } from "./dashboardPolling";
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
 import APP_VERSION_RAW from "../../VERSION?raw";
+import { Toaster } from "react-hot-toast";
+import { LabHiveChatPanel, useLabHiveChat } from "./labHiveChat";
 
 type AnyObj = Record<string, any>;
 
@@ -3769,6 +3771,13 @@ export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
   const [dash, setDash] = useState<AnyObj | null>(null);
+  const {
+    messages: labHiveMessages,
+    labChatEnabled,
+    setLabChatEnabled,
+    hivePanelOpen,
+    setHivePanelOpen,
+  } = useLabHiveChat(Boolean(dash));
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -5266,6 +5275,7 @@ export default function App() {
 
   return (
     <div className={dash ? "page page--bottom-marquee" : "page"}>
+      <Toaster position="bottom-right" gutter={10} />
       {visibleOptimizerNotifs.length ? (
         <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade and optimizer notifications">
           {visibleOptimizerNotifs.map((n) => {
@@ -5426,6 +5436,13 @@ export default function App() {
       {dash ? (
         <>
       <KalshiStatusBanner dash={dash} cfg={cfg} />
+      <LabHiveChatPanel
+        messages={labHiveMessages}
+        enabled={labChatEnabled}
+        onToggleEnabled={(n) => setLabChatEnabled(n)}
+        open={hivePanelOpen}
+        onToggleOpen={() => setHivePanelOpen((o) => !o)}
+      />
 
       <div className="dash-main-4grid">
         <div className="dash-split-row__col dash-split-row__col--metrics dash-split-metrics-stack">

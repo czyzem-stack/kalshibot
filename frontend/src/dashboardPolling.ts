@@ -8,6 +8,8 @@
 
 export const DASHBOARD_FULL_POLL_MS = 12_000;
 export const DASHBOARD_EQUITY_POLL_MS = 3_000;
+/** Labs B/C/D hive chat (`GET /labs/chat`). */
+export const LAB_CHAT_POLL_MS = 5_000;
 
 /** Run ``fn`` when the document becomes usable again (tab visible, back/forward cache, network back). */
 export function subscribeDashboardCatchUp(fn: () => void): () => void {

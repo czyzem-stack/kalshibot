@@ -35,6 +35,13 @@ from ..branch_config import (
 )
 from ..kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kalshi_settlement_credit_cents
 from ..kalshi_client import KalshiClient
+from ..lab_communication import (
+    LAB_CHATTER_BRANCHES,
+    chatter_on_ranked_market,
+    chatter_on_sim_open,
+    finalize_lab_chatter_tick,
+    get_lab_communication_bus,
+)
 from ..persistence import Store, _data_log
 from ..settings_env import env
 from ..types_kalshi import MarketRow
@@ -654,6 +661,10 @@ class TradingEngine:
         # One log/trace line per budget window for *transient* sim guards (series/ticker already open, atomic race).
         # Do **not** fold these into ``_seen_keys`` — that blocked retries before re-checking guards after settlement.
         self._sim_transient_skip_logged: set[str] = set()
+        # Labs B/C/D hive chatter (optional heartbeat + reactions); reset each ``tick_once``.
+        self._lab_chatter_next_heartbeat_mono: float = 0.0
+        self._lab_chatter_last_reaction_mono: float = 0.0
+        self._lab_chatter_msgs_this_tick: int = 0
 
 
 def _is_lab_branch(branch: str) -> bool:
@@ -702,6 +713,8 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
 
     trade_mode = str(cfg.get("_trade_mode") or "simulate")
     branch = str(cfg.get("_branch") or "live")
+    if branch in LAB_CHATTER_BRANCHES:
+        engine._lab_chatter_msgs_this_tick = 0
 
     balance_cents = 0
     if _is_lab_branch(branch):
@@ -792,7 +805,13 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
             ),
             reverse=True,
         )
-        for m in ranked_markets:
+        hive_bus = get_lab_communication_bus() if branch in LAB_CHATTER_BRANCHES else None
+        for idx, m in enumerate(ranked_markets):
+            prob_rank: float | None = None
+            if hive_bus is not None and isinstance(m, dict):
+                _yb = dollars_to_float(m.get("yes_bid_dollars"))
+                _ya = dollars_to_float(m.get("yes_ask_dollars"))
+                prob_rank = implied_yes_probability(_yb, _ya)
             kind = await handle_market(
                 engine,
                 cfg=cfg,
@@ -809,6 +828,16 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
                 study_wall_wid=study_wid,
                 trace=trace,
             )
+            if hive_bus is not None:
+                chatter_on_ranked_market(
+                    engine,
+                    branch,
+                    idx=idx,
+                    kind=kind,
+                    ticker=str(m.get("ticker") or ""),
+                    implied_yes=prob_rank,
+                    bus=hive_bus,
+                )
             if kind == "no_rule":
                 no_rule += 1
         if no_rule:
@@ -837,6 +866,9 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
         engine.state.last_error = f"patient_stop_loss: {e}"
 
     await _maybe_auto_reset_lab_paper_on_tick_failure(engine, full_cfg)
+
+    if branch in LAB_CHATTER_BRANCHES:
+        finalize_lab_chatter_tick(engine, branch, snapshots, scanned)
 
     engine._tick_count += 1
 
@@ -1590,6 +1622,16 @@ async def handle_market(
             f"rule=“{matched_rule.get('name')}” yes={prob:.2f} mins={mins:.1f} "
             f"cost¢={gross_amount_cents} (prem¢={amount_cents} fee¢={entry_fee_cents}, stake_cap¢={stake_cents} avail¢={available_cents})",
         )
+        if branch in LAB_CHATTER_BRANCHES:
+            chatter_on_sim_open(
+                engine,
+                branch,
+                ticker=ticker,
+                side=str(trade_side),
+                implied_yes=prob,
+                rule_name=str(matched_rule.get("name") or ""),
+                bus=get_lab_communication_bus(),
+            )
         return None
 
     cid = str(uuid.uuid4())
