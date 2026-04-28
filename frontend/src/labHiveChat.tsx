@@ -25,6 +25,42 @@ export type LabHiveRow = {
   kind?: string;
 };
 
+const TICKER_LABS = ["lab_b", "lab_c", "lab_d"] as const;
+
+/**
+ * Interleave recent lines per lab (newest-first round-robin). API order is chronological; the deque tail
+ * can be mostly one lab when that branch ticks last—this keeps B/C/D visible together on the ticker.
+ */
+export function balanceHiveMessagesForTicker(rows: LabHiveRow[], limit = 28): LabHiveRow[] {
+  type LabId = (typeof TICKER_LABS)[number];
+  const byLab: Record<LabId, LabHiveRow[]> = { lab_b: [], lab_c: [], lab_d: [] };
+  for (const r of rows) {
+    const lab = String(r.lab || "") as LabId;
+    if (lab in byLab) byLab[lab].push(r);
+  }
+  const idx: Record<LabId, number> = {
+    lab_b: byLab.lab_b.length - 1,
+    lab_c: byLab.lab_c.length - 1,
+    lab_d: byLab.lab_d.length - 1,
+  };
+  const out: LabHiveRow[] = [];
+  while (out.length < limit) {
+    let progressed = false;
+    for (const lab of TICKER_LABS) {
+      const i = idx[lab];
+      if (i >= 0) {
+        const row = byLab[lab][i];
+        if (row) out.push(row);
+        idx[lab] = i - 1;
+        progressed = true;
+        if (out.length >= limit) break;
+      }
+    }
+    if (!progressed) break;
+  }
+  return out;
+}
+
 export function useLabHiveChat(dashReady: boolean): {
   messages: LabHiveRow[];
   labChatEnabled: boolean;

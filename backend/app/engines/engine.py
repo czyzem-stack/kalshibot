@@ -665,6 +665,9 @@ class TradingEngine:
         self._lab_chatter_next_heartbeat_mono: float = 0.0
         self._lab_chatter_last_reaction_mono: float = 0.0
         self._lab_chatter_msgs_this_tick: int = 0
+        self._lab_chatter_last_publish_mono: float = 0.0
+        self._lab_chatter_headline_sent: bool = False
+        self._lab_chatter_bootstrap_done: bool = False
 
 
 def _is_lab_branch(branch: str) -> bool:
@@ -715,6 +718,7 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     branch = str(cfg.get("_branch") or "live")
     if branch in LAB_CHATTER_BRANCHES:
         engine._lab_chatter_msgs_this_tick = 0
+        engine._lab_chatter_headline_sent = False
 
     balance_cents = 0
     if _is_lab_branch(branch):

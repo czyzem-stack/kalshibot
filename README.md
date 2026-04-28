@@ -18,7 +18,7 @@ Polls Kalshi markets in real time, matches **JSON probability + time-based rules
 - Easy deployment: Windows .exe, Docker, or Python source
 - Full test suite + GitHub Actions CI
 
-**Current Version:** `v0.4.15.001` (see [`VERSION`](VERSION) and [`CHANGELOG.md`](CHANGELOG.md))
+**Current Version:** `v0.4.15.002` (see [`VERSION`](VERSION) and [`CHANGELOG.md`](CHANGELOG.md))
 
 ---
 

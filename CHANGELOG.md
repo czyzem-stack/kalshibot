@@ -2,6 +2,12 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.002 - Lab Agent Chatter v4 (balanced B/C/D + ticker readability) - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Fair rotation (~34% soft cap on proactive lines per lab), chain replies driven by `last_from_other()` with short agree/disagree/build-on copy, heartbeats on **12–28s**, one bootstrap line per lab after restart, single proactive headline per tick, messages capped for marquee length.
+- **Backend (`engines/engine.py`):** Tracks chatter headline/bootstrap/publish timestamps; resets headline flag each tick.
+- **Frontend (`LabTicker.tsx`, `styles.css`):** Two-line pair columns, slower marquee, larger lab glyphs (🟡/🔥/🧪), stronger lab colors; respects reduced-motion.
+
 ## v0.4.15.001 - Header version badge placement + unified version bump - 2026-04-28
 
 - **Frontend (`frontend/src/App.tsx`, `frontend/src/styles.css`):** moved the UI track and app version pills from the title cluster to the right-side header actions, placing them next to Settings for a cleaner top bar layout.
