@@ -2257,10 +2257,12 @@ input[type="number"] {
   background: linear-gradient(180deg, rgba(10, 18, 40, 0.98) 0%, rgba(8, 14, 30, 0.95) 100%);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Live + Lab A–E = six cells; five columns wrapped Lab E onto a second row */
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 3px 4px;
   align-items: stretch;
   box-sizing: border-box;
+  overflow-x: auto;
 }
 
 .branch-hero-snapshot__row {
@@ -2480,7 +2482,8 @@ input[type="number"] {
   }
 
   .branch-hero-snapshot--header {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Keep one horizontal strip; scroll if the viewport is too narrow for six columns */
+    grid-template-columns: repeat(6, minmax(52px, 1fr));
   }
 }
 
