@@ -2,6 +2,11 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.001 - Header version badge placement + unified version bump - 2026-04-28
+
+- **Frontend (`frontend/src/App.tsx`, `frontend/src/styles.css`):** moved the UI track and app version pills from the title cluster to the right-side header actions, placing them next to Settings for a cleaner top bar layout.
+- **Versioning:** bumped unified stack version from **v0.4.15.0** to **v0.4.15.001** across `VERSION`, README/version references, and breeding metadata labels.
+
 ## v0.4.15.0 - Unified versioning + Breeder explainability & Family Tree visualizer upgrade - 2026-04-28
 
 - **Versioning:** Standardized project branding to **v0.4.15.0** across backend/frontend/docs and removed separate breeder/family sub-version labels.

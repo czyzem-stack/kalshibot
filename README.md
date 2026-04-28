@@ -12,7 +12,7 @@ It connects to [Kalshi's API](https://docs.kalshi.com/getting_started/api_keys),
 
 **Shorthand:** the **chart** = **dual engine loop** (visible Live + Lab A–D + children). **Breeding** = B/C/D child-lab GA + culls in **`run_optimizer_once`** / **`lab_breeding`**, gated mostly by **`optimizer.breeding_enabled`**, and **orthogonal** to the dashboard chart. Full detail, tables, and grep keys: [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md).
 
-**Version:** `v0.4.15.0` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). The project now uses one unified release version across the stack (no separate breeder/tree sub-version labels). Recent updates include explainable breeder tournament selection, richer family lineage metadata, and compact Family tree visualization improvements in the existing Optimizer panel footprint.
+**Version:** `v0.4.15.001` in [`VERSION`](VERSION) / [`CHANGELOG.md`](CHANGELOG.md). The project now uses one unified release version across the stack (no separate breeder/tree sub-version labels). Recent updates include explainable breeder tournament selection, richer family lineage metadata, and compact Family tree visualization improvements in the existing Optimizer panel footprint.
 
 **Latest UI patch (develop):** Equity panel alignment now keeps proper left inset from the divider and prevents control-row wrap drift in narrow widths; chart subtitles no longer clip against the border.
 

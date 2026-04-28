@@ -1,4 +1,4 @@
-# LABS BREEDING — unified project version v0.4.15.0.
+# LABS BREEDING — unified project version v0.4.15.001.
 """
 Invisible internal GA for paper labs (no Claude, no UI changes on dashboard).
 
@@ -59,7 +59,7 @@ def _signals_sorted_desc(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
 ReplayBundleFn = Callable[..., dict[str, Any]]
 ReplayOpenKwFn = Callable[..., dict[str, Any]]
 
-LABS_BREEDING_VERSION = "0.4.15.0"
+LABS_BREEDING_VERSION = "0.4.15.001"
 LAB_BREEDING_GENERATION_INTERVAL = dt.timedelta(minutes=30)
 REPLACEMENT_COOLDOWN = dt.timedelta(minutes=5)
 MIN_SETTLED_FOR_ADOPTION_COMPARE = 4

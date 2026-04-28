@@ -33,10 +33,12 @@ import {
   subscribeDashboardCatchUp,
 } from "./dashboardPolling";
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
+import APP_VERSION_RAW from "../../VERSION?raw";
 
 type AnyObj = Record<string, any>;
 
 const UI_TRACK = resolveUiTrack();
+const APP_VERSION = String(APP_VERSION_RAW || "").trim() || "unknown";
 
 const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
 const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
@@ -5370,6 +5372,10 @@ export default function App() {
                   >
                     Chomp's Diner
                   </h1>
+                </div>
+              </div>
+              <div className="hero-head__right">
+                <div className="hero-head__meta-pills">
                   <span
                     className={`ui-track-pill ui-track-pill--${UI_TRACK.kind}`}
                     title={
@@ -5379,9 +5385,10 @@ export default function App() {
                   >
                     {UI_TRACK.label}
                   </span>
+                  <span className="app-version-pill" title="Running app version from repo VERSION file.">
+                    {APP_VERSION}
+                  </span>
                 </div>
-              </div>
-              <div style={{ flexShrink: 0 }}>
                 <button
                   type="button"
                   className="primary hero-settings-icon-btn"
