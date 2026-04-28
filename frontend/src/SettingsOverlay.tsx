@@ -17,6 +17,7 @@ import {
 } from "./settingsRules";
 import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import SettingsHelpPlaybook from "./settingsHelpPlaybook";
+import { LabHiveChatSettingsPanel, type LabHiveRow } from "./labHiveChat";
 
 type AnyObj = Record<string, any>;
 type SettingsTab =
@@ -228,6 +229,9 @@ export type SettingsOverlayProps = {
   onHeroMarqueeSpeedMultChange: (mult: number) => void;
   tradePopupToastsEnabled: boolean;
   onTradePopupToastsEnabledChange: (on: boolean) => void;
+  labHiveMessages: LabHiveRow[];
+  labChatEnabled: boolean;
+  onLabChatEnabledChange: (on: boolean) => void;
 };
 
 export default function SettingsOverlay({
@@ -284,6 +288,9 @@ export default function SettingsOverlay({
   onHeroMarqueeSpeedMultChange,
   tradePopupToastsEnabled,
   onTradePopupToastsEnabledChange,
+  labHiveMessages,
+  labChatEnabled,
+  onLabChatEnabledChange,
 }: SettingsOverlayProps) {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("global");
   const [activeLab, setActiveLab] = useState<LabBranchKey>("a");
@@ -537,7 +544,7 @@ export default function SettingsOverlay({
           <div
             className="panel settings-nested-panel section-tip"
             style={{ marginTop: 12, marginBottom: 0, padding: "12px 14px" }}
-            title="Browser-only (localStorage): header ticker speed and the Live/Lab balance snapshot column."
+            title="Browser-only (localStorage): header ticker speed, trade toasts, and agent chatter visibility."
           >
             <h3 style={{ margin: 0, fontSize: 12, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)" }}>
               Hero ticker & balance tile
@@ -574,6 +581,13 @@ export default function SettingsOverlay({
                   Trade open / settle toasts <span className="sub">(bottom-right; optimizer notices may share this stack)</span>
                 </span>
               </label>
+            </div>
+            <div style={{ marginTop: 14 }}>
+              <LabHiveChatSettingsPanel
+                messages={labHiveMessages}
+                enabled={labChatEnabled}
+                onToggleEnabled={onLabChatEnabledChange}
+              />
             </div>
           </div>
         </div>

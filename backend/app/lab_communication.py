@@ -94,10 +94,10 @@ def _heartbeat_message(lab: str, *, ticker_hint: str | None, scanned: int) -> tu
     if lab == BRANCH_LAB_B:
         msg = random.choice(
             [
-                f"Still treating {tick} as fragile — waiting for cleaner edge before size.",
-                f"Holding discipline on {tick}: capital preservation beats FOMO.",
-                f"Risk budget check: open interest context on {tick} looks noisy; staying patient.",
-                f"Correlation risk is on my mind — not chasing {tick} until structure improves.",
+                f"I'm clipping risk on {tick}; waiting for a cleaner entry and tighter spread before size.",
+                f"Capital-first posture on {tick}: if edge is marginal, I pass and protect bankroll.",
+                f"Checked {scanned} rows and still cautious on {tick} — signal quality is mixed.",
+                f"Not anti-trade, just anti-sloppy: {tick} needs better structure before I commit.",
             ]
         )
         conf = random.uniform(0.42, 0.62)
@@ -105,20 +105,20 @@ def _heartbeat_message(lab: str, *, ticker_hint: str | None, scanned: int) -> tu
     if lab == BRANCH_LAB_C:
         msg = random.choice(
             [
-                f"Pushing tempo on {tick} — implied looks exploitable if liquidity cooperates.",
-                f"I want this tape on {tick}: aggression pays when rules align.",
-                f"{tick}: sizing up mentally; microstructure still needs to confirm.",
-                f"Heat check on {tick} — prepared to engage fast if skip guards clear.",
+                f"I'm stalking {tick} for momentum continuation — if the rule lights, I press.",
+                f"{tick} still looks tradeable to me; aggression wins when microstructure confirms.",
+                f"I like the tape shape on {tick}; ready to move fast if guards clear.",
+                f"I'm not waiting forever on {tick} — if edge survives one more pass, I'm in.",
             ]
         )
         conf = random.uniform(0.58, 0.88)
         return msg, _clamp01(conf), "heartbeat"
     msg = random.choice(
         [
-            f"Treating {tick} as a sandbox — testing a weird thesis that breaks normal priors.",
-            f"{tick}: I'm hunting convexity even if it looks ugly on first pass.",
-            f"Wildcard read on {tick} — happy to be wrong quickly and rotate.",
-            f"Experimental lane on {tick}: hypothesis over elegance.",
+            f"I'm running an experimental angle on {tick}; ugly setups can still pay with disciplined exits.",
+            f"{tick} is weird enough to like — I'm testing the non-consensus tail again.",
+            f"Wildcard mode: probing {tick} for convexity even if it looks uncomfortable.",
+            f"I'll take the strange side on {tick} when the crowd gets one-sided.",
         ]
     )
     conf = random.uniform(0.35, 0.92)
@@ -131,26 +131,29 @@ def _peer_reaction(lab: str, peer_row: dict[str, Any]) -> tuple[str, float | Non
     if lab == BRANCH_LAB_B:
         text = random.choice(
             [
-                f"@{peer}: hear you — I'm trimming conviction until that thesis ages a minute.",
-                f"{peer}'s last take ({snippet[:48]}…) sounds spicy; I'm staying flat until spread tightens.",
-                f"Respectfully disagree with {peer} on tone — I'd rather miss than force size here.",
+                f"{peer}, I hear your edge call — I'm aligned directionally but sizing smaller.",
+                f"I agree with {peer}'s read, but only after spread and slippage calm down.",
+                f"{peer}'s point ({snippet[:52]}...) is fair; I'll wait one extra cycle before committing.",
+                f"{peer}, that's bold — I'll fade speed, not necessarily direction.",
             ]
         )
         return text, random.uniform(0.45, 0.62)
     if lab == BRANCH_LAB_C:
         text = random.choice(
             [
-                f"@{peer} yes — momentum agrees; I'm leaning in if fees stay sane.",
-                f"{peer} flagged it first; I'm watching the same skew.",
-                f"Piggybacking {peer}: if that line holds, I'm pressing.",
+                f"{peer} is on my wavelength here — if liquidity holds, I'm pressing this.",
+                f"I back {peer}'s thesis; execution speed decides whether this prints.",
+                f"{peer} called it early, I'm ready to amplify if the next check confirms.",
+                f"I hear {peer}; this is where conviction should actually compound.",
             ]
         )
         return text, random.uniform(0.62, 0.86)
     text = random.choice(
         [
-            f"{peer} — I'm remixing your idea with a weirder prior; let's see who bleeds less.",
-            f"I'll fade {peer} politely unless vol confirms; chaos is data.",
-            f"Interesting from {peer}; I'm stress-testing the opposite tail too.",
+            f"{peer} might be right, but I'm stress-testing the opposite tail before I copy it.",
+            f"I like {peer}'s angle; I'm adding chaos controls and taking the weirder variant.",
+            f"{peer}, that setup is spicy — I'm running a higher-variance version in paper.",
+            f"I disagree with {peer} on timing, not thesis; entering only on volatility expansion.",
         ]
     )
     return text, random.uniform(0.38, 0.78)
@@ -160,9 +163,9 @@ def publish_peer_reaction_if_due(engine: Any, branch: str, bus: LabCommunication
     if branch not in LAB_CHATTER_BRANCHES:
         return
     last_r = float(getattr(engine, "_lab_chatter_last_reaction_mono", 0.0) or 0.0)
-    if time.monotonic() - last_r < 18.0:
+    if time.monotonic() - last_r < 10.0:
         return
-    if random.random() > 0.34:
+    if random.random() > 0.78:
         return
     peer = bus.last_from_other(branch)
     if not peer:
@@ -184,13 +187,13 @@ def publish_heartbeat_if_due(
         return
     now_m = time.monotonic()
     nxt = float(getattr(engine, "_lab_chatter_next_heartbeat_mono", 0.0) or 0.0)
-    # Prime cadence without blasting three heartbeats on the very first tick.
+    # Prime cadence without blasting all branches on first tick.
     if nxt <= 0.0:
-        engine._lab_chatter_next_heartbeat_mono = now_m + random.uniform(20.0, 38.0)
+        engine._lab_chatter_next_heartbeat_mono = now_m + random.uniform(8.0, 18.0)
         return
     if now_m < nxt:
         return
-    engine._lab_chatter_next_heartbeat_mono = now_m + random.uniform(25.0, 45.0)
+    engine._lab_chatter_next_heartbeat_mono = now_m + random.uniform(15.0, 35.0)
     hint = None
     for snap in snapshots.values():
         if isinstance(snap, dict):
@@ -216,7 +219,7 @@ def chatter_on_ranked_market(
     if branch not in LAB_CHATTER_BRANCHES:
         return
     n = int(getattr(engine, "_lab_chatter_msgs_this_tick", 0) or 0)
-    if n >= 4:
+    if n >= 6:
         return
     tk = (ticker or "").strip()[:44] or "?"
     py = _clamp01(implied_yes)
@@ -224,17 +227,17 @@ def chatter_on_ranked_market(
 
     if idx == 0:
         if branch == BRANCH_LAB_B:
-            msg = f"Scanning top candidate {tk}{f' — YES ~{pct}%' if pct is not None else ''}; verifying liquidity + rule fit before sizing."
+            msg = f"Top read is {tk}{f' (~{pct}% YES)' if pct is not None else ''}; cautious confirmation pass before any size."
         elif branch == BRANCH_LAB_C:
-            msg = f"Front-running my queue on {tk}{f': YES ~{pct}%' if pct is not None else ''} — if edge holds I'm deploying fast."
+            msg = f"Lead candidate {tk}{f' (~{pct}% YES)' if pct is not None else ''}; if edge survives, I'm hitting this quickly."
         else:
-            msg = f"Weird-first look at {tk}{f' ({pct}% YES vibe)' if pct is not None else ''} — probing a non-obvious angle."
+            msg = f"I want to test a weird angle on {tk}{f' (~{pct}% YES vibe)' if pct is not None else ''}; this one has asymmetry."
         conf = py if py is not None else random.uniform(0.5, 0.75)
         bus.publish(branch, msg, confidence=_clamp01(conf), action="market_scan")
         engine._lab_chatter_msgs_this_tick = n + 1
         return
 
-    if kind == "no_rule" and idx < 3 and random.random() < 0.55:
+    if kind == "no_rule" and idx < 4 and random.random() < 0.72:
         if branch == BRANCH_LAB_B:
             msg = f"No rule match on {tk} @ YES ~{pct}% — skipping; edge isn't proved under my thresholds."
         elif branch == BRANCH_LAB_C:
@@ -243,6 +246,12 @@ def chatter_on_ranked_market(
             msg = f"Pass on {tk} (YES ~{pct}%): I'll chase chaos elsewhere unless a rule lights up."
         bus.publish(branch, msg, confidence=_clamp01(py), action="skip_no_rule")
         engine._lab_chatter_msgs_this_tick = n + 1
+    elif idx < 3 and random.random() < 0.48:
+        peer = bus.last_from_other(branch)
+        if peer:
+            msg, conf = _peer_reaction(branch, peer)
+            bus.publish(branch, msg, confidence=conf, action="peer_reaction", kind="reaction")
+            engine._lab_chatter_msgs_this_tick = n + 1
 
 
 def chatter_on_sim_open(engine: Any, branch: str, *, ticker: str, side: str, implied_yes: float | None, rule_name: str, bus: LabCommunicationBus) -> None:
@@ -268,3 +277,6 @@ def finalize_lab_chatter_tick(engine: Any, branch: str, snapshots: dict[str, dic
     bus = get_lab_communication_bus()
     publish_heartbeat_if_due(engine, branch, snapshots=snapshots, scanned=scanned, bus=bus)
     publish_peer_reaction_if_due(engine, branch, bus)
+    # Often reply twice in one tick to keep the team chat feeling alive.
+    if random.random() < 0.32:
+        publish_peer_reaction_if_due(engine, branch, bus)
