@@ -28,9 +28,9 @@ type Props = {
   dashReady: boolean;
 };
 
-const SHOW_MAX = 7;
+const SHOW_MAX = 5;
 
-/** Compact live log inside Optimizer — latest lines only, tight vertical layout. */
+/** Dense live log — latest five lines, zero fixed height, minimal chrome. */
 export default function LabThinkTank({ messages, enabled, dashReady }: Props) {
   const [expanded, setExpanded] = useState(true);
 

@@ -1,8 +1,8 @@
 """
 Breeding Council / Lab Think Tank — Labs B, C, D publish short lines with explicit conversational threading.
 
-Rolling **last 6** bus lines drive prompts; each turn anchors to the latest **1–2 other labs**; optional ``reply_to`` UUID ties replies.
-≤**75** chars; council **~2–9s** cadence; strategic pulse **~8–18s**; share cap relaxes after bootstrap so lines actually flow.
+Rolling **last 6** bus lines drive prompts; every line reacts to **other labs** by name; optional ``reply_to`` UUID ties replies.
+**55–65** chars target; council **6–15s**; ranked-market hook emits **no tickers** (dialogue-only Think Tank).
 
 Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ optional ``reply_to`` field).
 """
@@ -31,14 +31,14 @@ _LAB_LABEL = {
     BRANCH_LAB_D: "Lab D",
 }
 
-_MSG_SOFT_MAX = 75
+_MSG_SOFT_MAX = 62  # dialogue-only strip; ~55–65 chars effective
 _CONV_MEMORY = 6  # tail scanned for “reply to last 1–2 other labs”
 _RECENT_SHARE_WINDOW = 14  # shorter window — faster recovery from skew
 _PROACTIVE_SHARE_CAP = 0.46  # old 0.31 caused long silent stretches (strategic pulse kept deferring)
 _BOOTSTRAP_BUS_LINES = 16  # until this many rows exist, don’t throttle proactive voice (seed the thread)
-_STRATEGIC_PULSE_GAP_S = (8.0, 18.0)
-_INTRO_NEXT_STRATEGIC_GAP_S = (2.8, 7.5)  # first wave after intros — was tied to full pulse gap and felt dead
-_COUNCIL_REPLY_GAP_S = (2.0, 9.0)
+_STRATEGIC_PULSE_GAP_S = (7.0, 16.0)
+_INTRO_NEXT_STRATEGIC_GAP_S = (3.0, 8.0)
+_COUNCIL_REPLY_GAP_S = (6.0, 15.0)
 _SIM_BRANCH_PUBLISH_GAP_S = 12.0
 
 
@@ -147,20 +147,35 @@ def _recent_lab_share(bus: LabCommunicationBus, lab: str, *, window: int = _RECE
     return hits / float(len(rows))
 
 
+def _needs_voice_turn(bus: LabCommunicationBus, branch: str) -> bool:
+    """Prefer labs absent or behind in the recent tail so B/C/D all stay in the loop."""
+    rows = list(bus._dq)[-8:]
+    labs_seq = [str(r.get("lab") or "") for r in rows if str(r.get("lab") or "") in LAB_THINK_TANK_BRANCHES]
+    if branch not in LAB_THINK_TANK_BRANCHES:
+        return False
+    if not labs_seq:
+        return True
+    seen = {lb for lb in labs_seq[-6:]}
+    # Not all three represented recently → whoever's missing gets priority.
+    if len(seen) < 3 and branch not in seen:
+        return True
+    if branch not in labs_seq[-4:]:
+        return True
+    counts = {BRANCH_LAB_B: 0, BRANCH_LAB_C: 0, BRANCH_LAB_D: 0}
+    for lb in labs_seq:
+        if lb in counts:
+            counts[lb] += 1
+    mx = max(counts.values()) if counts else 0
+    return counts.get(branch, 0) < mx
+
+
 def _can_proactive_voice(bus: LabCommunicationBus, lab: str) -> bool:
     # Early thread: allow everyone to speak so the UI isn’t an empty box waiting on share math.
     if len(bus._dq) < _BOOTSTRAP_BUS_LINES:
         return True
+    if _needs_voice_turn(bus, lab):
+        return True
     return _recent_lab_share(bus, lab) <= _PROACTIVE_SHARE_CAP
-
-
-def _first_snapshot_ticker(snapshots: dict[str, dict[str, Any]]) -> str | None:
-    for snap in snapshots.values():
-        if isinstance(snap, dict):
-            t = snap.get("ticker") or snap.get("market_ticker")
-            if t:
-                return str(t)
-    return None
 
 
 def _optimizer_breeding_enabled(full_cfg: dict[str, Any] | None) -> bool:
@@ -192,8 +207,122 @@ def _seconds_since_publish(engine: Any) -> float:
     return time.monotonic() - float(getattr(engine, "_lab_think_tank_last_publish_mono", 0.0) or 0.0)
 
 
-def _tick_short(s: str | None, n: int = 10) -> str:
-    return (s or "").strip()[:n] or "?"
+def _strip_voice_prefix(msg: str) -> str:
+    s = (msg or "").strip()
+    for pref in ("B:", "C:", "D:", "b:", "c:", "d:"):
+        if s.startswith(pref):
+            s = s[len(pref) :].strip()
+            break
+    return s
+
+
+def _peer_blurb(peer_row: dict[str, Any] | None, *, max_len: int = 18) -> str:
+    """Short echo of what another lab said — human phrasing, no symbols."""
+    raw = _strip_voice_prefix(str((peer_row or {}).get("message") or ""))
+    if not raw:
+        return "that"
+    return _cap_msg(raw, max_len)
+
+
+def _team_peer_reply_line(
+    branch: str,
+    peer_row: dict[str, Any],
+    bus: LabCommunicationBus,
+    *,
+    breeding_enabled: bool,
+) -> tuple[str, float | None]:
+    """Natural reply to another lab — names only, no markets/tickers."""
+    voc = _voice_prefix(branch)
+    nick = _peer_nick(peer_row)
+    peer_lab = str(peer_row.get("lab") or "")
+    blur = _peer_blurb(peer_row, max_len=16)
+
+    team_tag = ""
+    if breeding_enabled and random.random() < 0.32:
+        team_tag = random.choice([" Team—breed next.", " Team—kid genome.", " Kid crossover?", ""]).strip()
+
+    others = thread_other_lines(bus, branch, _CONV_MEMORY)
+    nick2 = ""
+    if len(others) >= 2:
+        cand = others[-2]
+        if cand.get("id") != peer_row.get("id"):
+            nick2 = _peer_nick(cand)
+
+    # Two voices in play → weave both (still reply_to primary peer).
+    if nick2 and nick2 != nick and random.random() < 0.45:
+        pools_dual = {
+            BRANCH_LAB_B: [
+                f"{voc} heard {nick2} then you—interesting mix.",
+                f"{voc} agree {nick} some; {nick2} too—I'll sit.",
+                f"{voc} oh—{nick2} and you both landed; hmm.",
+            ],
+            BRANCH_LAB_C: [
+                f"{voc} interesting—I'm with {nick}, hear {nick2}.",
+                f"{voc} between you and {nick2}: softer take.",
+                f"{voc} building on both—small step from me.",
+            ],
+            BRANCH_LAB_D: [
+                f"{voc} remix what {nick2} said + you—cool.",
+                f"{voc} I'm with {nick} here; {nick2} fair too.",
+                f"{voc} agree vibes—sandwich both takes.",
+            ],
+        }
+        text = random.choice(pools_dual[branch]).strip()
+        if team_tag:
+            text = _cap_msg(text + " " + team_tag)
+        else:
+            text = _cap_msg(text)
+        return text, random.uniform(0.46, 0.78)
+
+    if branch == BRANCH_LAB_B:
+        opts = [
+            f"{voc} oh you did this—let me look at this.",
+            f"{voc} interesting take {nick}.",
+            f"{voc} agree but I'm holding smaller.",
+            f"{voc} yeah I'm with you on that.",
+            f"{voc} heard '{blur}'—fair pushback.",
+            f"{voc} what do you think—same page?",
+        ]
+        if peer_lab == BRANCH_LAB_C:
+            opts.extend([f"{voc} yeah C is right on that one.", f"{voc} C—that landed; I'm cautious."])
+        elif peer_lab == BRANCH_LAB_D:
+            opts.extend([f"{voc} D interesting; I'll mirror softer.", f"{voc} D—I hear you; nod from me."])
+        text = random.choice(opts).strip()
+    elif branch == BRANCH_LAB_C:
+        opts = [
+            f"{voc} interesting take {nick}.",
+            f"{voc} agree but I'm sizing smaller.",
+            f"{voc} I'm with you on that—almost.",
+            f"{voc} oh—that tracks; let me sit with it.",
+            f"{voc} building on what you said—small.",
+            f"{voc} what do you think—split the diff?",
+        ]
+        if peer_lab == BRANCH_LAB_B:
+            opts.extend([f"{voc} B fair; I'll follow softer.", f"{voc} B—you're not wrong there."])
+        elif peer_lab == BRANCH_LAB_D:
+            opts.extend([f"{voc} interesting take D.", f"{voc} D agree but clip my hype."])
+        text = random.choice(opts).strip()
+    else:
+        opts = [
+            f"{voc} interesting—I'm with {nick} here.",
+            f"{voc} agree but I'd sand off the edges.",
+            f"{voc} oh you went there—let me peek.",
+            f"{voc} yeah that's the tension—heard.",
+            f"{voc} remix your point—I'll try softer.",
+            f"{voc} what do you think—same worry?",
+        ]
+        if peer_lab == BRANCH_LAB_B:
+            opts.extend([f"{voc} B—I ride with that vibe.", f"{voc} B straight; I'll echo lighter."])
+        elif peer_lab == BRANCH_LAB_C:
+            opts.extend([f"{voc} C spicy; I'm half in.", f"{voc} interesting take C."])
+        text = random.choice(opts).strip()
+
+    if team_tag:
+        text = _cap_msg(text + " " + team_tag)
+    else:
+        text = _cap_msg(text)
+    conf = random.uniform(0.44, 0.78)
+    return text, conf
 
 
 def _contextual_strategic_pulse(
@@ -205,10 +334,12 @@ def _contextual_strategic_pulse(
     breeding_enabled: bool,
 ) -> tuple[str, float | None, str, str | None]:
     """
-    Dialogue-first pulse: anchor to the latest 1–2 *other* labs in the rolling tail.
-    Always reads like B/C/D reacting to each other; ``reply_to`` ties to the newest anchor line.
+    Team dialogue only — reacts to other labs' lines by name. No tickers, scans, or market slang.
+    ``ticker_hint`` / ``scanned`` kept for call-site compatibility but ignored for copy.
     """
-    tk = _tick_short(ticker_hint, 8)
+    _ = ticker_hint
+    _ = scanned
+
     vp = _voice_prefix(branch)
     others = thread_other_lines(bus, branch, _CONV_MEMORY)
     last_o = others[-1] if others else None
@@ -216,85 +347,82 @@ def _contextual_strategic_pulse(
     reply_to: str | None = str(last_o["id"]) if last_o and last_o.get("id") else None
 
     team = ""
-    if breeding_enabled and random.random() < 0.38:
+    if breeding_enabled and random.random() < 0.42:
         team = random.choice(
             [
-                "Team—breed this for next kid.",
-                "Team—edge worth child genome.",
-                "Team—lock thread for crossover.",
+                "Team—strong edge for next child genome.",
+                "Team—let's breed this next.",
                 "",
             ]
         ).strip()
 
     nick_last = _peer_nick(last_o) if last_o else ""
     nick_prev = _peer_nick(prev_o) if prev_o else ""
-    frag_last = _cap_msg(str((last_o or {}).get("message") or ""), 22)
+    blurb_last = _peer_blurb(last_o, max_len=14) if last_o else ""
 
-    # Two distinct other voices in-thread → acknowledge both (conversation density).
     if last_o and prev_o and nick_last != nick_prev:
         pools = {
             BRANCH_LAB_B: [
-                f"{vp} heard {nick_prev} then {nick_last}—{tk} still risky.",
-                f"{vp} agree {nick_last} tempting—{nick_prev} also loud; passing.",
-                f"{vp} interesting—{nick_prev} vs {nick_last}? Too thin for me.",
-                f"{vp} yeah {nick_last} edge cute—{nick_prev} worried me too.",
+                f"{vp} between {nick_prev} & {nick_last}—I'm torn.",
+                f"{vp} interesting—you two disagree; I pause.",
+                f"{vp} agree with {nick_last} a bit; {nick_prev} loud tho.",
+                f"{vp} oh—{nick_prev} then {nick_last}? Let me look.",
             ],
             BRANCH_LAB_C: [
-                f"{vp} that edge tempting—{nick_prev} cautious but I'm nibbling {tk}.",
-                f"{vp} I'm with {nick_last} here—{nick_prev} fair but sizes tiny.",
-                f"{vp} disagree {nick_prev} a bit—{nick_last} momentum wins {tk}.",
-                f"{vp} interesting—splitting {nick_prev}/{nick_last}; small YES.",
+                f"{vp} interesting take {nick_last}; hear {nick_prev}.",
+                f"{vp} I'm with {nick_last}; {nick_prev} fair push.",
+                f"{vp} agree but softer—split you both.",
+                f"{vp} what do you think—between those two?",
             ],
             BRANCH_LAB_D: [
-                f"{vp} wild lane—between {nick_prev} & {nick_last}, I probe tail.",
-                f"{vp} I'm with {nick_last}—{nick_prev} worry noted; hybrid test.",
-                f"{vp} chaos ok—{nick_prev}+{nick_last}? sandbox both views.",
-                f"{vp} remix {nick_last} take—{nick_prev} keeps me honest.",
+                f"{vp} remix {nick_last}+{nick_prev}; I'm curious.",
+                f"{vp} interesting—I'm with {nick_last} mostly.",
+                f"{vp} yeah {nick_prev} warned me; {nick_last} tempts.",
+                f"{vp} agree vibes—sandwich both takes.",
             ],
         }
         msg = random.choice(pools[branch])
     elif last_o:
         pools = {
             BRANCH_LAB_B: [
-                f"{vp} responding {nick_last}—'{frag_last}' yeah but risky.",
-                f"{vp} agree {nick_last} some—but {tk} too ugly for size.",
-                f"{vp} interesting—I'll stay flat after {nick_last}.",
-                f"{vp} hear you {nick_last}; I'm passing {tk} tho.",
-                f"{vp} what do you think team? I'm NO‑tilt post-{nick_last}.",
+                f"{vp} oh '{blurb_last}'—interesting.",
+                f"{vp} yeah {nick_last} I'm half with you.",
+                f"{vp} agree but I'd slow-roll after you.",
+                f"{vp} what do you think—same doubt?",
+                f"{vp} heard you {nick_last}; let me sit.",
             ],
             BRANCH_LAB_C: [
-                f"{vp} that edge tempting—{nick_last} I'm still small {tk}.",
-                f"{vp} agree w {nick_last} but sizing down—liquidity meh.",
-                f"{vp} interesting—riding {nick_last}; tiny starter.",
-                f"{vp} pushback gentle: {nick_last} ok—I clip risk.",
-                f"{vp} hearing {nick_last}; momentum yes, cap tight.",
+                f"{vp} interesting take {nick_last}.",
+                f"{vp} agree but I'm sizing smaller.",
+                f"{vp} I'm with you on that—almost.",
+                f"{vp} building on that—small step.",
+                f"{vp} oh you did this—let me look.",
             ],
             BRANCH_LAB_D: [
-                f"{vp} wild—since {nick_last}: test convex scratch.",
-                f"{vp} building on {nick_last}—weird hedge worth paper.",
-                f"{vp} I'm with {nick_last} on asymmetry—probe tails.",
-                f"{vp} interesting {nick_last}; GA log this variant.",
-                f"{vp} remix {nick_last}'s frame—sandbox ladder.",
+                f"{vp} interesting—I'm with {nick_last} here.",
+                f"{vp} agree but I'd hedge my excitement.",
+                f"{vp} remix your angle—softer from me.",
+                f"{vp} yeah {nick_last} that tracks.",
+                f"{vp} what do you think—same worry?",
             ],
         }
         msg = random.choice(pools[branch])
     else:
-        # Cold thread — invite others so startup isn't a monologue box.
         cold = {
             BRANCH_LAB_B: [
-                f"{vp} scanning {tk}—C+D what do you think?",
-                f"{vp} cautious ping {tk}; waiting on team.",
-                f"{vp} risk-first—need your reads.",
+                f"{vp} hey B+C+D—what do you think?",
+                f"{vp} team—chime in before I commit.",
+                f"{vp} who's with me—sanity check?",
             ],
             BRANCH_LAB_C: [
-                f"{vp} {tk} looks spicy—B+D agree?",
-                f"{vp} hunting edge—talk to me team.",
-                f"{vp} aggressive tiny—who else in?",
+                f"{vp} hey team—interesting angle?",
+                f"{vp} B+D—talk to me.",
+                f"{vp} what do you think—too spicy?",
             ],
             BRANCH_LAB_D: [
-                f"{vp} hypothesis {tk}—B+C poke holes?",
-                f"{vp} chaos probe ready—need sane brakes.",
-                f"{vp} experimental—team sanity-check me.",
+                f"{vp} B+C—poke holes in me.",
+                f"{vp} team—I'm listening.",
+                f"{vp} agree we sync—who speaks first?",
             ],
         }
         msg = random.choice(cold[branch])
@@ -316,66 +444,7 @@ def _council_reply_message(
     *,
     breeding_enabled: bool,
 ) -> tuple[str, float | None]:
-    voc = _voice_prefix(branch)
-    nick = _peer_nick(peer_row)
-    peer_lab = str(peer_row.get("lab") or "")
-    tag = ""
-    if breeding_enabled and random.random() < 0.28:
-        tag = random.choice([" Breed it.", " Kid?", " GA?", ""])
-
-    others = thread_other_lines(bus, branch, _CONV_MEMORY)
-    nick2 = ""
-    if len(others) >= 2:
-        cand = others[-2]
-        if cand.get("id") != peer_row.get("id"):
-            nick2 = _peer_nick(cand)
-
-    dual = ""
-    if nick2 and nick2 != nick and random.random() < 0.42:
-        dual = random.choice(
-            [
-                f" ({nick2}+{nick})",
-                f" re {nick2}+{nick}",
-                f" heard {nick2} too—",
-            ]
-        )
-
-    if branch == BRANCH_LAB_B:
-        opts = [
-            f"{voc} hearing {nick}: thin—mosquito size.{tag}",
-            f"{voc} {nick} loud—hedge first.{dual}{tag}",
-            f"{voc} resp {nick}: weak tape—cooling.{tag}",
-            f"{voc} agree {nick} some—but risk says wait.{tag}",
-        ]
-        if peer_lab == BRANCH_LAB_C:
-            opts.extend([f"{voc} C hot—I'm flat til calm.{tag}", f"{voc} C rush—fade speed only.{tag}"])
-        elif peer_lab == BRANCH_LAB_D:
-            opts.extend([f"{voc} D wild—tiny stamp OK.{tag}", f"{voc} D chaos—leash tight.{tag}"])
-        text = random.choice(opts).strip()
-        return _cap_msg(text), random.uniform(0.44, 0.62)
-
-    if branch == BRANCH_LAB_C:
-        opts = [
-            f"{voc} fair {nick}—still small.{tag}",
-            f"{voc} piggyback {nick}—slow scale.{dual}{tag}",
-            f"{voc} interesting {nick}—nibble only.{tag}",
-            f"{voc} agree but clip size—edge real.{tag}",
-        ]
-        if peer_lab == BRANCH_LAB_B:
-            opts.extend([f"{voc} B tight—heard; dip probe.{tag}", f"{voc} B worry—clip risk.{tag}"])
-        elif peer_lab == BRANCH_LAB_D:
-            opts.extend([f"{voc} D weird—pair momentum.{tag}", f"{voc} D chaos—stops on.{tag}"])
-        text = random.choice(opts).strip()
-        return _cap_msg(text), random.uniform(0.58, 0.82)
-
-    opts = [
-        f"{voc} vibes {nick}—remix tails.{tag}",
-        f"{voc} {nick} noted—sandbox twist.{dual}{tag}",
-        f"{voc} building on {nick}: hedge probe.{tag}",
-        f"{voc} interesting—breed what survives.{tag}",
-    ]
-    text = random.choice(opts).strip()
-    return _cap_msg(text), random.uniform(0.42, 0.78)
+    return _team_peer_reply_line(branch, peer_row, bus, breeding_enabled=breeding_enabled)
 
 
 def publish_council_reply_if_due(
@@ -393,6 +462,9 @@ def publish_council_reply_if_due(
         return
     gap_lo, gap_hi = _COUNCIL_REPLY_GAP_S
     need = random.uniform(gap_lo, gap_hi)
+    # Catch-up when this lab is behind others — stay inside product [6,15]s requirement.
+    if _needs_voice_turn(bus, branch) and need > 10.5:
+        need = random.uniform(gap_lo, min(gap_hi, 11.5))
     if _seconds_since_publish(engine) < need:
         return
 
@@ -437,13 +509,11 @@ def publish_strategic_pulse_if_due(
 
     engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(*_STRATEGIC_PULSE_GAP_S)
 
-    hint = _first_snapshot_ticker(snapshots)
-
     msg, conf, kind, reply_to = _contextual_strategic_pulse(
         branch,
         bus,
-        ticker_hint=hint or "BOOK",
-        scanned=max(1, scanned),
+        ticker_hint=None,
+        scanned=0,
         breeding_enabled=breeding_enabled,
     )
     _publish_tracked(engine, bus, branch, msg, confidence=conf, action=kind, reply_to=reply_to)
@@ -474,12 +544,11 @@ def publish_think_tank_break_silence_if_due(
         return
 
     now_m = time.monotonic()
-    hint = _first_snapshot_ticker(snapshots)
     msg, conf, _, reply_to = _contextual_strategic_pulse(
         branch,
         bus,
-        ticker_hint=hint or "BOOK",
-        scanned=max(1, scanned),
+        ticker_hint=None,
+        scanned=0,
         breeding_enabled=breeding_enabled,
     )
     _publish_tracked(engine, bus, branch, msg, confidence=conf, action="strategic_pulse_break", reply_to=reply_to)
@@ -496,66 +565,8 @@ def think_tank_on_ranked_market(
     implied_yes: float | None,
     bus: LabCommunicationBus,
 ) -> None:
-    if branch not in LAB_THINK_TANK_BRANCHES:
-        return
-    if idx != 0:
-        return
-    if random.random() > 0.22:
-        return
-    if bool(getattr(engine, "_lab_think_tank_market_note_sent", False)):
-        return
-    if _seconds_since_publish(engine) < 4.0:
-        return
-
-    tk = _tick_short(ticker, 12)
-    py = _clamp01(implied_yes)
-    pct = int(round((py or 0.0) * 100)) if py is not None else None
-    ys = f"{pct}" if pct is not None else "?"
-
-    peer = bus.last_from_other(branch)
-    pid = peer.get("id") if peer else None
-    nk = _peer_nick(peer) if peer else ""
-
-    if branch == BRANCH_LAB_B:
-        core = random.choice(
-            [
-                f"{tk}@{ys}¢ thin edge—skip.",
-                f"top {tk}: fragile book—wait.",
-                f"{tk}: cautious ping.",
-            ]
-        )
-    elif branch == BRANCH_LAB_C:
-        core = random.choice(
-            [
-                f"{tk}@{ys}¢ tempting tiny.",
-                f"leader {tk}: starter YES.",
-                f"{tk} rank hot—nip.",
-            ]
-        )
-    else:
-        core = random.choice(
-            [
-                f"{tk}@{ys}¢ weird tail—log.",
-                f"{tk}: chaos EV note.",
-                f"D poke {tk}; paper.",
-            ]
-        )
-
-    if peer and nk and random.random() < 0.55:
-        msg = _cap_msg(f"After {nk}: {core}")
-    else:
-        msg = _cap_msg(core)
-
-    engine._lab_think_tank_market_note_sent = True
-    _publish_tracked(
-        engine,
-        bus,
-        branch,
-        msg,
-        confidence=py if py is not None else random.uniform(0.5, 0.72),
-        action="market_ping",
-        reply_to=str(pid) if pid else None,
-    )
+    """Think Tank stays conversational — no ticker dumps from ranked-market scans."""
+    return
 
 
 def think_tank_on_sim_open(
@@ -568,27 +579,27 @@ def think_tank_on_sim_open(
     rule_name: str,
     bus: LabCommunicationBus,
 ) -> None:
+    """Sim opens don't narrate tickers — emit team dialogue anchored to peers."""
     if branch not in LAB_THINK_TANK_BRANCHES:
         return
     if _seconds_since_publish(engine) < _SIM_BRANCH_PUBLISH_GAP_S:
         return
-    tk = _tick_short(ticker, 10)
-    py = _clamp01(implied_yes)
-    pct = int(round((py or 0.0) * 100)) if py is not None else None
-    rn = _tick_short(rule_name, 14)
-    ys = f"{pct}" if pct is not None else "?"
-
     peer = bus.last_from_other(branch)
-    pid = peer.get("id") if peer and random.random() < 0.35 else None
-
-    if branch == BRANCH_LAB_B:
-        msg = _cap_msg(f"Sim {side.upper()} {tk} @{ys}—{rn}; tiny.")
-    elif branch == BRANCH_LAB_C:
-        msg = _cap_msg(f"Fill {side.upper()} {tk} @{ys}—{rn}; press.")
-    else:
-        msg = _cap_msg(f"Sandbox {side.upper()} {tk} @{ys}—{rn}; GA.")
-
-    _publish_tracked(engine, bus, branch, msg, confidence=py, action=f"open_sim_{side}", reply_to=str(pid) if pid else None)
+    if not peer:
+        return
+    py = _clamp01(implied_yes)
+    msg, conf = _team_peer_reply_line(branch, peer, bus, breeding_enabled=False)
+    pid = peer.get("id")
+    use_conf = _clamp01(py) if py is not None else conf
+    _publish_tracked(
+        engine,
+        bus,
+        branch,
+        msg,
+        confidence=use_conf,
+        action="team_dialogue_sim",
+        reply_to=str(pid) if pid else None,
+    )
 
 
 def finalize_think_tank_tick(
@@ -611,9 +622,9 @@ def finalize_think_tank_tick(
         intro = _cap_msg(
             random.choice(
                 [
-                    f"{vp} live—talk to me team.",
-                    f"{vp} online—react to each other.",
-                    f"{vp} here—B+C+D ping this tick.",
+                    f"{vp} hey team—I'm listening.",
+                    f"{vp} online—who wants first?",
+                    f"{vp} B+C+D ping me when ready.",
                 ]
             )
         )
@@ -647,8 +658,8 @@ def finalize_think_tank_tick(
             random.choice(
                 [
                     "Team—strong edge for next child genome.",
-                    "Council sync: breed this thread.",
-                    "Lock meme—crossover next.",
+                    "Team—breed this thread next.",
+                    "Team—lock crossover here.",
                 ]
             )
         )

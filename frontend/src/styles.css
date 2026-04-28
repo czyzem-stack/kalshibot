@@ -4080,30 +4080,31 @@ button[title].section-tip {
   word-break: break-word;
 }
 
-/* Lab Think Tank — tight console strip (auto height, latest rows only) */
+/* Lab Think Tank — dense console strip: auto height, no max-height, six rows max in TS */
 .lab-think-tank {
-  margin: 6px 8px 4px;
-  border-radius: 6px;
-  border: 1px solid rgba(96, 122, 210, 0.18);
-  background: rgba(6, 10, 20, 0.92);
+  margin: 3px 5px 2px;
+  border-radius: 3px;
+  border: 1px solid rgba(96, 122, 210, 0.14);
+  background: rgba(6, 10, 20, 0.94);
   overflow: visible;
+  min-height: 0;
 }
 .lab-think-tank__expand-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 3px;
   width: 100%;
   margin: 0;
-  padding: 5px 8px;
+  padding: 3px 5px;
   text-align: left;
   font: inherit;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 750;
   color: #e8eeff;
   background: rgba(4, 8, 18, 0.65);
   border: none;
-  border-bottom: 1px solid rgba(96, 122, 210, 0.14);
+  border-bottom: 1px solid rgba(96, 122, 210, 0.12);
   cursor: pointer;
 }
 .lab-think-tank__expand-btn:hover {
@@ -4118,13 +4119,13 @@ button[title].section-tip {
 }
 .lab-think-tank__hint,
 .lab-think-tank__empty {
-  margin: 4px 6px 6px;
-  font-size: 10px;
-  line-height: 1.3;
+  margin: 2px 4px 4px;
+  font-size: 9.5px;
+  line-height: 1.2;
   color: rgba(186, 205, 255, 0.68);
 }
 .lab-think-tank__viewport {
-  padding: 2px 6px 5px;
+  padding: 0 3px 2px;
 }
 .lab-think-tank__log {
   list-style: none;
@@ -4132,44 +4133,44 @@ button[title].section-tip {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 .lab-think-tank__line {
   display: flex;
   align-items: flex-start;
-  gap: 4px;
+  gap: 2px;
   margin: 0;
-  padding: 2px 4px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  line-height: 1.32;
+  padding: 1px 2px;
+  border-radius: 2px;
+  font-size: 9.5px;
+  line-height: 1.12;
   font-weight: 560;
   color: #dbe7ff;
   border-left: 2px solid rgba(148, 163, 184, 0.38);
   background: rgba(12, 18, 34, 0.55);
 }
 .lab-think-tank__line--reply {
-  padding-left: 4px;
+  padding-left: 2px;
 }
 .lab-think-tank__replymark {
   flex-shrink: 0;
-  width: 12px;
-  font-size: 11px;
+  width: 10px;
+  font-size: 10px;
   font-weight: 800;
-  opacity: 0.45;
+  opacity: 0.42;
   color: rgba(186, 205, 255, 0.85);
-  margin-top: 1px;
+  margin-top: 0;
 }
 .lab-think-tank__ico {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  font-size: 0.95rem;
+  gap: 1px;
+  font-size: 0.85rem;
   line-height: 1;
 }
 .lab-think-tank__letter {
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 800;
   opacity: 0.85;
   color: rgba(226, 232, 255, 0.92);

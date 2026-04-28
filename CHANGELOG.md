@@ -2,6 +2,16 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.008 - Lab Think Tank pure team dialogue - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Think Tank copy is **dialogue-only**: rewritten **`_contextual_strategic_pulse`** and council path via **`_team_peer_reply_line`** (natural back-and-forth, B/C/D names, agree/but/interesting/building on). **Max ~62 chars.** Ranked-market hook **publishes nothing** (no ticker dumps). Sim opens emit **peer-anchored team lines** instead of ticker narration. Stronger rotation when **not all three** labs appear in the recent tail.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`):** Latest **5** lines; tighter padding/gaps/fonts.
+
+## v0.4.15.007 - Lab Think Tank dialogue + ultra-compact UI - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Messages capped **<70** chars; council reply gaps **6–15s**; strategic pulses rewritten for explicit **B/C/D back-and-forth** (agree/but/interesting/building on); `reply_to` still anchors to latest other lab; **`_needs_voice_turn`** biases underrepresented labs so all three stay in rotation; catch-up council timing when a lab is behind.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`):** Latest **6** lines only; tighter padding/line-height — denser console strip in Optimizer.
+
 ## v0.4.15.006 - Lab Think Tank cadence + visibility fixes - 2026-04-28
 
 - **Backend (`lab_communication.py`):** Loosened proactive share cap / shorter rolling window; **bootstrap phase** (first ~16 bus lines) skips share throttling so messages appear immediately; faster council (**~2–9s**) and strategic (**~8–18s**) gaps; intros schedule the next pulse in **~3–8s** (was tied to the full gap); **`publish_think_tank_break_silence_if_due`** escapes share-cap deadlock so overrepresented labs still speak after ~14s quiet; ranked-market pings no longer double-block on share cap; UI polling interval **2.5s**.
