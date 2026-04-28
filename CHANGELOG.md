@@ -2,6 +2,10 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.009 - Lab Think Tank variety + balance - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Much larger **peer/strategic** template pools; **`_pick_varied`** avoids lines too close to the last **8** bus messages (word-overlap / prefix guard). **`_c_overrepresented`** blocks **C** proactive pulses when C dominates the tail; **`_needs_voice_turn`** boosts **B/D** when quiet or when **C** has run the board. **`_team_peer_reply_line`** expanded dual- and single-peer lines + team tags.
+
 ## v0.4.15.008 - Lab Think Tank pure team dialogue - 2026-04-28
 
 - **Backend (`lab_communication.py`):** Think Tank copy is **dialogue-only**: rewritten **`_contextual_strategic_pulse`** and council path via **`_team_peer_reply_line`** (natural back-and-forth, B/C/D names, agree/but/interesting/building on). **Max ~62 chars.** Ranked-market hook **publishes nothing** (no ticker dumps). Sim opens emit **peer-anchored team lines** instead of ticker narration. Stronger rotation when **not all three** labs appear in the recent tail.
