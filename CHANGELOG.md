@@ -2,6 +2,64 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.010 - Lab E full-stack UI + optimizer radar - 2026-04-28
+
+- **Frontend:** Lab **E** wired through **branch performance**, **equity** (six small multiples + compare overlay), **Assets to watch**, **Account** holdings/engine tabs, **optimizer thinking radar** (seven traces), **hero marquee/snapshot**, **Lab pulse**, **ActivityHints** for D/E engines, **promote Lab A→Live** vs B/C/D/E, **Settings** (engines, patient stop, simulation labs bulk save/reset, optimizer Lab E toggles/style/floors), and **help playbook** copy. **`BranchMarketTickers`:** `lab_e` in hero order, norms, positions, compact segments. **`labHiveChat`:** Breeding Council header (“working together”); **`balanceHiveMessagesForTicker`** now round-robins **lab_e** with B/C/D (was omitting E).
+- **Backend:** Lab E metrics/equity/engine/dashboard/API/optimizer paths; **`lab_communication._voice_prefix`** returns **`E:`** for **`lab_e`** (was **`?:`**).
+- **Backend (`persistence.py`):** Breeding Council parents **B/C/D/E** never persist with empty **`rules`** (would override globals and freeze signals): **`_ensure_breeder_labs_have_rules`** copies global rules or injects a loose BTC/ETH-friendly pack. **`default_bot_config`** seeds each breeder with **`rules`**, looser **`no_bet_when_yes_below_pct`**, slightly lower optimizer **yes_floor** / **min_minutes_left** for **B/D/E**, and **`engine_running: true`** on **B–E** so fresh installs tick immediately after restart.
+- **Backend (`engines/engine.py`, `kalshi_client.py`, `market_pulse.py`):** Guard **`/markets`** and balance payloads so a non-**dict** (or bad cache value) never reaches **`.get("markets")`** / **`.get("balance")`** — fixes **`NoneType` … `'get'`** on Lab E and other branches when the API or cache returns an unexpected shape.
+- **Backend (`main.py`):** **`_lab_thought_lines`** treats a missing/non-dict **`metrics`** as **`{}`** so dashboard **`lab_thoughts`** never throws for Lab E.
+- **Backend (`lab_communication.py`):** Extra short **Think Tank** team lines (**E+C** / **B/D** / **Lab A** handoff) in strategic pulses and peer replies.
+- **Backend (`engines/dual_engine_loop.py`):** Module docstring now lists **Lab A–E** (loop already ticked **`lab_e`** via **`BRANCH_LABS`**).
+- **Frontend (`BranchMarketTickers.tsx`):** **`branchHeadlineDollars`** coerces null/invalid **`metrics`** to **`{}`** before reading equity fields.
+- **Frontend (`dashboardPolling.ts`):** Comment documents keeping **`equity_snapshots_lab_*`** / **`metrics_lab_*`** in sync with **`App.tsx`** catch-up keys (includes **`lab_e`**).
+
+## v0.4.15.009 - Lab Think Tank variety + balance - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Much larger **peer/strategic** template pools; **`_pick_varied`** avoids lines too close to the last **8** bus messages (word-overlap / prefix guard). **`_c_overrepresented`** blocks **C** proactive pulses when C dominates the tail; **`_needs_voice_turn`** boosts **B/D** when quiet or when **C** has run the board. **`_team_peer_reply_line`** expanded dual- and single-peer lines + team tags.
+
+## v0.4.15.008 - Lab Think Tank pure team dialogue - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Think Tank copy is **dialogue-only**: rewritten **`_contextual_strategic_pulse`** and council path via **`_team_peer_reply_line`** (natural back-and-forth, B/C/D names, agree/but/interesting/building on). **Max ~62 chars.** Ranked-market hook **publishes nothing** (no ticker dumps). Sim opens emit **peer-anchored team lines** instead of ticker narration. Stronger rotation when **not all three** labs appear in the recent tail.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`):** Latest **5** lines; tighter padding/gaps/fonts.
+
+## v0.4.15.007 - Lab Think Tank dialogue + ultra-compact UI - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Messages capped **<70** chars; council reply gaps **6–15s**; strategic pulses rewritten for explicit **B/C/D back-and-forth** (agree/but/interesting/building on); `reply_to` still anchors to latest other lab; **`_needs_voice_turn`** biases underrepresented labs so all three stay in rotation; catch-up council timing when a lab is behind.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`):** Latest **6** lines only; tighter padding/line-height — denser console strip in Optimizer.
+
+## v0.4.15.006 - Lab Think Tank cadence + visibility fixes - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Loosened proactive share cap / shorter rolling window; **bootstrap phase** (first ~16 bus lines) skips share throttling so messages appear immediately; faster council (**~2–9s**) and strategic (**~8–18s**) gaps; intros schedule the next pulse in **~3–8s** (was tied to the full gap); **`publish_think_tank_break_silence_if_due`** escapes share-cap deadlock so overrepresented labs still speak after ~14s quiet; ranked-market pings no longer double-block on share cap; UI polling interval **2.5s**.
+- **Frontend (`dashboardPolling.ts`, `LabThinkTank.tsx`):** Faster `/labs/chat` polling; clearer empty-state copy when engines haven’t published yet.
+
+## v0.4.15.005 - Lab Think Tank conversational threading - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Rolling **last 4** thread tail drives prompts; strategic pulses **anchor** to another lab’s latest line (`reply_to` UUID); council replies include **`reply_to`**; messages capped **70** chars; council gaps **8–18s**; contextual ranked/sim lines optional **`reply_to`**.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`, `labHiveChat.tsx`):** Optional **`reply_to`** on rows; compact log shows **→** when replying to the **previous visible** line.
+
+## v0.4.15.004 - Lab Think Tank v5 (compact UI + short agent banter) - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Messages capped ~**65–78** chars; pulses **18–35s**; faster council replies (**6–14s** gap); tighter proactive share cap (**0.34**); short intros / ranked pings / sim lines / breeding whispers.
+- **Frontend (`LabThinkTank.tsx`, `styles.css`):** Max **~180px** viewport; latest **8** lines; tight **live-log** rows (emoji + B/C/D + message); removed chat-thread styling.
+
+## v0.4.15.003 - Breeding Council Think Tank (Labs B/C/D in Optimizer) - 2026-04-28
+
+- **Frontend:** Removed header lab ticker; added collapsible **Lab Think Tank** panel under Optimizer (pulse strip) with council transcript UI; Settings toggle renamed **Enable Agent Collaboration** (`LAB_COLLABORATION_STORAGE_KEY`, migrates legacy chat key).
+- **Backend (`lab_communication.py`):** Renamed conceptually to think tank / Breeding Council — slower strategic pulses (~25–50s), council replies, rare ranked-market analysis, sim-open narration; structlog event **`think_tank_message`**; `finalize_think_tank_tick(..., full_cfg=)` reads **`optimizer.breeding_enabled`** for breeding-themed lines without touching `lab_breeding.py`.
+- **Backend (`engines/engine.py`):** Wires think-tank finalize with full config; engine state keys **`_lab_think_tank_*`**.
+
+## v0.4.15.002 - Lab Agent Chatter v4 (balanced B/C/D + ticker readability) - 2026-04-28
+
+- **Backend (`lab_communication.py`):** Fair rotation (~34% soft cap on proactive lines per lab), chain replies driven by `last_from_other()` with short agree/disagree/build-on copy, heartbeats on **12–28s**, one bootstrap line per lab after restart, single proactive headline per tick, messages capped for marquee length.
+- **Backend (`engines/engine.py`):** Tracks chatter headline/bootstrap/publish timestamps; resets headline flag each tick.
+- **Frontend (`LabTicker.tsx`, `styles.css`):** Two-line pair columns, slower marquee, larger lab glyphs (🟡/🔥/🧪), stronger lab colors; respects reduced-motion.
+
+## v0.4.15.001 - Header version badge placement + unified version bump - 2026-04-28
+
+- **Frontend (`frontend/src/App.tsx`, `frontend/src/styles.css`):** moved the UI track and app version pills from the title cluster to the right-side header actions, placing them next to Settings for a cleaner top bar layout.
+- **Versioning:** bumped unified stack version from **v0.4.15.0** to **v0.4.15.001** across `VERSION`, README/version references, and breeding metadata labels.
+
 ## v0.4.15.0 - Unified versioning + Breeder explainability & Family Tree visualizer upgrade - 2026-04-28
 
 - **Versioning:** Standardized project branding to **v0.4.15.0** across backend/frontend/docs and removed separate breeder/family sub-version labels.

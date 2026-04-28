@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 
-export type SettingsHelpLabBranch = "a" | "b" | "c" | "d";
+export type SettingsHelpLabBranch = "a" | "b" | "c" | "d" | "e";
 
 export type SettingsHelpPlaybookProps = {
   goGlobal: () => void;
@@ -197,7 +197,7 @@ export default function SettingsHelpPlaybook({
             checked={checklist.step4PerLabRules}
             onChange={(e) => setChecklist((c) => ({ ...c, step4PerLabRules: e.target.checked }))}
           />
-          <span>Step 4: Per-lab rules and branch save flow (Labs A–D)</span>
+          <span>Step 4: Per-lab rules and branch save flow (Labs A–E)</span>
         </label>
         <label className="checkbox" style={{ border: "none" }}>
           <input
@@ -245,13 +245,13 @@ export default function SettingsHelpPlaybook({
             <strong>Global / Live</strong>: subtitle filters, live sizing, swing exit, live reset, shared rules JSON.
           </li>
           <li>
-            <strong>Simulation labs</strong>: <strong>Reset all labs (A–D)</strong> (optional uniform paper cents), four-branch sizing row, per-lab panels (auto-reset, YES/NO band sliders, branch save).
+            <strong>Simulation labs</strong>: <strong>Reset all labs (A–E)</strong> (optional uniform paper cents), five-branch sizing row, per-lab panels (auto-reset, YES/NO band sliders, branch save).
           </li>
           <li>
             <strong>Rules &amp; bands</strong>: default YES/NO bands, dev sim controls, experiment hints.
           </li>
           <li>
-            <strong>Patient stop-loss</strong>: Live + Labs A–D stop panels in one place.
+            <strong>Patient stop-loss</strong>: Live + Labs A–E stop panels in one place.
           </li>
           <li>
             <strong>Optimizer</strong>: scheduler, adaptive thresholds, lab styles, traces, change history.
@@ -273,7 +273,7 @@ export default function SettingsHelpPlaybook({
             },
             {
               name: "Simulation labs",
-              what: "A/B/C/D sizing row, lab sub-tabs, per-lab rules sliders and save.",
+              what: "A/B/C/D/E sizing row, lab sub-tabs, per-lab rules sliders and save.",
               impact: "Only the edited lab branch changes when you save that panel.",
             },
             {
@@ -283,7 +283,7 @@ export default function SettingsHelpPlaybook({
             },
             {
               name: "Patient stop-loss",
-              what: "Live + Lab A–D patient stop panels together.",
+              what: "Live + Lab A–E patient stop panels together.",
               impact: "Each panel saves its branch via config APIs.",
             },
             {
@@ -323,7 +323,7 @@ export default function SettingsHelpPlaybook({
           </li>
         </ul>
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-          {(["a", "b", "c", "d"] as const).map((k) => (
+          {(["a", "b", "c", "d", "e"] as const).map((k) => (
             <button key={k} type="button" className="primary" onClick={() => goLabs(k)}>
               Jump to Lab {k.toUpperCase()} sliders
             </button>
@@ -353,7 +353,7 @@ export default function SettingsHelpPlaybook({
             },
             {
               name: "Save all labs",
-              what: "Applies the sizing row for A/B/C/D in one request.",
+              what: "Applies the sizing row for A/B/C/D/E in one request.",
               impact: "Writes multiple branch configs together.",
             },
           ]}
@@ -381,7 +381,7 @@ export default function SettingsHelpPlaybook({
             <strong>Balance fraction / window / poll / paper balance</strong> on Global / Live: baseline loop behavior for the live branch.
           </li>
           <li>
-            <strong>Labs A–D</strong> inherit defaults until overridden per lab; tune Lab D with A/B/C for tail-risk review.
+            <strong>Labs A–E</strong> inherit defaults until overridden per lab; tune Labs D/E with A/B/C for tail-risk and adaptive review.
           </li>
         </ul>
         <SettingsMenuItemsList
@@ -430,7 +430,7 @@ export default function SettingsHelpPlaybook({
           <strong>patient stop-loss</strong> is edited on the <strong>Patient stop-loss</strong> tab (not inside each lab card).
         </p>
         <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-          {(["a", "b", "c", "d"] as const).map((k) => (
+          {(["a", "b", "c", "d", "e"] as const).map((k) => (
             <button key={k} type="button" className="primary" onClick={() => goLabs(k)}>
               Open Lab {k.toUpperCase()}
             </button>
@@ -459,7 +459,7 @@ export default function SettingsHelpPlaybook({
             },
             {
               name: "Patient stop-loss tab",
-              what: "Live + Lab A–D panels in one scrollable section.",
+              what: "Live + Lab A–E panels in one scrollable section.",
               impact: "Each panel saves its own branch.",
             },
           ]}
@@ -510,7 +510,7 @@ export default function SettingsHelpPlaybook({
       >
         <ul className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
           <li>
-            Compare <strong>Live + Lab A–D</strong> over matching windows; include <strong>Lab D</strong> for tail churn.
+            Compare <strong>Live + Lab A–E</strong> over matching windows; include <strong>Labs D–E</strong> for tail churn and adaptive contrast.
           </li>
           <li>Track drawdown depth and recovery speed alongside total PnL.</li>
           <li>

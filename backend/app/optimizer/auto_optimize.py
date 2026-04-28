@@ -8,6 +8,7 @@ from ..branch_config import (
     BRANCH_LAB_B,
     BRANCH_LAB_C,
     BRANCH_LAB_D,
+    BRANCH_LAB_E,
     MAX_BALANCE_FRACTION_PER_WINDOW,
     MIN_BALANCE_FRACTION_PER_WINDOW,
     _lab_key_for_branch,
@@ -25,7 +26,7 @@ def _trade_branch_matches_lab_row(row_branch: Any, engine_branch: str) -> bool:
 async def maybe_auto_optimize(store: Store, branch: str) -> None:
     """Tiny rule-based tuner per lab paper (not an LLM). Nudges balance fraction from recent settled PnL."""
     br = str(branch or "").strip().lower()
-    if br not in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D):
+    if br not in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E):
         return
     cfg = await store.load_config()
     lk = _lab_key_for_branch(br) or "lab_a"

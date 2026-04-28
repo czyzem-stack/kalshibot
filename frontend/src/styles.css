@@ -1264,6 +1264,11 @@ input[type="number"] {
     /* Keep the divider, but preserve card inset so headings/tabs don't hug the border. */
     padding-left: 14px;
     margin-left: 0;
+    /* Default grid stretch makes this column as tall as the Optimizer stack → empty band under short equity content. */
+    align-self: start;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
   }
 }
 
@@ -1319,6 +1324,8 @@ input[type="number"] {
   flex-direction: column;
   gap: 10px;
   margin-top: 4px;
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .dash-equity-chart-block {
@@ -1354,6 +1361,14 @@ input[type="number"] {
 
 .dash-equity-chart-block:nth-child(4) .dash-equity-branch-head {
   border-left-color: #f472b6;
+}
+
+.dash-equity-chart-block:nth-child(5) .dash-equity-branch-head {
+  border-left-color: #fca5a5;
+}
+
+.dash-equity-chart-block:nth-child(6) .dash-equity-branch-head {
+  border-left-color: #14b8a6;
 }
 
 .chart.chart--equity-stack {
@@ -1824,9 +1839,24 @@ input[type="number"] {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 10px;
   width: 100%;
   min-width: 0;
+}
+
+.hero-head__meta-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.hero-head__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .ui-track-pill {
@@ -1838,6 +1868,19 @@ input[type="number"] {
   border-radius: 5px;
   flex: 0 0 auto;
   line-height: 1.15;
+}
+
+.app-version-pill {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  border-radius: 5px;
+  line-height: 1.15;
+  color: #9cc7ff;
+  background: rgba(67, 104, 190, 0.18);
+  border: 1px solid rgba(108, 149, 255, 0.38);
+  white-space: nowrap;
 }
 
 .ui-track-pill--dev {
@@ -2214,10 +2257,12 @@ input[type="number"] {
   background: linear-gradient(180deg, rgba(10, 18, 40, 0.98) 0%, rgba(8, 14, 30, 0.95) 100%);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Live + Lab A–E = six cells; five columns wrapped Lab E onto a second row */
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 3px 4px;
   align-items: stretch;
   box-sizing: border-box;
+  overflow-x: auto;
 }
 
 .branch-hero-snapshot__row {
@@ -2437,7 +2482,8 @@ input[type="number"] {
   }
 
   .branch-hero-snapshot--header {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Keep one horizontal strip; scroll if the viewport is too narrow for six columns */
+    grid-template-columns: repeat(6, minmax(52px, 1fr));
   }
 }
 
@@ -3977,4 +4023,196 @@ button[title].section-tip {
 .optimizer-report-pre--muted {
   color: #9aa6cc;
   font-size: 10px;
+}
+
+/* Labs B/C/D hive chat */
+.lab-hive-chat-settings {
+  margin: 0;
+}
+.lab-hive-chat__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.lab-hive-chat__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #aeb8e6;
+  user-select: none;
+}
+.lab-hive-chat__body {
+  border: 1px solid rgba(90, 110, 180, 0.35);
+  border-radius: 10px;
+  background: rgba(7, 10, 24, 0.92);
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px 10px;
+}
+.lab-hive-chat__empty {
+  padding: 6px 2px;
+  opacity: 0.85;
+}
+.lab-hive-chat__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lab-hive-chat__li {
+  border-left: 3px solid rgba(148, 163, 184, 0.5);
+  padding-left: 8px;
+}
+.lab-hive-chat__li--lab_b {
+  border-left-color: rgba(251, 191, 36, 0.85);
+}
+.lab-hive-chat__li--lab_c {
+  border-left-color: rgba(244, 114, 182, 0.88);
+}
+.lab-hive-chat__li--lab_d {
+  border-left-color: rgba(192, 132, 252, 0.95);
+}
+.lab-hive-chat__li--lab_e {
+  border-left-color: rgba(94, 234, 212, 0.9);
+}
+.lab-hive-chat__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  margin-bottom: 3px;
+}
+.lab-hive-chat__ts {
+  font-size: 10px;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+}
+.lab-hive-chat__msg {
+  font-size: 11px;
+  line-height: 1.42;
+  color: #dce5ff;
+  word-break: break-word;
+}
+
+/* Lab Think Tank — dense console strip: auto height, no max-height, six rows max in TS */
+.lab-think-tank {
+  margin: 3px 5px 2px;
+  border-radius: 3px;
+  border: 1px solid rgba(96, 122, 210, 0.14);
+  background: rgba(6, 10, 20, 0.94);
+  overflow: visible;
+  min-height: 0;
+}
+.lab-think-tank__expand-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+  width: 100%;
+  margin: 0;
+  padding: 3px 5px;
+  text-align: left;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 750;
+  color: #e8eeff;
+  background: rgba(4, 8, 18, 0.65);
+  border: none;
+  border-bottom: 1px solid rgba(96, 122, 210, 0.12);
+  cursor: pointer;
+}
+.lab-think-tank__expand-btn:hover {
+  background: rgba(16, 22, 44, 0.65);
+}
+.lab-think-tank__expand-title {
+  letter-spacing: 0.03em;
+}
+.lab-think-tank__chevron {
+  opacity: 0.65;
+  font-size: 10px;
+}
+.lab-think-tank__hint,
+.lab-think-tank__empty {
+  margin: 2px 4px 4px;
+  font-size: 9.5px;
+  line-height: 1.2;
+  color: rgba(186, 205, 255, 0.68);
+}
+.lab-think-tank__viewport {
+  padding: 0 3px 2px;
+}
+.lab-think-tank__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.lab-think-tank__line {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  margin: 0;
+  padding: 1px 2px;
+  border-radius: 2px;
+  font-size: 9.5px;
+  line-height: 1.12;
+  font-weight: 560;
+  color: #dbe7ff;
+  border-left: 2px solid rgba(148, 163, 184, 0.38);
+  background: rgba(12, 18, 34, 0.55);
+}
+.lab-think-tank__line--reply {
+  padding-left: 2px;
+}
+.lab-think-tank__replymark {
+  flex-shrink: 0;
+  width: 10px;
+  font-size: 10px;
+  font-weight: 800;
+  opacity: 0.42;
+  color: rgba(186, 205, 255, 0.85);
+  margin-top: 0;
+}
+.lab-think-tank__ico {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.lab-think-tank__letter {
+  font-size: 8.5px;
+  font-weight: 800;
+  opacity: 0.85;
+  color: rgba(226, 232, 255, 0.92);
+}
+.lab-think-tank__msg {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.lab-think-tank__line--b {
+  border-left-color: rgba(252, 211, 77, 0.85);
+}
+.lab-think-tank__line--c {
+  border-left-color: rgba(248, 113, 113, 0.82);
+}
+.lab-think-tank__line--d {
+  border-left-color: rgba(167, 139, 250, 0.85);
+}
+.lab-think-tank__line--e {
+  border-left-color: rgba(45, 212, 191, 0.88);
+}
+.lab-think-tank__line--u {
+  border-left-color: rgba(148, 163, 184, 0.55);
 }

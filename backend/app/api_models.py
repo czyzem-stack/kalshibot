@@ -101,6 +101,7 @@ class BotConfigPayload(BaseModel):
     lab_b: dict[str, Any] | None = None
     lab_c: dict[str, Any] | None = None
     lab_d: dict[str, Any] | None = None
+    lab_e: dict[str, Any] | None = None
     sim_lab: dict[str, Any] | None = None
     optimizer: dict[str, Any] | None = None
 
@@ -206,7 +207,7 @@ class BotConfigPayload(BaseModel):
                     cur[k] = v
             out["optimizer"] = cur
         ensure_patient_stop_loss_on_branch_dict(out)
-        for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
+        for lk in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
             sub = out.get(lk)
             if isinstance(sub, dict):
                 ensure_patient_stop_loss_on_branch_dict(sub)

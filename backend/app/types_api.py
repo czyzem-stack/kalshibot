@@ -68,6 +68,7 @@ class EngineStatusResponse(TypedDict):
     lab_b: EngineStatusBlock
     lab_c: EngineStatusBlock
     lab_d: EngineStatusBlock
+    lab_e: EngineStatusBlock
 
 
 class AccountResponse(TypedDict, total=False):
@@ -110,6 +111,7 @@ class DashboardOrderbooksResponse(TypedDict, total=False):
     metrics_lab_b: dict[str, Any]
     metrics_lab_c: dict[str, Any]
     metrics_lab_d: dict[str, Any]
+    metrics_lab_e: dict[str, Any]
     order_writes_live: bool
 
 
@@ -125,11 +127,13 @@ class DashboardResponse(TypedDict, total=False):
     metrics_lab_b: dict[str, Any]
     metrics_lab_c: dict[str, Any]
     metrics_lab_d: dict[str, Any]
+    metrics_lab_e: dict[str, Any]
     equity_snapshots: list[dict[str, Any]]
     equity_snapshots_lab_a: list[dict[str, Any]]
     equity_snapshots_lab_b: list[dict[str, Any]]
     equity_snapshots_lab_c: list[dict[str, Any]]
     equity_snapshots_lab_d: list[dict[str, Any]]
+    equity_snapshots_lab_e: list[dict[str, Any]]
     recent_signals: list[dict[str, Any]]
     not_traded_signals: list[dict[str, Any]]
     recent_trades: list[dict[str, Any]]
@@ -139,6 +143,7 @@ class DashboardResponse(TypedDict, total=False):
     lab_b_config: dict[str, Any]
     lab_c_config: dict[str, Any]
     lab_d_config: dict[str, Any]
+    lab_e_config: dict[str, Any]
     lab_thoughts: dict[str, list[str]]
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
     optimizer_activity: dict[str, Any]

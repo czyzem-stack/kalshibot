@@ -33,10 +33,14 @@ import {
   subscribeDashboardCatchUp,
 } from "./dashboardPolling";
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
+import APP_VERSION_RAW from "../../VERSION?raw";
+import { useLabHiveChat } from "./labHiveChat";
+import LabThinkTank from "./components/LabThinkTank";
 
 type AnyObj = Record<string, any>;
 
 const UI_TRACK = resolveUiTrack();
+const APP_VERSION = String(APP_VERSION_RAW || "").trim() || "unknown";
 
 const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
 const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
@@ -64,12 +68,20 @@ const FAST_POLL_EQ_KEYS = [
   "equity_snapshots_lab_b",
   "equity_snapshots_lab_c",
   "equity_snapshots_lab_d",
+  "equity_snapshots_lab_e",
   "equity_snapshots_sim_lab",
 ] as const;
 
 const FAST_POLL_LIST_KEYS = ["recent_trades", "recent_signals", "not_traded_signals"] as const;
 
-const FAST_POLL_METRIC_KEYS = ["metrics", "metrics_lab_a", "metrics_lab_b", "metrics_lab_c", "metrics_lab_d"] as const;
+const FAST_POLL_METRIC_KEYS = [
+  "metrics",
+  "metrics_lab_a",
+  "metrics_lab_b",
+  "metrics_lab_c",
+  "metrics_lab_d",
+  "metrics_lab_e",
+] as const;
 
 /**
  * Merge GET /api/dashboard/equity — same as original ``{ ...prev, ...d }`` plus:
@@ -120,6 +132,7 @@ function branchLabelForTradeToast(branch: unknown): string {
   if (s === "lab_b") return "Lab B";
   if (s === "lab_c") return "Lab C";
   if (s === "lab_d") return "Lab D";
+  if (s === "lab_e") return "Lab E";
   return "Live";
 }
 
@@ -320,6 +333,7 @@ function LabPulseWideTicker({ thoughts }: { thoughts: AnyObj | undefined }) {
       { lab: "Lab B", key: "lab_b", accent: "#fdba74" },
       { lab: "Lab C", key: "lab_c", accent: "#f9a8d4" },
       { lab: "Lab D", key: "lab_d", accent: "#fca5a5" },
+      { lab: "Lab E", key: "lab_e", accent: "#5eead4" },
     ].map(({ lab, key, accent }) => ({
       lab,
       key,
@@ -1521,16 +1535,17 @@ function equitySlopeDollarsPerHourFromRows(rows: AnyObj[] | null | undefined): n
 }
 
 /** Same family as `BRANCH_SWATCH` (radar is defined before that token). */
-const OPTIMIZER_RADAR_SWATCH: Record<"live" | "a" | "b" | "c" | "d", string> = {
+const OPTIMIZER_RADAR_SWATCH: Record<"live" | "a" | "b" | "c" | "d" | "e", string> = {
   live: "#5ed8ff",
   a: "#b4a3ff",
   b: "#fbbf5c",
   c: "#f9a3d2",
   d: "#f8837a",
+  e: "#2dd4bf",
 };
 
 type OptimizerMultiRadarTraceBranch = {
-  dataKey: "live" | "a" | "b" | "c" | "d";
+  dataKey: "live" | "a" | "b" | "c" | "d" | "e";
   name: string;
   m: AnyObj;
   snaps: AnyObj[];
@@ -1617,11 +1632,13 @@ function buildMultiBranchOptimizerRadar(
   mB: AnyObj,
   mC: AnyObj,
   mD: AnyObj,
+  mE: AnyObj,
   snapsLive: AnyObj[],
   sA: AnyObj[],
   sB: AnyObj[],
   sC: AnyObj[],
   sD: AnyObj[],
+  sE: AnyObj[],
 ): { data: AnyObj[]; series: OptimizerMultiRadarSeries[] } {
   const br: OptimizerMultiRadarTraceBranch[] = [
     { dataKey: "live", name: "Live", m: mLive, snaps: snapsLive, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.live },
@@ -1629,6 +1646,7 @@ function buildMultiBranchOptimizerRadar(
     { dataKey: "b", name: "Lab B", m: mB, snaps: sB, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.b },
     { dataKey: "c", name: "Lab C", m: mC, snaps: sC, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.c },
     { dataKey: "d", name: "Lab D", m: mD, snaps: sD, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.d },
+    { dataKey: "e", name: "Lab E", m: mE, snaps: sE, isLabA: false, color: OPTIMIZER_RADAR_SWATCH.e },
   ];
   const subj: { k: string; label: string }[] = [
     { k: "fit", label: "Fitness" },
@@ -2078,6 +2096,9 @@ function tradeBranchOptimizerLens(branchRaw: unknown): string {
   if (s === "lab_d") {
     return "  ↳ Lab D: reference + “wild” can widen/narrow bet pulse step from B/C short-run momentum.";
   }
+  if (s === "lab_e") {
+    return "  ↳ Lab E: balanced breeder reference — adaptive voice in council context; thresholds not auto-written here.";
+  }
   return "  ↳ Live: shown for your book; optimizer pulses use paper lab trades in their lookback, not Live branch rows.";
 }
 
@@ -2131,6 +2152,12 @@ function branchRollupCardsFromDash(dash: AnyObj): { key: string; label: string; 
       hint: "Reference + can widen/narrow bet-pulse step from B/C momentum.",
       m: (dash?.metrics_lab_d || {}) as AnyObj,
     },
+    {
+      key: "lab_e",
+      label: "Lab E",
+      hint: "Breeding Council — balanced/adaptive Lab E alongside B/C/D.",
+      m: (dash?.metrics_lab_e || {}) as AnyObj,
+    },
   ];
 }
 
@@ -2147,7 +2174,7 @@ function optimizerTuningLines(dash: AnyObj): string[] {
   return [
     `Gates: need ≥${minTr} settled paper trades with PnL and ≥${minProf} decisive winners before Lab A settings can move.`,
     `Adaptive (Lab A): stacks losses that entered near the YES floor (~${floor}% implied). At ${trig} such losses the server may tighten floor or min minutes left after a replay check; can ease after wins.`,
-    `Bet pulse (Lab A): last ~40 Lab A settled mean PnL nudges balance_fraction_per_window. Labs B–D supply comparison context; Lab D can widen or narrow the step.`,
+    `Bet pulse (Lab A): last ~40 Lab A settled mean PnL nudges balance_fraction_per_window. Labs B–E supply comparison context; Lab D can widen or narrow the step.`,
     `Scheduled optimizer ${sched ? "on" : "off"} · adaptive ${adapt ? "on" : "off"} · optimize bet ${betOpt ? "on" : "off"}. Auto-writes target Lab A only.`,
   ];
 }
@@ -2225,12 +2252,14 @@ function buildTradesByLabSnapshotToast(dash: AnyObj): {
   const mb = (dash?.metrics_lab_b || {}) as AnyObj;
   const mc = (dash?.metrics_lab_c || {}) as AnyObj;
   const md = (dash?.metrics_lab_d || {}) as AnyObj;
+  const me = (dash?.metrics_lab_e || {}) as AnyObj;
   const roll = [
     formatBranchRollupLine("Live", metricsLive),
     formatBranchRollupLine("Lab A", ma),
     formatBranchRollupLine("Lab B", mb),
     formatBranchRollupLine("Lab C", mc),
     formatBranchRollupLine("Lab D", md),
+    formatBranchRollupLine("Lab E", me),
   ].join("\n");
   const recent = (dash?.recent_trades || []) as AnyObj[];
   const settledBlock = recentSettledResolutionLinesWithLens(recent, 10);
@@ -2595,7 +2624,7 @@ function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null 
 
       <div className="optimizer-report-section optimizer-report-section--hint">
         <p className="optimizer-report-line">
-          <strong>Experiments</strong> compares Live + Lab A–D MTM from the same window start. <strong>Lab pulse</strong> is the
+          <strong>Experiments</strong> compares Live + Lab A–E MTM from the same window start. <strong>Lab pulse</strong> is the
           scrolling ticker under the chart.
         </p>
       </div>
@@ -2611,7 +2640,7 @@ function optimizerBriefInfoBody(): ReactNode {
         <strong>mutation</strong> dial and <strong>Lab pulse</strong> ticker sit <strong>above the Optimizer / Breeder / Tree tabs</strong>{" "}
         on every sub-view (same readout while you switch radars or the tree). Full <strong>run-metric</strong> detail (cycle, last run,
         accept %, fit 7d, pulse) is in the <strong>report</strong> overlay. The <strong>Experiments</strong> multi-line chart (further down in
-        this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–D from a shared window.
+        this column) does <em>not</em> place orders; it shows indexed / comparable MTM-style paths for Live + Lab A–E from a shared window.
       </p>
       <p>
         <strong>Health dot (title row).</strong> A small <strong>green / yellow / red</strong> circle reflects internal-mutation
@@ -2660,7 +2689,7 @@ function optimizerBriefInfoBody(): ReactNode {
       </p>
       <p>
         <strong>Adaptive / scheduled optimizer (server).</strong> When enabled, the server can nudge Lab A (staging) from settled paper
-        with guardrails; B/C/D stay reference unless you use other tools. For cycle-by-cycle acceptance, use <strong>Settings → Internal
+        with guardrails; B/C/D/E stay reference unless you use other tools. For cycle-by-cycle acceptance, use <strong>Settings → Internal
         Optimizer Trace</strong>.
       </p>
       <p>
@@ -2794,7 +2823,7 @@ function dedupeAssetWatchOpenRowsByTicker(rows: AnyObj[]): AnyObj[] {
 }
 
 /** Open rows for the Assets-to-watch branch tab only (avoids Lab exposure highlighting on Live tab, etc.). */
-function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c" | "d"): AnyObj[] {
+function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c" | "d" | "e"): AnyObj[] {
   if (!row || typeof row !== "object") return [];
   const o = row as AnyObj;
   const out: AnyObj[] = [];
@@ -2820,17 +2849,19 @@ function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c" | 
     push(o.bot_sim_open_lab_b, "Sim · Lab B");
   } else if (tab === "c") {
     push(o.bot_sim_open_lab_c, "Sim · Lab C");
-  } else {
+  } else if (tab === "d") {
     push(o.bot_sim_open_lab_d, "Sim · Lab D");
+  } else {
+    push(o.bot_sim_open_lab_e, "Sim · Lab E");
   }
   return out;
 }
 
-function positionTabHasOpenExposure(row: unknown, tab: "live" | "a" | "b" | "c" | "d"): boolean {
+function positionTabHasOpenExposure(row: unknown, tab: "live" | "a" | "b" | "c" | "d" | "e"): boolean {
   return assetWatchOpenRowsForTab(row, tab).length > 0;
 }
 
-function exposureLabelsForAssetWatchTab(row: unknown, tab: "live" | "a" | "b" | "c" | "d"): string[] {
+function exposureLabelsForAssetWatchTab(row: unknown, tab: "live" | "a" | "b" | "c" | "d" | "e"): string[] {
   const rows = assetWatchOpenRowsForTab(row, tab);
   const uniq: string[] = [];
   for (const r of rows) {
@@ -2943,8 +2974,8 @@ function OpenExposureLinesForWatch({
 }
 
 /** Normalize SQLite `branch` onto dashboard tabs (legacy sim_lab → Lab A). */
-type ActivityBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d";
-type PerfBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d";
+type ActivityBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e";
+type PerfBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e";
 
 function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   const s = String(b ?? "live").trim().toLowerCase();
@@ -2952,6 +2983,7 @@ function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   if (s === "lab_b") return "lab_b";
   if (s === "lab_c") return "lab_c";
   if (s === "lab_d") return "lab_d";
+  if (s === "lab_e") return "lab_e";
   return "live";
 }
 
@@ -2961,6 +2993,7 @@ const BRANCH_SWATCH: Record<ActivityBranchKey, string> = {
   lab_b: "#fdba74",
   lab_c: "#f9a8d4",
   lab_d: "#fca5a5",
+  lab_e: "#5eead4",
 };
 
 function branchToastSwatch(branchRaw: unknown): string {
@@ -3010,6 +3043,7 @@ function labsBreedingLabLabel(branchRaw: unknown): string {
   if (s === "lab_b" || s === "b") return "Lab B";
   if (s === "lab_c" || s === "c") return "Lab C";
   if (s === "lab_d" || s === "d") return "Lab D";
+  if (s === "lab_e" || s === "e") return "Lab E";
   const childM = /^lab_child_(\d+)$/i.exec(s);
   if (childM) return `Child ${childM[1]}`;
   if (s.startsWith("lab_")) return s.replace("lab_", "Lab ").toUpperCase().replace("LAB ", "Lab ");
@@ -3189,7 +3223,18 @@ function activityBranchTabLabel(b: ActivityBranchKey): string {
   if (b === "lab_a") return "Lab A";
   if (b === "lab_b") return "Lab B";
   if (b === "lab_c") return "Lab C";
-  return "Lab D";
+  if (b === "lab_d") return "Lab D";
+  return "Lab E";
+}
+
+/** Live + single-letter lab tabs (holdings, assets to watch). */
+function dashboardLabLetterTabLabel(tab: "live" | "a" | "b" | "c" | "d" | "e"): string {
+  if (tab === "live") return "Live";
+  if (tab === "a") return "Lab A";
+  if (tab === "b") return "Lab B";
+  if (tab === "c") return "Lab C";
+  if (tab === "d") return "Lab D";
+  return "Lab E";
 }
 
 /** BTC first, ETH second, then remaining asset ids A–Z. */
@@ -3384,7 +3429,7 @@ function equitySeriesWithLiveTail(
   return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
 }
 
-type OverlayBranchKey = "live" | "a" | "b" | "c" | "d";
+type OverlayBranchKey = "live" | "a" | "b" | "c" | "d" | "e";
 
 /** Chronological union of branch snapshots with forward-filled values so overlay lines share one true time axis. */
 function mergeEquityOverlayRows(
@@ -3393,6 +3438,7 @@ function mergeEquityOverlayRows(
   labB: EquityChartRow[],
   labC: EquityChartRow[],
   labD: EquityChartRow[],
+  labE: EquityChartRow[],
 ): AnyObj[] {
   type Pt = { tsMs: number; t: string; branch: OverlayBranchKey; equity: number; mtm: number };
   const pts: Pt[] = [];
@@ -3408,6 +3454,7 @@ function mergeEquityOverlayRows(
   push(labB, "b");
   push(labC, "c");
   push(labD, "d");
+  push(labE, "e");
   if (!pts.length) return [];
   pts.sort((x, y) => x.tsMs - y.tsMs);
 
@@ -3419,8 +3466,15 @@ function mergeEquityOverlayRows(
   }
   const uniqTs = [...byTs.keys()].sort((a, b) => a - b);
 
-  const last: Record<OverlayBranchKey, { eq: number; mtm: number } | null> = { live: null, a: null, b: null, c: null, d: null };
-  const branches: OverlayBranchKey[] = ["live", "a", "b", "c", "d"];
+  const last: Record<OverlayBranchKey, { eq: number; mtm: number } | null> = {
+    live: null,
+    a: null,
+    b: null,
+    c: null,
+    d: null,
+    e: null,
+  };
+  const branches: OverlayBranchKey[] = ["live", "a", "b", "c", "d", "e"];
   const out: AnyObj[] = [];
 
   for (const tsMs of uniqTs) {
@@ -3458,7 +3512,7 @@ function EquityDualLineChart({
   mtmStroke: string;
   /** ``pct`` = Y-axis and tooltip show % change from first point in ``data`` (see ``scaleEquityRowsPctFromWindowStart``). */
   yFormat?: "dollar" | "pct";
-  /** When set (e.g. shared across Lab A–D $ charts), Recharts Y domain; omit for per-chart auto scale. */
+  /** When set (e.g. shared across Lab A–E $ charts), Recharts Y domain; omit for per-chart auto scale. */
   yDomain?: [number, number];
 }) {
   // Recharts ignores null/undefined for Line points — synthesize a numeric series so MTM always draws.
@@ -3767,6 +3821,7 @@ export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
   const [dash, setDash] = useState<AnyObj | null>(null);
+  const { messages: labHiveMessages, labChatEnabled, setLabChatEnabled } = useLabHiveChat(Boolean(dash));
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -3814,18 +3869,19 @@ export default function App() {
   /** ``toast_id`` values from ``labs_breeding_log`` already shown (or present at first dashboard load). */
   const labsBreedingToastSeenRef = useRef<Set<string>>(new Set());
   const labsBreedingToastBootstrappedRef = useRef(false);
-  const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c" | "d">("live");
-  const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d">("live");
+  const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c" | "d" | "e">("live");
+  const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d" | "e">("live");
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
   const [equityValueScale, setEquityValueScale] = useState<EquityValueScale>("dollars");
-  const [equityVisible, setEquityVisible] = useState<Record<"live" | "a" | "b" | "c" | "d", boolean>>({
+  const [equityVisible, setEquityVisible] = useState<Record<"live" | "a" | "b" | "c" | "d" | "e", boolean>>({
     live: true,
     a: true,
     b: true,
     c: true,
     d: true,
+    e: true,
   });
   const [equityCompareOpen, setEquityCompareOpen] = useState(false);
   const [equityCompareMode, setEquityCompareMode] = useState<"blended" | "potential">("blended");
@@ -3953,11 +4009,13 @@ export default function App() {
       const lb = (nextConfig.lab_b || {}) as AnyObj;
       const lc = (nextConfig.lab_c || {}) as AnyObj;
       const ld = (nextConfig.lab_d || {}) as AnyObj;
+      const le = (nextConfig.lab_e || {}) as AnyObj;
       const liveOn = Boolean(nextConfig.engine_running);
       const labAOn = Boolean(la.engine_running);
       const labBOn = Boolean(lb.engine_running);
       const labCOn = Boolean(lc.engine_running);
       const labDOn = Boolean(ld.engine_running);
+      const labEOn = Boolean(le.engine_running);
 
       const engine = { ...((prev.engine || {}) as AnyObj) };
       const live = { ...((engine.live || {}) as AnyObj) };
@@ -3968,19 +4026,30 @@ export default function App() {
         const cur = engine[key];
         if (cur && typeof cur === "object") {
           engine[key] = { ...cur, engine_running: on, simulate_orders: true };
+        } else {
+          // First dashboard after upgrade (or cache) may omit ``lab_e`` — still merge toggles from Settings.
+          engine[key] = {
+            engine_running: on,
+            simulate_orders: true,
+            last_tick_at: null,
+            last_error: null,
+            markets_scanned: 0,
+            last_tick_trace: [],
+          };
         }
       };
       patchBranch("lab_a", labAOn);
       patchBranch("lab_b", labBOn);
       patchBranch("lab_c", labCOn);
       patchBranch("lab_d", labDOn);
+      patchBranch("lab_e", labEOn);
       if (engine.sim_lab && typeof engine.sim_lab === "object") {
         engine.sim_lab = { ...engine.sim_lab, engine_running: labAOn, simulate_orders: true };
       }
 
       const kalshi = { ...((prev.kalshi || {}) as AnyObj) };
       kalshi.simulate_live = sim;
-      kalshi.polling_enabled = liveOn || labAOn || labBOn || labCOn;
+      kalshi.polling_enabled = liveOn || labAOn || labBOn || labCOn || labDOn || labEOn;
       if ("private_ok" in kalshi) {
         kalshi.order_writes_live = Boolean(kalshi.private_ok) && !sim;
       }
@@ -4410,6 +4479,7 @@ export default function App() {
   const metricsLabB = (dash?.metrics_lab_b || {}) as AnyObj;
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
   const metricsLabD = (dash?.metrics_lab_d || {}) as AnyObj;
+  const metricsLabE = (dash?.metrics_lab_e || {}) as AnyObj;
   const optimizerStatus = useMemo(() => buildOptimizerStatus((dash as AnyObj | null) || null, cfg as AnyObj), [cfg?.optimizer, dash]);
 
   const breederRadarRows = useMemo(() => {
@@ -4617,15 +4687,16 @@ export default function App() {
     const pnlB = Number(metricsLabB.total_pnl_dollars ?? 0);
     const pnlC = Number(metricsLabC.total_pnl_dollars ?? 0);
     const pnlD = Number(metricsLabD.total_pnl_dollars ?? 0);
-    const ahead = pnlA > pnlB && pnlA > pnlC && pnlA > pnlD;
+    const pnlE = Number(metricsLabE.total_pnl_dollars ?? 0);
+    const ahead = pnlA > pnlB && pnlA > pnlC && pnlA > pnlD && pnlA > pnlE;
     if (!ahead) {
-      setErr("Lab A settled PnL must exceed Lab B, Lab C, and Lab D before promoting to Live.");
+      setErr("Lab A settled PnL must exceed Lab B, Lab C, Lab D, and Lab E before promoting to Live.");
       return;
     }
     const sim = Boolean(cfg.simulate);
     const msg = sim
-      ? `Copy Lab A trading settings (rules, window, bet fraction, filters, fees) to the Live branch?\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} settled PnL.`
-      : `LIVE / REAL MONEY: Copy Lab A settings onto the Live branch. Live uses Real $ when the engine is on.\n\nYou will be asked to type APPLY_LIVE next.\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} settled PnL.`;
+      ? `Copy Lab A trading settings (rules, window, bet fraction, filters, fees) to the Live branch?\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} vs E $${pnlE.toFixed(2)} settled PnL.`
+      : `LIVE / REAL MONEY: Copy Lab A settings onto the Live branch. Live uses Real $ when the engine is on.\n\nYou will be asked to type APPLY_LIVE next.\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} vs E $${pnlE.toFixed(2)} settled PnL.`;
     if (!window.confirm(msg)) return;
     let ack = "";
     if (!sim) {
@@ -4654,6 +4725,7 @@ export default function App() {
   const equitySnapsLabB = equitySnapshotsArray(dash?.equity_snapshots_lab_b);
   const equitySnapsLabC = equitySnapshotsArray(dash?.equity_snapshots_lab_c);
   const equitySnapsLabD = equitySnapshotsArray(dash?.equity_snapshots_lab_d);
+  const equitySnapsLabE = equitySnapshotsArray(dash?.equity_snapshots_lab_e);
 
   const optimizerThinkingRadarBundle = useMemo(() => {
     const m0 = (metrics as AnyObj) || {};
@@ -4664,18 +4736,20 @@ export default function App() {
       metricsLabB,
       metricsLabC,
       metricsLabD,
+      metricsLabE,
       snaps,
       equitySnapsLabA,
       equitySnapsLabB,
       equitySnapsLabC,
       equitySnapsLabD,
+      equitySnapsLabE,
     );
     return {
       data,
       series,
       tableDetail: <OptimizerRadarTableDetail data={data} series={series} />,
       caption:
-        "Six 0–100 spokes: fitness, acceptance, mutation, stop loss, momentum, and red (global stress, inverted on-scale so higher is better). Live + all labs; hover the chart or the table for per-branch values and the same axis descriptions as the chart tooltips. Updates with optimizer and trading metrics.",
+        "Six 0–100 spokes: fitness, acceptance, mutation, stop loss, momentum, and red (global stress, inverted on-scale so higher is better). Seven traces: Live + Labs A–E; hover the chart or the table for per-branch values and the same axis descriptions as the chart tooltips. Updates with optimizer and trading metrics.",
     };
   }, [
     optimizerStatus,
@@ -4684,11 +4758,13 @@ export default function App() {
     metricsLabB,
     metricsLabC,
     metricsLabD,
+    metricsLabE,
     snaps,
     equitySnapsLabA,
     equitySnapsLabB,
     equitySnapsLabC,
     equitySnapsLabD,
+    equitySnapsLabE,
   ]);
 
   const labA = useMemo((): AnyObj => {
@@ -4713,6 +4789,11 @@ export default function App() {
     if (d && typeof d === "object") return d as AnyObj;
     return EMPTY_LAB;
   }, [cfg.lab_d]);
+  const labE = useMemo((): AnyObj => {
+    const e = cfg.lab_e;
+    if (e && typeof e === "object") return e as AnyObj;
+    return EMPTY_LAB;
+  }, [cfg.lab_e]);
   // Backward-compatible aliases while we expand UI sections incrementally.
   const simLab = labA;
   const perfBranchMeta = useMemo(() => {
@@ -4725,9 +4806,10 @@ export default function App() {
       lab_b: { label: "Lab B", shortLabel: "B", metrics: metricsLabB, bankNoun: "lab bankroll", reconcileLabel: "Lab B", isLive: false },
       lab_c: { label: "Lab C", shortLabel: "C", metrics: metricsLabC, bankNoun: "lab bankroll", reconcileLabel: "Lab C", isLive: false },
       lab_d: { label: "Lab D", shortLabel: "D", metrics: metricsLabD, bankNoun: "lab bankroll", reconcileLabel: "Lab D", isLive: false },
+      lab_e: { label: "Lab E", shortLabel: "E", metrics: metricsLabE, bankNoun: "lab bankroll", reconcileLabel: "Lab E", isLive: false },
     };
     return map[perfBranch];
-  }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC, metricsLabD]);
+  }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC, metricsLabD, metricsLabE]);
 
   const perfCommittedDisplay = useMemo(() => {
     const m = perfBranchMeta.metrics as AnyObj;
@@ -4736,7 +4818,7 @@ export default function App() {
     const pct = useFleet ? Number(fleet) : Number(m.committed_pct_of_start ?? 0);
     const sub =
       fmtPct(pct) +
-      (useFleet ? " of combined paper fleet (Live + Labs A–D)" : ` of ${perfBranchMeta.bankNoun}`);
+      (useFleet ? " of combined paper fleet (Live + Labs A–E)" : ` of ${perfBranchMeta.bankNoun}`);
     return { sub, subTone: metricSignedTone(-pct) };
   }, [perfBranchMeta]);
 
@@ -4757,7 +4839,8 @@ export default function App() {
   const canPromoteLabAToLive =
     Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabB.total_pnl_dollars ?? 0) &&
     Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabC.total_pnl_dollars ?? 0) &&
-    Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabD.total_pnl_dollars ?? 0);
+    Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabD.total_pnl_dollars ?? 0) &&
+    Number(metricsLabA.total_pnl_dollars ?? 0) > Number(metricsLabE.total_pnl_dollars ?? 0);
 
   const chartDataLiveRaw = useMemo(
     () => equitySeriesWithLiveTail(snaps, equityGranularity, metrics, fmtIsoLocal),
@@ -4778,6 +4861,10 @@ export default function App() {
   const chartDataLabDRaw = useMemo(
     () => equitySeriesWithLiveTail(equitySnapsLabD, equityGranularity, metricsLabD, fmtIsoLocal),
     [equitySnapsLabD, equityGranularity, metricsLabD, fmtIsoLocal],
+  );
+  const chartDataLabERaw = useMemo(
+    () => equitySeriesWithLiveTail(equitySnapsLabE, equityGranularity, metricsLabE, fmtIsoLocal),
+    [equitySnapsLabE, equityGranularity, metricsLabE, fmtIsoLocal],
   );
 
   const chartData = useMemo(
@@ -4800,11 +4887,22 @@ export default function App() {
     () => applyEquityValueScale(chartDataLabDRaw, equityValueScale),
     [chartDataLabDRaw, equityValueScale],
   );
-  /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the five small charts for per-branch % view. */
+  const chartDataLabE = useMemo(
+    () => applyEquityValueScale(chartDataLabERaw, equityValueScale),
+    [chartDataLabERaw, equityValueScale],
+  );
+  /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the six small charts for per-branch % view. */
   const equityOverlayData = useMemo(
     () =>
-      mergeEquityOverlayRows(chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw),
-    [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw],
+      mergeEquityOverlayRows(
+        chartDataLiveRaw,
+        chartDataLabARaw,
+        chartDataLabBRaw,
+        chartDataLabCRaw,
+        chartDataLabDRaw,
+        chartDataLabERaw,
+      ),
+    [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw, chartDataLabERaw],
   );
 
   const assets = (cfg.assets || {}) as AnyObj;
@@ -4814,16 +4912,19 @@ export default function App() {
   const engineSnapsLabB = (assetSnaps.lab_b || {}) as AnyObj;
   const engineSnapsLabC = (assetSnaps.lab_c || {}) as AnyObj;
   const engineSnapsLabD = (assetSnaps.lab_d || {}) as AnyObj;
+  const engineSnapsLabE = (assetSnaps.lab_e || {}) as AnyObj;
   const engineLabA = (dash?.engine?.lab_a ?? dash?.engine?.sim_lab) as AnyObj | undefined;
   const engineLabB = dash?.engine?.lab_b as AnyObj | undefined;
   const engineLabC = dash?.engine?.lab_c as AnyObj | undefined;
   const engineLabD = dash?.engine?.lab_d as AnyObj | undefined;
+  const engineLabE = dash?.engine?.lab_e as AnyObj | undefined;
   /** Dashboard ``engine.*`` can lag; fall back to config (same idea as Lab A toolbar toggle). */
   const liveBranchEngineOn = Boolean((dash?.engine?.live as AnyObj | undefined)?.engine_running ?? cfg.engine_running);
   const labABranchEngineOn = Boolean(engineLabA?.engine_running ?? simLab.engine_running);
   const labBBranchEngineOn = Boolean(engineLabB?.engine_running ?? labB.engine_running);
   const labCBranchEngineOn = Boolean(engineLabC?.engine_running ?? labC.engine_running);
   const labDBranchEngineOn = Boolean(engineLabD?.engine_running ?? labD.engine_running);
+  const labEBranchEngineOn = Boolean(engineLabE?.engine_running ?? labE.engine_running);
 
   const accountActivityBranch: ActivityBranchKey =
     holdingsBranchTab === "live"
@@ -4834,7 +4935,9 @@ export default function App() {
           ? "lab_b"
           : holdingsBranchTab === "c"
             ? "lab_c"
-            : "lab_d";
+            : holdingsBranchTab === "d"
+              ? "lab_d"
+              : "lab_e";
 
   const recentSignalsFiltered = useMemo(() => {
     const rs = (dash?.recent_signals || []) as AnyObj[];
@@ -4922,19 +5025,29 @@ export default function App() {
     }
   };
 
-  const setLabRunning = async (lab: "a" | "b" | "c" | "d", running: boolean) => {
+  const setLabRunning = async (lab: "a" | "b" | "c" | "d" | "e", running: boolean) => {
     const prevDash = dash;
     if (prevDash) {
       const patch = { ...cfg } as AnyObj;
       if (lab === "a") patch.lab_a = { ...(cfg.lab_a || EMPTY_LAB), engine_running: running };
       else if (lab === "b") patch.lab_b = { ...(cfg.lab_b || EMPTY_LAB), engine_running: running };
       else if (lab === "c") patch.lab_c = { ...(cfg.lab_c || EMPTY_LAB), engine_running: running };
-      else patch.lab_d = { ...(cfg.lab_d || EMPTY_LAB), engine_running: running };
+      else if (lab === "d") patch.lab_d = { ...(cfg.lab_d || EMPTY_LAB), engine_running: running };
+      else patch.lab_e = { ...(cfg.lab_e || EMPTY_LAB), engine_running: running };
       applyDashboardConfig(patch);
     }
     setBusy(true);
     try {
-      const key = lab === "a" ? "lab_a_running" : lab === "b" ? "lab_b_running" : lab === "c" ? "lab_c_running" : "lab_d_running";
+      const key =
+        lab === "a"
+          ? "lab_a_running"
+          : lab === "b"
+            ? "lab_b_running"
+            : lab === "c"
+              ? "lab_c_running"
+              : lab === "d"
+                ? "lab_d_running"
+                : "lab_e_running";
       const out = (await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
@@ -4948,8 +5061,9 @@ export default function App() {
   };
   const setSimLabRunning = async (running: boolean) => setLabRunning("a", running);
 
-  const saveLabFromSliders = async (lab: "a" | "b" | "c" | "d") => {
-    const p = lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : "lab_d";
+  const saveLabFromSliders = async (lab: "a" | "b" | "c" | "d" | "e") => {
+    const p =
+      lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : lab === "d" ? "lab_d" : "lab_e";
     const fracRaw = (document.getElementById(`${p}_frac`) as HTMLInputElement | null)?.value;
     const winRaw = (document.getElementById(`${p}_win`) as HTMLInputElement | null)?.value;
     const paperRaw = (document.getElementById(`${p}_paper`) as HTMLInputElement | null)?.value;
@@ -4979,7 +5093,15 @@ export default function App() {
       };
       await apiPutLabBranches({
         reset_data: "none",
-        ...(lab === "a" ? { lab_a: patch } : lab === "b" ? { lab_b: patch } : lab === "c" ? { lab_c: patch } : { lab_d: patch }),
+        ...(lab === "a"
+          ? { lab_a: patch }
+          : lab === "b"
+            ? { lab_b: patch }
+            : lab === "c"
+              ? { lab_c: patch }
+              : lab === "d"
+                ? { lab_d: patch }
+                : { lab_e: patch }),
       });
       await refresh();
     } catch (e: any) {
@@ -4993,13 +5115,22 @@ export default function App() {
   const saveLabBFromSliders = async () => saveLabFromSliders("b");
   const saveLabCFromSliders = async () => saveLabFromSliders("c");
   const saveLabDFromSliders = async () => saveLabFromSliders("d");
+  const saveLabEFromSliders = async () => saveLabFromSliders("e");
 
-  const saveLabRules = async (lab: "a" | "b" | "c" | "d", rules: AnyObj[]) => {
+  const saveLabRules = async (lab: "a" | "b" | "c" | "d" | "e", rules: AnyObj[]) => {
     setBusy(true);
     try {
       await apiPutLabBranches({
         reset_data: "none",
-        ...(lab === "a" ? { lab_a: { rules } } : lab === "b" ? { lab_b: { rules } } : lab === "c" ? { lab_c: { rules } } : { lab_d: { rules } }),
+        ...(lab === "a"
+          ? { lab_a: { rules } }
+          : lab === "b"
+            ? { lab_b: { rules } }
+            : lab === "c"
+              ? { lab_c: { rules } }
+              : lab === "d"
+                ? { lab_d: { rules } }
+                : { lab_e: { rules } }),
       });
       await refresh();
     } catch (e: any) {
@@ -5012,6 +5143,7 @@ export default function App() {
   const saveLabBRules = async (rules: AnyObj[]) => saveLabRules("b", rules);
   const saveLabCRules = async (rules: AnyObj[]) => saveLabRules("c", rules);
   const saveLabDRules = async (rules: AnyObj[]) => saveLabRules("d", rules);
+  const saveLabERules = async (rules: AnyObj[]) => saveLabRules("e", rules);
 
   const saveSizing = async () => {
     const frac = Number((document.getElementById("frac") as HTMLInputElement)?.value);
@@ -5124,8 +5256,9 @@ export default function App() {
     }
   };
 
-  const savePatientStopLossLab = async (lab: "a" | "b" | "c" | "d", patch: Record<string, unknown>) => {
-    const key = lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : "lab_d";
+  const savePatientStopLossLab = async (lab: "a" | "b" | "c" | "d" | "e", patch: Record<string, unknown>) => {
+    const key =
+      lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : lab === "d" ? "lab_d" : "lab_e";
     setBusy(true);
     try {
       await apiPutLabBranches({ reset_data: "none", [key]: patch });
@@ -5190,7 +5323,7 @@ export default function App() {
   };
 
   const resetTradingData = async (
-    branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d",
+    branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e",
     backup: boolean,
     uniformPaperBalanceCents?: number | null,
   ) => {
@@ -5242,7 +5375,7 @@ export default function App() {
   const addAllLabsPaperBankroll = async () => {
     if (
       !window.confirm(
-        "Add $100.00 to Lab A, B, and C paper balance each?\n\nReturn % and other vs-start KPIs will treat the cumulative basis as your previous basis plus $100 per lab (where a lifetime basis is stored, it is increased by the same amount). Optimizer settings, rules, engines, and trade history are unchanged."
+        "Add $100.00 to each lab paper balance (Labs A–E)?\n\nReturn % and other vs-start KPIs will treat the cumulative basis as your previous basis plus $100 per lab (where a lifetime basis is stored, it is increased by the same amount). Optimizer settings, rules, engines, and trade history are unchanged."
       )
     )
       return;
@@ -5370,6 +5503,10 @@ export default function App() {
                   >
                     Chomp's Diner
                   </h1>
+                </div>
+              </div>
+              <div className="hero-head__right">
+                <div className="hero-head__meta-pills">
                   <span
                     className={`ui-track-pill ui-track-pill--${UI_TRACK.kind}`}
                     title={
@@ -5379,9 +5516,10 @@ export default function App() {
                   >
                     {UI_TRACK.label}
                   </span>
+                  <span className="app-version-pill" title="Running app version from repo VERSION file.">
+                    {APP_VERSION}
+                  </span>
                 </div>
-              </div>
-              <div style={{ flexShrink: 0 }}>
                 <button
                   type="button"
                   className="primary hero-settings-icon-btn"
@@ -5518,7 +5656,8 @@ export default function App() {
             { id: "lab_a", label: "Lab A" },
             { id: "lab_b", label: "Lab B" },
             { id: "lab_c", label: "Lab C" },
-              { id: "lab_d", label: "Lab D" },
+            { id: "lab_d", label: "Lab D" },
+            { id: "lab_e", label: "Lab E" },
           ].map((t) => (
             <button
               key={t.id}
@@ -5630,7 +5769,7 @@ export default function App() {
           <MetricTile
             label={`${perfBranchMeta.label} committed`}
             value={fmtMoney(Number(perfBranchMeta.metrics.open_sim_committed_dollars || 0))}
-            title="Premium tied up in open positions. Subtitle % uses combined configured paper starts (Live when paper + Labs A–D) when available; otherwise this branch's start only."
+            title="Premium tied up in open positions. Subtitle % uses combined configured paper starts (Live when paper + Labs A–E) when available; otherwise this branch's start only."
             sub={perfCommittedDisplay.sub}
             subTone={perfCommittedDisplay.subTone}
           />
@@ -5641,7 +5780,7 @@ export default function App() {
             type="button"
             className="primary"
             disabled={busy || !canPromoteLabAToLive}
-            title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds B/C/D. Extra confirmation when Live is in Real $ mode."
+            title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds B/C/D/E. Extra confirmation when Live is in Real $ mode."
             onClick={() => void promoteLabAToLive()}
           >
             Apply Lab A to Live
@@ -5809,7 +5948,7 @@ export default function App() {
                     >
                       <ChartDblClickExpand
                         className="branch-brain-optimizer-radar__zoom"
-                        title="Breeder personality (Labs A–D + children)"
+                        title="Breeder personality (Labs A–E + children)"
                         defaultHeight={DASH_OPTIMIZER_INLINE_RADAR_H}
                         expandedHeight={720}
                         expandedPanelMaxWidth="min(1100px, 99vw)"
@@ -5859,6 +5998,7 @@ export default function App() {
                 mutationDial: optimizerStatus.mutationDial,
               }}
             />
+            <LabThinkTank messages={labHiveMessages} enabled={labChatEnabled} dashReady={Boolean(dash)} />
           {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
@@ -5912,7 +6052,7 @@ export default function App() {
                 type="button"
                 className="primary dash-panel-btn"
                 title={
-                  "Equity: five small-multiple charts (Live + Lab A–D), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
+                  "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
                   "Time-scale tabs re-bucket the same stored snapshots: Intraday = last 400 points in time order; D/W/M/Y = last snapshot " +
                   "per calendar bucket (day/week start UTC/month/year). Use Compare to overlay branches in one frame. " +
@@ -5924,7 +6064,7 @@ export default function App() {
                     body: (
                       <div className="dash-section__legend dash-equity-panel__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
-                          <strong>What each chart shows.</strong> You get <strong>five</strong> independent panels, one per branch. Each
+                          <strong>What each chart shows.</strong> You get <strong>six</strong> independent panels (Live + Labs A–E), one per branch. Each
                           panel has two series over time: a <strong>solid</strong> line (book or cost-basis / cash-ledger path) and a{" "}
                           <strong>dashed</strong> line (mark-to-market “total worth” that includes the fair value of open positions on top
                           of the same ledger). All branches use the <em>same</em> time-scale control so you can line up “what the market
@@ -5948,7 +6088,7 @@ export default function App() {
                           on every dashboard refresh so the tail tracks “right now” more closely than a sparse historical series.
                         </p>
                         <p>
-                          <strong>Time-scale tabs (Intraday, D, W, M, Y).</strong> All four labels apply to <em>all</em> five charts.{" "}
+                          <strong>Time-scale tabs (Intraday, D, W, M, Y).</strong> All four labels apply to <em>all six</em> charts.{" "}
                           <strong>Intraday</strong> plots raw snapshot order (up to the last 400 points) for responsive debugging. <strong>
                             D / W / M / Y
                           </strong>{" "}
@@ -6030,12 +6170,12 @@ export default function App() {
                   [
                     "dollars",
                     "$",
-                    "Absolute dollars from SQLite snapshots. Labs A–D share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
+                    "Absolute dollars from SQLite snapshots. Labs A–E share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
                   ],
                   [
                     "pct_change_window",
                     "%Δ",
-                    "% change from the first plotted point in this chart’s window — makes B/C/D divergence visible when bankrolls differ but moves are correlated.",
+                    "% change from the first plotted point in this chart’s window — makes B/C/D/E divergence visible when bankrolls differ but moves are correlated.",
                   ],
                 ] as const
               ).map(([id, label, tip]) => (
@@ -6189,6 +6329,33 @@ export default function App() {
                 />
               </div>
             </div>
+            <div className="dash-equity-chart-block">
+              <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_e")}: book value (solid) vs current worth (dashed).`}>
+                {activityBranchTabLabel("lab_e")}
+              </h3>
+              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_e.">
+                {equitySnapsLabE.length} pts · book {fmtMoney(Number(metricsLabE.current_equity_dollars ?? 0))} · {Number(metricsLabE.settled_trades ?? 0)} settled
+              </p>
+              <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
+                <ChartDblClickExpand
+                  title={`${activityBranchTabLabel("lab_e")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
+                  defaultHeight={200}
+                  expandedHeight={420}
+                  detail={<EquityDblReadout m={metricsLabE} name={activityBranchTabLabel("lab_e")} />}
+                  render={({ h }) => (
+                    <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
+                      <EquityDualLineChart
+                        key={`eq-e-${equityValueScale}-${equityGranularity}-${chartDataLabE.length}`}
+                        data={chartDataLabE}
+                        equityStroke="#14b8a6"
+                        mtmStroke="#99f6e4"
+                        yFormat={equityValueScale === "pct_change_window" ? "pct" : "dollar"}
+                      />
+                    </div>
+                  )}
+                />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -6206,7 +6373,7 @@ export default function App() {
                 type="button"
                 className="primary dash-panel-btn"
                 title={
-                  "Per-asset engine snapshot cards: Live vs Lab A–D select which branch’s last tick view you read; config is unchanged. " +
+                  "Per-asset engine snapshot cards: Live vs Lab A–E select which branch’s last tick view you read; config is unchanged. " +
                   "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
                   "window, target, and open-sim hints. If “No snapshot”, the engine may be off, the series has no active 15m row yet, " +
                   "or Kalshi returned no book. On sandbox/draft hosts, TBD or 0.00 bid/ask often means missing books, not a bug in your " +
@@ -6325,6 +6492,16 @@ export default function App() {
               >
                 Lab D
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "e"}
+                className={`chart-tab ${assetWatchLab === "e" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab E."
+                onClick={() => setAssetWatchLab("e")}
+              >
+                Lab E
+              </button>
             </div>
           </div>
           <div className="dashboard-grid-panel__body dashboard-grid-panel__body--assets">
@@ -6353,7 +6530,9 @@ export default function App() {
                           ? (engineSnapsLabB[id] as AnyObj | undefined)
                           : assetWatchLab === "c"
                             ? (engineSnapsLabC[id] as AnyObj | undefined)
-                            : (engineSnapsLabD[id] as AnyObj | undefined);
+                            : assetWatchLab === "d"
+                              ? (engineSnapsLabD[id] as AnyObj | undefined)
+                              : (engineSnapsLabE[id] as AnyObj | undefined);
                   const implied = Number(headlineSnap?.implied_prob);
                   const impliedMove = Number.isFinite(implied) ? Math.abs(implied - 0.5) : 0;
                   const rulesCount = Array.isArray(headlineSnap?.rules_matched) ? headlineSnap.rules_matched.length : 0;
@@ -6373,7 +6552,7 @@ export default function App() {
                       className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
                       title={
                         hasExposureTab
-                          ? `Open exposure for the “${assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
+                          ? `Open exposure for the “${dashboardLabLetterTabLabel(assetWatchLab)}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
                           : `Asset ${id}: series ${String(a.series_ticker || "")}.`
                       }
                     >
@@ -6399,7 +6578,7 @@ export default function App() {
                             className="asset-watch-exposure-badge"
                             title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
                           >
-                            Open ({assetWatchLab === "live" ? "Live" : assetWatchLab === "a" ? "Lab A" : assetWatchLab === "b" ? "Lab B" : assetWatchLab === "c" ? "Lab C" : "Lab D"}):{" "}
+                            Open ({dashboardLabLetterTabLabel(assetWatchLab)}):{" "}
                             {exposureLabelsTab.join(" · ")}
                           </span>
                         ) : null}
@@ -6472,7 +6651,18 @@ export default function App() {
                               <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
                             </div>
                           )
-                        ) : null}
+                        ) : labEBranchEngineOn ? (
+                          <EngineAssetSnapBlock
+                            label="Sim · Lab E"
+                            snap={engineSnapsLabE[id]}
+                            lastTick={engineLabE?.last_tick_at}
+                            engineOn={labEBranchEngineOn}
+                          />
+                        ) : (
+                          <div className="sub" style={{ fontSize: 12 }} title="Turn Lab E on in Settings to populate lab snapshots.">
+                            <strong>Sim · Lab E</strong> — engine off (no snapshot for this series).
+                          </div>
+                        )}
                         <OpenExposureLinesForWatch
                           rows={openRowsTab}
                           headlineSnap={headlineSnap}
@@ -6635,6 +6825,7 @@ export default function App() {
               { id: "b", label: "Lab B" },
               { id: "c", label: "Lab C" },
               { id: "d", label: "Lab D" },
+              { id: "e", label: "Lab E" },
             ].map((t) => (
               <button
                 key={t.id}
@@ -6642,7 +6833,7 @@ export default function App() {
                 role="tab"
                 aria-selected={holdingsBranchTab === t.id}
                 className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
-                onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d")}
+                onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d" | "e")}
               >
                 {t.label}
               </button>
@@ -6667,15 +6858,7 @@ export default function App() {
                             : `Lab ${holdingsBranchTab.toUpperCase()} open sim rows. Market lines = distinct tickers; contracts = position size (Kalshi units), not how many markets.`
                         }
                       >
-                        {holdingsBranchTab === "live"
-                          ? "Live"
-                          : holdingsBranchTab === "a"
-                            ? "Lab A"
-                            : holdingsBranchTab === "b"
-                              ? "Lab B"
-                              : holdingsBranchTab === "c"
-                                ? "Lab C"
-                                : "Lab D"}
+                        {dashboardLabLetterTabLabel(holdingsBranchTab)}
                       </th>
                     </tr>
                   </thead>
@@ -6693,7 +6876,9 @@ export default function App() {
                               ? summarizePositionRows(row.bot_sim_open_lab_b)
                               : holdingsBranchTab === "c"
                                 ? summarizePositionRows(row.bot_sim_open_lab_c)
-                                : summarizePositionRows(row.bot_sim_open_lab_d);
+                                : holdingsBranchTab === "d"
+                                  ? summarizePositionRows(row.bot_sim_open_lab_d)
+                                  : summarizePositionRows(row.bot_sim_open_lab_e);
                       return (
                       <tr key={aid} title={`Configured asset ${aid}`}>
                         <td title="Label from config.">{String(row.label || aid)}</td>
@@ -6941,16 +7126,7 @@ export default function App() {
             <div className="sub account-section-scroll account-section-scroll--engine" style={{ marginTop: 10 }} title="Engine polling status from /api/dashboard.">
               {(() => {
                 const selectedIsLive = holdingsBranchTab === "live";
-                const label =
-                  holdingsBranchTab === "live"
-                    ? "Live"
-                    : holdingsBranchTab === "a"
-                      ? "Lab A"
-                      : holdingsBranchTab === "b"
-                        ? "Lab B"
-                        : holdingsBranchTab === "c"
-                          ? "Lab C"
-                          : "Lab D";
+                const label = dashboardLabLetterTabLabel(holdingsBranchTab);
                 const engineObj =
                   holdingsBranchTab === "live"
                     ? (dash?.engine?.live as AnyObj | undefined)
@@ -6960,7 +7136,9 @@ export default function App() {
                         ? engineLabB
                         : holdingsBranchTab === "c"
                           ? engineLabC
-                          : engineLabD;
+                          : holdingsBranchTab === "d"
+                            ? engineLabD
+                            : engineLabE;
                 const on =
                   holdingsBranchTab === "live"
                     ? Boolean(dash?.engine?.live?.engine_running)
@@ -6970,7 +7148,9 @@ export default function App() {
                         ? labBBranchEngineOn
                         : holdingsBranchTab === "c"
                           ? labCBranchEngineOn
-                          : labDBranchEngineOn;
+                          : holdingsBranchTab === "d"
+                            ? labDBranchEngineOn
+                            : labEBranchEngineOn;
                 const lastTick = engineObj?.last_tick_at;
                 const scanned = engineObj?.markets_scanned;
                 const errMsg = String(engineObj?.last_error || "");
@@ -6992,17 +7172,7 @@ export default function App() {
                 );
               })()}
               <EngineTickTrace
-                title={
-                  holdingsBranchTab === "live"
-                    ? "Live — last tick log"
-                    : holdingsBranchTab === "a"
-                      ? "Lab A — last tick log"
-                      : holdingsBranchTab === "b"
-                        ? "Lab B — last tick log"
-                        : holdingsBranchTab === "c"
-                          ? "Lab C — last tick log"
-                          : "Lab D — last tick log"
-                }
+                title={`${dashboardLabLetterTabLabel(holdingsBranchTab)} — last tick log`}
                 lines={
                   holdingsBranchTab === "live"
                     ? dash?.engine?.live?.last_tick_trace
@@ -7012,7 +7182,9 @@ export default function App() {
                         ? engineLabB?.last_tick_trace
                         : holdingsBranchTab === "c"
                           ? engineLabC?.last_tick_trace
-                          : engineLabD?.last_tick_trace
+                          : holdingsBranchTab === "d"
+                            ? engineLabD?.last_tick_trace
+                            : engineLabE?.last_tick_trace
                 }
               />
             </div>
@@ -7030,6 +7202,7 @@ export default function App() {
         labB={labB}
         labC={labC}
         labD={labD}
+        labE={labE}
         busy={busy}
         onSaveRules={saveRules}
         onValidateRulesJson={validateRulesOnServer}
@@ -7040,10 +7213,12 @@ export default function App() {
         onSaveLabBFromSliders={saveLabBFromSliders}
         onSaveLabCFromSliders={saveLabCFromSliders}
         onSaveLabDFromSliders={saveLabDFromSliders}
+        onSaveLabEFromSliders={saveLabEFromSliders}
         onSaveLabARules={saveLabARules}
         onSaveLabBRules={saveLabBRules}
         onSaveLabCRules={saveLabCRules}
         onSaveLabDRules={saveLabDRules}
+        onSaveLabERules={saveLabERules}
         onSaveDevSimHighYesPct={saveDevSimHighYesPct}
         onSaveNoBetWhenYesBelow={saveNoBetWhenYesBelow}
         onSaveSwingExitImpliedDropPct={saveSwingExitImpliedDropPct}
@@ -7063,10 +7238,12 @@ export default function App() {
         labEngineBOn={labBBranchEngineOn}
         labEngineCOn={labCBranchEngineOn}
         labEngineDOn={labDBranchEngineOn}
+        labEngineEOn={labEBranchEngineOn}
         onToggleLabA={() => void setSimLabRunning(!labABranchEngineOn)}
         onToggleLabB={() => void setLabRunning("b", !labBBranchEngineOn)}
         onToggleLabC={() => void setLabRunning("c", !labCBranchEngineOn)}
         onToggleLabD={() => void setLabRunning("d", !labDBranchEngineOn)}
+        onToggleLabE={() => void setLabRunning("e", !labEBranchEngineOn)}
         onAddAllLabsPaper={() => void addAllLabsPaperBankroll()}
         onRefresh={() => void refresh({ force: true })}
         onOpenHistory={() => setHistoryOpen(true)}
@@ -7075,6 +7252,9 @@ export default function App() {
         onHeroMarqueeSpeedMultChange={setHeroMarqueeSpeedMultPersist}
         tradePopupToastsEnabled={tradePopupToastsEnabled}
         onTradePopupToastsEnabledChange={setTradePopupToastsEnabledPersist}
+        labHiveMessages={labHiveMessages}
+        labChatEnabled={labChatEnabled}
+        onLabChatEnabledChange={setLabChatEnabled}
       />
       <HistoricalExplorerOverlay open={historyOpen} onClose={() => setHistoryOpen(false)} />
       {equityCompareOpen ? (
@@ -7117,6 +7297,7 @@ export default function App() {
                 { key: "b", label: "Lab B", color: "#f59e0b" },
                 { key: "c", label: "Lab C", color: "#f472b6" },
                 { key: "d", label: "Lab D", color: "#fca5a5" },
+                { key: "e", label: "Lab E", color: "#14b8a6" },
               ] as const).map((opt) => (
                 <label key={opt.key} className="dash-equity-overlay-toggle" title={`Show or hide ${opt.label} on the combined chart.`}>
                   <input
@@ -7145,7 +7326,7 @@ export default function App() {
                       ? "one line per branch, average of book and MTM at each time step."
                       : "MTM minus book (open-risk mark) at each time step."}{" "}
                     Use the checkboxes in this popup to show or hide series; those toggles are shared with the main Compare view. Time scale is the
-                    current tab ({String(equityGranularity)}). This overlay is always <strong>dollars</strong> (the %Δ tab applies to the five small charts only).
+                    current tab ({String(equityGranularity)}). This overlay is always <strong>dollars</strong> (the %Δ tab applies to the six small charts only).
                   </p>
                 }
                 render={({ h }) => (
@@ -7216,6 +7397,17 @@ export default function App() {
                             dataKey={equityCompareMode === "blended" ? "dBlend" : "dPot"}
                             name={equityCompareMode === "blended" ? "Lab D blended" : "Lab D potential"}
                             stroke="#fca5a5"
+                            strokeWidth={2.4}
+                            dot={false}
+                            isAnimationActive={false}
+                          />
+                        ) : null}
+                        {equityVisible.e ? (
+                          <Line
+                            type="monotone"
+                            dataKey={equityCompareMode === "blended" ? "eBlend" : "ePot"}
+                            name={equityCompareMode === "blended" ? "Lab E blended" : "Lab E potential"}
+                            stroke="#14b8a6"
                             strokeWidth={2.4}
                             dot={false}
                             isAnimationActive={false}
@@ -7310,14 +7502,20 @@ function ActivityHints({
   const labAOn = Boolean(dash?.engine?.lab_a?.engine_running ?? dash?.engine?.sim_lab?.engine_running ?? simLab.engine_running);
   const labBOn = Boolean(dash?.engine?.lab_b?.engine_running ?? (cfg.lab_b as AnyObj | undefined)?.engine_running);
   const labCOn = Boolean(dash?.engine?.lab_c?.engine_running ?? (cfg.lab_c as AnyObj | undefined)?.engine_running);
+  const labDOn = Boolean(dash?.engine?.lab_d?.engine_running ?? (cfg.lab_d as AnyObj | undefined)?.engine_running);
+  const labEOn = Boolean(dash?.engine?.lab_e?.engine_running ?? (cfg.lab_e as AnyObj | undefined)?.engine_running);
   const liveTick = dash?.engine?.live?.last_tick_at;
   const labATick = dash?.engine?.lab_a?.last_tick_at ?? dash?.engine?.sim_lab?.last_tick_at;
   const labBTick = dash?.engine?.lab_b?.last_tick_at;
   const labCTick = dash?.engine?.lab_c?.last_tick_at;
+  const labDTick = dash?.engine?.lab_d?.last_tick_at;
+  const labETick = dash?.engine?.lab_e?.last_tick_at;
   const scannedLive = dash?.engine?.live?.markets_scanned;
   const scannedLabA = dash?.engine?.lab_a?.markets_scanned ?? dash?.engine?.sim_lab?.markets_scanned;
   const scannedLabB = dash?.engine?.lab_b?.markets_scanned;
   const scannedLabC = dash?.engine?.lab_c?.markets_scanned;
+  const scannedLabD = dash?.engine?.lab_d?.markets_scanned;
+  const scannedLabE = dash?.engine?.lab_e?.markets_scanned;
 
   const lines: string[] = [];
   const branchName = activityBranchTabLabel(activityBranch);
@@ -7347,7 +7545,16 @@ function ActivityHints({
     const needA = activityBranch === "lab_a";
     const needB = activityBranch === "lab_b";
     const needC = activityBranch === "lab_c";
-    if ((needLive && !liveOn) || (needA && !labAOn) || (needB && !labBOn) || (needC && !labCOn)) {
+    const needD = activityBranch === "lab_d";
+    const needE = activityBranch === "lab_e";
+    if (
+      (needLive && !liveOn) ||
+      (needA && !labAOn) ||
+      (needB && !labBOn) ||
+      (needC && !labCOn) ||
+      (needD && !labDOn) ||
+      (needE && !labEOn)
+    ) {
       lines.push(`Turn the ${branchName} engine on in the toolbar — otherwise this branch’s ticks (and rows) stay idle.`);
     } else {
       if (needLive && liveOn) {
@@ -7368,6 +7575,16 @@ function ActivityHints({
       if (needC && labCOn) {
         lines.push(
           `Lab C last tick: ${labCTick ? fmtIsoLocal(String(labCTick)) : "—"} · markets scanned: ${scannedLabC ?? "—"}.`,
+        );
+      }
+      if (needD && labDOn) {
+        lines.push(
+          `Lab D last tick: ${labDTick ? fmtIsoLocal(String(labDTick)) : "—"} · markets scanned: ${scannedLabD ?? "—"}.`,
+        );
+      }
+      if (needE && labEOn) {
+        lines.push(
+          `Lab E last tick: ${labETick ? fmtIsoLocal(String(labETick)) : "—"} · markets scanned: ${scannedLabE ?? "—"}.`,
         );
       }
       lines.push(

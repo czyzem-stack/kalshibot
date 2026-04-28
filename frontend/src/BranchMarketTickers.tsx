@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 
 type AnyObj = Record<string, any>;
 
-type BranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d";
+type BranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e";
 
 type Tone = "pos" | "neg" | "yes" | "no" | "muted" | "warn";
 
@@ -167,12 +167,35 @@ function toneForYes(raw: string): Tone {
 
 function labPulseFallbackSegments(branch: BranchKey, labThoughts: AnyObj | undefined): TickerSeg[] {
   const lt = labThoughts && typeof labThoughts === "object" ? labThoughts : {};
-  const key = branch === "lab_a" ? "lab_a" : branch === "lab_b" ? "lab_b" : branch === "lab_c" ? "lab_c" : branch === "lab_d" ? "lab_d" : "lab_a";
+  const key =
+    branch === "lab_a"
+      ? "lab_a"
+      : branch === "lab_b"
+        ? "lab_b"
+        : branch === "lab_c"
+          ? "lab_c"
+          : branch === "lab_d"
+            ? "lab_d"
+            : branch === "lab_e"
+              ? "lab_e"
+              : "lab_a";
   const rows = Array.isArray((lt as AnyObj)[key]) ? ((lt as AnyObj)[key] as unknown[]) : [];
   const f = parsePulseFields(rows);
   if (!Object.keys(f).length) return [seg("No market update yet.", "muted")];
   const tag =
-    branch === "live" ? "Lab pulse (A)" : branch === "lab_a" ? "Lab pulse (A)" : branch === "lab_b" ? "Lab pulse (B)" : branch === "lab_c" ? "Lab pulse (C)" : "Lab pulse (D)";
+    branch === "live"
+      ? "Lab pulse (A)"
+      : branch === "lab_a"
+        ? "Lab pulse (A)"
+        : branch === "lab_b"
+          ? "Lab pulse (B)"
+          : branch === "lab_c"
+            ? "Lab pulse (C)"
+            : branch === "lab_d"
+              ? "Lab pulse (D)"
+              : branch === "lab_e"
+                ? "Lab pulse (E)"
+                : "Lab pulse (A)";
   const yes = f.implied_yes_latest || "na";
   const ret = f.return || "na";
   const streak = f.streak || "0";
@@ -262,6 +285,8 @@ function positionSegmentsForBranch(
       blocks.push(simOpenSegments(r.bot_sim_open_lab_c, lab, "Lab C"));
     } else if (branch === "lab_d" && Array.isArray(r.bot_sim_open_lab_d) && r.bot_sim_open_lab_d.length) {
       blocks.push(simOpenSegments(r.bot_sim_open_lab_d, lab, "Lab D"));
+    } else if (branch === "lab_e" && Array.isArray(r.bot_sim_open_lab_e) && r.bot_sim_open_lab_e.length) {
+      blocks.push(simOpenSegments(r.bot_sim_open_lab_e, lab, "Lab E"));
     }
   }
   if (!blocks.length) return [];
@@ -279,6 +304,7 @@ function normBranch(b: unknown): BranchKey {
   if (s === "lab_b") return "lab_b";
   if (s === "lab_c") return "lab_c";
   if (s === "lab_d") return "lab_d";
+  if (s === "lab_e") return "lab_e";
   return "live";
 }
 
@@ -333,7 +359,18 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
   const pnl = Number(metrics.total_pnl_dollars || 0);
   const ret = metrics.return_mtm_vs_start_pct ?? metrics.return_vs_start_pct;
   const retN = ret != null && Number.isFinite(Number(ret)) ? Number(ret) : NaN;
-  const lab = branch === "lab_a" ? "Lab A" : branch === "lab_b" ? "Lab B" : branch === "lab_c" ? "Lab C" : branch === "lab_d" ? "Lab D" : "Live";
+  const lab =
+    branch === "lab_a"
+      ? "Lab A"
+      : branch === "lab_b"
+        ? "Lab B"
+        : branch === "lab_c"
+          ? "Lab C"
+          : branch === "lab_d"
+            ? "Lab D"
+            : branch === "lab_e"
+              ? "Lab E"
+              : "Live";
   const rt: Tone = !Number.isFinite(retN) ? "muted" : retN > 0 ? "pos" : retN < 0 ? "neg" : "muted";
   return [
     seg(`${lab} · `, "muted"),
@@ -510,7 +547,7 @@ function TickerSegRun({ segments }: { segments: TickerSeg[] }) {
   );
 }
 
-const HERO_BRANCH_ORDER: BranchKey[] = ["live", "lab_a", "lab_b", "lab_c", "lab_d"];
+const HERO_BRANCH_ORDER: BranchKey[] = ["live", "lab_a", "lab_b", "lab_c", "lab_d", "lab_e"];
 
 const HERO_BRANCH_TAG: Record<BranchKey, string> = {
   live: "Live",
@@ -518,6 +555,7 @@ const HERO_BRANCH_TAG: Record<BranchKey, string> = {
   lab_b: "Lab B",
   lab_c: "Lab C",
   lab_d: "Lab D",
+  lab_e: "Lab E",
 };
 
 const HERO_BRANCH_ACCENT: Record<BranchKey, string> = {
@@ -526,6 +564,7 @@ const HERO_BRANCH_ACCENT: Record<BranchKey, string> = {
   lab_b: "#fdba74",
   lab_c: "#f9a8d4",
   lab_d: "#fca5a5",
+  lab_e: "#5eead4",
 };
 
 function combineHeroMarqueeSegments(bundles: Record<BranchKey, TickerSeg[]>): TickerSeg[] {
@@ -550,27 +589,28 @@ function heroMarqueeDurationSec(segments: TickerSeg[]): number {
 const HERO_MARQUEE_SCROLL_PACE = 0.7;
 
 function branchHeadlineDollars(
-  m: AnyObj,
+  m: AnyObj | null | undefined,
   which: "live" | "lab",
   livePaper: boolean,
   keys: boolean,
   rb: AnyObj | undefined,
 ): number | null {
+  const mx = m != null && typeof m === "object" ? m : {};
   if (which === "live") {
     if (livePaper) {
-      const v = m.current_mtm_dollars ?? m.current_equity_dollars;
+      const v = mx.current_mtm_dollars ?? mx.current_equity_dollars;
       return v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
     }
-    const pv = m.exchange_portfolio_value_dollars;
+    const pv = mx.exchange_portfolio_value_dollars;
     if (pv != null && pv !== "" && Number.isFinite(Number(pv))) return Number(pv);
     if (rb?.portfolio_value != null && Number.isFinite(Number(rb.portfolio_value))) return Number(rb.portfolio_value) / 100;
     return null;
   }
-  const v = m.current_mtm_dollars ?? m.current_equity_dollars;
+  const v = mx.current_mtm_dollars ?? mx.current_equity_dollars;
   return v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
 }
 
-/** Single scrolling strip for all branches + optional five-row snapshot (Live + Lab A–D, no rotation). */
+/** Single scrolling strip for all branches + optional snapshot rows (Live + Lab A–E, no rotation). */
 export function BranchHeroMarquee({
   dash,
   cfg,
@@ -589,12 +629,14 @@ export function BranchHeroMarquee({
   const snapsB = (assetSnaps.lab_b || {}) as Record<string, AnyObj>;
   const snapsC = (assetSnaps.lab_c || {}) as Record<string, AnyObj>;
   const snapsD = (assetSnaps.lab_d || {}) as Record<string, AnyObj>;
+  const snapsE = (assetSnaps.lab_e || {}) as Record<string, AnyObj>;
   const eng = dash?.engine || {};
   const mLive = (dash?.metrics || {}) as AnyObj;
   const mA = ((dash?.metrics_lab_a || dash?.metrics_sim_lab) || {}) as AnyObj;
   const mB = (dash?.metrics_lab_b || {}) as AnyObj;
   const mC = (dash?.metrics_lab_c || {}) as AnyObj;
   const mD = (dash?.metrics_lab_d || {}) as AnyObj;
+  const mE = (dash?.metrics_lab_e || {}) as AnyObj;
 
   const segBundles = useMemo(() => {
     const live = buildHeroCompactSegments({
@@ -642,8 +684,17 @@ export function BranchHeroMarquee({
       positionByAsset: posBy,
       kalshiPrivateOk,
     });
-    return { live, lab_a: a, lab_b: b, lab_c: c, lab_d: d };
-  }, [cfg, mLive, mA, mB, mC, mD, snapsLive, snapsA, snapsB, snapsC, snapsD, eng, posBy, kalshiPrivateOk]);
+    const e = buildHeroCompactSegments({
+      branch: "lab_e",
+      cfg,
+      metrics: mE,
+      snaps: snapsE,
+      engineBlock: eng.lab_e,
+      positionByAsset: posBy,
+      kalshiPrivateOk,
+    });
+    return { live, lab_a: a, lab_b: b, lab_c: c, lab_d: d, lab_e: e };
+  }, [cfg, mLive, mA, mB, mC, mD, mE, snapsLive, snapsA, snapsB, snapsC, snapsD, snapsE, eng, posBy, kalshiPrivateOk]);
 
   const combined = useMemo(() => combineHeroMarqueeSegments(segBundles), [segBundles]);
   const speedMult = Number(cfg?.hero_marquee_speed_mult);
@@ -658,10 +709,11 @@ export function BranchHeroMarquee({
   const dB = branchHeadlineDollars(mB, "lab", livePaper, keys, rb);
   const dC = branchHeadlineDollars(mC, "lab", livePaper, keys, rb);
   const dD = branchHeadlineDollars(mD, "lab", livePaper, keys, rb);
+  const dE = branchHeadlineDollars(mE, "lab", livePaper, keys, rb);
   const tipLive = livePaper
     ? "Live paper: headline $ is mark-to-market total (last equity snapshot); % uses MTM vs bankroll when available."
     : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
-  const labTip = (lab: "A" | "B" | "C" | "D") =>
+  const labTip = (lab: "A" | "B" | "C" | "D" | "E") =>
     `Lab ${lab}: $ = MTM or cost-basis equity; % = return vs bankroll (MTM) when present.`;
   const cashLiveStr =
     livePaper || !keys
@@ -692,8 +744,9 @@ export function BranchHeroMarquee({
     { key: "lab_b", label: "Lab B", valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB), metrics: mB, accent: HERO_BRANCH_ACCENT.lab_b, title: labTip("B") },
     { key: "lab_c", label: "Lab C", valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC), metrics: mC, accent: HERO_BRANCH_ACCENT.lab_c, title: labTip("C") },
     { key: "lab_d", label: "Lab D", valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD), metrics: mD, accent: HERO_BRANCH_ACCENT.lab_d, title: labTip("D") },
+    { key: "lab_e", label: "Lab E", valueStr: dE == null || !Number.isFinite(dE) ? "—" : fmt$(dE), metrics: mE, accent: HERO_BRANCH_ACCENT.lab_e, title: labTip("E") },
   ];
-  const snapshotAsideTitle = "All branches: headline $ and return vs start (arrows) from last /api/dashboard — Live plus Lab A through Lab D.";
+  const snapshotAsideTitle = "All branches: headline $ and return vs start (arrows) from last /api/dashboard — Live plus Lab A through Lab E.";
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const firstHalfRef = useRef<HTMLSpanElement | null>(null);
@@ -813,7 +866,7 @@ export function BranchHeroMarquee({
   return (
     <div
       className={`branch-hero-marquee section-tip${showSnapshot ? "" : " branch-hero-marquee--ticker-only"}`}
-      title="All-branch market readout. Drag to throw. Right: five-row snapshot of Live and Lab A–D ($ and return)."
+      title="All-branch market readout. Drag to throw. Right: six-row snapshot of Live and Lab A–E ($ and return)."
       aria-label="Combined Live and lab market ticker with all-branch balance snapshot"
     >
       <div className="branch-hero-marquee__scroll" role="presentation">
@@ -837,7 +890,7 @@ export function BranchHeroMarquee({
           className="branch-hero-marquee__rotor branch-hero-marquee__rotor--snapshot section-tip"
           title={snapshotAsideTitle}
           aria-live="polite"
-          aria-label="Live and Lab A through D: balance and return each"
+          aria-label="Live and Lab A through E: balance and return each"
         >
           <div className="branch-hero-snapshot" role="list">
             {snapshotRows.map((row) => (
@@ -874,7 +927,7 @@ export function BranchHeroMarquee({
   );
 }
 
-/** Centered header snapshot (under title): Live + Lab A–D, no marquee/scrolling track. */
+/** Centered header snapshot (under title): Live + Lab A–E, no marquee/scrolling track. */
 export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }): ReactNode {
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
@@ -884,11 +937,13 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
   const mB = (dash?.metrics_lab_b || {}) as AnyObj;
   const mC = (dash?.metrics_lab_c || {}) as AnyObj;
   const mD = (dash?.metrics_lab_d || {}) as AnyObj;
+  const mE = (dash?.metrics_lab_e || {}) as AnyObj;
   const dLive = branchHeadlineDollars(mLive, "live", livePaper, keys, rb);
   const dA = branchHeadlineDollars(mA, "lab", livePaper, keys, rb);
   const dB = branchHeadlineDollars(mB, "lab", livePaper, keys, rb);
   const dC = branchHeadlineDollars(mC, "lab", livePaper, keys, rb);
   const dD = branchHeadlineDollars(mD, "lab", livePaper, keys, rb);
+  const dE = branchHeadlineDollars(mE, "lab", livePaper, keys, rb);
   const cashLiveStr =
     livePaper || !keys
       ? null
@@ -911,13 +966,14 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
     { key: "lab_b", label: "Lab B", valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB), metrics: mB, accent: HERO_BRANCH_ACCENT.lab_b },
     { key: "lab_c", label: "Lab C", valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC), metrics: mC, accent: HERO_BRANCH_ACCENT.lab_c },
     { key: "lab_d", label: "Lab D", valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD), metrics: mD, accent: HERO_BRANCH_ACCENT.lab_d },
+    { key: "lab_e", label: "Lab E", valueStr: dE == null || !Number.isFinite(dE) ? "—" : fmt$(dE), metrics: mE, accent: HERO_BRANCH_ACCENT.lab_e },
   ];
   return (
     <div
       className="branch-hero-snapshot branch-hero-snapshot--header"
       role="list"
       aria-live="polite"
-      aria-label="Live and Lab A through D: balance and return each"
+      aria-label="Live and Lab A through E: balance and return each"
     >
       {rows.map((row) => (
         <div

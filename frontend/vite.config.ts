@@ -17,6 +17,12 @@ export default defineConfig(({ mode }) => {
           timeout: 120_000,
           proxyTimeout: 120_000,
         },
+        "/labs": {
+          target: origin,
+          changeOrigin: true,
+          timeout: 120_000,
+          proxyTimeout: 120_000,
+        },
       },
     },
   };

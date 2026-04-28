@@ -1,6 +1,6 @@
-"""Visible paper / live tick: Live + Lab A–D + child ``lab_child_*`` branches (settle, tick, snapshot, optional auto-optimize).
+"""Visible paper / live tick: Live + Lab A–E + child ``lab_child_*`` branches (settle, tick, snapshot, optional auto-optimize).
 
-**Not** the same subsystem as B/C/D **child-lab GA** in ``lab_breeding``/``optimizer_claude``—see
+**Not** the same subsystem as B/C/D/E **child-lab GA** in ``lab_breeding``/``optimizer_claude``—see
 ``.cursor/rules/architecture-breeding.md``. Charts and Branch performance here reflect per-tick rule matching; breeding
 uses replay over history on the optimizer interval.
 """
