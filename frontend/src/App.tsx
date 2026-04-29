@@ -238,6 +238,16 @@ function formatActiveTradeMarqueeLine(t: AnyObj): string {
   return `${tick} ${side} · ${st}${costStr} (${tag})`;
 }
 
+/** Map a synthetic character count (from width tiers) to clamped marquee duration seconds. */
+function marqueeDurationFromSyntheticChars(
+  syntheticCharCount: number,
+  minSec: number,
+  maxSec: number,
+  charsPerSecond: number,
+): number {
+  return Math.max(minSec, Math.min(maxSec, Math.round(syntheticCharCount * charsPerSecond)));
+}
+
 /** Branch performance footer: scrolling list of non-settled trades for the selected branch tab. */
 function BranchPerfActiveTradesMarquee({ branchLabel, activeRows }: { branchLabel: string; activeRows: AnyObj[] }) {
   const segments = useMemo(
@@ -261,18 +271,31 @@ function BranchPerfActiveTradesMarquee({ branchLabel, activeRows }: { branchLabe
     const vp = viewportRef.current;
     const half = firstHalfRef.current;
     if (!vp || !half) return;
+    let raf = 0;
     const measure = () => {
-      setNeedsScroll(segments.length > 0 && half.scrollWidth > vp.clientWidth + 2);
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const next = segments.length > 0 && half.scrollWidth > vp.clientWidth + 2;
+        setNeedsScroll((prev) => (prev === next ? prev : next));
+      });
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(vp);
     ro.observe(half);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [segments]);
 
   const charCount = segments.reduce((n, s) => n + s.text.length, 0);
-  const durSec = Math.max(18, Math.min(120, Math.round(charCount * 0.07)));
+  const charTier = Math.ceil(Math.max(1, charCount) / 48);
+  const durSec = useMemo(
+    () => marqueeDurationFromSyntheticChars(charTier * 48, 18, 120, 0.07),
+    [charTier],
+  );
 
   const renderHalf = (suffix: string) => (
     <>
@@ -352,18 +375,31 @@ function LabPulseWideTicker({ thoughts }: { thoughts: AnyObj | undefined }) {
     const vp = viewportRef.current;
     const half = firstHalfRef.current;
     if (!vp || !half) return;
+    let raf = 0;
     const measure = () => {
-      setNeedsScroll(half.scrollWidth > vp.clientWidth + 2);
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const next = half.scrollWidth > vp.clientWidth + 2;
+        setNeedsScroll((prev) => (prev === next ? prev : next));
+      });
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(vp);
     ro.observe(half);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [segments]);
 
   const charCount = segments.reduce((n, s) => n + s.lab.length + s.text.length, 0);
-  const durSec = Math.max(22, Math.min(140, Math.round(charCount * 0.055)));
+  const charTier = Math.ceil(Math.max(1, charCount) / 48);
+  const durSec = useMemo(
+    () => marqueeDurationFromSyntheticChars(charTier * 48, 22, 140, 0.055),
+    [charTier],
+  );
 
   const renderChunks = (suffix: string) => (
     <>
@@ -5390,6 +5426,12 @@ export default function App() {
   const acctSnap = dash?.account_snapshot as AnyObj | undefined;
   const accountLinked = Boolean(kalshi?.private_ok);
 
+  /** Stable reference so BranchHeroMarquee / snapshot header memos are not busted every parent render. */
+  const cfgWithHeroMarqueeSpeed = useMemo(
+    () => ({ ...(cfg as AnyObj), hero_marquee_speed_mult: heroMarqueeSpeedMult }),
+    [cfg, heroMarqueeSpeedMult],
+  );
+
   return (
     <div className={dash ? "page page--bottom-marquee" : "page"}>
       {visibleOptimizerNotifs.length ? (
@@ -5528,13 +5570,7 @@ export default function App() {
             </div>
             {dash ? (
               <div className="hero-head__snapshot-center">
-                <BranchHeroSnapshotHeader
-                  dash={dash}
-                  cfg={{
-                    ...(cfg as AnyObj),
-                    hero_marquee_speed_mult: heroMarqueeSpeedMult,
-                  }}
-                />
+                <BranchHeroSnapshotHeader dash={dash} cfg={cfgWithHeroMarqueeSpeed} />
               </div>
             ) : null}
           </div>
@@ -6045,7 +6081,329 @@ export default function App() {
 
         </div>
 
-        <div className="dash-split-row__col dash-split-row__col--equity dash-split-card dash-equity-panel">
+
+        <div className="panel dashboard-grid-panel dashboard-grid-panel--assets">
+          <div className="dashboard-grid-panel__head">
+            <div className="dashboard-grid-panel__head-row">
+              <h2
+                id="dash-heading-assets"
+                className="dash-section__title dashboard-grid-panel__title"
+                title="Snapshots per series (BTC first, ETH second, then A-Z). Which series the engine scans is controlled by each asset's enabled flag in bot config."
+              >
+                Assets to watch
+              </h2>
+              <button
+                type="button"
+                className="primary dash-panel-btn"
+                title={
+                  "Per-asset engine snapshot cards: Live vs Lab A–E select which branch’s last tick view you read; config is unchanged. " +
+                  "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
+                  "window, target, and open-sim hints. If “No snapshot”, the engine may be off, the series has no active 15m row yet, " +
+                  "or Kalshi returned no book. On sandbox/draft hosts, TBD or 0.00 bid/ask often means missing books, not a bug in your " +
+                  "rules. Enable/disable assets in Settings; this panel is read-only telemetry."
+                }
+                onClick={() =>
+                  setInfoPopup({
+                    title: "Assets to watch",
+                    body: (
+                      <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
+                        <p>
+                          <strong>Purpose.</strong> This grid is a <em>telemetry heat map</em> of what the engine last knew about each
+                          configured asset (BTC, ETH, …) for a <em>single branch at a time</em> (Live, Lab A, Lab B, Lab C, Lab D). It
+                          answers: “Is there a current 15-minute (or configured) market row? What were the mids or implieds? Are we
+                          blocked from new entries in this series because of an open sim?” It does <strong>not</strong> edit rules;
+                          it reflects the product of config + engine + Kalshi feed.
+                        </p>
+                        <p>
+                          <strong>Branch tabs vs config.</strong> Switching Live / Lab A / Lab B / Lab C / Lab D only swaps which
+                          branch’s <code>asset_snapshots</code> (or equivalent) object the UI reads from the dashboard payload. Your
+                          SQLite config and environment files are untouched. If two branches show different numbers, that is expected:
+                          they may have different paper positions, different rule packs, or different last-tick times.
+                        </p>
+                        <p>
+                          <strong>Which assets appear.</strong> Only assets present in bot config with reasonable keys are listed. Order
+                          is stable (for example headline crypto first, then alphabetical). If you add a new asset in Settings, you may
+                          need a save + engine tick before a card appears. An asset with <code>enabled: false</code> is typically omitted
+                          or shown as inactive—check Settings for the authoritative flag; the UI may still show a stub for visibility.
+                        </p>
+                        <p>
+                          <strong>“No snapshot” and empty fields.</strong> Common causes: branch engine toggled off for that run; Kalshi
+                          API rate limit or outage; no market row in the series for the current clock; first tick after startup not
+                          completed yet. Distinguish “no data yet” from “data is zero”—read the Engine section under Account for{" "}
+                          <code>last_tick_at</code> and error strings. If <code>last_tick</code> is fresh but the card is empty, the
+                          series might not have a tradable row in this environment.
+                        </p>
+                        <p>
+                          <strong>Non-production and draft Kalshi hosts.</strong> Sandbox and internal hosts often show{" "}
+                          <code>Target price: TBD</code>, <code>0.00</code> bid/ask, or obviously stale books for many 15m contracts. That
+                          is a feed limitation, not your filter string. Do not tune rules against those numbers; use production-like
+                          markets or verify on the official site. The yellow “non-production feed” banner (if present) calls this out.
+                        </p>
+                        <p>
+                          <strong>How this ties to trades and skips.</strong> If a card shows an open sim or a series lock, cross-check
+                          Activity log and “Bets not traded” for <code>series_has_open_sim</code> or similar. If implieds look
+                          nonsensical (e.g. 0% or 100% with no book), the engine may still skip entries for safety. Use Optimizer Lab
+                          pulse for the same tick’s narrative; use Branch performance for money impact, not this panel.
+                        </p>
+                        <p>
+                          <strong>Operational checklist.</strong> (1) Confirm each engine is on for the branch you are reading. (2) Confirm
+                          each asset you care about is enabled. (3) If only one branch is stale, restart or inspect that branch’s engine
+                          state in the dashboard JSON. (4) If all branches are stale, the backend or Kalshi connectivity is the prime
+                          suspect before you change strategy.
+                        </p>
+                      </div>
+                    ),
+                  })
+                }
+              >
+                Info
+              </button>
+            </div>
+            <div
+              className="chart-tabs dashboard-grid-panel__tabs"
+              role="tablist"
+              aria-label="Asset snapshot branch"
+              style={{ width: "100%" }}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "live"}
+                className={`chart-tab ${assetWatchLab === "live" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for the Live branch."
+                onClick={() => setAssetWatchLab("live")}
+              >
+                Live
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "a"}
+                className={`chart-tab ${assetWatchLab === "a" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab A (same branch as legacy sim_lab in SQLite)."
+                onClick={() => setAssetWatchLab("a")}
+              >
+                Lab A
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "b"}
+                className={`chart-tab ${assetWatchLab === "b" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab B (conservative reference)."
+                onClick={() => setAssetWatchLab("b")}
+              >
+                Lab B
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "c"}
+                className={`chart-tab ${assetWatchLab === "c" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab C (aggressive reference)."
+                onClick={() => setAssetWatchLab("c")}
+              >
+                Lab C
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "d"}
+                className={`chart-tab ${assetWatchLab === "d" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab D."
+                onClick={() => setAssetWatchLab("d")}
+              >
+                Lab D
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "e"}
+                className={`chart-tab ${assetWatchLab === "e" ? "chart-tab--active" : ""}`}
+                title="Per-asset engine snapshot for Lab E."
+                onClick={() => setAssetWatchLab("e")}
+              >
+                Lab E
+              </button>
+            </div>
+          </div>
+          <div className="dashboard-grid-panel__body dashboard-grid-panel__body--assets">
+          {kalshiIsNonProd(kalshi?.env) ? (
+            <div className="sub" style={{ marginBottom: 8, fontSize: 12 }} title="Non-production feed detected. Use Info for full notes.">
+              Non-production host detected: <code>{String(kalshi?.env || "—")}</code>.
+            </div>
+          ) : null}
+          {Object.keys(assets).length === 0 ? (
+            <div className="sub" title="Add assets under Settings → JSON or defaults in backend config.">
+              No assets configured.
+            </div>
+          ) : (
+            <div className="asset-watch-scroll">
+              {(() => {
+                const entries = orderedAssetEntries(assets as AnyObj);
+                const enriched = entries.map(([id, a], idx) => {
+                  const posRow = (acctSnap?.position_by_asset as AnyObj | undefined)?.[id] as AnyObj | undefined;
+                  const openRowsTab = dedupeAssetWatchOpenRowsByTicker(assetWatchOpenRowsForTab(posRow, assetWatchLab));
+                  const headlineSnap =
+                    assetWatchLab === "live"
+                      ? (engineSnapsLive[id] as AnyObj | undefined)
+                      : assetWatchLab === "a"
+                        ? (engineSnapsLabA[id] as AnyObj | undefined)
+                        : assetWatchLab === "b"
+                          ? (engineSnapsLabB[id] as AnyObj | undefined)
+                          : assetWatchLab === "c"
+                            ? (engineSnapsLabC[id] as AnyObj | undefined)
+                            : assetWatchLab === "d"
+                              ? (engineSnapsLabD[id] as AnyObj | undefined)
+                              : (engineSnapsLabE[id] as AnyObj | undefined);
+                  const implied = Number(headlineSnap?.implied_prob);
+                  const impliedMove = Number.isFinite(implied) ? Math.abs(implied - 0.5) : 0;
+                  const rulesCount = Array.isArray(headlineSnap?.rules_matched) ? headlineSnap.rules_matched.length : 0;
+                  const movementScore = impliedMove + (rulesCount > 0 ? 0.15 : 0) + (headlineSnap?.has_orderbook ? 0.05 : 0);
+                  return { id, a, idx, posRow, openRowsTab, headlineSnap, hasExposureTab: openRowsTab.length > 0, movementScore };
+                });
+                enriched.sort((x, y) => {
+                  if (x.hasExposureTab !== y.hasExposureTab) return x.hasExposureTab ? -1 : 1;
+                  if (y.movementScore !== x.movementScore) return y.movementScore - x.movementScore;
+                  return x.idx - y.idx;
+                });
+                return enriched.map(({ id, a, posRow, openRowsTab, headlineSnap, hasExposureTab }) => {
+                  const exposureLabelsTab = exposureLabelsForAssetWatchTab(posRow, assetWatchLab);
+                  return (
+                    <div
+                      key={id}
+                      className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
+                      title={
+                        hasExposureTab
+                          ? `Open exposure for the “${dashboardLabLetterTabLabel(assetWatchLab)}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
+                          : `Asset ${id}: series ${String(a.series_ticker || "")}.`
+                      }
+                    >
+                      <div
+                        className="asset-watch-heading"
+                        style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 10px", marginBottom: 4 }}
+                        title={`${String(a.series_ticker || "")} · engine scans this series only if enabled in Settings.`}
+                      >
+                        <strong title="Display label for this asset.">{a.label || id}</strong>
+                        <span style={{ color: "var(--muted)" }}>·</span>
+                        <code title="Kalshi series ticker for open markets.">{a.series_ticker}</code>
+                        {a.enabled === false ? (
+                          <span
+                            className="sub"
+                            style={{ fontSize: 11, color: "#ffc878" }}
+                            title="Disabled in config — set assets.{id}.enabled true via PUT /api/config or edit backend bot_config JSON."
+                          >
+                            (engine off for this series)
+                          </span>
+                        ) : null}
+                        {hasExposureTab ? (
+                          <span
+                            className="asset-watch-exposure-badge"
+                            title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
+                          >
+                            Open ({dashboardLabLetterTabLabel(assetWatchLab)}):{" "}
+                            {exposureLabelsTab.join(" · ")}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div
+                        className="sub"
+                        style={{
+                          marginLeft: 28,
+                          marginTop: 6,
+                          fontSize: 12,
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        {assetWatchLab === "live" ? (
+                          <EngineAssetSnapBlock
+                            label="Live"
+                            snap={engineSnapsLive[id]}
+                            lastTick={dash?.engine?.live?.last_tick_at}
+                            engineOn={Boolean(cfg.engine_running)}
+                          />
+                        ) : assetWatchLab === "a" ? (
+                          labABranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab A"
+                              snap={engineSnapsLabA[id]}
+                              lastTick={engineLabA?.last_tick_at}
+                              engineOn={labABranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab A on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab A</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : assetWatchLab === "b" ? (
+                          labBBranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab B"
+                              snap={engineSnapsLabB[id]}
+                              lastTick={engineLabB?.last_tick_at}
+                              engineOn={labBBranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : assetWatchLab === "c" ? (
+                          labCBranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab C"
+                              snap={engineSnapsLabC[id]}
+                              lastTick={engineLabC?.last_tick_at}
+                              engineOn={labCBranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : assetWatchLab === "d" ? (
+                          labDBranchEngineOn ? (
+                            <EngineAssetSnapBlock
+                              label="Sim · Lab D"
+                              snap={engineSnapsLabD[id]}
+                              lastTick={engineLabD?.last_tick_at}
+                              engineOn={labDBranchEngineOn}
+                            />
+                          ) : (
+                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab D on in the toolbar to populate lab snapshots.">
+                              <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
+                            </div>
+                          )
+                        ) : labEBranchEngineOn ? (
+                          <EngineAssetSnapBlock
+                            label="Sim · Lab E"
+                            snap={engineSnapsLabE[id]}
+                            lastTick={engineLabE?.last_tick_at}
+                            engineOn={labEBranchEngineOn}
+                          />
+                        ) : (
+                          <div className="sub" style={{ fontSize: 12 }} title="Turn Lab E on in Settings to populate lab snapshots.">
+                            <strong>Sim · Lab E</strong> — engine off (no snapshot for this series).
+                          </div>
+                        )}
+                        <OpenExposureLinesForWatch
+                          rows={openRowsTab}
+                          headlineSnap={headlineSnap}
+                          seriesTicker={String(a.series_ticker || "")}
+                        />
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          )}
+          </div>
+
+        </div>
+
+        <div className="dash-main-4grid__rail">
+        <div className="dash-split-card dash-equity-panel">
           <div className="dash-panel-head">
             <h2
               id="dash-heading-equity-curves"
@@ -6366,329 +6724,9 @@ export default function App() {
             </div>
           </div>
         </div>
-
-        <div className="panel dashboard-grid-panel dashboard-grid-panel--assets">
-          <div className="dashboard-grid-panel__head">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%" }}>
-              <h2
-                id="dash-heading-assets"
-                className="dash-section__title dashboard-grid-panel__title"
-                title="Snapshots per series (BTC first, ETH second, then A-Z). Which series the engine scans is controlled by each asset's enabled flag in bot config."
-              >
-                Assets to watch
-              </h2>
-              <button
-                type="button"
-                className="primary dash-panel-btn"
-                title={
-                  "Per-asset engine snapshot cards: Live vs Lab A–E select which branch’s last tick view you read; config is unchanged. " +
-                  "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
-                  "window, target, and open-sim hints. If “No snapshot”, the engine may be off, the series has no active 15m row yet, " +
-                  "or Kalshi returned no book. On sandbox/draft hosts, TBD or 0.00 bid/ask often means missing books, not a bug in your " +
-                  "rules. Enable/disable assets in Settings; this panel is read-only telemetry."
-                }
-                onClick={() =>
-                  setInfoPopup({
-                    title: "Assets to watch",
-                    body: (
-                      <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
-                        <p>
-                          <strong>Purpose.</strong> This grid is a <em>telemetry heat map</em> of what the engine last knew about each
-                          configured asset (BTC, ETH, …) for a <em>single branch at a time</em> (Live, Lab A, Lab B, Lab C, Lab D). It
-                          answers: “Is there a current 15-minute (or configured) market row? What were the mids or implieds? Are we
-                          blocked from new entries in this series because of an open sim?” It does <strong>not</strong> edit rules;
-                          it reflects the product of config + engine + Kalshi feed.
-                        </p>
-                        <p>
-                          <strong>Branch tabs vs config.</strong> Switching Live / Lab A / Lab B / Lab C / Lab D only swaps which
-                          branch’s <code>asset_snapshots</code> (or equivalent) object the UI reads from the dashboard payload. Your
-                          SQLite config and environment files are untouched. If two branches show different numbers, that is expected:
-                          they may have different paper positions, different rule packs, or different last-tick times.
-                        </p>
-                        <p>
-                          <strong>Which assets appear.</strong> Only assets present in bot config with reasonable keys are listed. Order
-                          is stable (for example headline crypto first, then alphabetical). If you add a new asset in Settings, you may
-                          need a save + engine tick before a card appears. An asset with <code>enabled: false</code> is typically omitted
-                          or shown as inactive—check Settings for the authoritative flag; the UI may still show a stub for visibility.
-                        </p>
-                        <p>
-                          <strong>“No snapshot” and empty fields.</strong> Common causes: branch engine toggled off for that run; Kalshi
-                          API rate limit or outage; no market row in the series for the current clock; first tick after startup not
-                          completed yet. Distinguish “no data yet” from “data is zero”—read the Engine section under Account for{" "}
-                          <code>last_tick_at</code> and error strings. If <code>last_tick</code> is fresh but the card is empty, the
-                          series might not have a tradable row in this environment.
-                        </p>
-                        <p>
-                          <strong>Non-production and draft Kalshi hosts.</strong> Sandbox and internal hosts often show{" "}
-                          <code>Target price: TBD</code>, <code>0.00</code> bid/ask, or obviously stale books for many 15m contracts. That
-                          is a feed limitation, not your filter string. Do not tune rules against those numbers; use production-like
-                          markets or verify on the official site. The yellow “non-production feed” banner (if present) calls this out.
-                        </p>
-                        <p>
-                          <strong>How this ties to trades and skips.</strong> If a card shows an open sim or a series lock, cross-check
-                          Activity log and “Bets not traded” for <code>series_has_open_sim</code> or similar. If implieds look
-                          nonsensical (e.g. 0% or 100% with no book), the engine may still skip entries for safety. Use Optimizer Lab
-                          pulse for the same tick’s narrative; use Branch performance for money impact, not this panel.
-                        </p>
-                        <p>
-                          <strong>Operational checklist.</strong> (1) Confirm each engine is on for the branch you are reading. (2) Confirm
-                          each asset you care about is enabled. (3) If only one branch is stale, restart or inspect that branch’s engine
-                          state in the dashboard JSON. (4) If all branches are stale, the backend or Kalshi connectivity is the prime
-                          suspect before you change strategy.
-                        </p>
-                      </div>
-                    ),
-                  })
-                }
-              >
-                Info
-              </button>
-            </div>
-            <div
-              className="chart-tabs dashboard-grid-panel__tabs"
-              role="tablist"
-              aria-label="Asset snapshot branch"
-              style={{ width: "100%" }}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "live"}
-                className={`chart-tab ${assetWatchLab === "live" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for the Live branch."
-                onClick={() => setAssetWatchLab("live")}
-              >
-                Live
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "a"}
-                className={`chart-tab ${assetWatchLab === "a" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab A (same branch as legacy sim_lab in SQLite)."
-                onClick={() => setAssetWatchLab("a")}
-              >
-                Lab A
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "b"}
-                className={`chart-tab ${assetWatchLab === "b" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab B (conservative reference)."
-                onClick={() => setAssetWatchLab("b")}
-              >
-                Lab B
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "c"}
-                className={`chart-tab ${assetWatchLab === "c" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab C (aggressive reference)."
-                onClick={() => setAssetWatchLab("c")}
-              >
-                Lab C
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "d"}
-                className={`chart-tab ${assetWatchLab === "d" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab D."
-                onClick={() => setAssetWatchLab("d")}
-              >
-                Lab D
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "e"}
-                className={`chart-tab ${assetWatchLab === "e" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab E."
-                onClick={() => setAssetWatchLab("e")}
-              >
-                Lab E
-              </button>
-            </div>
-          </div>
-          <div className="dashboard-grid-panel__body dashboard-grid-panel__body--assets">
-          {kalshiIsNonProd(kalshi?.env) ? (
-            <div className="sub" style={{ marginBottom: 8, fontSize: 12 }} title="Non-production feed detected. Use Info for full notes.">
-              Non-production host detected: <code>{String(kalshi?.env || "—")}</code>.
-            </div>
-          ) : null}
-          {Object.keys(assets).length === 0 ? (
-            <div className="sub" title="Add assets under Settings → JSON or defaults in backend config.">
-              No assets configured.
-            </div>
-          ) : (
-            <div className="asset-watch-scroll">
-              {(() => {
-                const entries = orderedAssetEntries(assets as AnyObj);
-                const enriched = entries.map(([id, a], idx) => {
-                  const posRow = (acctSnap?.position_by_asset as AnyObj | undefined)?.[id] as AnyObj | undefined;
-                  const openRowsTab = dedupeAssetWatchOpenRowsByTicker(assetWatchOpenRowsForTab(posRow, assetWatchLab));
-                  const headlineSnap =
-                    assetWatchLab === "live"
-                      ? (engineSnapsLive[id] as AnyObj | undefined)
-                      : assetWatchLab === "a"
-                        ? (engineSnapsLabA[id] as AnyObj | undefined)
-                        : assetWatchLab === "b"
-                          ? (engineSnapsLabB[id] as AnyObj | undefined)
-                          : assetWatchLab === "c"
-                            ? (engineSnapsLabC[id] as AnyObj | undefined)
-                            : assetWatchLab === "d"
-                              ? (engineSnapsLabD[id] as AnyObj | undefined)
-                              : (engineSnapsLabE[id] as AnyObj | undefined);
-                  const implied = Number(headlineSnap?.implied_prob);
-                  const impliedMove = Number.isFinite(implied) ? Math.abs(implied - 0.5) : 0;
-                  const rulesCount = Array.isArray(headlineSnap?.rules_matched) ? headlineSnap.rules_matched.length : 0;
-                  const movementScore = impliedMove + (rulesCount > 0 ? 0.15 : 0) + (headlineSnap?.has_orderbook ? 0.05 : 0);
-                  return { id, a, idx, posRow, openRowsTab, headlineSnap, hasExposureTab: openRowsTab.length > 0, movementScore };
-                });
-                enriched.sort((x, y) => {
-                  if (x.hasExposureTab !== y.hasExposureTab) return x.hasExposureTab ? -1 : 1;
-                  if (y.movementScore !== x.movementScore) return y.movementScore - x.movementScore;
-                  return x.idx - y.idx;
-                });
-                return enriched.map(({ id, a, posRow, openRowsTab, headlineSnap, hasExposureTab }) => {
-                  const exposureLabelsTab = exposureLabelsForAssetWatchTab(posRow, assetWatchLab);
-                  return (
-                    <div
-                      key={id}
-                      className={hasExposureTab ? "asset-watch-row asset-watch-row--invested" : "asset-watch-row"}
-                      title={
-                        hasExposureTab
-                          ? `Open exposure for the “${dashboardLabLetterTabLabel(assetWatchLab)}” tab: ${exposureLabelsTab.join(", ")}. Other branches may still be flat.`
-                          : `Asset ${id}: series ${String(a.series_ticker || "")}.`
-                      }
-                    >
-                      <div
-                        className="asset-watch-heading"
-                        style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px 10px", marginBottom: 4 }}
-                        title={`${String(a.series_ticker || "")} · engine scans this series only if enabled in Settings.`}
-                      >
-                        <strong title="Display label for this asset.">{a.label || id}</strong>
-                        <span style={{ color: "var(--muted)" }}>·</span>
-                        <code title="Kalshi series ticker for open markets.">{a.series_ticker}</code>
-                        {a.enabled === false ? (
-                          <span
-                            className="sub"
-                            style={{ fontSize: 11, color: "#ffc878" }}
-                            title="Disabled in config — set assets.{id}.enabled true via PUT /api/config or edit backend bot_config JSON."
-                          >
-                            (engine off for this series)
-                          </span>
-                        ) : null}
-                        {hasExposureTab ? (
-                          <span
-                            className="asset-watch-exposure-badge"
-                            title={`Open in this tab only: ${exposureLabelsTab.join(" · ")}.`}
-                          >
-                            Open ({dashboardLabLetterTabLabel(assetWatchLab)}):{" "}
-                            {exposureLabelsTab.join(" · ")}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div
-                        className="sub"
-                        style={{
-                          marginLeft: 28,
-                          marginTop: 6,
-                          fontSize: 12,
-                          lineHeight: 1.45,
-                        }}
-                      >
-                        {assetWatchLab === "live" ? (
-                          <EngineAssetSnapBlock
-                            label="Live"
-                            snap={engineSnapsLive[id]}
-                            lastTick={dash?.engine?.live?.last_tick_at}
-                            engineOn={Boolean(cfg.engine_running)}
-                          />
-                        ) : assetWatchLab === "a" ? (
-                          labABranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab A"
-                              snap={engineSnapsLabA[id]}
-                              lastTick={engineLabA?.last_tick_at}
-                              engineOn={labABranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab A on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab A</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
-                        ) : assetWatchLab === "b" ? (
-                          labBBranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab B"
-                              snap={engineSnapsLabB[id]}
-                              lastTick={engineLabB?.last_tick_at}
-                              engineOn={labBBranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
-                        ) : assetWatchLab === "c" ? (
-                          labCBranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab C"
-                              snap={engineSnapsLabC[id]}
-                              lastTick={engineLabC?.last_tick_at}
-                              engineOn={labCBranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
-                        ) : assetWatchLab === "d" ? (
-                          labDBranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab D"
-                              snap={engineSnapsLabD[id]}
-                              lastTick={engineLabD?.last_tick_at}
-                              engineOn={labDBranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab D on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
-                        ) : labEBranchEngineOn ? (
-                          <EngineAssetSnapBlock
-                            label="Sim · Lab E"
-                            snap={engineSnapsLabE[id]}
-                            lastTick={engineLabE?.last_tick_at}
-                            engineOn={labEBranchEngineOn}
-                          />
-                        ) : (
-                          <div className="sub" style={{ fontSize: 12 }} title="Turn Lab E on in Settings to populate lab snapshots.">
-                            <strong>Sim · Lab E</strong> — engine off (no snapshot for this series).
-                          </div>
-                        )}
-                        <OpenExposureLinesForWatch
-                          rows={openRowsTab}
-                          headlineSnap={headlineSnap}
-                          seriesTicker={String(a.series_ticker || "")}
-                        />
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-          )}
-          </div>
-
-        </div>
-
         <div className="panel dashboard-grid-panel dashboard-grid-panel--account">
           <div className="dashboard-grid-panel__head">
+            <div className="dashboard-grid-panel__head-row">
             <h2
               id="dash-heading-account"
               className="dash-section__title dashboard-grid-panel__title"
@@ -6700,7 +6738,7 @@ export default function App() {
             >
               Account
             </h2>
-            <div className="dashboard-grid-panel__meta" aria-label="Kalshi link status" style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            <div className="dashboard-grid-panel__meta" aria-label="Kalshi link status">
               <span
                 className={`dashboard-grid-panel__badge${accountLinked ? " dashboard-grid-panel__badge--ok" : ""}`}
                 title={accountLinked ? "Signed portfolio reads enabled for this backend." : "No exchange credentials on this backend; public market data only."}
@@ -6785,8 +6823,30 @@ export default function App() {
                 Info
               </button>
             </div>
+            </div>
+            <div className="chart-tabs dashboard-grid-panel__tabs" role="tablist" aria-label="Account branch tabs" style={{ width: "100%" }}>
+            {[
+              { id: "live", label: "Live" },
+              { id: "a", label: "Lab A" },
+              { id: "b", label: "Lab B" },
+              { id: "c", label: "Lab C" },
+              { id: "d", label: "Lab D" },
+              { id: "e", label: "Lab E" },
+            ].map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={holdingsBranchTab === t.id}
+                className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
+                onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d" | "e")}
+              >
+                {t.label}
+              </button>
+            ))}
+            </div>
           </div>
-          <div className="dashboard-grid-panel__body dashboard-grid-panel__body--assets">
+          <div className="dashboard-grid-panel__body dashboard-grid-panel__body--account">
           {!remoteBal ? (
             <div
               className="sub"
@@ -6825,28 +6885,6 @@ export default function App() {
               ) : null}
             </div>
           )}
-
-          <div className="chart-tabs" role="tablist" aria-label="Account branch tabs" style={{ marginTop: 14, marginBottom: 8 }}>
-            {[
-              { id: "live", label: "Live" },
-              { id: "a", label: "Lab A" },
-              { id: "b", label: "Lab B" },
-              { id: "c", label: "Lab C" },
-              { id: "d", label: "Lab D" },
-              { id: "e", label: "Lab E" },
-            ].map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                role="tab"
-                aria-selected={holdingsBranchTab === t.id}
-                className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
-                onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d" | "e")}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
 
           <div className="account-section-box" style={{ marginTop: 8 }}>
             {acctSnap?.position_by_asset && Object.keys(acctSnap.position_by_asset).length > 0 ? (
@@ -7200,6 +7238,7 @@ export default function App() {
           </div>
         </div>
       </div>
+      </div>
 
       <SettingsOverlay
         open={settingsOpen}
@@ -7431,14 +7470,7 @@ export default function App() {
         </div>
       ) : null}
       <div className="app-bottom-marquee" aria-label="Live and lab branch tickers (persistent)">
-        <BranchHeroMarquee
-          dash={dash}
-          cfg={{
-            ...(cfg as AnyObj),
-            hero_marquee_speed_mult: heroMarqueeSpeedMult,
-          }}
-          showSnapshot={false}
-        />
+        <BranchHeroMarquee dash={dash} cfg={cfgWithHeroMarqueeSpeed} showSnapshot={false} />
       </div>
         </>
       ) : null}

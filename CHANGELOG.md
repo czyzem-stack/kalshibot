@@ -2,6 +2,10 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.018 - footer marquee smoothness - 2026-04-29
+
+- **Frontend (`App.tsx`, `styles.css`):** Branch active-trades ticker and Lab pulse marquee — **rAF-coalesced** `ResizeObserver`, **skip redundant** `needsScroll` updates, **tiered** `animation-duration` so dashboard polls do not restart the CSS animation on tiny text changes; **`translate3d`** keyframes, **`will-change`** only while scrolling, compositing hints and **`isolation`** on masked viewports to reduce flicker.
+
 ## v0.4.15.017 - series_open log gate tightened - 2026-04-29
 
 - **Backend (engines/engine.py):** series_has_open_sim dedupe key no longer includes matched rule/side (dedupe_key). It now gates by **window + branch + series**, preventing repeated INFO lines for the same blocked series in one window when different rules fire.

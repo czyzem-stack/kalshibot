@@ -700,6 +700,11 @@ export function BranchHeroMarquee({
   const speedMult = Number(cfg?.hero_marquee_speed_mult);
   const speedScale = Number.isFinite(speedMult) && speedMult > 0 ? Math.min(4, Math.max(0.35, speedMult)) : 1;
   const dur = useMemo(() => heroMarqueeDurationSec(combined) / speedScale, [combined, speedScale]);
+  /** One full loop (translate by one chunk width `w`) at the same px/s as the old RAF path — driven by CSS on the compositor. */
+  const loopSec = useMemo(
+    () => Math.max(3.8, dur) / (2.25 * HERO_MARQUEE_SCROLL_PACE),
+    [dur],
+  );
 
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
@@ -750,8 +755,15 @@ export function BranchHeroMarquee({
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const firstHalfRef = useRef<HTMLSpanElement | null>(null);
+  const trackInnerRef = useRef<HTMLDivElement | null>(null);
   const offsetRef = useRef(0);
   const velocityRef = useRef(0);
+  const halfWidthRef = useRef(0);
+  const loopSecRef = useRef(loopSec);
+  loopSecRef.current = loopSec;
+  const manualDragRef = useRef(false);
+  const throwActiveRef = useRef(false);
+  const throwRafRef = useRef(0);
   const dragRef = useRef<{ active: boolean; startX: number; startOffset: number; lastX: number; lastT: number }>({
     active: false,
     startX: 0,
@@ -759,10 +771,12 @@ export function BranchHeroMarquee({
     lastX: 0,
     lastT: 0,
   });
-  const rafRef = useRef<number>(0);
-  const [trackX, setTrackX] = useState(0);
   const [manualDrag, setManualDrag] = useState(false);
-  const [halfWidth, setHalfWidth] = useState(0);
+
+  const applyTrackTransform = useCallback((x: number) => {
+    const el = trackInnerRef.current;
+    if (el) el.style.transform = `translate3d(${x}px,0,0)`;
+  }, []);
 
   const normalizeOffset = useCallback((x: number, w: number): number => {
     if (w <= 0) return 0;
@@ -771,57 +785,106 @@ export function BranchHeroMarquee({
     return v;
   }, []);
 
+  const restartCssAutoplay = useCallback(() => {
+    const el = trackInnerRef.current;
+    const w = halfWidthRef.current;
+    if (!el || w <= 1) return;
+    if (manualDragRef.current || throwActiveRef.current) return;
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      el.style.animation = "none";
+      el.style.transform = "none";
+      return;
+    }
+    const loop = loopSecRef.current;
+    offsetRef.current = normalizeOffset(offsetRef.current, w);
+    const p = ((-offsetRef.current / w) % 1 + 1) % 1;
+    const delay = -p * loop;
+    el.style.transform = "";
+    el.style.animation = `branch-hero-css-drift ${loop}s linear ${delay}s infinite`;
+  }, [normalizeOffset]);
+
+  /* Omit `combined` from deps: listing it reconnected RO every dashboard poll. ResizeObserver still remeasures when width changes. */
   useLayoutEffect(() => {
     const vp = viewportRef.current;
     const half = firstHalfRef.current;
     if (!vp || !half) return;
     const measure = () => {
       const w = Math.max(1, half.scrollWidth);
-      setHalfWidth(w);
-      offsetRef.current = normalizeOffset(offsetRef.current, w);
-      setTrackX(offsetRef.current);
+      const el = trackInnerRef.current;
+      const prevW = halfWidthRef.current;
+      halfWidthRef.current = w;
+      if (w <= 1 || !el) return;
+
+      if (manualDragRef.current || throwActiveRef.current) {
+        offsetRef.current = normalizeOffset(offsetRef.current, w);
+        applyTrackTransform(offsetRef.current);
+        return;
+      }
+
+      if (prevW > 1 && el.style.animation && el.style.animation !== "none") {
+        try {
+          const t = getComputedStyle(el).transform;
+          if (t && t !== "none") {
+            offsetRef.current = normalizeOffset(new DOMMatrixReadOnly(t).m41, w);
+          } else {
+            offsetRef.current = normalizeOffset(offsetRef.current, w);
+          }
+        } catch {
+          offsetRef.current = normalizeOffset(offsetRef.current, w);
+        }
+      } else {
+        offsetRef.current = normalizeOffset(offsetRef.current, w);
+      }
+      restartCssAutoplay();
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(vp);
     ro.observe(half);
     return () => ro.disconnect();
-  }, [combined, normalizeOffset]);
+  }, [normalizeOffset, applyTrackTransform, restartCssAutoplay]);
+
+  useLayoutEffect(() => {
+    if (manualDragRef.current || throwActiveRef.current) return;
+    const el = trackInnerRef.current;
+    const w = halfWidthRef.current;
+    if (!el || w <= 1) return;
+    if (el.style.animation && el.style.animation !== "none") {
+      try {
+        const t = getComputedStyle(el).transform;
+        if (t && t !== "none") offsetRef.current = normalizeOffset(new DOMMatrixReadOnly(t).m41, w);
+      } catch {
+        /* keep offsetRef */
+      }
+    }
+    restartCssAutoplay();
+  }, [loopSec, normalizeOffset, restartCssAutoplay]);
 
   useEffect(() => {
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = Math.min(0.04, (now - last) / 1000);
-      last = now;
-      const w = halfWidth;
-      if (w > 1) {
-        let next = offsetRef.current;
-        if (!manualDrag) {
-          if (Math.abs(velocityRef.current) > 4) {
-            next += velocityRef.current * dt;
-            velocityRef.current *= Math.pow(0.92, dt * 60);
-          } else {
-            const pxPerSec = (w / Math.max(3.8, dur)) * 2.25 * HERO_MARQUEE_SCROLL_PACE;
-            next -= pxPerSec * dt;
-            velocityRef.current = 0;
-          }
-        }
-        next = normalizeOffset(next, w);
-        if (next !== offsetRef.current) {
-          offsetRef.current = next;
-          setTrackX(next);
-        }
-      }
-      rafRef.current = window.requestAnimationFrame(tick);
+    return () => {
+      if (throwRafRef.current) window.cancelAnimationFrame(throwRafRef.current);
     };
-    rafRef.current = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(rafRef.current);
-  }, [dur, halfWidth, manualDrag, normalizeOffset]);
+  }, []);
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
+    throwActiveRef.current = false;
+    if (throwRafRef.current) window.cancelAnimationFrame(throwRafRef.current);
+    manualDragRef.current = true;
     setManualDrag(true);
+    const track = trackInnerRef.current;
+    const w = Math.max(1, halfWidthRef.current);
+    if (track) {
+      try {
+        const t = getComputedStyle(track).transform;
+        if (t && t !== "none") offsetRef.current = normalizeOffset(new DOMMatrixReadOnly(t).m41, w);
+      } catch {
+        offsetRef.current = normalizeOffset(offsetRef.current, w);
+      }
+      track.style.animation = "none";
+      applyTrackTransform(offsetRef.current);
+    }
     dragRef.current = {
       active: true,
       startX: e.clientX,
@@ -837,8 +900,8 @@ export function BranchHeroMarquee({
     const now = performance.now();
     const dx = e.clientX - dragRef.current.startX;
     const next = dragRef.current.startOffset + dx;
-    offsetRef.current = normalizeOffset(next, Math.max(1, halfWidth));
-    setTrackX(offsetRef.current);
+    offsetRef.current = normalizeOffset(next, Math.max(1, halfWidthRef.current));
+    applyTrackTransform(offsetRef.current);
     const dtMs = Math.max(8, now - dragRef.current.lastT);
     velocityRef.current = ((e.clientX - dragRef.current.lastX) / dtMs) * 1000;
     dragRef.current.lastX = e.clientX;
@@ -847,7 +910,43 @@ export function BranchHeroMarquee({
 
   const onPointerEnd = () => {
     dragRef.current.active = false;
+    manualDragRef.current = false;
     setManualDrag(false);
+
+    const w = halfWidthRef.current;
+    const v = velocityRef.current;
+    if (w > 1 && Math.abs(v) > 4) {
+      throwActiveRef.current = true;
+      let last = performance.now();
+      const step = (now: number) => {
+        if (!throwActiveRef.current) return;
+        const dt = Math.min(0.04, (now - last) / 1000);
+        last = now;
+        const ww = halfWidthRef.current;
+        if (ww <= 1) {
+          throwActiveRef.current = false;
+          velocityRef.current = 0;
+          restartCssAutoplay();
+          return;
+        }
+        let next = offsetRef.current + velocityRef.current * dt;
+        velocityRef.current *= Math.pow(0.92, dt * 60);
+        next = normalizeOffset(next, ww);
+        offsetRef.current = next;
+        applyTrackTransform(next);
+        if (Math.abs(velocityRef.current) < 4) {
+          throwActiveRef.current = false;
+          velocityRef.current = 0;
+          restartCssAutoplay();
+          return;
+        }
+        throwRafRef.current = window.requestAnimationFrame(step);
+      };
+      throwRafRef.current = window.requestAnimationFrame(step);
+    } else {
+      velocityRef.current = 0;
+      restartCssAutoplay();
+    }
   };
 
   const renderHalf = (copy: "a" | "b") => (
@@ -879,7 +978,7 @@ export function BranchHeroMarquee({
           onPointerUp={onPointerEnd}
           onPointerCancel={onPointerEnd}
         >
-          <div className="branch-ticker-track-inner branch-hero-marquee__track-inner" style={{ transform: `translateX(${trackX}px)` }}>
+          <div ref={trackInnerRef} className="branch-ticker-track-inner branch-hero-marquee__track-inner">
             {renderHalf("a")}
             {renderHalf("b")}
           </div>
