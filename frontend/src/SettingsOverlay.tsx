@@ -1,6 +1,6 @@
 // SETTINGS STREAMLINE — cleaned information architecture per user request
 // HELP CLEANUP — thorough & professional (tooltips, onboarding copy, Optimizer context).
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
@@ -51,6 +51,270 @@ function formatOptimizerTraceAt(iso: string): string {
   const ms = Date.parse(s);
   if (!Number.isFinite(ms)) return s;
   return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+type BreederLetter = "b" | "c" | "d" | "e";
+
+function optimizerBreederYesFloorKey(which: BreederLetter): string {
+  return `lab_${which}_yes_floor_pct`;
+}
+
+function BreederLabCard({
+  which,
+  title,
+  blurb,
+  lab,
+  cfg,
+  optimizerCfg,
+  busy,
+  engineOn,
+  onToggleEngine,
+  onApplyLabBranches,
+  onSaveOptimizerConfig,
+  onSavePatientStopLossLab,
+  onSaveLabRules,
+  onFetchBreederSmartDefaults,
+}: {
+  which: BreederLetter;
+  title: string;
+  blurb: string;
+  lab: AnyObj;
+  cfg: AnyObj;
+  optimizerCfg: AnyObj;
+  busy: boolean;
+  engineOn: boolean;
+  onToggleEngine: () => void | Promise<void>;
+  onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
+  onSaveOptimizerConfig: (patch: AnyObj) => void | Promise<void>;
+  onSavePatientStopLossLab: (patch: AnyObj) => void | Promise<void>;
+  onSaveLabRules: (rules: AnyObj[]) => void | Promise<void>;
+  onFetchBreederSmartDefaults: (labKey: string) => Promise<AnyObj>;
+}) {
+  const apiKey = labBranchToApiKey(which);
+  const p = `lab_${which}`;
+  const floorKey = optimizerBreederYesFloorKey(which);
+  const defFrac =
+    which === "b" ? 0.038 : which === "c" ? 0.155 : which === "d" ? 0.105 : 0.088;
+  const defWin = which === "b" ? 22 : which === "c" ? 8 : which === "d" ? 14 : 13;
+  const defNoBet = which === "b" ? 36 : which === "c" ? 21 : which === "d" ? 19 : 22;
+  const defFloor =
+    which === "b" ? 62 : which === "c" ? 41 : which === "d" ? 44 : 51;
+  const defPers =
+    which === "b" ? "conservative" : which === "c" ? "aggressive" : which === "d" ? "contrarian" : "adaptive";
+
+  const labPatchTimer = useRef<number | undefined>(undefined);
+  const scheduleLabPatch = useCallback(
+    (patch: AnyObj) => {
+      window.clearTimeout(labPatchTimer.current);
+      labPatchTimer.current = window.setTimeout(() => {
+        void onApplyLabBranches({ reset_data: "none", [apiKey]: patch });
+      }, 340);
+    },
+    [apiKey, onApplyLabBranches],
+  );
+
+  const optTimer = useRef<number | undefined>(undefined);
+  const scheduleOptimizer = useCallback(
+    (patch: AnyObj) => {
+      window.clearTimeout(optTimer.current);
+      optTimer.current = window.setTimeout(() => {
+        void onSaveOptimizerConfig(patch);
+      }, 340);
+    },
+    [onSaveOptimizerConfig],
+  );
+
+  const defaultPersonality = String(lab?.breeder_personality || "").trim() || defPers;
+
+  return (
+    <div
+      className="panel settings-nested-panel breeder-lab-card"
+      style={{
+        padding: "12px 14px",
+        border: "1px solid rgba(90, 110, 160, 0.35)",
+        background: "rgba(14, 18, 32, 0.42)",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14 }}>{title}</h3>
+          <p className="sub" style={{ margin: "6px 0 0", fontSize: 11, lineHeight: 1.45 }}>
+            {blurb}
+          </p>
+        </div>
+        <button
+          type="button"
+          className={engineOn ? "primary" : undefined}
+          style={{ fontSize: 11, padding: "6px 10px", whiteSpace: "nowrap" }}
+          disabled={busy}
+          title="Toggle this lab paper engine (persists engine_running)."
+          onClick={() => void onToggleEngine()}
+        >
+          Engine {engineOn ? "on" : "off"}
+        </button>
+      </div>
+
+      <div className="field" style={{ marginTop: 10 }} title="Scales Think Tank + council signal impact on breeder rule matching (0 = ignore council tilt).">
+        <label htmlFor={`${p}_council_weight`}>Council influence weight (0–100%)</label>
+        <input
+          id={`${p}_council_weight`}
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          disabled={busy}
+          defaultValue={String(Math.round(Number(lab?.council_influence_weight_pct ?? 100)))}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            scheduleLabPatch({ council_influence_weight_pct: v });
+          }}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor={`${p}_yes_floor`}>YES floor (% · optimizer gate)</label>
+        <input
+          id={`${p}_yes_floor`}
+          type="number"
+          min={35}
+          max={95}
+          disabled={busy}
+          defaultValue={String(Number(optimizerCfg?.[floorKey] ?? defFloor))}
+          onBlur={(e) => {
+            const n = Math.round(Number(e.target.value));
+            if (!Number.isFinite(n)) return;
+            scheduleOptimizer({ [floorKey]: Math.max(35, Math.min(95, n)) });
+          }}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor={`${p}_paper`}>Paper balance (cents)</label>
+        <input
+          id={`${p}_paper`}
+          type="number"
+          defaultValue={String(lab.paper_balance_cents ?? cfg.paper_balance_cents ?? 500000)}
+          disabled={busy}
+          onBlur={(e) => {
+            const n = Math.round(Number(String(e.target.value).replace(/,/g, "")));
+            if (!Number.isFinite(n) || n < 0) return;
+            scheduleLabPatch({ paper_balance_cents: n });
+          }}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor={`${p}_frac`}>Balance fraction per window</label>
+        <input
+          id={`${p}_frac`}
+          type="text"
+          defaultValue={String(lab.balance_fraction_per_window ?? defFrac)}
+          disabled={busy}
+          onBlur={(e) => {
+            const n = Number(String(e.target.value).trim());
+            if (!Number.isFinite(n) || n < 0.0001 || n > 1) return;
+            scheduleLabPatch({ balance_fraction_per_window: n });
+          }}
+        />
+      </div>
+      <div className="field">
+        <label htmlFor={`${p}_win`}>Window (minutes)</label>
+        <input
+          id={`${p}_win`}
+          type="number"
+          defaultValue={String(lab.window_minutes ?? defWin)}
+          disabled={busy}
+          onBlur={(e) => {
+            const n = Math.round(Number(e.target.value));
+            if (!Number.isFinite(n) || n < 1 || n > 1440) return;
+            scheduleLabPatch({ window_minutes: n });
+          }}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor={`${p}_no_bet`}>Skip YES bets when implied YES below (%)</label>
+        <input
+          id={`${p}_no_bet`}
+          type="number"
+          min={0}
+          max={99}
+          disabled={busy}
+          defaultValue={String(lab.no_bet_when_yes_below_pct ?? defNoBet)}
+          onBlur={(e) => {
+            const n = Math.round(Number(e.target.value));
+            if (!Number.isFinite(n)) return;
+            scheduleLabPatch({ no_bet_when_yes_below_pct: Math.max(0, Math.min(99, n)) });
+          }}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor={`${p}_personality`}>Breeder personality (engine drift + council)</label>
+        <select
+          id={`${p}_personality`}
+          disabled={busy}
+          defaultValue={defaultPersonality}
+          onChange={(e) => scheduleLabPatch({ breeder_personality: String(e.target.value) })}
+        >
+          <option value="conservative">Conservative (ultra-tight)</option>
+          <option value="aggressive">Aggressive</option>
+          <option value="contrarian">Contrarian</option>
+          <option value="adaptive">Adaptive</option>
+        </select>
+      </div>
+
+      <PatientStopLossPanel
+        title={`Lab ${which.toUpperCase()} · patient stop`}
+        busy={busy}
+        enable={Boolean(lab.enable_patient_stop_loss ?? true)}
+        triggerPct={Number(
+          lab.stop_loss_trigger_pct ?? (which === "b" ? -8 : which === "c" ? -12 : which === "d" ? -7 : -8.5),
+        )}
+        minHold={Number(
+          lab.min_hold_minutes_before_stop ?? (which === "b" ? 30 : which === "c" ? 60 : which === "d" ? 25 : 28),
+        )}
+        onSave={(patch) => void onSavePatientStopLossLab(patch)}
+      />
+
+      <RulesBandsSliders
+        key={`breeder-${which}-yes-${Array.isArray(lab.rules) ? lab.rules.length : 0}-${(cfg.rules || []).length}`}
+        rules={Array.isArray(lab.rules) && lab.rules.length ? lab.rules : cfg.rules ?? EMPTY_RULES_LIST}
+        disabled={busy}
+        onSave={(r) => void onSaveLabRules(r)}
+      />
+      <NoBandsSliders
+        key={`breeder-${which}-no-${Array.isArray(lab.rules) ? lab.rules.length : 0}-${(cfg.rules || []).length}`}
+        rules={Array.isArray(lab.rules) && lab.rules.length ? lab.rules : cfg.rules ?? EMPTY_RULES_LIST}
+        disabled={busy}
+        onSave={(r) => void onSaveLabRules(r)}
+      />
+
+      <button
+        type="button"
+        disabled={busy}
+        title="Restore distinct fallback rules + sizing/council defaults from the server template."
+        onClick={() =>
+          void (async () => {
+            try {
+              const snap = await onFetchBreederSmartDefaults(apiKey);
+              const lp = snap?.lab_patch;
+              const op = snap?.optimizer_patch;
+              if (lp && typeof lp === "object") {
+                await onApplyLabBranches({ reset_data: "none", [apiKey]: lp });
+              }
+              if (op && typeof op === "object" && Object.keys(op).length) {
+                await onSaveOptimizerConfig(op);
+              }
+            } catch (e: any) {
+              window.alert(String(e?.message || e || "Reset failed"));
+            }
+          })()
+        }
+      >
+        Reset to smart defaults ({which.toUpperCase()})
+      </button>
+    </div>
+  );
 }
 
 function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: AnyObj; cfg: AnyObj; busy: boolean }) {
@@ -238,6 +502,8 @@ export type SettingsOverlayProps = {
   ) => void | Promise<void>;
   /** Direct ``PUT /api/config/lab-branches`` (merge + optional branch data reset); independent of optimizer. */
   onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
+  /** GET ``/api/config/breeder-smart-defaults/{lab_b..lab_e}`` for Reset to Smart Defaults. */
+  onFetchBreederSmartDefaults?: (labKey: string) => Promise<AnyObj>;
   /** Paper lab engine toggles + shared bankroll bump (same actions as the former hero rail). */
   liveEngineOn: boolean;
   onToggleLive: () => void | Promise<void>;
@@ -304,6 +570,7 @@ export default function SettingsOverlay({
   onDiversifyLabsNow,
   onResetTradingData,
   onApplyLabBranches,
+  onFetchBreederSmartDefaults,
   liveEngineOn,
   onToggleLive,
   labEngineAOn,
@@ -408,29 +675,6 @@ export default function SettingsOverlay({
     const avgTrend = scores.length >= 2 ? (scores[scores.length - 1] - scores[0]) / Math.max(1, scores.length - 1) : 0;
     return { cycles: n, accepted, rate: (accepted * 100) / n, lastScore, avgTrend };
   }, [optimizerTraceRows]);
-
-  const activeLabObj =
-    activeLab === "a" ? labA : activeLab === "b" ? labB : activeLab === "c" ? labC : activeLab === "d" ? labD : labE;
-  const saveActiveLabRules =
-    activeLab === "a"
-      ? onSaveLabARules
-      : activeLab === "b"
-        ? onSaveLabBRules
-        : activeLab === "c"
-          ? onSaveLabCRules
-          : activeLab === "d"
-            ? onSaveLabDRules
-            : onSaveLabERules;
-  const saveActiveLabSliders =
-    activeLab === "a"
-      ? onSaveLabAFromSliders
-      : activeLab === "b"
-        ? onSaveLabBFromSliders
-        : activeLab === "c"
-          ? onSaveLabCFromSliders
-          : activeLab === "d"
-            ? onSaveLabDFromSliders
-            : onSaveLabEFromSliders;
 
   if (!open) return null;
 
@@ -874,6 +1118,115 @@ export default function SettingsOverlay({
               <strong>Save all labs</strong>, <strong>Mass apply</strong> (engines, sizing, patient stop, auto-reset), or per-lab saves. The{" "}
               <strong>Reset Live + all labs</strong> panel below wipes <strong>Live + A–E</strong> sim history in SQLite; per-lab saves alone do not delete history.
             </p>
+            {showLabsBranchPanel ? (
+              <>
+                <h3
+                  className="section-tip"
+                  style={{ margin: "14px 0 6px 0", fontSize: 13, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--muted)" }}
+                >
+                  Breeder labs (B–E)
+                </h3>
+                <p className="sub" style={{ marginTop: 0, marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
+                  Council influence, sizing, optimizer YES floor, and distinct rule templates per lab. Edits save to SQLite after a short pause; rule sliders use each section&apos;s Save buttons.
+                </p>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))",
+                    gap: 12,
+                  }}
+                >
+                  <BreederLabCard
+                    key={`bl-b-${String(labB?.council_influence_weight_pct ?? "")}-${String(labB?.breeder_personality ?? "")}-${String(labB?.paper_balance_cents ?? "")}`}
+                    which="b"
+                    title="Lab B — conservative"
+                    blurb="Tight risk, lower council coupling, explicit fade-vs-crowd NO lane."
+                    lab={labB}
+                    cfg={cfg}
+                    optimizerCfg={optimizerCfg}
+                    busy={busy}
+                    engineOn={labEngineBOn}
+                    onToggleEngine={onToggleLabB}
+                    onApplyLabBranches={onApplyLabBranches}
+                    onSaveOptimizerConfig={onSaveOptimizerConfig}
+                    onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("b", patch)}
+                    onSaveLabRules={onSaveLabBRules}
+                    onFetchBreederSmartDefaults={
+                      onFetchBreederSmartDefaults ??
+                      (async () => {
+                        throw new Error("Breeder smart defaults are not available (missing fetch handler).");
+                      })
+                    }
+                  />
+                  <BreederLabCard
+                    key={`bl-c-${String(labC?.council_influence_weight_pct ?? "")}-${String(labC?.breeder_personality ?? "")}-${String(labC?.paper_balance_cents ?? "")}`}
+                    which="c"
+                    title="Lab C — aggressive"
+                    blurb="Large fractions, short window, wide YES bands + slam-NO when overheated."
+                    lab={labC}
+                    cfg={cfg}
+                    optimizerCfg={optimizerCfg}
+                    busy={busy}
+                    engineOn={labEngineCOn}
+                    onToggleEngine={onToggleLabC}
+                    onApplyLabBranches={onApplyLabBranches}
+                    onSaveOptimizerConfig={onSaveOptimizerConfig}
+                    onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("c", patch)}
+                    onSaveLabRules={onSaveLabCRules}
+                    onFetchBreederSmartDefaults={
+                      onFetchBreederSmartDefaults ??
+                      (async () => {
+                        throw new Error("Breeder smart defaults are not available (missing fetch handler).");
+                      })
+                    }
+                  />
+                  <BreederLabCard
+                    key={`bl-d-${String(labD?.council_influence_weight_pct ?? "")}-${String(labD?.breeder_personality ?? "")}-${String(labD?.paper_balance_cents ?? "")}`}
+                    which="d"
+                    title="Lab D — contrarian"
+                    blurb="NO-first lanes; engine actively fades crowded council consensus."
+                    lab={labD}
+                    cfg={cfg}
+                    optimizerCfg={optimizerCfg}
+                    busy={busy}
+                    engineOn={labEngineDOn}
+                    onToggleEngine={onToggleLabD}
+                    onApplyLabBranches={onApplyLabBranches}
+                    onSaveOptimizerConfig={onSaveOptimizerConfig}
+                    onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("d", patch)}
+                    onSaveLabRules={onSaveLabDRules}
+                    onFetchBreederSmartDefaults={
+                      onFetchBreederSmartDefaults ??
+                      (async () => {
+                        throw new Error("Breeder smart defaults are not available (missing fetch handler).");
+                      })
+                    }
+                  />
+                  <BreederLabCard
+                    key={`bl-e-${String(labE?.council_influence_weight_pct ?? "")}-${String(labE?.breeder_personality ?? "")}-${String(labE?.paper_balance_cents ?? "")}`}
+                    which="e"
+                    title="Lab E — adaptive"
+                    blurb="Balanced sizing with strong adaptive fade (dual NO lanes)."
+                    lab={labE}
+                    cfg={cfg}
+                    optimizerCfg={optimizerCfg}
+                    busy={busy}
+                    engineOn={labEngineEOn}
+                    onToggleEngine={onToggleLabE}
+                    onApplyLabBranches={onApplyLabBranches}
+                    onSaveOptimizerConfig={onSaveOptimizerConfig}
+                    onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("e", patch)}
+                    onSaveLabRules={onSaveLabERules}
+                    onFetchBreederSmartDefaults={
+                      onFetchBreederSmartDefaults ??
+                      (async () => {
+                        throw new Error("Breeder smart defaults are not available (missing fetch handler).");
+                      })
+                    }
+                  />
+                </div>
+              </>
+            ) : null}
             <div
               className="panel settings-nested-panel"
               style={{
@@ -972,10 +1325,12 @@ export default function SettingsOverlay({
             </div>
             <div className="row" style={{ marginTop: 12 }}>
               {activeLab === "a" ? <LabSizingInputs which="a" lab={labA} cfg={cfg} busy={busy} /> : null}
-              {activeLab === "b" ? <LabSizingInputs which="b" lab={labB} cfg={cfg} busy={busy} /> : null}
-              {activeLab === "c" ? <LabSizingInputs which="c" lab={labC} cfg={cfg} busy={busy} /> : null}
-              {activeLab === "d" ? <LabSizingInputs which="d" lab={labD} cfg={cfg} busy={busy} /> : null}
-              {activeLab === "e" ? <LabSizingInputs which="e" lab={labE} cfg={cfg} busy={busy} /> : null}
+              {activeLab === "b" || activeLab === "c" || activeLab === "d" || activeLab === "e" ? (
+                <p className="sub" style={{ margin: 0, fontSize: 12, lineHeight: 1.45 }}>
+                  Labs <strong>B–E</strong> sizing and council controls live in <strong>Breeder labs (B–E)</strong> above. Use this tab row for{" "}
+                  <strong>mass apply</strong> (active lab = <strong>Lab {activeLab.toUpperCase()}</strong>).
+                </p>
+              ) : null}
             </div>
             <div
               className="panel settings-nested-panel"
@@ -1322,17 +1677,17 @@ export default function SettingsOverlay({
           </div>
         ) : null}
 
-        {showLabsBranchPanel ? (
+        {showLabsBranchPanel && activeLab === "a" ? (
           <LabBranchPanel
-            branch={activeLab}
-            lab={activeLabObj}
+            branch="a"
+            lab={labA}
             cfg={cfg}
             busy={busy}
             onResetTradingData={onResetTradingData}
-            onSaveLabRules={saveActiveLabRules}
-            onSaveLabFromSliders={saveActiveLabSliders}
+            onSaveLabRules={onSaveLabARules}
+            onSaveLabFromSliders={onSaveLabAFromSliders}
             showPatientStop={false}
-            onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab(activeLab, patch)}
+            onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("a", patch)}
             style={{ marginTop: showLabSizingGrid ? 12 : 20 }}
           />
         ) : null}
@@ -1464,7 +1819,7 @@ export default function SettingsOverlay({
             </div>
             <div className="field">
               <label>Lab B YES floor (%)</label>
-              <input id="opt_lab_b_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_b_yes_floor_pct ?? 55)} />
+              <input id="opt_lab_b_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_b_yes_floor_pct ?? 62)} />
             </div>
             <div className="field">
               <label>Lab A min minutes-left floor</label>
@@ -1472,27 +1827,27 @@ export default function SettingsOverlay({
             </div>
             <div className="field">
               <label>Lab B min minutes-left floor</label>
-              <input id="opt_lab_b_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_b_min_minutes_left ?? 3)} />
+              <input id="opt_lab_b_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_b_min_minutes_left ?? 4)} />
             </div>
             <div className="field">
               <label>Lab C YES floor (%)</label>
-              <input id="opt_lab_c_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_c_yes_floor_pct ?? 52)} />
+              <input id="opt_lab_c_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_c_yes_floor_pct ?? 41)} />
             </div>
             <div className="field">
               <label>Lab C min minutes-left floor</label>
-              <input id="opt_lab_c_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_c_min_minutes_left ?? 3)} />
+              <input id="opt_lab_c_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_c_min_minutes_left ?? 2)} />
             </div>
             <div className="field">
               <label>Lab D YES floor (%)</label>
-              <input id="opt_lab_d_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_d_yes_floor_pct ?? 50)} />
+              <input id="opt_lab_d_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_d_yes_floor_pct ?? 44)} />
             </div>
             <div className="field">
               <label>Lab D min minutes-left floor</label>
-              <input id="opt_lab_d_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_d_min_minutes_left ?? 2)} />
+              <input id="opt_lab_d_min_minutes_left" type="number" min={0} max={30} defaultValue={String(optimizerCfg?.lab_d_min_minutes_left ?? 3)} />
             </div>
             <div className="field">
               <label>Lab E YES floor (%)</label>
-              <input id="opt_lab_e_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_e_yes_floor_pct ?? 53)} />
+              <input id="opt_lab_e_yes_floor_pct" type="number" min={45} max={95} defaultValue={String(optimizerCfg?.lab_e_yes_floor_pct ?? 51)} />
             </div>
             <div className="field">
               <label>Lab E min minutes-left floor</label>
@@ -1567,14 +1922,14 @@ export default function SettingsOverlay({
                   threshold_step_pct: Number((document.getElementById("opt_threshold_step_pct") as HTMLInputElement | null)?.value || 2),
                   minute_step: Number((document.getElementById("opt_minute_step") as HTMLInputElement | null)?.value || 2),
                   lab_a_yes_floor_pct: Number((document.getElementById("opt_lab_a_yes_floor_pct") as HTMLInputElement | null)?.value || 57),
-                  lab_b_yes_floor_pct: Number((document.getElementById("opt_lab_b_yes_floor_pct") as HTMLInputElement | null)?.value || 55),
+                  lab_b_yes_floor_pct: Number((document.getElementById("opt_lab_b_yes_floor_pct") as HTMLInputElement | null)?.value || 62),
                   lab_a_min_minutes_left: Number((document.getElementById("opt_lab_a_min_minutes_left") as HTMLInputElement | null)?.value || 5),
-                  lab_b_min_minutes_left: Number((document.getElementById("opt_lab_b_min_minutes_left") as HTMLInputElement | null)?.value || 3),
-                  lab_c_yes_floor_pct: Number((document.getElementById("opt_lab_c_yes_floor_pct") as HTMLInputElement | null)?.value || 52),
-                  lab_c_min_minutes_left: Number((document.getElementById("opt_lab_c_min_minutes_left") as HTMLInputElement | null)?.value || 3),
-                  lab_d_yes_floor_pct: Number((document.getElementById("opt_lab_d_yes_floor_pct") as HTMLInputElement | null)?.value || 50),
-                  lab_d_min_minutes_left: Number((document.getElementById("opt_lab_d_min_minutes_left") as HTMLInputElement | null)?.value || 2),
-                  lab_e_yes_floor_pct: Number((document.getElementById("opt_lab_e_yes_floor_pct") as HTMLInputElement | null)?.value || 53),
+                  lab_b_min_minutes_left: Number((document.getElementById("opt_lab_b_min_minutes_left") as HTMLInputElement | null)?.value || 4),
+                  lab_c_yes_floor_pct: Number((document.getElementById("opt_lab_c_yes_floor_pct") as HTMLInputElement | null)?.value || 41),
+                  lab_c_min_minutes_left: Number((document.getElementById("opt_lab_c_min_minutes_left") as HTMLInputElement | null)?.value || 2),
+                  lab_d_yes_floor_pct: Number((document.getElementById("opt_lab_d_yes_floor_pct") as HTMLInputElement | null)?.value || 44),
+                  lab_d_min_minutes_left: Number((document.getElementById("opt_lab_d_min_minutes_left") as HTMLInputElement | null)?.value || 3),
+                  lab_e_yes_floor_pct: Number((document.getElementById("opt_lab_e_yes_floor_pct") as HTMLInputElement | null)?.value || 51),
                   lab_e_min_minutes_left: Number((document.getElementById("opt_lab_e_min_minutes_left") as HTMLInputElement | null)?.value || 3),
                   min_trades_for_optimize: Number((document.getElementById("opt_min_trades_for_optimize") as HTMLInputElement | null)?.value || 8),
                   min_profitable_trades: Number((document.getElementById("opt_min_profitable_trades") as HTMLInputElement | null)?.value || 2),
@@ -1652,7 +2007,7 @@ export default function SettingsOverlay({
               </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
                 <strong>Force</strong> runs one Lab A internal mutation + replay gate. <strong>Diversify council</strong> sets{" "}
-                <code>labs_council_diversity_until</code> for 45m (cosmetic Think Tank lines only).
+                <code>labs_council_diversity_until</code> for 45m and applies a strong council signal pulse (Think Tank lines + engine council strength).
               </p>
             </div>
             <div style={{ marginTop: 20 }}>

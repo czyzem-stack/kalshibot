@@ -76,30 +76,97 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
 def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
     if lab_key == "lab_b":
+        # Ultra-tight risk + explicit counter-thesis NO lane (fade crowded YES).
         return [
-            {"name": "B tight mid YES", "min_prob": 0.52, "max_prob": 0.72, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
-            {"name": "B high conviction YES", "min_prob": 0.68, "max_prob": 0.92, "min_minutes_left": 2.0, "max_minutes_left": 14.0},
-            {"name": "B late NO", "side": "no", "min_prob": 0.48, "max_prob": 0.78, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
+            {"name": "B tight mid YES", "min_prob": 0.58, "max_prob": 0.74, "min_minutes_left": 4.0, "max_minutes_left": 14.0},
+            {"name": "B narrow high YES", "min_prob": 0.72, "max_prob": 0.88, "min_minutes_left": 3.0, "max_minutes_left": 11.0},
+            {"name": "B late scalp YES", "min_prob": 0.44, "max_prob": 0.62, "min_minutes_left": 1.0, "max_minutes_left": 8.0},
+            {
+                "name": "B counter-thesis: fade crowded YES",
+                "side": "no",
+                "min_prob": 0.55,
+                "max_prob": 0.82,
+                "min_minutes_left": 2.0,
+                "max_minutes_left": 16.0,
+            },
         ]
     if lab_key == "lab_c":
+        # Aggressive sizing tolerance — wide bands + slam-NO when YES overheated.
         return [
-            {"name": "C wide mid YES", "min_prob": 0.38, "max_prob": 0.78, "min_minutes_left": 1.0, "max_minutes_left": 22.0},
-            {"name": "C scalp YES", "min_prob": 0.32, "max_prob": 0.52, "min_minutes_left": 1.0, "max_minutes_left": 16.0},
-            {"name": "C NO fade", "side": "no", "min_prob": 0.42, "max_prob": 0.88, "min_minutes_left": 1.0, "max_minutes_left": 20.0},
+            {"name": "C wide rip YES", "min_prob": 0.28, "max_prob": 0.84, "min_minutes_left": 0.5, "max_minutes_left": 24.0},
+            {"name": "C momentum YES", "min_prob": 0.48, "max_prob": 0.92, "min_minutes_left": 1.0, "max_minutes_left": 18.0},
+            {"name": "C NO cannon", "side": "no", "min_prob": 0.52, "max_prob": 0.94, "min_minutes_left": 1.0, "max_minutes_left": 20.0},
+            {
+                "name": "C counter-thesis: slam NO on overheated YES",
+                "side": "no",
+                "min_prob": 0.38,
+                "max_prob": 0.72,
+                "min_minutes_left": 0.5,
+                "max_minutes_left": 22.0,
+            },
         ]
     if lab_key == "lab_d":
+        # Contrarian — bias to opposing YES consensus via NO-first lanes.
         return [
-            {"name": "D contrarian NO mid", "side": "no", "min_prob": 0.42, "max_prob": 0.62, "min_minutes_left": 1.5, "max_minutes_left": 18.0},
-            {"name": "D long-tail YES", "min_prob": 0.40, "max_prob": 0.90, "min_minutes_left": 1.0, "max_minutes_left": 24.0},
-            {"name": "D spike YES", "min_prob": 0.55, "max_prob": 0.95, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
+            {
+                "name": "D counter-thesis: oppose consensus YES",
+                "side": "no",
+                "min_prob": 0.36,
+                "max_prob": 0.68,
+                "min_minutes_left": 1.0,
+                "max_minutes_left": 22.0,
+            },
+            {"name": "D fade YES band", "side": "no", "min_prob": 0.48, "max_prob": 0.78, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
+            {"name": "D lone wolf YES", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 2.0, "max_minutes_left": 14.0},
+            {"name": "D chaos YES tail", "min_prob": 0.62, "max_prob": 0.96, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
         ]
     if lab_key == "lab_e":
+        # Blend + strong adaptive fade (dual NO lanes).
         return [
-            {"name": "E balanced mid YES", "min_prob": 0.44, "max_prob": 0.76, "min_minutes_left": 1.5, "max_minutes_left": 20.0},
-            {"name": "E tier YES", "min_prob": 0.56, "max_prob": 0.88, "min_minutes_left": 2.0, "max_minutes_left": 16.0},
-            {"name": "E NO hedge", "side": "no", "min_prob": 0.48, "max_prob": 0.82, "min_minutes_left": 1.5, "max_minutes_left": 18.0},
+            {"name": "E balanced core YES", "min_prob": 0.46, "max_prob": 0.78, "min_minutes_left": 2.0, "max_minutes_left": 19.0},
+            {"name": "E tier2 YES", "min_prob": 0.58, "max_prob": 0.90, "min_minutes_left": 2.5, "max_minutes_left": 15.0},
+            {"name": "E hedge NO", "side": "no", "min_prob": 0.50, "max_prob": 0.74, "min_minutes_left": 3.0, "max_minutes_left": 17.0},
+            {
+                "name": "E counter-thesis: adaptive fade",
+                "side": "no",
+                "min_prob": 0.44,
+                "max_prob": 0.86,
+                "min_minutes_left": 1.5,
+                "max_minutes_left": 21.0,
+            },
         ]
     return _breeder_loose_rules_fallback()
+
+
+def breeder_smart_defaults_snapshot(lab_key: str) -> dict[str, Any]:
+    """
+    Payload for **Reset to Smart Defaults** on breeder labs: fresh ``rules`` plus sizing/council keys from
+    :func:`default_bot_config`, and matching optimizer YES-floor / min-minutes keys.
+    """
+    lk = str(lab_key or "").strip().lower()
+    if lk not in _BREEDER_PARENT_LABS:
+        raise ValueError(f"unsupported breeder lab: {lab_key!r}")
+    full = default_bot_config()
+    lab_base = full.get(lk)
+    if not isinstance(lab_base, dict):
+        raise ValueError("default_bot_config missing lab block")
+    oc = full.get("optimizer") if isinstance(full.get("optimizer"), dict) else {}
+    floor_k = f"{lk}_yes_floor_pct"
+    mins_k = f"{lk}_min_minutes_left"
+    lab_patch: dict[str, Any] = {
+        "rules": _breeder_fallback_rules_for(lk),
+        "balance_fraction_per_window": lab_base.get("balance_fraction_per_window"),
+        "window_minutes": lab_base.get("window_minutes"),
+        "no_bet_when_yes_below_pct": lab_base.get("no_bet_when_yes_below_pct"),
+        "council_influence_weight_pct": lab_base.get("council_influence_weight_pct"),
+        "breeder_personality": lab_base.get("breeder_personality"),
+    }
+    optimizer_patch: dict[str, Any] = {}
+    if floor_k in oc:
+        optimizer_patch[floor_k] = oc[floor_k]
+    if mins_k in oc:
+        optimizer_patch[mins_k] = oc[mins_k]
+    return {"lab_key": lk, "lab_patch": lab_patch, "optimizer_patch": optimizer_patch}
 
 
 def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
@@ -331,7 +398,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab B: conservative paper reference (does not apply scheduled optimizer rule changes).
+        # Lab B: ultra-conservative breeder — tight fractions, high skip floor, lower council coupling.
         "lab_b": {
             "engine_running": True,
             "auto_optimize": False,
@@ -339,16 +406,18 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.0,
             "min_hold_minutes_before_stop": 30,
-            "balance_fraction_per_window": 0.055,
-            "window_minutes": 18,
-            "no_bet_when_yes_below_pct": 30,
+            "balance_fraction_per_window": 0.038,
+            "window_minutes": 22,
+            "no_bet_when_yes_below_pct": 36,
+            "council_influence_weight_pct": 78,
+            "breeder_personality": "conservative",
             "rules": _breeder_fallback_rules_for("lab_b"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab C: aggressive paper reference (does not apply scheduled optimizer rule changes).
+        # Lab C: aggressive breeder — large fractions, short window, wide rule bands.
         "lab_c": {
             "engine_running": True,
             "auto_optimize": False,
@@ -356,16 +425,18 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -12.0,
             "min_hold_minutes_before_stop": 60,
-            "balance_fraction_per_window": 0.11,
-            "window_minutes": 12,
-            "no_bet_when_yes_below_pct": 26,
+            "balance_fraction_per_window": 0.155,
+            "window_minutes": 8,
+            "no_bet_when_yes_below_pct": 21,
+            "council_influence_weight_pct": 100,
+            "breeder_personality": "aggressive",
             "rules": _breeder_fallback_rules_for("lab_c"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab D: wild reference branch; optimizer may use B/C momentum to influence Lab A sizing.
+        # Lab D: contrarian breeder — opposes consensus in-engine; moderate sizing, longer window.
         "lab_d": {
             "engine_running": True,
             "auto_optimize": False,
@@ -373,16 +444,18 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -7.0,
             "min_hold_minutes_before_stop": 25,
-            "balance_fraction_per_window": 0.13,
-            "window_minutes": 10,
-            "no_bet_when_yes_below_pct": 22,
+            "balance_fraction_per_window": 0.105,
+            "window_minutes": 14,
+            "no_bet_when_yes_below_pct": 19,
+            "council_influence_weight_pct": 92,
+            "breeder_personality": "contrarian",
             "rules": _breeder_fallback_rules_for("lab_d"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab E: balanced / adaptive breeder (Breeding Council).
+        # Lab E: adaptive blend + strong fade capability.
         "lab_e": {
             "engine_running": True,
             "auto_optimize": False,
@@ -390,9 +463,11 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.5,
             "min_hold_minutes_before_stop": 28,
-            "balance_fraction_per_window": 0.095,
-            "window_minutes": 11,
-            "no_bet_when_yes_below_pct": 24,
+            "balance_fraction_per_window": 0.088,
+            "window_minutes": 13,
+            "no_bet_when_yes_below_pct": 22,
+            "council_influence_weight_pct": 100,
+            "breeder_personality": "adaptive",
             "rules": _breeder_fallback_rules_for("lab_e"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
@@ -440,15 +515,15 @@ def default_bot_config() -> dict[str, Any]:
             "minute_step": 2,
             "max_history": 120,
             "lab_a_yes_floor_pct": 56,
-            "lab_b_yes_floor_pct": 58,
-            "lab_c_yes_floor_pct": 44,
-            "lab_d_yes_floor_pct": 46,
-            "lab_e_yes_floor_pct": 50,
+            "lab_b_yes_floor_pct": 62,
+            "lab_c_yes_floor_pct": 41,
+            "lab_d_yes_floor_pct": 44,
+            "lab_e_yes_floor_pct": 51,
             "lab_a_min_minutes_left": 5,
-            "lab_b_min_minutes_left": 2,
-            "lab_c_min_minutes_left": 3,
-            "lab_d_min_minutes_left": 2,
-            "lab_e_min_minutes_left": 2,
+            "lab_b_min_minutes_left": 4,
+            "lab_c_min_minutes_left": 2,
+            "lab_d_min_minutes_left": 3,
+            "lab_e_min_minutes_left": 3,
             "min_trades_for_optimize": 8,
             "min_profitable_trades": 2,
             "optimize_bet_size": True,

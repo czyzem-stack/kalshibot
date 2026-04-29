@@ -55,7 +55,7 @@ from .kalshi_portfolio import fetch_portfolio_snapshot
 from .lab_communication import get_lab_communication_bus, seed_think_tank_breeder_intros_at_startup
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
-from .persistence import expand_partial_lab_branch
+from .persistence import breeder_smart_defaults_snapshot, expand_partial_lab_branch
 from .optimizer.promotion import lab_a_promotion_report
 from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
 from .middleware import ApiBearerAuthMiddleware, SecurityHeadersMiddleware
@@ -1048,6 +1048,15 @@ async def put_config(
         history_audit_meta=paper_off_audit,
     )
     return merged
+
+
+@app.get("/api/config/breeder-smart-defaults/{lab_key}")
+async def get_breeder_smart_defaults(lab_key: str) -> dict[str, Any]:
+    """Rules + sizing/council defaults for breeder labs B–E (Settings → Reset to Smart Defaults)."""
+    try:
+        return breeder_smart_defaults_snapshot(lab_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.put("/api/config/lab-branches")

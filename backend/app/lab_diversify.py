@@ -132,7 +132,7 @@ async def apply_emergency_diversify(store: Any) -> dict[str, Any]:
             line = line[:69].rsplit(" ", 1)[0]
         bus.publish(br, line, kind="say", action="council_diversity_pulse")
 
-    refresh_engine_council_signal(bus, cfg)
+    refresh_engine_council_signal(bus, cfg, diversify_pulse=True)
 
     return {
         "ok": True,

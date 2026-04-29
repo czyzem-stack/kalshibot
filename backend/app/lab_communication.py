@@ -146,11 +146,17 @@ def peek_engine_council_signal(bus: LabCommunicationBus | None = None) -> dict[s
     return dict(sig)
 
 
-def refresh_engine_council_signal(bus: LabCommunicationBus, full_cfg: dict[str, Any] | None) -> None:
+def refresh_engine_council_signal(
+    bus: LabCommunicationBus,
+    full_cfg: dict[str, Any] | None,
+    *,
+    diversify_pulse: bool = False,
+) -> None:
     """
     Recompute ``_engine_council_signal`` from recent Think Tank lines + diversity window.
 
     Engines read this on the **next** tick (finalize runs after ``handle_market`` for the same branch).
+    ``diversify_pulse=True`` is used right after ``POST /labs/diversify`` so breeders feel a short, strong pulse.
     """
     bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
     div = council_diversity_pulse_active(full_cfg)
@@ -160,16 +166,21 @@ def refresh_engine_council_signal(bus: LabCommunicationBus, full_cfg: dict[str, 
         strength = max(strength, 0.55)
     if div:
         strength = max(strength, 0.48)
-    if tot == 0 and not div:
+    if diversify_pulse:
+        strength = max(strength, 0.91)
+        strength = min(1.0, strength * 1.35)
+    if tot == 0 and not div and not diversify_pulse:
         bus._engine_council_signal = None
         return
+    ttl = 420.0 if diversify_pulse else 120.0
     bus._engine_council_signal = {
         "bias": float(bias),
         "yes_ct": int(yes_h),
         "no_ct": int(no_h),
         "strength": float(min(1.0, strength)),
         "diversity": bool(div),
-        "expires_mono": time.monotonic() + 120.0,
+        "diversify_pulse": bool(diversify_pulse),
+        "expires_mono": time.monotonic() + ttl,
     }
 
 
@@ -1445,7 +1456,7 @@ def finalize_think_tank_tick(
         if _seconds_since_publish(engine) >= 10.0:
             _publish_tracked(engine, bus, branch, msg, confidence=0.62, action="breeding_whisper", reply_to=anchor_id)
 
-    refresh_engine_council_signal(bus, full_cfg)
+    refresh_engine_council_signal(bus, full_cfg, diversify_pulse=False)
 
 
 finalize_lab_chatter_tick = finalize_think_tank_tick

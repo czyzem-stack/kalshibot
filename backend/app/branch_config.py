@@ -102,6 +102,9 @@ LAB_BRANCH_OVERLAY_KEYS = (
     "paper_fee_bps",
     "paper_fee_model",
     "kalshi_fee_multiplier",
+    # Breeder council tuning (Labs B–E): merged onto branch cfg for engines + UI.
+    "council_influence_weight_pct",
+    "breeder_personality",
 )
 
 

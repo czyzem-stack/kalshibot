@@ -228,6 +228,10 @@ async function apiPut(path: string, body: AnyObj) {
   return await r.json();
 }
 
+async function fetchBreederSmartDefaults(labKey: string): Promise<AnyObj> {
+  return apiGet(`/api/config/breeder-smart-defaults/${encodeURIComponent(labKey)}`);
+}
+
 async function apiPutLabBranches(body: AnyObj): Promise<AnyObj> {
   const path = "/api/config/lab-branches";
   const r = await fetch(
@@ -3267,6 +3271,21 @@ function mergeTradeRowsForToastEffect(dashRows: unknown, pollRows: AnyObj[] | nu
   return Array.from(byKey.values());
 }
 
+/** Merge a single trade toast into the bottom-right stack (same cap/sort as batch merge). */
+function mergeOneTradeNotifIntoStack(prev: AnyObj[], n: AnyObj, dismissed: Set<string>): AnyObj[] {
+  const byId = new Map<string, AnyObj>();
+  for (const x of prev) {
+    const pid = String(x.id || "");
+    if (!pid || dismissed.has(pid)) continue;
+    byId.set(pid, x);
+  }
+  const nid = String(n.id || "");
+  if (nid && !dismissed.has(nid)) byId.set(nid, n);
+  const merged = Array.from(byId.values());
+  merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  return merged.slice(0, 28);
+}
+
 function tradeRowLooksResolved(t: AnyObj): boolean {
   const st = String(t?.status || "").trim().toLowerCase();
   if (
@@ -4447,10 +4466,52 @@ export default function App() {
 
   const TOAST_AUTOCLOSE_MIN_MS = 10_000;
   const TOAST_AUTOCLOSE_MAX_MS = 15_000;
+  /** Delay between successive trade open/settle cards so a burst of fills does not stack all at once. */
+  const TRADE_TOAST_STAGGER_MS = 520;
   /** ``optimizer_suggested_action`` toasts: always 10s (separate from trade toasts' random 10–15s). */
   const OPTIMIZER_SUGGESTED_TOAST_MS = 10_000;
   // LABS BREEDING — special toasts for birth and death/cull
   const LABS_BREEDING_TOAST_MS = 11_000;
+
+  /** FIFO queue + pump so trade toasts appear one-by-one with ``TRADE_TOAST_STAGGER_MS`` gaps. */
+  const tradeToastStaggerRef = useRef<{ queue: AnyObj[]; pumpTimer: number | null; processing: boolean }>({
+    queue: [],
+    pumpTimer: null,
+    processing: false,
+  });
+
+  const clearTradeToastStaggerQueue = useCallback(() => {
+    const s = tradeToastStaggerRef.current;
+    s.queue = [];
+    if (s.pumpTimer != null) {
+      window.clearTimeout(s.pumpTimer);
+      s.pumpTimer = null;
+    }
+    s.processing = false;
+  }, []);
+
+  const pumpTradeToastOnce = useCallback(() => {
+    const s = tradeToastStaggerRef.current;
+    if (s.processing) return;
+    const next = s.queue.shift();
+    if (!next) return;
+    s.processing = true;
+    setOptimizerNotifs((prev) => mergeOneTradeNotifIntoStack(prev, next, dismissedTradeToastIdsRef.current));
+    s.pumpTimer = window.setTimeout(() => {
+      s.processing = false;
+      s.pumpTimer = null;
+      if (s.queue.length > 0) pumpTradeToastOnce();
+    }, TRADE_TOAST_STAGGER_MS);
+  }, []);
+
+  const enqueueTradeToastBatch = useCallback(
+    (items: AnyObj[]) => {
+      if (!items.length) return;
+      tradeToastStaggerRef.current.queue.push(...items);
+      pumpTradeToastOnce();
+    },
+    [pumpTradeToastOnce],
+  );
 
   useEffect(() => {
     const activeIds = new Set<string>();
@@ -4486,8 +4547,9 @@ export default function App() {
         window.clearTimeout(tid);
       }
       toastAutoDismissTimeoutsRef.current.clear();
+      clearTradeToastStaggerQueue();
     };
-  }, []);
+  }, [clearTradeToastStaggerQueue]);
 
   useEffect(() => {
     const raw = (dash as AnyObj | null)?.trading_data_revision;
@@ -4500,6 +4562,7 @@ export default function App() {
     }
     if (rev <= lastTradeToastDataRevisionRef.current) return;
     lastTradeToastDataRevisionRef.current = rev;
+    clearTradeToastStaggerQueue();
     seenTradeInitRef.current.clear();
     seenTradeSettleRef.current.clear();
     tradeToastsBootstrappedRef.current = false;
@@ -4509,7 +4572,7 @@ export default function App() {
         return !id.startsWith("trade-initiated-") && !id.startsWith("trade-resolved-");
       }),
     );
-  }, [dash?.trading_data_revision]);
+  }, [dash?.trading_data_revision, clearTradeToastStaggerQueue]);
 
   /**
    * Bottom-right cards when a sim/live trade row first appears or settles.
@@ -4616,23 +4679,8 @@ export default function App() {
       }
     }
     if (!toAdd.length) return;
-    setOptimizerNotifs((prev) => {
-      const byId = new Map<string, AnyObj>();
-      for (const n of prev) {
-        const pid = String(n.id || "");
-        if (dismissedTradeToastIdsRef.current.has(pid)) continue;
-        byId.set(pid, n);
-      }
-      for (const n of toAdd) {
-        const nid = String(n.id || "");
-        if (dismissedTradeToastIdsRef.current.has(nid)) continue;
-        byId.set(nid, n);
-      }
-      const merged = Array.from(byId.values());
-      merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-      return merged.slice(0, 28);
-    });
-  }, [dash, toastTradeRows, tradePopupToastsEnabled]);
+    enqueueTradeToastBatch(toAdd);
+  }, [dash, toastTradeRows, tradePopupToastsEnabled, enqueueTradeToastBatch]);
 
   const optimizerChangeHistoryMerged = useMemo(() => {
     const oc = (cfg as AnyObj)?.optimizer;
@@ -4776,7 +4824,14 @@ export default function App() {
           if (!cancelled) setBreederStatusPayload(j);
         })
         .catch((e: unknown) => {
-          if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
+          if (!cancelled) {
+            const raw = e instanceof Error ? e.message : "Failed to load breeder data";
+            const hint =
+              /Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(raw)
+                ? " — API unreachable or /api not proxied: run the backend (default port 8765) and open the app via Vite dev/preview (localhost:5174), not the raw API URL alone."
+                : "";
+            setBreederStatusError(raw + hint);
+          }
         })
         .finally(() => {
           if (!cancelled) setBreederStatusLoading(false);
@@ -4811,7 +4866,14 @@ export default function App() {
           }
         })
         .catch((e: unknown) => {
-          if (!cancelled) setBreedingStripError(e instanceof Error ? e.message : "Breeding status failed");
+          if (!cancelled) {
+            const raw = e instanceof Error ? e.message : "Breeding status failed";
+            const hint =
+              /Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(raw)
+                ? " — Run the API on :8765; use the Vite app origin (e.g. localhost:5174) so /api proxies — vite preview now mirrors dev proxy."
+                : "";
+            setBreedingStripError(raw + hint);
+          }
         });
     };
     tick();
@@ -7491,6 +7553,7 @@ export default function App() {
         onDiversifyLabsNow={emergencyDiversifyNow}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
+        onFetchBreederSmartDefaults={fetchBreederSmartDefaults}
         liveEngineOn={liveBranchEngineOn}
         onToggleLive={() => void setRunning(!liveBranchEngineOn)}
         labEngineAOn={labABranchEngineOn}
