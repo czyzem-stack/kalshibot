@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   PolarAngleAxis,
@@ -3290,7 +3289,34 @@ function orderedAssetEntries(assetsObj: AnyObj | undefined): [string, AnyObj][] 
   });
 }
 
-type EquityGranularity = "intraday" | "dd" | "ww" | "mm" | "yy";
+type EquityGranularity = "intraday" | "hourly" | "dd" | "ww" | "mm" | "yy";
+
+/** Intraday = rolling wall-clock window (not “last N points”). Backend sends up to 2000 snapshots per branch. */
+const EQUITY_INTRADAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const EQUITY_INTRADAY_MAX_POINTS = 2500;
+
+/** Hourly = last snapshot per local clock hour (noise-reduced intraday). Rolling window below. */
+const EQUITY_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Shared by dashboard equity tabs and Compare overlay (same `equityGranularity` state). */
+const EQUITY_GRANULARITY_TAB_DEFS = [
+  ["intraday", "Intraday", "Rolling last 24 hours of snapshots (wall clock), dense ticks."],
+  ["hourly", "Hourly", "One point per local clock hour (latest snapshot in that hour), rolling 7 days."],
+  ["dd", "D / D", "Last snapshot per local calendar day (need multiple days of history for several points)."],
+  ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
+  ["mm", "M / M", "Last snapshot per UTC calendar month."],
+  ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
+] as const;
+
+function fmtEquityCompareXTick(v: unknown): string {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 3) return `${parts[1]} ${parts[2]}`;
+  if (parts.length === 2) return parts[1];
+  return s.length > 18 ? `${s.slice(0, 16)}…` : s;
+}
 
 type EquityChartRow = { t: string; tsMs: number; equity: number; mtm: number | null; synthetic?: boolean };
 
@@ -3365,12 +3391,46 @@ function buildEquityChartSeries(
   rows.sort((a, b) => a.ts - b.ts);
 
   if (mode === "intraday") {
-    return rows.slice(-400).map((r) => ({
+    const cutoff = Date.now() - EQUITY_INTRADAY_WINDOW_MS;
+    let windowed = rows.filter((r) => r.ts >= cutoff);
+    if (windowed.length > EQUITY_INTRADAY_MAX_POINTS) windowed = windowed.slice(-EQUITY_INTRADAY_MAX_POINTS);
+    return windowed.map((r) => ({
       t: fmtIsoLocalFn(r.at, false),
       tsMs: r.ts,
       equity: r.eq,
       mtm: r.mtm,
     }));
+  }
+
+  if (mode === "hourly") {
+    const cutoff = Date.now() - EQUITY_HOURLY_WINDOW_MS;
+    const filtered = rows.filter((r) => r.ts >= cutoff);
+    const localHourKey = (iso: string): string => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      const y = d.getFullYear();
+      const mo = d.getMonth();
+      const day = d.getDate();
+      const h = d.getHours();
+      return `${y}-${String(mo + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(h).padStart(2, "0")}`;
+    };
+    const hourBest = new Map<string, { ts: number; eq: number; mtm: number | null; sampleIso: string }>();
+    for (const r of filtered) {
+      const b = localHourKey(r.at);
+      if (!b) continue;
+      const cur = hourBest.get(b);
+      if (!cur || r.ts >= cur.ts) hourBest.set(b, { ts: r.ts, eq: r.eq, mtm: r.mtm, sampleIso: r.at });
+    }
+    const hourKeys = [...hourBest.keys()].sort();
+    return hourKeys.map((k) => {
+      const cell = hourBest.get(k)!;
+      return {
+        t: fmtIsoLocalFn(cell.sampleIso, false),
+        tsMs: cell.ts,
+        equity: cell.eq,
+        mtm: cell.mtm,
+      };
+    });
   }
 
   const bucketKey = (iso: string): string => {
@@ -3379,7 +3439,13 @@ function buildEquityChartSeries(
     const y = d.getUTCFullYear();
     const mo = d.getUTCMonth();
     const day = d.getUTCDate();
-    if (mode === "dd") return `${y}-${String(mo + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    /* Local calendar day: aligns D/D with labels and avoids UTC midnight splitting one session across two buckets. */
+    if (mode === "dd") {
+      const ly = d.getFullYear();
+      const lmo = d.getMonth();
+      const lday = d.getDate();
+      return `${ly}-${String(lmo + 1).padStart(2, "0")}-${String(lday).padStart(2, "0")}`;
+    }
     if (mode === "mm") return `${y}-${String(mo + 1).padStart(2, "0")}`;
     if (mode === "yy") return `${y}`;
     if (mode === "ww") return mondayUtcKey(iso);
@@ -6417,11 +6483,19 @@ export default function App() {
               <button
                 type="button"
                 className="primary dash-panel-btn"
+                title="Open combined comparison popup with branch toggles."
+                onClick={() => setEquityCompareOpen(true)}
+              >
+                Compare
+              </button>
+              <button
+                type="button"
+                className="primary dash-panel-btn"
                 title={
                   "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
-                  "Time-scale tabs re-bucket the same stored snapshots: Intraday = last 400 points in time order; D/W/M/Y = last snapshot " +
-                  "per calendar bucket (day/week start UTC/month/year). Use Compare to overlay branches in one frame. " +
+                  "Time-scale tabs re-bucket stored snapshots: Intraday = last 24h raw ticks; Hourly = last snapshot per local hour (rolling 7 days); D/W/M/Y = one point per calendar bucket. " +
+                  "Use Compare to overlay branches in one frame. " +
                   "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
                 }
                 onClick={() =>
@@ -6454,16 +6528,13 @@ export default function App() {
                           on every dashboard refresh so the tail tracks “right now” more closely than a sparse historical series.
                         </p>
                         <p>
-                          <strong>Time-scale tabs (Intraday, D, W, M, Y).</strong> All four labels apply to <em>all six</em> charts.{" "}
-                          <strong>Intraday</strong> plots raw snapshot order (up to the last 400 points) for responsive debugging. <strong>
-                            D / W / M / Y
-                          </strong>{" "}
-                          collapse to the last point in each UTC calendar day, week (Monday start), month, or year so you can de-noise. Labels on
-                          day view use the snapshot’s <em>local</em> calendar date, not a synthetic “end of day” you might expect from
-                          equities—this is a Kalshi 24/7 world clock.
+                          <strong>Time-scale tabs (Intraday, Hourly, D, W, M, Y).</strong> All apply to <em>all six</em> charts.{" "}
+                          <strong>Intraday</strong> is raw snapshots from roughly the <strong>last 24 hours</strong>. <strong>Hourly</strong> keeps one point per <strong>local clock hour</strong> (latest snapshot in that hour) over a <strong>rolling 7 days</strong> — smoother than Intraday when the engine writes many ticks per hour.{" "}
+                          <strong>D / D</strong> uses <strong>local calendar days</strong> (one point per day where you have data).{" "}
+                          <strong>W / M / Y</strong> still bucket by <strong>UTC</strong> week (Monday start), month, and year. Kalshi runs 24/7 — days are calendar buckets, not equity market sessions.
                         </p>
                         <p>
-                          <strong>Compare (separate button).</strong> That overlay puts multiple branch curves in one frame with toggles so you
+                          <strong>Compare</strong> (next to Info above). That overlay puts multiple branch curves in one frame with toggles so you
                           can eyeball <em>shape</em> and divergence, not to sum dollars (each bankroll differs). Use it when Optimizer
                           “Experiments” and these equity charts disagree on <em>direction</em>—one might be an indexed or shorter window, the
                           other raw dollars over long history.
@@ -6475,7 +6546,7 @@ export default function App() {
                           broken quotes. (4) Mismatch with Branch performance: performance tiles are one instant; these charts are
                           time-series—always compare the same branch tab and the same time window mentally. (5) Lab curves that{" "}
                           <em>look</em> like clones but sit at different dollar levels: each chart uses its own snapshot series and book
-                          rollups—check the line under each title (pts / book / settled). Use the <strong>%Δ</strong> tab to re-scale every
+                          rollups—check the line under each title (pts / book / settled). Use the <strong>$</strong>/<strong>%Δ</strong> toggle to re-scale every
                           chart as <em>% change from its first plotted point</em> so Lab B/C/D divergence is obvious when bankrolls differ.
                           Shared rules + the same market tape often produce very similar <em>dollar</em> shapes at different levels.
                         </p>
@@ -6496,15 +6567,7 @@ export default function App() {
           </div>
           <div className="dash-equity-controls-row">
             <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
-              {(
-                [
-                  ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
-                  ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
-                  ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
-                  ["mm", "M / M", "Last snapshot per UTC calendar month."],
-                  ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
-                ] as const
-              ).map(([id, label, tip]) => (
+              {EQUITY_GRANULARITY_TAB_DEFS.map(([id, label, tip]) => (
                 <button
                   key={id}
                   type="button"
@@ -6517,46 +6580,24 @@ export default function App() {
                   {label}
                 </button>
               ))}
+            </div>
+            <div className="dash-equity-panel__tabs dash-equity-panel__tabs--scale-wrap">
               <button
                 type="button"
-                className="chart-tab"
-                title="Open combined comparison popup with branch toggles."
-                onClick={() => setEquityCompareOpen(true)}
+                role="switch"
+                aria-checked={equityValueScale === "pct_change_window"}
+                className={`chart-tab dash-equity-scale-toggle ${equityValueScale === "pct_change_window" ? "chart-tab--active" : ""}`}
+                title={
+                  equityValueScale === "dollars"
+                    ? "$ — absolute dollars from SQLite snapshots (click for %Δ)."
+                    : "%Δ — change from first point in each chart’s window (click for $)."
+                }
+                onClick={() =>
+                  setEquityValueScale((s) => (s === "dollars" ? "pct_change_window" : "dollars"))
+                }
               >
-                Compare
+                {equityValueScale === "dollars" ? "$" : "%Δ"}
               </button>
-            </div>
-            <div
-              className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs dash-equity-panel__tabs--scale"
-              role="tablist"
-              aria-label="Equity Y-axis scale (all branch charts)"
-            >
-              {(
-                [
-                  [
-                    "dollars",
-                    "$",
-                    "Absolute dollars from SQLite snapshots. Labs A–E share one Y range so different bankroll levels and MTM swings are not each zoomed to full height (which made correlated moves look like clones).",
-                  ],
-                  [
-                    "pct_change_window",
-                    "%Δ",
-                    "% change from the first plotted point in this chart’s window — makes B/C/D/E divergence visible when bankrolls differ but moves are correlated.",
-                  ],
-                ] as const
-              ).map(([id, label, tip]) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={equityValueScale === id}
-                  className={`chart-tab ${equityValueScale === id ? "chart-tab--active" : ""}`}
-                  title={tip}
-                  onClick={() => setEquityValueScale(id)}
-                >
-                  {label}
-                </button>
-              ))}
             </div>
           </div>
           <div className="dash-equity-charts">
@@ -7319,25 +7360,46 @@ export default function App() {
                 Close
               </button>
             </div>
-            <div className="dash-equity-view-toggle" role="group" aria-label="Compare chart mode">
-              <button
-                type="button"
-                className={`chart-tab ${equityCompareMode === "blended" ? "chart-tab--active" : ""}`}
-                title="One blended line per branch: average of book and MTM."
-                onClick={() => setEquityCompareMode("blended")}
+            <div className="dash-equity-compare-toolbar">
+              <div
+                className="dash-equity-compare-toolbar__granularity chart-tabs dash-split-panel__tabs"
+                role="tablist"
+                aria-label="Compare chart time scale"
               >
-                Blended
-              </button>
-              <button
-                type="button"
-                className={`chart-tab ${equityCompareMode === "potential" ? "chart-tab--active" : ""}`}
-                title="Potential spread per branch: MTM minus book."
-                onClick={() => setEquityCompareMode("potential")}
-              >
-                Potential
-              </button>
+                {EQUITY_GRANULARITY_TAB_DEFS.map(([id, label, tip]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={equityGranularity === id}
+                    className={`chart-tab ${equityGranularity === id ? "chart-tab--active" : ""}`}
+                    title={tip}
+                    onClick={() => setEquityGranularity(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="dash-equity-compare-toolbar__modes" role="group" aria-label="Compare chart mode">
+                <button
+                  type="button"
+                  className={`chart-tab ${equityCompareMode === "blended" ? "chart-tab--active" : ""}`}
+                  title="One blended line per branch: average of book and MTM."
+                  onClick={() => setEquityCompareMode("blended")}
+                >
+                  Blended
+                </button>
+                <button
+                  type="button"
+                  className={`chart-tab ${equityCompareMode === "potential" ? "chart-tab--active" : ""}`}
+                  title="Potential spread per branch: MTM minus book."
+                  onClick={() => setEquityCompareMode("potential")}
+                >
+                  Potential
+                </button>
+              </div>
             </div>
-            <div className="dash-equity-overlay-controls" role="group" aria-label="Toggle branch overlays">
+            <div className="dash-equity-overlay-controls dash-equity-overlay-controls--compare" role="group" aria-label="Toggle branch overlays">
               {([
                 { key: "live", label: "Live", color: "#38bdf8" },
                 { key: "a", label: "Lab A", color: "#a78bfa" },
@@ -7372,90 +7434,103 @@ export default function App() {
                     Mode <strong>{equityCompareMode === "blended" ? "Blended" : "Potential"}</strong>: {equityCompareMode === "blended"
                       ? "one line per branch, average of book and MTM at each time step."
                       : "MTM minus book (open-risk mark) at each time step."}{" "}
-                    Use the checkboxes in this popup to show or hide series; those toggles are shared with the main Compare view. Time scale is the
-                    current tab ({String(equityGranularity)}). This overlay is always <strong>dollars</strong> (the %Δ tab applies to the six small charts only).
+                    Use the checkboxes below to show or hide branches (same toggles as the dashboard). Pick <strong>Intraday</strong>, <strong>Hourly</strong>, <strong>D/D</strong>, etc. in this popup — they mirror the main Equity curves tabs. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
                   </p>
                 }
                 render={({ h }) => (
                   <div style={{ width: "100%", height: h }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={equityOverlayData} margin={{ left: 18, right: 12, top: 8, bottom: 32 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
-                        <XAxis dataKey="t" stroke="#7f8ab5" tick={{ fontSize: 11 }} minTickGap={28} interval="preserveStartEnd" />
-                        <YAxis stroke="#7f8ab5" tick={{ fontSize: 11 }} domain={["auto", "auto"]} />
+                      <LineChart data={equityOverlayData} margin={{ left: 10, right: 14, top: 10, bottom: 18 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#223056" strokeOpacity={0.85} />
+                        <XAxis
+                          dataKey="t"
+                          stroke="#7f8ab5"
+                          tick={{ fontSize: 10 }}
+                          tickMargin={6}
+                          minTickGap={18}
+                          interval="preserveStartEnd"
+                          tickFormatter={fmtEquityCompareXTick}
+                        />
+                        <YAxis
+                          stroke="#7f8ab5"
+                          tick={{ fontSize: 11 }}
+                          domain={["auto", "auto"]}
+                          tickFormatter={(v: number) => `$${Number(v).toFixed(0)}`}
+                          width={44}
+                        />
                         <Tooltip
                           allowEscapeViewBox={{ x: true, y: true }}
-                          contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
+                          contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
                           formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
-                        />
-                        <Legend
-                          verticalAlign="bottom"
-                          height={28}
-                          wrapperStyle={{ fontSize: 11, paddingTop: 6 }}
-                          formatter={(value) => <span style={{ color: "var(--muted)" }}>{String(value)}</span>}
                         />
                         {equityVisible.live ? (
                           <Line
-                            type="monotone"
+                            type="stepAfter"
                             dataKey={equityCompareMode === "blended" ? "liveBlend" : "livePot"}
                             name={equityCompareMode === "blended" ? "Live blended" : "Live potential"}
                             stroke="#38bdf8"
-                            strokeWidth={2.4}
+                            strokeWidth={2}
+                            strokeOpacity={0.95}
                             dot={false}
                             isAnimationActive={false}
                           />
                         ) : null}
                         {equityVisible.a ? (
                           <Line
-                            type="monotone"
+                            type="stepAfter"
                             dataKey={equityCompareMode === "blended" ? "aBlend" : "aPot"}
                             name={equityCompareMode === "blended" ? "Lab A blended" : "Lab A potential"}
                             stroke="#a78bfa"
-                            strokeWidth={2.4}
+                            strokeWidth={2}
+                            strokeOpacity={0.95}
                             dot={false}
                             isAnimationActive={false}
                           />
                         ) : null}
                         {equityVisible.b ? (
                           <Line
-                            type="monotone"
+                            type="stepAfter"
                             dataKey={equityCompareMode === "blended" ? "bBlend" : "bPot"}
                             name={equityCompareMode === "blended" ? "Lab B blended" : "Lab B potential"}
                             stroke="#f59e0b"
-                            strokeWidth={2.4}
+                            strokeWidth={2}
+                            strokeOpacity={0.95}
                             dot={false}
                             isAnimationActive={false}
                           />
                         ) : null}
                         {equityVisible.c ? (
                           <Line
-                            type="monotone"
+                            type="stepAfter"
                             dataKey={equityCompareMode === "blended" ? "cBlend" : "cPot"}
                             name={equityCompareMode === "blended" ? "Lab C blended" : "Lab C potential"}
                             stroke="#f472b6"
-                            strokeWidth={2.4}
+                            strokeWidth={2}
+                            strokeOpacity={0.95}
                             dot={false}
                             isAnimationActive={false}
                           />
                         ) : null}
                         {equityVisible.d ? (
                           <Line
-                            type="monotone"
+                            type="stepAfter"
                             dataKey={equityCompareMode === "blended" ? "dBlend" : "dPot"}
                             name={equityCompareMode === "blended" ? "Lab D blended" : "Lab D potential"}
                             stroke="#fca5a5"
-                            strokeWidth={2.4}
+                            strokeWidth={2}
+                            strokeOpacity={0.95}
                             dot={false}
                             isAnimationActive={false}
                           />
                         ) : null}
                         {equityVisible.e ? (
                           <Line
-                            type="monotone"
+                            type="stepAfter"
                             dataKey={equityCompareMode === "blended" ? "eBlend" : "ePot"}
                             name={equityCompareMode === "blended" ? "Lab E blended" : "Lab E potential"}
                             stroke="#14b8a6"
-                            strokeWidth={2.4}
+                            strokeWidth={2}
+                            strokeOpacity={0.95}
                             dot={false}
                             isAnimationActive={false}
                           />

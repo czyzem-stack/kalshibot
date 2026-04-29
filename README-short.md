@@ -16,6 +16,6 @@ Self-hosted **Kalshi** stack: **FastAPI + React**, **Live + Lab A–E** (+ optio
 
 ## Docs
 
-- Full guide: [`README.md`](README.md)
+- Full guide: [`README.md`](README.md) — includes **Equity curves (deep dive)** (time tabs, Compare overlay, book vs MTM).
 - Breeding architecture: [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md)
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)

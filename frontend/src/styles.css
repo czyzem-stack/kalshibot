@@ -1343,27 +1343,35 @@ input[type="number"] {
   margin: 0 0 10px 0;
 }
 
+/* One horizontal strip: time tabs wrap *inside* the left cluster; $/%Δ stays on the same row (no orphan wrap). */
 .dash-equity-controls-row {
   display: flex;
-  align-items: center;
-  justify-content: flex-start;
   flex-wrap: nowrap;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 10px;
   margin: 10px 0 10px;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  overflow-x: visible;
 }
 
-.dash-equity-controls-row .dash-equity-panel__tabs {
+.dash-equity-controls-row > .chart-tabs.dash-equity-panel__tabs {
   margin: 0;
-  flex-wrap: nowrap;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
-.dash-equity-controls-row .dash-equity-panel__tabs--scale {
-  margin-left: auto;
+.dash-equity-controls-row .dash-equity-panel__tabs--scale-wrap {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+/* Fixed width so $ ↔ %Δ toggle does not jump layout */
+.dash-equity-scale-toggle {
+  min-width: 3.25rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
 }
 
 .dash-equity-panel__legend {
@@ -1442,6 +1450,35 @@ input[type="number"] {
   flex-wrap: wrap;
   gap: 8px 14px;
   margin: 10px 0 12px;
+}
+
+.dash-equity-overlay-controls--compare {
+  margin-top: 4px;
+}
+
+/* Compare modal: time tabs + Blended/Potential on one strip (no orphan wraps). */
+.dash-equity-compare-toolbar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 0 10px;
+  min-width: 0;
+}
+
+.dash-equity-compare-toolbar__granularity {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 !important;
+  flex-wrap: wrap;
+}
+
+.dash-equity-compare-toolbar__modes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  align-self: flex-start;
 }
 
 .dash-equity-view-toggle {

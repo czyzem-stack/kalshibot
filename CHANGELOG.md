@@ -2,6 +2,16 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.020 - equity UX + README equity deep dive - 2026-04-29
+
+- **Frontend (`App.tsx`, `styles.css`):** Equity **Compare** overlay — **granularity tabs** (Intraday…Y/Y) in-modal synced with dashboard; **Compare** moved beside **Info**; dashboard controls layout (**$/%Δ** toggle, no orphan scrollbar); overlay chart **step-after** lines, compact axes, duplicate legend removed; shared **`EQUITY_GRANULARITY_TAB_DEFS`**.
+- **Hours / days:** **Hourly** tab (local hour buckets, rolling 7d); **D/D** buckets **local** calendar days.
+- **README:** Large new section [**Equity curves (deep dive)**](README.md#equity-curves-deep-dive) — time tabs, $/%Δ, Compare semantics, API snapshot limits, how to read book vs MTM; TOC updated.
+
+## v0.4.15.019 - equity intraday 24h window - 2026-04-29
+
+- **Frontend (`App.tsx`):** **Equity curves → Intraday** now plots snapshots from the **rolling last 24 hours** (wall clock). Previously the UI took only the **last 400** snapshot rows, which at tight engine cadence looked like “a few hours.” **D / D**, **W / W**, etc. unchanged (UTC calendar buckets). Docs: [`README.md`](README.md) Dashboard map.
+
 ## v0.4.15.018 - footer marquee smoothness - 2026-04-29
 
 - **Frontend (`App.tsx`, `styles.css`):** Branch active-trades ticker and Lab pulse marquee — **rAF-coalesced** `ResizeObserver`, **skip redundant** `needsScroll` updates, **tiered** `animation-duration` so dashboard polls do not restart the CSS animation on tiny text changes; **`translate3d`** keyframes, **`will-change`** only while scrolling, compositing hints and **`isolation`** on masked viewports to reduce flicker.
