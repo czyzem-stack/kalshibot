@@ -54,15 +54,16 @@ Second terminal: `cd frontend && npm ci && npm run dev` — put your Vite origin
 11. [Packaged API (Windows exe)](#packaged-api-windows-exe)
 12. [Configuration: two layers](#configuration-two-layers)
 13. [Dashboard & Settings map](#dashboard--settings-map)
-14. [API reference](#api-reference)
-15. [Development & testing](#development--testing)
-16. [Upgrading & parallel checkouts](#upgrading--parallel-checkouts)
-17. [Troubleshooting](#troubleshooting)
-18. [Security & operations](#security--operations)
-19. [Repository layout](#repository-layout)
-20. [Contributing](#contributing)
-21. [Glossary](#glossary)
-22. [Further reading](#further-reading)
+14. [Equity curves (deep dive)](#equity-curves-deep-dive)
+15. [API reference](#api-reference)
+16. [Development & testing](#development--testing)
+17. [Upgrading & parallel checkouts](#upgrading--parallel-checkouts)
+18. [Troubleshooting](#troubleshooting)
+19. [Security & operations](#security--operations)
+20. [Repository layout](#repository-layout)
+21. [Contributing](#contributing)
+22. [Glossary](#glossary)
+23. [Further reading](#further-reading)
 
 ---
 
@@ -283,11 +284,51 @@ Ports, Kalshi base URL, logging, timeouts, WebSocket, dashboard MTM caps, Think 
 | UI area | Purpose |
 |---------|---------|
 | **Hero / branch strip** | Live + Lab A–E; engine toggles; marquees. |
-| **Equity curves** | Small multiples + **Compare** overlay. **Intraday** = rolling **24 hours** of `equity_snapshots` (not a fixed row cap). **D / D** … **Y / Y** = last snapshot per **UTC** day / Monday week / month / year. |
+| **Equity curves** | Six panels (Live + Labs A–E), **Compare** overlay, time tabs, **$ / %Δ** toggle — full behavior in [**Equity curves (deep dive)**](#equity-curves-deep-dive). |
 | **Account / performance** | Holdings, metrics, activity by branch. |
 | **Optimizer** | **Breeder** + **Tree**; **Lab Think Tank** strip (`/labs/chat`). |
 | **Settings → Simulation labs** | Per-lab tabs, **Save all labs**, **Mass apply** (`PUT /api/config/lab-branches`: engines, paper, sizing, patient stop, auto-reset). |
 | **Settings → Data** | Scoped resets, backups. |
+---
+
+## Equity curves (deep dive)
+
+The **Equity curves** card is where you reconcile **ledger truth** vs **mark-to-market truth** over time. Nothing here executes trades; it reads **`equity_snapshots`** per branch from SQLite (filled by the dual loop when engines run). Each small chart has **two** series: **solid** = book / cost-basis path from rollups; **dashed** = **MTM** (“what open positions are worth right now” using mids between snapshot writes). Those lines **will diverge** when you carry risk — that is expected.
+
+### Time-scale tabs (same logic on every branch chart)
+
+All tabs apply to **all six** charts at once; they only change **how raw snapshots are bucketed or filtered**, not which branch you are looking at.
+
+| Tab | What it plots |
+|-----|----------------|
+| **Intraday** | Snapshots whose timestamps fall in the **rolling last 24 hours** (your machine’s wall clock). The UI used to cap at “last 400 rows,” which could look like “only a few hours” when the engine writes very frequently — that cap is gone for time window (still bounded by how many rows the API returns). **Intraday** may append a **live tail** point on each `/api/dashboard` poll so the right edge tracks current metrics. |
+| **Hourly** | **One point per local clock hour**: the **latest** snapshot in each hour, across a **rolling 7 days**. Use this when raw intraday is too noisy but you still want intraday-ish resolution. |
+| **D / D** | **One point per local calendar day** (latest snapshot that day). You need **multiple days** of engine history to see more than one dot — one trading session often collapses to one daily bucket. Bucket boundaries use **local** midnight semantics so labels match how you read the calendar. |
+| **W / W** | One point per **UTC week** (week starts **Monday UTC**). Labels show “Week of …” in UTC so multi-day crypto schedules stay comparable across machines. |
+| **M / M** | One point per **UTC calendar month**. |
+| **Y / Y** | One point per **UTC calendar year**. |
+
+Backend **`GET /api/dashboard`** ships up to **2000** equity snapshot rows **per branch** (`equity_series(limit=2000)`). If you need longer archival history than that for forensic work, use exports / history routes — the dashboard chart is an **operator window**, not an immutable audit trail.
+
+### Dollar scale vs percent change
+
+The **$ / %Δ** control is a **single toggle** (not two tabs): **$** shows absolute dollars from snapshots; **%Δ** rescales each chart’s series as **percent change from the first plotted point in that chart’s window**, which makes Labs B–E easier to compare when bankrolls sit at different dollar levels but moves are correlated. The **Compare** overlay (below) is always **dollars** — blended and potential semantics are dollar-based.
+
+### Compare (one graph)
+
+**Compare** sits next to **Info** in the card header. It opens a **single** chart that overlays **all visible branches** on one time axis (merged forward-filled union of timestamps). You choose:
+
+- **Blended** — per branch, **(book + MTM) / 2** at each step (a simple combined read of both ledger lines).
+- **Potential** — **MTM − book** at each step (roughly “where marks sit versus cost basis” / open-risk shape).
+
+The overlay includes the **same Intraday … Y/Y tabs** as the main card — they drive the **same** `equityGranularity` state, so you never have to close the popup to switch between hourly and daily comparison. Branch **checkboxes** choose who draws; **step-after** line interpolation matches discrete snapshots without implying fake curves between SQLite samples.
+
+### Reading the chart without fooling yourself
+
+- A **step** on solid is usually a fill, fee, settlement, or ledger-affecting event. A **wiggle** on dashed while solid is flat is often **marks moving** on open contracts.
+- **D / D** showing “only today” is usually **one bucket** — switch to **Hourly** or **Intraday** for intraday shape.
+- If everything is flat, confirm engines are **on**, **`equity_snapshots`** rows exist for that branch, and you are not filtering everything off in **Compare**.
+
 ---
 
 ## API reference
