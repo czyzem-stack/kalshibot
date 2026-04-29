@@ -2,6 +2,14 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.011 - Settings mass apply + lab toggle fix + Think Tank log hygiene - 2026-04-29
+
+- **Frontend (`SettingsOverlay.tsx`):** **Mass apply** under Simulation labs — select Labs A–E, choose action (engines on/off, uniform paper, copy sizing from active tab, copy patient stop from a source lab, auto-reset on/off), confirm once; uses **`PUT /api/config/lab-branches`**.
+- **Frontend (`App.tsx`):** Lab engine **Turn A/B/C/D/E on|off** now persists via **`PUT /api/config/lab-branches`** (same as Mass apply) instead of **`POST /api/engine/toggle?*_running=`**, so Lab **E** (and consistency across labs) works even when the API build predates **`lab_e_running`** on the toggle route.
+- **Backend (`main.py`):** Dashboard **`lab_*_engine_on`** / Live uses **`_coerce_engine_running_flag`** so stringly-typed config matches **`dual_engine_loop`** coercion.
+- **Backend (`lab_communication.py`, `settings_env.py`):** **`think_tank_message`** logs default to **DEBUG**; optional **`LAB_THINK_TANK_LOG_INFO=1`** restores **INFO** per line.
+- **Docs:** [`.env.example`](.env.example) documents **`LAB_THINK_TANK_LOG_INFO`**; **README** Configuration section expanded.
+
 ## v0.4.15.010 - Lab E full-stack UI + optimizer radar - 2026-04-28
 
 - **Frontend:** Lab **E** wired through **branch performance**, **equity** (six small multiples + compare overlay), **Assets to watch**, **Account** holdings/engine tabs, **optimizer thinking radar** (seven traces), **hero marquee/snapshot**, **Lab pulse**, **ActivityHints** for D/E engines, **promote Lab A→Live** vs B/C/D/E, **Settings** (engines, patient stop, simulation labs bulk save/reset, optimizer Lab E toggles/style/floors), and **help playbook** copy. **`BranchMarketTickers`:** `lab_e` in hero order, norms, positions, compact segments. **`labHiveChat`:** Breeding Council header (“working together”); **`balanceHiveMessagesForTicker`** now round-robins **lab_e** with B/C/D (was omitting E).

@@ -19,6 +19,7 @@ from typing import Any
 import structlog
 
 from .branch_config import BRANCH_BREEDERS, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E
+from .settings_env import env
 
 LAB_THINK_TANK_BRANCHES = BRANCH_BREEDERS
 LAB_CHATTER_BRANCHES = LAB_THINK_TANK_BRANCHES
@@ -84,7 +85,10 @@ class LabCommunicationBus:
             row["reply_to"] = reply_to
         self._dq.append(row)
         payload = {k: v for k, v in row.items() if v is not None}
-        _slog.info("think_tank_message", **payload)
+        if env.lab_think_tank_log_info:
+            _slog.info("think_tank_message", **payload)
+        else:
+            _slog.debug("think_tank_message", **payload)
         return row
 
     def recent(self) -> list[dict[str, Any]]:

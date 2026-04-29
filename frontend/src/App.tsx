@@ -5027,28 +5027,17 @@ export default function App() {
 
   const setLabRunning = async (lab: "a" | "b" | "c" | "d" | "e", running: boolean) => {
     const prevDash = dash;
+    const lk =
+      lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : lab === "d" ? "lab_d" : "lab_e";
     if (prevDash) {
       const patch = { ...cfg } as AnyObj;
-      if (lab === "a") patch.lab_a = { ...(cfg.lab_a || EMPTY_LAB), engine_running: running };
-      else if (lab === "b") patch.lab_b = { ...(cfg.lab_b || EMPTY_LAB), engine_running: running };
-      else if (lab === "c") patch.lab_c = { ...(cfg.lab_c || EMPTY_LAB), engine_running: running };
-      else if (lab === "d") patch.lab_d = { ...(cfg.lab_d || EMPTY_LAB), engine_running: running };
-      else patch.lab_e = { ...(cfg.lab_e || EMPTY_LAB), engine_running: running };
+      patch[lk] = { ...((cfg[lk] || EMPTY_LAB) as AnyObj), engine_running: running };
       applyDashboardConfig(patch);
     }
     setBusy(true);
     try {
-      const key =
-        lab === "a"
-          ? "lab_a_running"
-          : lab === "b"
-            ? "lab_b_running"
-            : lab === "c"
-              ? "lab_c_running"
-              : lab === "d"
-                ? "lab_d_running"
-                : "lab_e_running";
-      const out = (await apiPost(`/api/engine/toggle?${key}=${running ? "true" : "false"}`)) as AnyObj;
+      const body: AnyObj = { reset_data: "none", [lk]: { engine_running: running } };
+      const out = (await apiPutLabBranches(body)) as AnyObj;
       const cfgNext = out?.config;
       if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
       void refresh();

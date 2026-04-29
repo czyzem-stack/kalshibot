@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Version** | [`v0.4.15.010`](VERSION) — see [`CHANGELOG.md`](CHANGELOG.md) |
+| **Version** | [`v0.4.15.011`](VERSION) — see [`CHANGELOG.md`](CHANGELOG.md) |
 | **Branches** | `develop` (day-to-day) · `main` (release-aligned) |
 | **Data** | `data/bot.sqlite3` (+ optional JSONL under `data/logs/`) |
 
@@ -90,7 +90,8 @@ macOS/Linux: use the same env file and run the backend module / Vite commands yo
 ## Configuration
 
 - **Runtime config** is stored in SQLite (`bot_config` / merged payloads) and edited from **Settings** in the UI (`PUT`/`POST` under `/api/config` and lab-branch routes).
-- **Environment** (ports, Kalshi base URL, log level, HTTP/WS tuning) lives in **`.env`** — see [`.env.example`](.env.example) and [`backend/app/settings_env.py`](backend/app/settings_env.py).
+- **Simulation labs (A–E)** — per-lab sizing/rules saves and **Save all labs**; **Mass apply** batches engines (`engine_running`), uniform paper balance, copy sizing from the active tab, copy patient stop-loss from a source lab, and auto-reset flags onto whichever labs you select (**one** `PUT /api/config/lab-branches`, `reset_data: none`). Lab **Turn A/B/C/D/E on|off** in Settings uses the same lab-branches merge path so toggles persist reliably (including Lab E on older API builds that lacked `lab_e_running` on `POST /api/engine/toggle`).
+- **Environment** (ports, Kalshi base URL, log level, Think Tank log verbosity, HTTP/WS tuning) lives in **`.env`** — see [`.env.example`](.env.example) and [`backend/app/settings_env.py`](backend/app/settings_env.py).
 - **Backups** — copy `data/bot.sqlite3` regularly; use Settings reset flows carefully in production.
 
 ---

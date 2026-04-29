@@ -32,6 +32,18 @@ type SettingsTab =
 /** SQLite lab branches A–E (simulation). Breeding is backend-only — no extra UI tabs. */
 type LabBranchKey = "a" | "b" | "c" | "d" | "e";
 
+function labBranchToApiKey(k: LabBranchKey): "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e" {
+  return k === "a" ? "lab_a" : k === "b" ? "lab_b" : k === "c" ? "lab_c" : k === "d" ? "lab_d" : "lab_e";
+}
+
+function patientStopDefaultsForLab(k: LabBranchKey): { trigger: number; hold: number } {
+  if (k === "a") return { trigger: -6, hold: 20 };
+  if (k === "b") return { trigger: -8, hold: 30 };
+  if (k === "c") return { trigger: -12, hold: 60 };
+  if (k === "d") return { trigger: -7, hold: 25 };
+  return { trigger: -7.5, hold: 22 };
+}
+
 /** Local display for optimizer trace ``at`` ISO timestamps. */
 function formatOptimizerTraceAt(iso: string): string {
   const s = String(iso || "").trim();
@@ -852,7 +864,7 @@ export default function SettingsOverlay({
           >
             <h2 style={{ marginTop: 0 }}>Simulation labs</h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-              Five independent paper branches (A–E). Sizing and rules are per lab; use <strong>Save all labs</strong> or per-lab saves. The <strong>Reset Live + all labs</strong> panel below wipes <strong>Live + A–E</strong> sim history in SQLite; per-lab saves alone do not delete history.
+              Five independent paper branches (A–E). Sizing and rules are per lab; use <strong>Save all labs</strong>, <strong>Mass apply</strong> (engines, sizing, patient stop, auto-reset), or per-lab saves. The <strong>Reset Live + all labs</strong> panel below wipes <strong>Live + A–E</strong> sim history in SQLite; per-lab saves alone do not delete history.
             </p>
             <div
               className="panel settings-nested-panel"
@@ -956,6 +968,161 @@ export default function SettingsOverlay({
               {activeLab === "c" ? <LabSizingInputs which="c" lab={labC} cfg={cfg} busy={busy} /> : null}
               {activeLab === "d" ? <LabSizingInputs which="d" lab={labD} cfg={cfg} busy={busy} /> : null}
               {activeLab === "e" ? <LabSizingInputs which="e" lab={labE} cfg={cfg} busy={busy} /> : null}
+            </div>
+            <div
+              className="panel settings-nested-panel"
+              style={{
+                marginTop: 14,
+                padding: "12px 14px",
+                border: "1px solid rgba(120, 100, 160, 0.38)",
+                background: "rgba(18, 14, 28, 0.35)",
+              }}
+            >
+              <h3 className="section-tip" style={{ margin: "0 0 6px 0", fontSize: 13 }} title="PUT /api/config/lab-branches (merge; reset_data none)">
+                Mass apply to selected labs
+              </h3>
+              <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
+                One request updates only the labs you check. <strong>Copy sizing from active tab</strong> reads the paper / fraction / window row for the tab selected above. Engines map to each lab&apos;s <code>engine_running</code> flag (same as the lab rail toggles, but batched).
+              </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px", marginBottom: 12 }}>
+                {(["a", "b", "c", "d", "e"] as const).map((k) => (
+                  <label key={k} className="checkbox" style={{ border: "none" }}>
+                    <input id={`mass_apply_lab_${k}`} type="checkbox" defaultChecked disabled={busy} />
+                    <span>Lab {k.toUpperCase()}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="field">
+                <label htmlFor="mass_apply_mode" className="section-tip">
+                  Action
+                </label>
+                <select id="mass_apply_mode" disabled={busy} defaultValue="engines_on">
+                  <option value="engines_on">Turn paper engines ON</option>
+                  <option value="engines_off">Turn paper engines OFF</option>
+                  <option value="uniform_paper">Set paper balance (cents) from field below</option>
+                  <option value="copy_sizing_from_active_tab">Copy sizing from active lab tab</option>
+                  <option value="copy_patient_stop">Copy patient stop-loss from source lab</option>
+                  <option value="auto_reset_on">Enable auto-reset paper on tick failure</option>
+                  <option value="auto_reset_off">Disable auto-reset paper on tick failure</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="mass_uniform_paper" className="section-tip" title="Used only for “Set paper balance”">
+                  Uniform paper balance (cents)
+                </label>
+                <input
+                  id="mass_uniform_paper"
+                  type="number"
+                  min={0}
+                  max={100_000_000}
+                  step={1000}
+                  disabled={busy}
+                  defaultValue={String(Number(labA?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500_000))}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="mass_patient_stop_source" className="section-tip" title="Used only for “Copy patient stop-loss”">
+                  Source lab (patient stop copy)
+                </label>
+                <select id="mass_patient_stop_source" disabled={busy} defaultValue={activeLab}>
+                  <option value="a">Lab A</option>
+                  <option value="b">Lab B</option>
+                  <option value="c">Lab C</option>
+                  <option value="d">Lab D</option>
+                  <option value="e">Lab E</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || optimizerSaving}
+                title="PUT /api/config/lab-branches"
+                onClick={() => {
+                  const keys: LabBranchKey[] = ["a", "b", "c", "d", "e"];
+                  const selected: LabBranchKey[] = [];
+                  for (const k of keys) {
+                    const el = document.getElementById(`mass_apply_lab_${k}`) as HTMLInputElement | null;
+                    if (el?.checked) selected.push(k);
+                  }
+                  if (!selected.length) {
+                    window.alert("Select at least one lab.");
+                    return;
+                  }
+                  const mode = String((document.getElementById("mass_apply_mode") as HTMLSelectElement | null)?.value || "");
+                  const parseC = (id: string, fallback: number) => {
+                    const el = document.getElementById(id) as HTMLInputElement | null;
+                    if (!el) return fallback;
+                    const raw = String(el.value ?? "").replace(/,/g, "").trim();
+                    if (!raw) return fallback;
+                    return Math.round(Number(raw));
+                  };
+                  const parseF = (id: string, fallback: number) => {
+                    const el = document.getElementById(id) as HTMLInputElement | null;
+                    if (!el) return fallback;
+                    const raw = String(el.value ?? "").replace(/,/g, "").trim();
+                    if (!raw) return fallback;
+                    return Number(raw);
+                  };
+                  const body: AnyObj = { reset_data: "none" };
+                  const labLabel = (k: LabBranchKey) => `Lab ${k.toUpperCase()}`;
+                  if (mode === "engines_on") {
+                    for (const s of selected) body[labBranchToApiKey(s)] = { engine_running: true };
+                  } else if (mode === "engines_off") {
+                    for (const s of selected) body[labBranchToApiKey(s)] = { engine_running: false };
+                  } else if (mode === "uniform_paper") {
+                    const n = parseC("mass_uniform_paper", NaN);
+                    if (!Number.isFinite(n) || n < 0 || n > 100_000_000) {
+                      window.alert("Paper balance must be a number between 0 and 100000000 cents.");
+                      return;
+                    }
+                    for (const s of selected) body[labBranchToApiKey(s)] = { paper_balance_cents: n };
+                  } else if (mode === "copy_sizing_from_active_tab") {
+                    const p = `lab_${activeLab}`;
+                    const defFrac =
+                      activeLab === "a" ? 0.055 : activeLab === "b" ? 0.06 : activeLab === "c" ? 0.1 : activeLab === "d" ? 0.13 : 0.115;
+                    const defWin = activeLab === "a" ? 15 : activeLab === "b" ? 12 : 10;
+                    const srcLab = activeLab === "a" ? labA : activeLab === "b" ? labB : activeLab === "c" ? labC : activeLab === "d" ? labD : labE;
+                    const paper = parseC(`${p}_paper`, Number(srcLab?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500_000));
+                    const frac = parseF(`${p}_frac`, Number(srcLab?.balance_fraction_per_window ?? defFrac));
+                    const win = parseC(`${p}_win`, Number(srcLab?.window_minutes ?? defWin));
+                    if (!Number.isFinite(frac) || frac < 0.0001 || frac > 1) {
+                      window.alert("Balance fraction must be between 0.0001 and 1 (check the active tab sizing row).");
+                      return;
+                    }
+                    for (const s of selected) {
+                      body[labBranchToApiKey(s)] = {
+                        paper_balance_cents: paper,
+                        balance_fraction_per_window: frac,
+                        window_minutes: win,
+                      };
+                    }
+                  } else if (mode === "copy_patient_stop") {
+                    const rawSrc = String((document.getElementById("mass_patient_stop_source") as HTMLSelectElement | null)?.value || "a");
+                    const srcKey: LabBranchKey =
+                      rawSrc === "b" ? "b" : rawSrc === "c" ? "c" : rawSrc === "d" ? "d" : rawSrc === "e" ? "e" : "a";
+                    const srcLab = srcKey === "a" ? labA : srcKey === "b" ? labB : srcKey === "c" ? labC : srcKey === "d" ? labD : labE;
+                    const def = patientStopDefaultsForLab(srcKey);
+                    const patch = {
+                      enable_patient_stop_loss: Boolean(srcLab?.enable_patient_stop_loss ?? true),
+                      stop_loss_trigger_pct: Number(srcLab?.stop_loss_trigger_pct ?? def.trigger),
+                      min_hold_minutes_before_stop: Number(srcLab?.min_hold_minutes_before_stop ?? def.hold),
+                    };
+                    for (const s of selected) body[labBranchToApiKey(s)] = { ...patch };
+                  } else if (mode === "auto_reset_on") {
+                    for (const s of selected) body[labBranchToApiKey(s)] = { auto_reset_paper_on_tick_failure: true };
+                  } else if (mode === "auto_reset_off") {
+                    for (const s of selected) body[labBranchToApiKey(s)] = { auto_reset_paper_on_tick_failure: false };
+                  } else {
+                    window.alert("Unknown mass-apply action.");
+                    return;
+                  }
+                  const names = selected.map(labLabel).join(", ");
+                  if (!window.confirm(`Apply this mass action to ${names}?`)) return;
+                  void onApplyLabBranches(body);
+                }}
+              >
+                Apply to selected labs
+              </button>
             </div>
             {showCombinedLabReset ? (
               <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
