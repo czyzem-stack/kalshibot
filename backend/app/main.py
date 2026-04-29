@@ -754,8 +754,8 @@ def labs_chat() -> dict[str, Any]:
 @app.post("/labs/diversify")
 async def labs_diversify() -> dict[str, Any]:
     """
-    Emergency diversify: temporarily raises breeder yes floors + tightens ``no_bet_when_yes_below_pct`` on
-    Labs B–E (~45m), forces one internal mutation pulse, and broadcasts to the Think Tank.
+    Council diversity pulse (~45m): sets ``labs_council_diversity_until`` so Think Tank runs a hotter
+    adversarial mix; posts ``DIVERSITY PULSE`` lines. Does **not** run internal mutation (use ``force`` for that).
     """
     from .lab_diversify import apply_emergency_diversify
 
@@ -1571,10 +1571,10 @@ def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: st
 async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     """
     Assemble the full dashboard JSON. When ``with_marks`` is False, the same
-    ``_refresh_paper_mtm_from_marks`` work runs with a configurable timeout
-    (``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``, default ~22s) so ``GET /api/dashboard/equity``
-    can still update paper MTM between full ~12s refreshes; on timeout, metrics fall back to
-    snapshot-based values from ``_enrich_strategy_metrics`` (flat MTM vs book until the next full poll).
+    ``_refresh_paper_mtm_from_marks`` runs per branch with ``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``
+    (default ~30s) so ``GET /api/dashboard/equity`` can refresh paper MTM between full polls; a slow
+    branch times out alone — others still get live marks. On per-branch timeout, that branch falls
+    back to snapshot-based values from ``_enrich_strategy_metrics`` until the next poll.
     """
     cfg = await store.load_config()
     mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
@@ -1801,27 +1801,33 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     # ``/api/dashboard/equity`` can opt out of this batch via env (DASHBOARD_FAST_PAPER_MTM=0) to test or reduce load; full ``/api/dashboard`` always runs it.
     if mtm_tasks and (with_marks or env.dashboard_fast_paper_mtm):
         mtm_timeout = 50.0 if with_marks else float(env.dashboard_fast_mtm_gather_timeout_s)
-        try:
-            mtm_res = await asyncio.wait_for(
-                asyncio.gather(*mtm_tasks, return_exceptions=True),
-                timeout=mtm_timeout,
-            )
-            for idx, r in enumerate(mtm_res or []):
-                if isinstance(r, Exception):
-                    logger.debug("paper MTM subtask %d failed: %s", idx, r)
-        except asyncio.TimeoutError:
-            if with_marks:
-                logger.warning(
-                    "dashboard MTM refresh hit 50s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
-                )
-            else:
-                logger.warning(
-                    "dashboard fast MTM refresh hit %.1fs cap — charts may flatline MTM vs book until next full /api/dashboard (raise DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S or reduce open sims).",
-                    mtm_timeout,
-                )
-            # Fast path timeout: leave ``metrics*`` on snapshot-based values from _enrich_strategy_metrics (stale vs live marks).
-        except Exception as e:
-            logger.warning("dashboard paper MTM batch failed: %s", e)
+
+        async def _run_one_paper_mtm(idx: int, coro: Any) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=mtm_timeout)
+            except asyncio.TimeoutError:
+                if with_marks:
+                    logger.warning(
+                        "dashboard MTM refresh branch index=%d hit per-branch %.1fs cap (other branches may still be fresh).",
+                        idx,
+                        mtm_timeout,
+                    )
+                else:
+                    logger.warning(
+                        "dashboard fast MTM refresh branch index=%d hit %.1fs cap (raise DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S or reduce open sims on that branch).",
+                        idx,
+                        mtm_timeout,
+                    )
+            except Exception as e:
+                logger.debug("paper MTM subtask %d failed: %s", idx, e)
+
+        mtm_res = await asyncio.gather(
+            *(_run_one_paper_mtm(i, t) for i, t in enumerate(mtm_tasks)),
+            return_exceptions=True,
+        )
+        for idx, r in enumerate(mtm_res or []):
+            if isinstance(r, Exception):
+                logger.debug("paper MTM gather wrapper %d failed: %s", idx, r)
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None

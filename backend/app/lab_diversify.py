@@ -1,6 +1,9 @@
 """
-Emergency diversify: temporarily tighten breeder (B/C/D/E) gates + optimizer yes floors,
-then revert after ``emergency_diversify_revert_at``. Invoked from ``POST /labs/diversify``.
+Council diversity pulse: ``POST /labs/diversify`` sets ``labs_council_diversity_until`` so the
+Think Tank runs hotter adversarial / rotation mix for ~45 minutes. No internal mutation and no
+gate bumps (distinct from ``force`` internal mutation).
+
+Legacy ``emergency_diversify_*`` keys are still reverted by expiry for older configs.
 """
 from __future__ import annotations
 
@@ -10,16 +13,11 @@ from typing import Any
 
 from .branch_config import BRANCH_BREEDERS
 from .lab_communication import _voice_prefix, get_lab_communication_bus
-from .optimizer_claude import force_internal_mutation_once
 
 logger = logging.getLogger("kalshibot.api")
 
 _DIVERSIFY_MINUTES = 45
-_YES_FLOOR_BUMP = 5
-_NO_BET_BUMP = 6
-_YES_FLOOR_CAP = 58
-_NO_BET_CAP = 46
-
+_COUNCIL_DIVERSITY_KEY = "labs_council_diversity_until"
 
 def _parse_until_iso(raw: Any) -> dt.datetime | None:
     s = str(raw or "").strip()
@@ -34,46 +32,7 @@ def _parse_until_iso(raw: Any) -> dt.datetime | None:
         return None
 
 
-def _baseline_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
-    oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
-    labs: dict[str, Any] = {}
-    for lk in BRANCH_BREEDERS:
-        lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
-        labs[lk] = {"no_bet_when_yes_below_pct": lab.get("no_bet_when_yes_below_pct")}
-    return {
-        "lab_b_yes_floor_pct": oc.get("lab_b_yes_floor_pct"),
-        "lab_c_yes_floor_pct": oc.get("lab_c_yes_floor_pct"),
-        "lab_d_yes_floor_pct": oc.get("lab_d_yes_floor_pct"),
-        "lab_e_yes_floor_pct": oc.get("lab_e_yes_floor_pct"),
-        "labs": labs,
-    }
-
-
-def _apply_bumps(cfg: dict[str, Any]) -> None:
-    oc = cfg.setdefault("optimizer", {})
-    if not isinstance(oc, dict):
-        cfg["optimizer"] = {}
-        oc = cfg["optimizer"]
-    keys = ("lab_b_yes_floor_pct", "lab_c_yes_floor_pct", "lab_d_yes_floor_pct", "lab_e_yes_floor_pct")
-    for k in keys:
-        try:
-            cur = int(float(oc.get(k) or 50))
-        except (TypeError, ValueError):
-            cur = 50
-        oc[k] = min(_YES_FLOOR_CAP, cur + _YES_FLOOR_BUMP)
-    for lk in BRANCH_BREEDERS:
-        lab = cfg.setdefault(lk, {})
-        if not isinstance(lab, dict):
-            cfg[lk] = {}
-            lab = cfg[lk]
-        try:
-            nb = int(float(lab.get("no_bet_when_yes_below_pct") or 24))
-        except (TypeError, ValueError):
-            nb = 24
-        lab["no_bet_when_yes_below_pct"] = min(_NO_BET_CAP, nb + _NO_BET_BUMP)
-
-
-def _restore_from_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
+def _restore_legacy_from_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
     oc = cfg.setdefault("optimizer", {})
     if not isinstance(oc, dict):
         return
@@ -92,8 +51,7 @@ def _restore_from_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
 
 async def maybe_revert_emergency_diversify_if_due(store: Any, cfg: dict[str, Any]) -> bool:
     """
-    If ``emergency_diversify_revert_at`` has passed, restore baseline and persist.
-    Called from ``Store.load_config`` so any API tick picks up expiry without a dedicated timer.
+    Legacy gate-bump window (pre–council-only diversify). Restore baseline when expired.
     """
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     until = _parse_until_iso(oc.get("emergency_diversify_revert_at"))
@@ -103,19 +61,44 @@ async def maybe_revert_emergency_diversify_if_due(store: Any, cfg: dict[str, Any
     now = dt.datetime.now(dt.timezone.utc)
     if now <= until:
         return False
-    _restore_from_baseline(cfg, base)
+    _restore_legacy_from_baseline(cfg, base)
     await store.save_config(
         cfg,
         history_branch="global",
         history_changed_by="system",
         history_reason="emergency_diversify_expired",
     )
-    logger.info("emergency_diversify reverted after window")
+    logger.info("legacy emergency_diversify gates reverted after window")
+    return True
+
+
+async def maybe_revert_council_diversity_if_due(store: Any, cfg: dict[str, Any]) -> bool:
+    """Clear ``labs_council_diversity_until`` when the pulse window has ended."""
+    oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    until = _parse_until_iso(oc.get(_COUNCIL_DIVERSITY_KEY))
+    if until is None:
+        return False
+    now = dt.datetime.now(dt.timezone.utc)
+    if now <= until:
+        return False
+    oc2 = cfg.setdefault("optimizer", {})
+    if isinstance(oc2, dict):
+        oc2.pop(_COUNCIL_DIVERSITY_KEY, None)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="system",
+        history_reason="council_diversity_pulse_expired",
+    )
+    logger.info("council diversity pulse window ended")
     return True
 
 
 async def apply_emergency_diversify(store: Any) -> dict[str, Any]:
-    """Persist tighter breeder gates + floors; force one internal mutation; announce on Think Tank."""
+    """
+    Council diversity pulse only: extends adversarial Think Tank mix for ~45m, posts DIVERSITY PULSE lines.
+    Does **not** run internal mutation (use ``force`` for that) and does **not** change breeder gates.
+    """
     cfg = await store.load_config()
     oc = cfg.setdefault("optimizer", {})
     if not isinstance(oc, dict):
@@ -123,42 +106,35 @@ async def apply_emergency_diversify(store: Any) -> dict[str, Any]:
         oc = cfg["optimizer"]
 
     now = dt.datetime.now(dt.timezone.utc)
-    until_existing = _parse_until_iso(oc.get("emergency_diversify_revert_at"))
-    if until_existing and now < until_existing:
-        oc["emergency_diversify_revert_at"] = (now + dt.timedelta(minutes=_DIVERSIFY_MINUTES)).isoformat()
-        await store.save_config(
-            cfg,
-            history_branch="global",
-            history_changed_by="api:labs_diversify",
-            history_reason="emergency_diversify_extend",
-        )
-        mut = await force_internal_mutation_once(store)
-        bus = get_lab_communication_bus()
-        banner = "DIVERSIFY EXTENDED—council keep diverging"
-        for br in BRANCH_BREEDERS:
-            bus.publish(br, f"{_voice_prefix(br)} {banner}", kind="say", action="emergency_diversify")
-        return {"ok": True, "extended": True, "revert_at": str(oc.get("emergency_diversify_revert_at") or ""), "internal_mutation": mut}
-    else:
-        oc["emergency_diversify_baseline"] = _baseline_snapshot(cfg)
-        _apply_bumps(cfg)
-        oc["emergency_diversify_revert_at"] = (now + dt.timedelta(minutes=_DIVERSIFY_MINUTES)).isoformat()
-        await store.save_config(
-            cfg,
-            history_branch="global",
-            history_changed_by="api:labs_diversify",
-            history_reason="emergency_diversify_apply",
-        )
+    until_new = (now + dt.timedelta(minutes=_DIVERSIFY_MINUTES)).isoformat()
+    until_existing = _parse_until_iso(oc.get(_COUNCIL_DIVERSITY_KEY))
+    extended = bool(until_existing and now < until_existing)
+    oc[_COUNCIL_DIVERSITY_KEY] = until_new
+
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="api:labs_diversify",
+        history_reason="council_diversity_pulse_extend" if extended else "council_diversity_pulse_apply",
+    )
 
     bus = get_lab_communication_bus()
-    banner = "DIVERSIFY TRIGGERED—B/C/D/E diverge 45m"
-
-    for br in BRANCH_BREEDERS:
+    banners = [
+        "DIVERSITY PULSE 45m—split the pile",
+        "DIVERSITY PULSE—talk your book",
+        "DIVERSITY PULSE—no groupthink",
+        "DIVERSITY PULSE—oppose default",
+    ]
+    for i, br in enumerate(BRANCH_BREEDERS):
         vp = _voice_prefix(br)
-        bus.publish(br, f"{vp} {banner}", kind="say", action="emergency_diversify")
+        line = f"{vp} {banners[i % len(banners)]}"
+        if len(line) > 69:
+            line = line[:69].rsplit(" ", 1)[0]
+        bus.publish(br, line, kind="say", action="council_diversity_pulse")
 
-    mut = await force_internal_mutation_once(store)
     return {
         "ok": True,
-        "revert_at": str(oc.get("emergency_diversify_revert_at") or ""),
-        "internal_mutation": mut,
+        "extended": extended,
+        "council_diversity_until": str(oc.get(_COUNCIL_DIVERSITY_KEY) or ""),
+        "internal_mutation": None,
     }

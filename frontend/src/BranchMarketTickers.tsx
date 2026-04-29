@@ -615,10 +615,13 @@ export function BranchHeroMarquee({
   dash,
   cfg,
   showSnapshot = true,
+  embedVariant = "default",
 }: {
   dash: AnyObj;
   cfg: AnyObj;
   showSnapshot?: boolean;
+  /** ``bottomBodyRoot`` = mounted under ``document.body`` via a second ``createRoot``; avoids ticker-only flex collapse. */
+  embedVariant?: "default" | "bottomBodyRoot";
 }): ReactNode {
   const kalshiPrivateOk = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const acct = dash?.account_snapshot as AnyObj | undefined;
@@ -790,7 +793,10 @@ export function BranchHeroMarquee({
     const w = halfWidthRef.current;
     if (!el || w <= 1) return;
     if (manualDragRef.current || throwActiveRef.current) return;
-    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const reduceMotion =
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    /* Bottom strip: keep horizontal drift so all-branch copy still “cycles”; dashboard hero still honors reduce-motion. */
+    if (reduceMotion && embedVariant !== "bottomBodyRoot") {
       el.style.animation = "none";
       el.style.transform = "none";
       return;
@@ -801,7 +807,7 @@ export function BranchHeroMarquee({
     const delay = -p * loop;
     el.style.transform = "";
     el.style.animation = `branch-hero-css-drift ${loop}s linear ${delay}s infinite`;
-  }, [normalizeOffset]);
+  }, [normalizeOffset, embedVariant]);
 
   /* Omit `combined` from deps: listing it reconnected RO every dashboard poll. ResizeObserver still remeasures when width changes. */
   useLayoutEffect(() => {
@@ -968,9 +974,16 @@ export function BranchHeroMarquee({
     </span>
   );
 
+  const layoutExtra =
+    embedVariant === "bottomBodyRoot"
+      ? " branch-hero-marquee--bottom-body-root"
+      : showSnapshot
+        ? ""
+        : " branch-hero-marquee--ticker-only";
+
   return (
     <div
-      className={`branch-hero-marquee section-tip${showSnapshot ? "" : " branch-hero-marquee--ticker-only"}`}
+      className={`branch-hero-marquee section-tip${layoutExtra}`}
       title="All-branch market readout. Drag to throw. Right: six-row snapshot of Live and Lab A–E ($ and return)."
       aria-label="Combined Live and lab market ticker with all-branch balance snapshot"
     >

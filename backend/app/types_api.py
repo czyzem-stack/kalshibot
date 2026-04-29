@@ -180,6 +180,8 @@ class OptimizerStatusResponse(TypedDict, total=False):
     breeding_last_run_at: str
     breeding_last_summary: str
     breeding_last_run_minutes_ago: float | None
+    # ISO UTC: Think Tank adversarial mix boosted until this instant (``POST /labs/diversify``).
+    labs_council_diversity_until: str
     internal_optimizer_trace: list[dict[str, Any]]
     advanced_metrics_last: dict[str, Any]
     acceptance_rate_pct: float

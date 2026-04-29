@@ -737,11 +737,12 @@ class Store:
                     else:
                         out = _normalize_loaded_config(parsed)
         try:
-            from .lab_diversify import maybe_revert_emergency_diversify_if_due
+            from .lab_diversify import maybe_revert_council_diversity_if_due, maybe_revert_emergency_diversify_if_due
 
             await maybe_revert_emergency_diversify_if_due(self, out)
+            await maybe_revert_council_diversity_if_due(self, out)
         except Exception as exc:
-            _logger.warning("emergency_diversify revert check failed: %s", exc)
+            _logger.warning("diversity / emergency_diversify revert check failed: %s", exc)
         return out
 
     async def save_config(

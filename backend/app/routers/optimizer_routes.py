@@ -173,6 +173,7 @@ async def optimizer_status() -> OptimizerStatusResponse:
         "breeding_last_run_at": str(oc.get("breeding_last_run_at") or ""),
         "breeding_last_summary": str(oc.get("breeding_last_summary") or ""),
         "breeding_last_run_minutes_ago": _breeding_minutes_ago(_bla),
+        "labs_council_diversity_until": str(oc.get("labs_council_diversity_until") or ""),
         "model": str(oc.get("model") or "internal"),
         "optimizer_cycle_count": int(oc.get("optimizer_cycle_count") or 0),
         "pulse_eval_count": int(oc.get("pulse_eval_count") or 0),

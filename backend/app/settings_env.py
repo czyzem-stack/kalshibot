@@ -182,8 +182,8 @@ class EnvSettings:
     dashboard_orderbook_cache_ttl_s: float = _get_float("DASHBOARD_ORDERBOOK_CACHE_TTL_S", 5.0, min_value=0.5)
     # If false, ``GET /api/dashboard/equity`` skips the parallel paper mark refresh (saves Kalshi I/O; chart MTM lags between full 12s polls).
     dashboard_fast_paper_mtm: bool = _get("DASHBOARD_FAST_PAPER_MTM", "1").lower() not in ("0", "false", "no", "off")
-    # Wall-clock cap for **all** paper MTM subtasks on the fast equity poll (Live + Lab A–D in parallel). 5s was too tight and timed out often → flat MTM / overlapped book lines until the full dashboard poll.
-    dashboard_fast_mtm_gather_timeout_s: float = _get_float("DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S", 22.0, min_value=5.0, max_value=120.0)
+    # Per-branch wall-clock cap for each paper MTM refresh on the fast equity poll (Live + labs run concurrently; each branch gets this budget). One slow branch no longer cancels the others.
+    dashboard_fast_mtm_gather_timeout_s: float = _get_float("DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S", 30.0, min_value=5.0, max_value=120.0)
     engine_study_trade_window_minutes: int = _get_int("ENGINE_STUDY_TRADE_WINDOW_MINUTES", 15, min_value=1)
     engine_orderbook_enrich_first_tick_cap: int = _get_int("ENGINE_ORDERBOOK_ENRICH_FIRST_TICK_CAP", 10, min_value=1)
     engine_orderbook_enrich_steady_cap: int = _get_int("ENGINE_ORDERBOOK_ENRICH_STEADY_CAP", 20, min_value=1)

@@ -229,6 +229,8 @@ export type SettingsOverlayProps = {
   onRunOptimizerNow?: () => void | Promise<void>;
   /** POST /api/optimizer/force-internal-mutation (force one internal mutant cycle). */
   onForceInternalMutationNow?: () => void | Promise<void>;
+  /** POST /labs/diversify — council Think Tank diversity pulse (nuke / manual only; dashboard has no button). */
+  onDiversifyLabsNow?: () => void | Promise<void>;
   onResetTradingData: (
     branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e",
     backup: boolean,
@@ -299,6 +301,7 @@ export default function SettingsOverlay({
   optimizerSaving = false,
   onRunOptimizerNow,
   onForceInternalMutationNow,
+  onDiversifyLabsNow,
   onResetTradingData,
   onApplyLabBranches,
   liveEngineOn,
@@ -328,6 +331,7 @@ export default function SettingsOverlay({
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("global");
   const [activeLab, setActiveLab] = useState<LabBranchKey>("a");
   const [forcingMutation, setForcingMutation] = useState(false);
+  const [diversifyCouncilBusy, setDiversifyCouncilBusy] = useState(false);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1591,29 +1595,55 @@ export default function SettingsOverlay({
             </button>
             <div style={{ marginTop: 18 }} className="field">
               <h3 className="section-tip" style={{ margin: "0 0 10px 0", fontSize: 14 }}>
-                Internal Optimizer Controls
+                Manual / nuke (optional)
               </h3>
-              <button
-                type="button"
-                className="primary"
-                disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
-                title="POST /api/optimizer/force-internal-mutation: one internal mutant cycle with replay + fitness gate; bypasses the scheduler. Same as the dashboard force control. Does not place exchange orders."
-                onClick={() =>
-                  void (async () => {
-                    if (!onForceInternalMutationNow) return;
-                    setForcingMutation(true);
-                    try {
-                      await onForceInternalMutationNow();
-                    } finally {
-                      setForcingMutation(false);
-                    }
-                  })()
-                }
-              >
-                {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
-              </button>
+              <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 11, lineHeight: 1.45 }}>
+                Scheduled optimizer + breeding run automatically. Use these only when you need an immediate corrective push. Same endpoints you can call with{" "}
+                <code>curl</code> (<code>POST /api/optimizer/force-internal-mutation</code>, <code>POST /labs/diversify</code>).
+              </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || optimizerSaving || forcingMutation || diversifyCouncilBusy || !onForceInternalMutationNow}
+                  title="POST /api/optimizer/force-internal-mutation: one internal mutant cycle with replay + fitness gate; bypasses the scheduler. Nuke option (Settings only). Does not place exchange orders."
+                  onClick={() =>
+                    void (async () => {
+                      if (!onForceInternalMutationNow) return;
+                      setForcingMutation(true);
+                      try {
+                        await onForceInternalMutationNow();
+                      } finally {
+                        setForcingMutation(false);
+                      }
+                    })()
+                  }
+                >
+                  {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || optimizerSaving || forcingMutation || diversifyCouncilBusy || !onDiversifyLabsNow}
+                  title="POST /labs/diversify: 45m Breeding Council Think Tank diversity pulse (B–E only). Nuke option (Settings only). No Lab A internal mutation."
+                  onClick={() =>
+                    void (async () => {
+                      if (!onDiversifyLabsNow) return;
+                      setDiversifyCouncilBusy(true);
+                      try {
+                        await onDiversifyLabsNow();
+                      } finally {
+                        setDiversifyCouncilBusy(false);
+                      }
+                    })()
+                  }
+                >
+                  {diversifyCouncilBusy ? "Diversifying council…" : "Diversify council (Think Tank)"}
+                </button>
+              </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
-                Runs one internal rule and parameter mutation with the same replay fitness gate as scheduled ticks. Also advances any due internal lab-evolution housekeeping on this call.
+                <strong>Force</strong> runs one Lab A internal mutation + replay gate. <strong>Diversify council</strong> sets{" "}
+                <code>labs_council_diversity_until</code> for 45m (cosmetic Think Tank lines only).
               </p>
             </div>
             <div style={{ marginTop: 20 }}>

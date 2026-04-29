@@ -835,6 +835,7 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
                 balance_cents=balance_cents,
                 study_wall_wid=study_wid,
                 trace=trace,
+                full_cfg=full_cfg,
             )
             if hive_bus is not None:
                 think_tank_on_ranked_market(
@@ -1229,6 +1230,7 @@ async def handle_market(
     balance_cents: int,
     study_wall_wid: str,
     trace: list[str],
+    full_cfg: dict[str, Any] | None = None,
 ) -> str | None:
     now = utc_now()
     ticker = str(market.get("ticker") or "")
@@ -1641,6 +1643,7 @@ async def handle_market(
                 implied_yes=prob,
                 rule_name=str(matched_rule.get("name") or ""),
                 bus=get_lab_communication_bus(),
+                full_cfg=full_cfg,
             )
         return None
 

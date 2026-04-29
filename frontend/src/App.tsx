@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import {
   CartesianGrid,
   Line,
@@ -35,6 +36,7 @@ import {
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
 import APP_VERSION_RAW from "../../VERSION?raw";
 import { useLabHiveChat } from "./labHiveChat";
+import BreedingLineageGraph from "./components/BreedingLineageGraph";
 import LabThinkTank from "./components/LabThinkTank";
 
 type AnyObj = Record<string, any>;
@@ -982,6 +984,7 @@ function BreedingFamilyTreePanel({
       <div className="dash-breeding-tree-scroll" style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}>
         {sub === "family" ? (
           <div>
+            <BreedingLineageGraph tree={tree} />
             <div className="dash-breeding-tree-node" style={{ marginBottom: 10 }}>
               <strong>Family tree · generation {Number(tree.generation_index ?? 0)}</strong>
               <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
@@ -1010,7 +1013,6 @@ function BreedingFamilyTreePanel({
                   const pText = pLabels.length ? pLabels.join(" + ") : String(n.parent || "—");
                   const fit = Number(n.fitness ?? 0);
                   const delta = Number(n.fitness_delta ?? 0);
-                  const deltaArrow = delta >= 0 ? "▲" : "▼";
                   const deltaTone = delta >= 0 ? "#5ef3a9" : "#fca5a5";
                   const why = String(n.breeder_reason_short || n.breeder_reason_full || "lineage carry-forward");
                   const traits = Array.isArray(n.inherited_traits_summary) ? (n.inherited_traits_summary as AnyObj[]).map((x) => String(x)).filter(Boolean).slice(0, 3) : [];
@@ -1032,7 +1034,11 @@ function BreedingFamilyTreePanel({
                         </div>
                         <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>← {pText}</div>
                         <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>
-                          fitness {fit.toFixed(3)} <span style={{ color: deltaTone, fontWeight: 700 }}>{deltaArrow} {delta >= 0 ? "+" : ""}{delta.toFixed(3)}</span>
+                          fitness {fit.toFixed(3)}{" "}
+                          <span style={{ color: deltaTone, fontWeight: 700 }}>
+                            d {delta >= 0 ? "+" : ""}
+                            {delta.toFixed(3)}
+                          </span>
                         </div>
                         <div className="sub" style={{ marginTop: 3, fontSize: 12, color: "#c9d6f6" }}>{why}</div>
                         {traits.length ? (
@@ -1175,7 +1181,7 @@ function BreedingFamilyTreePanel({
         {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
         compactOverlay
         surfaceHint="Double-click to enlarge · full lineage story in overlay · Esc/backdrop closes."
-        hint="Double-click to enlarge. Family tree explains who bred whom and why (tournament reason, synergy, inherited traits, fitness delta)."
+        hint="Double-click to enlarge. Family tab: SVG lineage graph from server tree edges, then cards for parents, children, and breeding story."
         detail={
           <p className="sub" style={{ margin: 0 }}>
             In overlay: click a child to inspect its breeding story (reason, parent pairing, synergy score, inherited rules/traits, and fitness delta vs parents). Other tabs remain lineage/children/culls/log from the same status payload.
@@ -2719,7 +2725,7 @@ function optimizerBriefInfoBody(): ReactNode {
       <p>
         <strong>Health dot (title row).</strong> A small <strong>green / yellow / red</strong> circle reflects internal-mutation
         <em>acceptance rate</em>: over 60% → green, 30–60% → yellow, under 30% → red. Hover the dot for the full band explanation. There is
-        no duplicate health readout in the top page header; settings (⚙) in the header only open Settings.
+        no duplicate health readout in the top page header; the Settings control in the header only opens Settings.
       </p>
       <p>
         <strong>Suggested action (toasts, not the card).</strong> Long-form <code>optimizer_suggested_action</code> text is{" "}
@@ -2734,9 +2740,10 @@ function optimizerBriefInfoBody(): ReactNode {
         card.
       </p>
       <p>
-        <strong>Action buttons in the title row.</strong> <strong>force</strong> runs the same “internal mutation + replay gate” as
-        <code>POST /api/optimizer/force-internal-mutation</code> and bypasses the normal scheduler; it does not by itself post exchange
-        orders. The same action exists in <strong>Settings → Optimizer</strong> for convenience. <strong>report</strong> opens the full
+        <strong>Optimizer card actions.</strong> The dashboard card only has <strong>report</strong> and <strong>Info</strong>; scheduled work runs without manual clicks.{" "}
+        <strong>Nuke / manual</strong> lives in <strong>Settings → Optimizer</strong>: <strong>Force Internal Mutation Now</strong> (
+        <code>POST /api/optimizer/force-internal-mutation</code>) and <strong>Diversify council (Think Tank)</strong> (
+        <code>POST /labs/diversify</code>) — B–E council diversity window, cosmetic lines. <strong>report</strong> opens the full
         overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
         <strong>Optimizer / Breeder / Tree</strong> is a segmented control at the <strong>bottom-right of this card</strong>.{" "}
         <strong>Breeder</strong> shows the 12-axis personality radar from <code>GET /api/optimizer/status</code>; <strong>Tree</strong> is a
@@ -3571,7 +3578,7 @@ function appendEquityLiveTailFromMetrics(
   return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
 }
 
-/** Intraday + Live (hourly buckets): trailing point from latest dashboard metrics so curves move on each fast equity poll. */
+/** Every granularity: trailing point from latest dashboard metrics so curves move on each fast equity poll (not only intraday/hourly — D/D and coarser tabs were frozen after a reset until new snapshot buckets appeared). */
 function equitySeriesWithLiveTail(
   snaps: AnyObj[],
   mode: EquityGranularity,
@@ -3579,7 +3586,6 @@ function equitySeriesWithLiveTail(
   fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
 ): EquityChartRow[] {
   const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
-  if (mode !== "intraday" && mode !== "hourly") return base;
   return appendEquityLiveTailFromMetrics(base, snaps, metrics, fmtIsoLocalFn);
 }
 
@@ -3999,8 +4005,6 @@ export default function App() {
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
-  const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
-  const [emergencyDiversifyBusy, setEmergencyDiversifyBusy] = useState(false);
   /** LABS BREEDING — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
   const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder" | "tree">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
@@ -4052,6 +4056,8 @@ export default function App() {
   const dashSnapshotRef = useRef<AnyObj | null>(null);
   /** Last full ``config`` blob from any dashboard response (equity-only polls may drop nested config). */
   const dashboardConfigFallbackRef = useRef<AnyObj>({});
+  /** Bottom ticker: separate React root on ``document.body`` (``createPortal`` was still not visible for some users). */
+  const bottomTickerHostRef = useRef<{ el: HTMLDivElement; root: Root } | null>(null);
 
   /**
    * Dashboard fetch: dedupe in-flight; force aborts. ``dashboardFetchEpochRef`` bumps on Strict Mode
@@ -4368,6 +4374,69 @@ export default function App() {
       dashboardConfigFallbackRef.current = c as AnyObj;
     }
   }, [dash?.config]);
+
+  useLayoutEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!bottomTickerHostRef.current) {
+      const el = document.createElement("div");
+      el.className = "app-bottom-marquee";
+      Object.assign(el.style, {
+        position: "fixed",
+        left: "0",
+        right: "0",
+        bottom: "0",
+        width: "100%",
+        zIndex: "2400",
+        minHeight: "48px",
+        maxHeight: "56px",
+        height: "52px",
+        padding: "0 12px",
+        paddingBottom: "max(4px, env(safe-area-inset-bottom, 0px))",
+        boxSizing: "border-box",
+        background: "rgb(13, 18, 40)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "hidden",
+      });
+      document.body.appendChild(el);
+      bottomTickerHostRef.current = { el, root: createRoot(el) };
+    }
+    const h = bottomTickerHostRef.current!;
+    const tickerDashNow = (dash ?? dashSnapshotRef.current ?? {}) as AnyObj;
+    const cfgMerged = {
+      ...(((tickerDashNow?.config as AnyObj) || dashboardConfigFallbackRef.current || (cfg as AnyObj) || {}) as AnyObj),
+      hero_marquee_speed_mult: heroMarqueeSpeedMult,
+    };
+    try {
+      h.root.render(
+        <BranchHeroMarquee dash={tickerDashNow} cfg={cfgMerged} showSnapshot={false} embedVariant="bottomBodyRoot" />,
+      );
+    } catch (e) {
+      console.error("bottom ticker render failed", e);
+      h.el.replaceChildren();
+      const p = document.createElement("p");
+      p.style.margin = "0";
+      p.style.fontSize = "13px";
+      p.style.color = "#e8ecff";
+      p.textContent = "Branch ticker failed to render — check the browser console.";
+      h.el.appendChild(p);
+    }
+  }, [dash, cfg, heroMarqueeSpeedMult]);
+
+  useEffect(() => {
+    return () => {
+      const h = bottomTickerHostRef.current;
+      if (!h) return;
+      try {
+        h.root.unmount();
+      } catch {
+        /* ignore */
+      }
+      h.el.remove();
+      bottomTickerHostRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!infoPopup) return;
@@ -5497,7 +5566,6 @@ export default function App() {
   }, [loadOptimizer, refresh]);
 
   const emergencyDiversifyNow = useCallback(async () => {
-    setEmergencyDiversifyBusy(true);
     try {
       await apiPostJson("/labs/diversify", {});
       await loadOptimizer();
@@ -5505,8 +5573,6 @@ export default function App() {
       setBreederRefetchNonce((n) => n + 1);
     } catch (e: any) {
       setErr(String(e?.message || e));
-    } finally {
-      setEmergencyDiversifyBusy(false);
     }
   }, [loadOptimizer, refresh]);
 
@@ -5595,14 +5661,19 @@ export default function App() {
   const acctSnap = dash?.account_snapshot as AnyObj | undefined;
   const accountLinked = Boolean(kalshi?.private_ok);
 
-  /** Stable reference so BranchHeroMarquee / snapshot header memos are not busted every parent render. */
+  /** Last good dashboard for bottom ticker when ``dash`` is momentarily null; keeps the fixed strip mounted. */
+  const tickerDash = (dash ?? dashSnapshotRef.current) as AnyObj | null;
+  /** Config for marquee: live ``dash.config`` or fallback when ticker uses snapshot ref only. */
   const cfgWithHeroMarqueeSpeed = useMemo(
-    () => ({ ...(cfg as AnyObj), hero_marquee_speed_mult: heroMarqueeSpeedMult }),
-    [cfg, heroMarqueeSpeedMult],
+    () => ({
+      ...(((tickerDash?.config as AnyObj) || dashboardConfigFallbackRef.current || (cfg as AnyObj) || {}) as AnyObj),
+      hero_marquee_speed_mult: heroMarqueeSpeedMult,
+    }),
+    [tickerDash, cfg, heroMarqueeSpeedMult],
   );
 
   return (
-    <div className={dash ? "page page--bottom-marquee" : "page"}>
+    <div className={tickerDash ? "page page--bottom-marquee" : "page"}>
       {visibleOptimizerNotifs.length ? (
         <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade and optimizer notifications">
           {visibleOptimizerNotifs.map((n) => {
@@ -5995,61 +6066,22 @@ export default function App() {
           aria-labelledby="dash-heading-optimizer"
         >
           <div className="branch-brain-inline branch-brain-inline--optimizer-stack">
-            <div className="branch-brain-inline__head">
-              <h2 id="dash-heading-optimizer" className="dash-section__title" style={{ margin: 0 }}>
-                Optimizer
-              </h2>
-              <span
-                className={`dash-optimizer-health-dot dash-optimizer-health-dot--${optimizerStatus.health}`}
-                role="img"
-                aria-label={`Optimizer health ${optimizerStatus.health}`}
-                title={
-                  `Optimizer health (${optimizerStatus.health}): from internal mutation acceptance rate — green if >60% accepted, yellow if 30–60%, red if <30%. ` +
-                  "Red usually means most proposed mutants failed replay or statistical gates. Check Internal Optimizer Trace in Settings, replay PnL vs gates, and any " +
-                  "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
-                }
-              />
-              <div className="dash-optimizer-actions">
-                <button
-                  type="button"
-                  className="primary dash-panel-btn"
-                  aria-label={
-                    "Force internal mutation: applies an internal rule or parameter change, runs replay fitness checks, and bypasses the normal optimizer scheduler. " +
-                    "POST /api/optimizer/force-internal-mutation. Does not submit exchange orders; it updates paper-side optimizer and config paths your rules consume."
-                  }
-                  disabled={!dash || busy || forceInternalMutationBusy}
+            <div className="branch-brain-inline__head dash-optimizer-panel__head">
+              <div className="dash-optimizer-panel__head-top">
+                <h2 id="dash-heading-optimizer" className="dash-section__title" style={{ margin: 0 }}>
+                  Optimizer
+                </h2>
+                <span
+                  className={`dash-optimizer-health-dot dash-optimizer-health-dot--${optimizerStatus.health}`}
+                  role="img"
+                  aria-label={`Optimizer health ${optimizerStatus.health}`}
                   title={
-                    "Force: run an internal mutation now — internal rule/parameter change plus replay fitness checks, bypassing the scheduler (POST /api/optimizer/force-internal-mutation). " +
-                    "Does not place Kalshi orders by itself; it changes what the bot simulates and gates on the next ticks."
+                    `Optimizer health (${optimizerStatus.health}): from internal mutation acceptance rate — green if >60% accepted, yellow if 30–60%, red if <30%. ` +
+                    "Red usually means most proposed mutants failed replay or statistical gates. Check Internal Optimizer Trace in Settings, replay PnL vs gates, and any " +
+                    "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
                   }
-                  onClick={() =>
-                    void (async () => {
-                      if (!dash) return;
-                      setForceInternalMutationBusy(true);
-                      try {
-                        await forceInternalMutationNow();
-                        setBreederRefetchNonce((n) => n + 1);
-                      } finally {
-                        setForceInternalMutationBusy(false);
-                      }
-                    })()
-                  }
-                >
-                  {forceInternalMutationBusy ? "…" : "force"}
-                </button>
-                <button
-                  type="button"
-                  className="dash-panel-btn dash-optimizer-emergency-diversify"
-                  aria-label="Emergency diversify: temporarily tighten breeder B–E gates and yes floors, force internal mutation, log to Think Tank."
-                  disabled={!dash || busy || emergencyDiversifyBusy || forceInternalMutationBusy}
-                  title={
-                    "Emergency diversify (~45m): raises optimizer yes floors for Labs B–E, tightens each lab’s no_bet_when_yes_below_pct, runs one internal mutation, " +
-                    "and posts DIVERSIFY TRIGGERED lines to the Breeding Council Think Tank. POST /labs/diversify."
-                  }
-                  onClick={() => void emergencyDiversifyNow()}
-                >
-                  {emergencyDiversifyBusy ? "…" : "🚨 Emergency Diversify"}
-                </button>
+                />
+                <div className="dash-optimizer-actions">
                 <button
                   type="button"
                   className="primary dash-panel-btn"
@@ -6066,26 +6098,19 @@ export default function App() {
                     "This card: main area switches Optimizer radar vs Breeder vs Tree; mutation dial + Lab pulse stay fixed just above the tab row on every tab. " +
                     "Under the title: Breeding pool / death-chamber snapshot (click → Tree tab). " +
                     "Suggested-action text may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
-                    "force / report: same row as this button; Optimizer / Breeder / Tree toggle is bottom-right. Pulse empty → check engine toggles and Account."
+                    "Manual optimizer nukes live under Settings → Optimizer (not on this card). Optimizer / Breeder / Tree toggle is bottom-right. Pulse empty → check engine toggles and Account."
                   }
                   onClick={() => setInfoPopup({ title: "Optimizer", body: optimizerBriefInfoBody() })}
                 >
                   Info
                 </button>
+                </div>
               </div>
             </div>
-            <p
-              className="sub dash-optimizer-breeding-hook"
-              style={{
-                margin: "4px 0 10px",
-                maxWidth: "52rem",
-                lineHeight: 1.48,
-                fontSize: 12,
-              }}
-            >
-              <strong>Labs Breeding</strong> — Parents <strong>B–E</strong> feed hidden <code>lab_child_*</code> candidates (replay fitness, pool vs{" "}
-              <strong>death chamber</strong>). <strong>Adoption → Lab A</strong> is gated; Live needs a separate promote. Use{" "}
-              <strong>Breeder</strong> &amp; <strong>Tree</strong> below · Think Tank chat is cosmetic.
+            <p className="sub dash-optimizer-breeding-hook">
+              <strong>Breeding</strong> — B–E evolve <code>lab_child_*</code> (pool vs death chamber); adoption to Lab A is gated.{" "}
+              <strong>Breeder</strong> / <strong>Tree</strong> for detail. Manual nukes: <strong>Settings</strong> → Optimizer (
+              <code>POST /api/optimizer/force-internal-mutation</code>, <code>POST /labs/diversify</code>).
             </p>
             <button
               type="button"
@@ -6224,7 +6249,16 @@ export default function App() {
                 mutationDial: optimizerStatus.mutationDial,
               }}
             />
-            <LabThinkTank messages={labHiveMessages} enabled={labChatEnabled} dashReady={Boolean(dash)} />
+            <LabThinkTank
+              messages={labHiveMessages}
+              enabled={labChatEnabled}
+              dashReady={Boolean(dash)}
+              councilDiversityUntil={String(
+                (breedingStripStatus as AnyObj | null)?.labs_council_diversity_until ||
+                  (cfg?.optimizer as AnyObj)?.labs_council_diversity_until ||
+                  "",
+              )}
+            />
           {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
@@ -7447,6 +7481,7 @@ export default function App() {
         optimizerSaving={optimizerSaving}
         onRunOptimizerNow={runOptimizerNow}
         onForceInternalMutationNow={forceInternalMutationNow}
+        onDiversifyLabsNow={emergencyDiversifyNow}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
         liveEngineOn={liveBranchEngineOn}
@@ -7681,9 +7716,6 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      <div className="app-bottom-marquee" aria-label="Live and lab branch tickers (persistent)">
-        <BranchHeroMarquee dash={dash} cfg={cfgWithHeroMarqueeSpeed} showSnapshot={false} />
-      </div>
         </>
       ) : null}
       {infoPopup ? (
