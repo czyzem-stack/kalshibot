@@ -3292,6 +3292,10 @@ function orderedAssetEntries(assetsObj: AnyObj | undefined): [string, AnyObj][] 
 
 type EquityGranularity = "intraday" | "dd" | "ww" | "mm" | "yy";
 
+/** Intraday = rolling wall-clock window (not “last N points”). Backend sends up to 2000 snapshots per branch. */
+const EQUITY_INTRADAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const EQUITY_INTRADAY_MAX_POINTS = 2500;
+
 type EquityChartRow = { t: string; tsMs: number; equity: number; mtm: number | null; synthetic?: boolean };
 
 /** ``pct_change_window`` — each series is % change from the first *usable* point in that branch’s plotted window (book and MTM use their own first-row bases). */
@@ -3365,7 +3369,10 @@ function buildEquityChartSeries(
   rows.sort((a, b) => a.ts - b.ts);
 
   if (mode === "intraday") {
-    return rows.slice(-400).map((r) => ({
+    const cutoff = Date.now() - EQUITY_INTRADAY_WINDOW_MS;
+    let windowed = rows.filter((r) => r.ts >= cutoff);
+    if (windowed.length > EQUITY_INTRADAY_MAX_POINTS) windowed = windowed.slice(-EQUITY_INTRADAY_MAX_POINTS);
+    return windowed.map((r) => ({
       t: fmtIsoLocalFn(r.at, false),
       tsMs: r.ts,
       equity: r.eq,
@@ -6420,7 +6427,7 @@ export default function App() {
                 title={
                   "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
-                  "Time-scale tabs re-bucket the same stored snapshots: Intraday = last 400 points in time order; D/W/M/Y = last snapshot " +
+                  "Time-scale tabs re-bucket the same stored snapshots: Intraday = snapshots from the rolling last 24 hours (wall clock); D/W/M/Y = last snapshot " +
                   "per calendar bucket (day/week start UTC/month/year). Use Compare to overlay branches in one frame. " +
                   "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
                 }
@@ -6455,10 +6462,10 @@ export default function App() {
                         </p>
                         <p>
                           <strong>Time-scale tabs (Intraday, D, W, M, Y).</strong> All four labels apply to <em>all six</em> charts.{" "}
-                          <strong>Intraday</strong> plots raw snapshot order (up to the last 400 points) for responsive debugging. <strong>
+                          <strong>Intraday</strong> plots snapshots from roughly the <strong>last 24 hours</strong> in time order (same dense ticks as the engine writes); capped only if the list exceeds server limits. <strong>
                             D / W / M / Y
                           </strong>{" "}
-                          collapse to the last point in each UTC calendar day, week (Monday start), month, or year so you can de-noise. Labels on
+                          collapse to the last point in each UTC calendar day, week (Monday UTC start), month, or year so you can de-noise. Labels on
                           day view use the snapshot’s <em>local</em> calendar date, not a synthetic “end of day” you might expect from
                           equities—this is a Kalshi 24/7 world clock.
                         </p>
@@ -6498,7 +6505,7 @@ export default function App() {
             <div className="chart-tabs dash-split-panel__tabs dash-equity-panel__tabs" role="tablist" aria-label="Equity time scale (all branches)">
               {(
                 [
-                  ["intraday", "Intraday", "Raw snapshots in time order (last 400 points)."],
+                  ["intraday", "Intraday", "Rolling last 24 hours of snapshots (wall clock), dense ticks."],
                   ["dd", "D / D", "Last snapshot per UTC calendar day; label uses that snapshot’s local date."],
                   ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
                   ["mm", "M / M", "Last snapshot per UTC calendar month."],

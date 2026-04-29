@@ -2,6 +2,10 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.019 - equity intraday 24h window - 2026-04-29
+
+- **Frontend (`App.tsx`):** **Equity curves → Intraday** now plots snapshots from the **rolling last 24 hours** (wall clock). Previously the UI took only the **last 400** snapshot rows, which at tight engine cadence looked like “a few hours.” **D / D**, **W / W**, etc. unchanged (UTC calendar buckets). Docs: [`README.md`](README.md) Dashboard map.
+
 ## v0.4.15.018 - footer marquee smoothness - 2026-04-29
 
 - **Frontend (`App.tsx`, `styles.css`):** Branch active-trades ticker and Lab pulse marquee — **rAF-coalesced** `ResizeObserver`, **skip redundant** `needsScroll` updates, **tiered** `animation-duration` so dashboard polls do not restart the CSS animation on tiny text changes; **`translate3d`** keyframes, **`will-change`** only while scrolling, compositing hints and **`isolation`** on masked viewports to reduce flicker.

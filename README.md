@@ -283,7 +283,7 @@ Ports, Kalshi base URL, logging, timeouts, WebSocket, dashboard MTM caps, Think 
 | UI area | Purpose |
 |---------|---------|
 | **Hero / branch strip** | Live + Lab A–E; engine toggles; marquees. |
-| **Equity** | Small multiples + compare overlay. |
+| **Equity curves** | Small multiples + **Compare** overlay. **Intraday** = rolling **24 hours** of `equity_snapshots` (not a fixed row cap). **D / D** … **Y / Y** = last snapshot per **UTC** day / Monday week / month / year. |
 | **Account / performance** | Holdings, metrics, activity by branch. |
 | **Optimizer** | **Breeder** + **Tree**; **Lab Think Tank** strip (`/labs/chat`). |
 | **Settings → Simulation labs** | Per-lab tabs, **Save all labs**, **Mass apply** (`PUT /api/config/lab-branches`: engines, paper, sizing, patient stop, auto-reset). |
