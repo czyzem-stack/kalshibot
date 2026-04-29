@@ -71,11 +71,15 @@ a {
   padding: 4px 14px;
   padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
-  background: rgba(11, 16, 32, 0.96);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  /* Mostly solid + light blur: full-glass fixed bars often flicker when the page repaints behind them (dashboard polls). */
+  background: rgba(11, 16, 32, 0.985);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.32);
   box-sizing: border-box;
+  isolation: isolate;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .app-bottom-marquee .branch-hero-marquee {
@@ -102,7 +106,7 @@ a {
   margin-bottom: 0;
   padding-top: max(24px, calc(4px + env(safe-area-inset-top, 0px)));
   padding-bottom: var(--hero-stack-rhythm);
-  border-bottom: 1px solid var(--border);
+  /* No border-bottom — full-width hairline under the hero snapshot read as a glitch (snapshot card already frames tickers). */
   background: rgba(11, 16, 32, 0.98);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
 }
@@ -379,12 +383,21 @@ button.primary.dash-panel-btn {
 /* Assets | Account: same header rhythm as Branch / Equity (dash-section__title + tabs / badge) */
 .dashboard-grid-panel__head {
   display: flex;
-  flex-wrap: wrap;
-  /* flex-start: chart tabs are taller than the title line; center would push the left title down vs Account+badge */
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px 14px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   margin-bottom: 12px;
+}
+
+/* One row: title block + actions/badge — match .dash-panel-head vertical centering so card tops line up across the 2×2 grid */
+.dashboard-grid-panel__head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  width: 100%;
+  min-width: 0;
 }
 
 .dashboard-grid-panel.panel .dashboard-grid-panel__head .dash-section__title.dashboard-grid-panel__title {
@@ -409,6 +422,10 @@ button.primary.dash-panel-btn {
 /* Later `.chart-tabs { margin-top: 10px }` is for stacked chart sections; row headers must stay flush. */
 .dashboard-grid-panel__head .chart-tabs.dashboard-grid-panel__tabs {
   margin-top: 0;
+  /* Match inset of title text after 3px accent + 12px pad on `.dashboard-grid-panel__title` */
+  padding-left: calc(3px + 12px);
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .dashboard-grid-panel__meta {
@@ -416,6 +433,7 @@ button.primary.dash-panel-btn {
   align-items: center;
   justify-content: flex-end;
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .dash-panel-head {
@@ -474,7 +492,15 @@ button.primary.dash-panel-btn {
 }
 
 .dashboard-grid-panel__body--account {
-  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Lead paragraphs under Account header — same left keyline as title + branch tabs */
+.dash-main-4grid .dashboard-grid-panel--account .dashboard-grid-panel__body--account > .sub {
+  padding-left: calc(3px + 12px);
+  box-sizing: border-box;
 }
 
 .asset-watch-scroll {
@@ -1229,7 +1255,8 @@ input[type="number"] {
   min-width: 0;
 }
 
-.dash-main-4grid > .dashboard-grid-panel {
+.dash-main-4grid > .dashboard-grid-panel,
+.dash-main-4grid__rail > .dashboard-grid-panel {
   align-self: stretch;
   max-height: var(--dash-lower-panel-max);
   min-height: 0;
@@ -1243,32 +1270,63 @@ input[type="number"] {
 }
 
 /* Account matches Assets vertical level; only inner section boxes scroll. */
-.dash-main-4grid > .dashboard-grid-panel--account {
+.dash-main-4grid .dashboard-grid-panel--account {
   display: flex;
   flex-direction: column;
 }
 
+/* Right rail: Equity + Account share one inset — avoids staggered left edges between rows in column 2. */
+.dash-main-4grid > .dash-main-4grid__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  align-self: stretch;
+}
+
 @media (min-width: 980px) {
   .dash-main-4grid {
-    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+    /* Equal tracks so the center gutter is geometrically centered between column masses */
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 12px 14px;
+    justify-items: stretch;
+    align-items: start;
+  }
+
+  /* Explicit placement (DOM order is metrics → assets → rail). */
+  .dash-main-4grid > .dash-split-metrics-stack {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .dash-main-4grid > .dashboard-grid-panel--assets {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  /* Grid `gap` separates columns — no rail border (avoids a full-height vertical hairline in the gutter). */
+  .dash-main-4grid > .dash-main-4grid__rail {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    box-sizing: border-box;
   }
 
   .dash-split-row__col--metrics .optimizer-activity-charts {
     grid-template-columns: 1fr;
   }
+}
 
-  /* Vertical break between metrics stack and equity; column-gap already separates columns — avoid extra inset so Account lines up with Equity. */
-  .dash-split-row__col--equity {
-    border-left: 1px solid rgba(56, 68, 110, 0.95);
-    /* Keep the divider, but preserve card inset so headings/tabs don't hug the border. */
-    padding-left: 14px;
-    margin-left: 0;
-    /* Default grid stretch makes this column as tall as the Optimizer stack → empty band under short equity content. */
-    align-self: start;
-    width: 100%;
-    max-width: 100%;
-    box-sizing: border-box;
+@media (max-width: 979px) {
+  .dash-main-4grid > .dash-split-metrics-stack,
+  .dash-main-4grid > .dashboard-grid-panel--assets,
+  .dash-main-4grid > .dash-main-4grid__rail {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .dash-main-4grid > .dash-main-4grid__rail {
+    border-left: none;
+    padding-left: 0;
   }
 }
 
@@ -1463,6 +1521,7 @@ input[type="number"] {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 11px;
   color: #dce3ff;
+  isolation: isolate;
   mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
 }
 
@@ -1470,13 +1529,15 @@ input[type="number"] {
   display: inline-flex;
   flex-wrap: nowrap;
   white-space: nowrap;
-  will-change: transform;
 }
 
 .branch-perf-active-marquee__track--scroll {
   animation-name: lab-thought-marquee;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .branch-perf-active-marquee__track--static .branch-perf-active-marquee__half {
@@ -1586,6 +1647,7 @@ input[type="number"] {
   font-size: 11px;
   line-height: 1.45;
   color: #dce3ff;
+  isolation: isolate;
   mask-image: linear-gradient(90deg, transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
 }
 
@@ -1593,13 +1655,15 @@ input[type="number"] {
   display: inline-flex;
   flex-wrap: nowrap;
   white-space: nowrap;
-  will-change: transform;
 }
 
 .lab-pulse-ticker__track--scroll {
   animation-name: lab-thought-marquee;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .lab-pulse-ticker__half {
@@ -2201,8 +2265,18 @@ input[type="number"] {
 
 .branch-hero-marquee__track-inner {
   align-items: stretch;
-  animation: none !important;
   will-change: transform;
+}
+
+/* Compositor-driven loop (duration set inline). JS RAF autoplay was dropping frames under dashboard load. */
+@keyframes branch-hero-css-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
 }
 
 .branch-hero-marquee__rotor {
@@ -2523,6 +2597,7 @@ input[type="number"] {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 11px;
   color: #dff7e8;
+  isolation: isolate;
   mask-image: linear-gradient(90deg, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
 }
 
@@ -2530,13 +2605,15 @@ input[type="number"] {
   display: inline-flex;
   flex-wrap: nowrap;
   white-space: nowrap;
-  will-change: transform;
 }
 
 .lab-thoughts-strip__track--scroll {
   animation-name: lab-thought-marquee;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 .lab-thoughts-strip__track--static .lab-thoughts-strip__seg {
@@ -2551,10 +2628,10 @@ input[type="number"] {
 
 @keyframes lab-thought-marquee {
   0% {
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0);
   }
   100% {
-    transform: translateX(-50%);
+    transform: translate3d(-50%, 0, 0);
   }
 }
 
@@ -3491,7 +3568,6 @@ button[title].section-tip {
 .branch-ticker-track-inner {
   display: flex;
   width: max-content;
-  animation: branch-ticker-scroll linear infinite;
 }
 
 .branch-ticker-chunk {
@@ -3550,11 +3626,16 @@ button[title].section-tip {
 
 @media (prefers-reduced-motion: reduce) {
   .branch-ticker-track-inner {
-    animation: none;
+    animation: none !important;
     transform: none;
     flex-wrap: wrap;
     width: 100%;
     white-space: normal;
+  }
+
+  .branch-hero-marquee__marquee .branch-hero-marquee__track-inner {
+    animation: none !important;
+    transform: none;
   }
 
   .branch-hero-marquee__marquee {

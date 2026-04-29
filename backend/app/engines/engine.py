@@ -1333,18 +1333,20 @@ async def handle_market(
         if series_up:
             open_blocker_tk = await engine.store.first_open_sim_ticker_for_series_prefix(branch, series_up)
         if open_blocker_tk:
-            logger.info(
-                "[sim_trade_block] skip reason=series_has_open_sim series_family=%s branch=%s new_ticker=%s open_blocker=%s grep=series_open_sim",
-                series_up,
-                branch,
-                str(ticker)[:48],
-                str(open_blocker_tk)[:64],
-            )
             bt = str(open_blocker_tk)[:100]
             skip_lbl = f"series_has_open_sim — already open: {bt}"
-            _skip_log_k = f"{window_id}:{dedupe_key}:series_open"
+            # Keep this gate independent of matched rule/side so one blocked series logs once per branch+window.
+            _skip_log_k = f"{window_id}:{branch}:{series_up}:series_open"
             if _skip_log_k not in engine._sim_transient_skip_logged:
                 engine._sim_transient_skip_logged.add(_skip_log_k)
+                # Match log_signal: one INFO per window+key — avoid spamming every tick while blocker unchanged.
+                logger.info(
+                    "[sim_trade_block] skip reason=series_has_open_sim series_family=%s branch=%s new_ticker=%s open_blocker=%s grep=series_open_sim",
+                    series_up,
+                    branch,
+                    str(ticker)[:48],
+                    str(open_blocker_tk)[:64],
+                )
                 await log_signal(
                     engine,
                     window_id=window_id,
