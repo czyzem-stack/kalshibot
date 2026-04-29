@@ -864,7 +864,11 @@ export default function SettingsOverlay({
           >
             <h2 style={{ marginTop: 0 }}>Simulation labs</h2>
             <p className="sub" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45 }}>
-              Five independent paper branches (A–E). Sizing and rules are per lab; use <strong>Save all labs</strong>, <strong>Mass apply</strong> (engines, sizing, patient stop, auto-reset), or per-lab saves. The <strong>Reset Live + all labs</strong> panel below wipes <strong>Live + A–E</strong> sim history in SQLite; per-lab saves alone do not delete history.
+              Five independent paper branches (A–E). <strong>Labs B–E</strong> are the <strong>breeder parents</strong> for Labs Breeding (hidden{" "}
+              <code>lab_child_*</code> tournament → pool / death chamber → optional adoption into <strong>Lab A</strong>) — see the dashboard{" "}
+              <strong>Optimizer → Breeder / Tree</strong>. <strong>Lab A</strong> is staging toward Live; sizing and rules are per lab. Use{" "}
+              <strong>Save all labs</strong>, <strong>Mass apply</strong> (engines, sizing, patient stop, auto-reset), or per-lab saves. The{" "}
+              <strong>Reset Live + all labs</strong> panel below wipes <strong>Live + A–E</strong> sim history in SQLite; per-lab saves alone do not delete history.
             </p>
             <div
               className="panel settings-nested-panel"

@@ -85,10 +85,9 @@ class LabCommunicationBus:
             row["reply_to"] = reply_to
         self._dq.append(row)
         payload = {k: v for k, v in row.items() if v is not None}
+        # Only log at INFO when explicitly enabled — DEBUG still flooded consoles when LOG_LEVEL=DEBUG.
         if env.lab_think_tank_log_info:
             _slog.info("think_tank_message", **payload)
-        else:
-            _slog.debug("think_tank_message", **payload)
         return row
 
     def recent(self) -> list[dict[str, Any]]:

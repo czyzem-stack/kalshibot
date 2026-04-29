@@ -245,7 +245,8 @@ export default function SettingsHelpPlaybook({
             <strong>Global / Live</strong>: subtitle filters, live sizing, swing exit, live reset, shared rules JSON.
           </li>
           <li>
-            <strong>Simulation labs</strong>: <strong>Reset all labs (A–E)</strong> (optional uniform paper cents), five-branch sizing row, per-lab panels (auto-reset, YES/NO band sliders, branch save).
+            <strong>Simulation labs</strong>: <strong>Reset all labs (A–E)</strong> (optional uniform paper cents), five-branch sizing row, per-lab panels (auto-reset, YES/NO band sliders, branch save).{" "}
+            <strong>Labs B–E</strong> are <strong>breeder parents</strong> for GA children (<code>lab_child_*</code>) — outcomes surface under <strong>Optimizer → Breeder / Tree</strong>.
           </li>
           <li>
             <strong>Rules &amp; bands</strong>: default YES/NO bands, dev sim controls, experiment hints.
@@ -254,7 +255,7 @@ export default function SettingsHelpPlaybook({
             <strong>Patient stop-loss</strong>: Live + Labs A–E stop panels in one place.
           </li>
           <li>
-            <strong>Optimizer</strong>: scheduler, adaptive thresholds, lab styles, traces, change history.
+            <strong>Optimizer</strong>: scheduler, adaptive thresholds, lab styles, traces, change history — plus <strong>Labs Breeding</strong> telemetry (Breeder radar, Tree).
           </li>
           <li>
             <strong>Fees &amp; sim</strong>: paper fee model for sim exits and replay.
@@ -273,8 +274,8 @@ export default function SettingsHelpPlaybook({
             },
             {
               name: "Simulation labs",
-              what: "A/B/C/D/E sizing row, lab sub-tabs, per-lab rules sliders and save.",
-              impact: "Only the edited lab branch changes when you save that panel.",
+              what: "A/B/C/D/E sizing row, lab sub-tabs, per-lab rules sliders and save. B–E are breeder parents for child-lab GA.",
+              impact: "Only the edited lab branch changes when you save that panel; breeder fitness indirectly feeds adoption candidates.",
             },
             {
               name: "Rules & bands",
@@ -288,8 +289,8 @@ export default function SettingsHelpPlaybook({
             },
             {
               name: "Optimizer",
-              what: "Scheduler, adaptive controls, lab include toggles, replay gates, internal trace.",
-              impact: "Adaptive persisted writes still target Lab A staging.",
+              what: "Scheduler, adaptive controls, lab include toggles, replay gates, internal trace; Breeder/Tree read breeding pool & lineage.",
+              impact: "Adaptive persisted writes still target Lab A staging; breeding GA uses B–E parents + lab_child_* tournament.",
             },
             {
               name: "Fees & sim",
@@ -312,6 +313,9 @@ export default function SettingsHelpPlaybook({
         onAction={() => goLabs("a")}
       >
         <ul className="sub" style={{ marginTop: 0, fontSize: 12, lineHeight: 1.5 }}>
+          <li>
+            <strong>Architecture</strong>: <strong>Lab A</strong> = staging toward Live; <strong>B–E</strong> = parallel breeder personalities whose paper PnL and rules inform <strong>Labs Breeding</strong> (see Optimizer column).
+          </li>
           <li>
             <strong>Paper balance (cents)</strong>: starting bankroll for that lab.
           </li>

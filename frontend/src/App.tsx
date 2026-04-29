@@ -2636,6 +2636,12 @@ function optimizerBriefInfoBody(): ReactNode {
   return (
     <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
       <p>
+        <strong>Labs Breeding (substance).</strong> Breeder paper runs on <strong>Labs B–E</strong>; the GA maintains hidden{" "}
+        <code>lab_child_*</code> slots that compete on replay fitness — <strong>pool</strong> vs <strong>death chamber</strong>, then optional{" "}
+        <strong>adoption into Lab A</strong> (staging). That loop is <em>not</em> the scrolling Think Tank dialogue (that is flavor only).
+        The <strong>Breeder</strong> radar and <strong>Tree</strong> tabs visualize this; the breeding snapshot line jumps to Tree.
+      </p>
+      <p>
         <strong>What this column is for.</strong> The Optimizer area is your <em>adaptive paper tuning</em> and experiment readout. The{" "}
         <strong>mutation</strong> dial and <strong>Lab pulse</strong> ticker sit <strong>above the Optimizer / Breeder / Tree tabs</strong>{" "}
         on every sub-view (same readout while you switch radars or the tree). Full <strong>run-metric</strong> detail (cycle, last run,
@@ -5499,8 +5505,8 @@ export default function App() {
                   <span
                     className={`ui-track-pill ui-track-pill--${UI_TRACK.kind}`}
                     title={
-                      "Which checkout this UI belongs to (local worktrees). Set VITE_UI_TRACK=dev|main|test|live in frontend/.env. " +
-                      "If unset: dev server port 5173 → main, 5174 → develop; else VITE_API_ORIGIN 8770 → main, else dev."
+                      "Which checkout this UI belongs to (local worktrees). In Vite dev, URL port wins: 5173 → main, 5174 → develop, 5175 → test (so two tabs are not both “dev” when .env pins VITE_UI_TRACK). " +
+                      "Otherwise set VITE_UI_TRACK=dev|main|test|live; or VITE_API_ORIGIN :8770 → main."
                     }
                   >
                     {UI_TRACK.label}
@@ -5850,6 +5856,19 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <p
+              className="sub dash-optimizer-breeding-hook"
+              style={{
+                margin: "4px 0 10px",
+                maxWidth: "52rem",
+                lineHeight: 1.48,
+                fontSize: 12,
+              }}
+            >
+              <strong>Labs Breeding</strong> — Parents <strong>B–E</strong> feed hidden <code>lab_child_*</code> candidates (replay fitness, pool vs{" "}
+              <strong>death chamber</strong>). <strong>Adoption → Lab A</strong> is gated; Live needs a separate promote. Use{" "}
+              <strong>Breeder</strong> &amp; <strong>Tree</strong> below · Think Tank chat is cosmetic.
+            </p>
             <button
               type="button"
               className="dash-optimizer-breeding-summary"

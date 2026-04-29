@@ -1,45 +1,80 @@
 # Kalshibot (“Chomp’s Diner”)
 
-**Self-hosted Kalshi trading stack** — a **FastAPI** backend and **React (Vite)** dashboard that run on **your** machine. One process owns Kalshi **REST** (and optional **WebSocket**) traffic, a **JSON rule engine**, **SQLite** history, and a **dual engine loop** that ticks **Live** plus **five paper labs (A–E)** and hidden **`lab_child_*`** breeding slots. An **optimizer** and **Labs Breeding** layer can propose and replay experiments; a **Breeding Council Think Tank** (Labs **B–E**) adds lightweight, in-memory “lab chat” for the UI — separate from the GA breeding code path.
+**Self-hosted Kalshi trading stack** — a **FastAPI** backend and **React (Vite)** dashboard on **your** machine. **Labs Breeding** is the strategic loop: breeder parents (**Labs B–E**) drive a **genetic tournament** of hidden **`lab_child_*`** engines (replay fitness, pool vs death chamber, gated **adoption into Lab A**). **Lab A** is staging only; **Live** changes only when you explicitly promote. A **dual loop** ticks **Live + Lab A–E + children** against Kalshi **REST/WebSocket**; **SQLite** holds config and history; an **optimizer** proposes bounded experiments. The **Breeding Council Think Tank** (Labs **B–E**) is **cosmetic UI dialogue** (`GET /labs/chat`) — **not** the GA (see [`lab_breeding.py`](backend/app/lab_breeding.py)).
 
 | | |
 |---|---|
-| **Version** | [`VERSION`](VERSION) (currently **v0.4.15.011**) · full history in [`CHANGELOG.md`](CHANGELOG.md) |
-| **Default branches** | **`develop`** — day-to-day work · **`main`** — release-aligned / sidecar worktrees |
+| **Version** | [`VERSION`](VERSION) · history in [`CHANGELOG.md`](CHANGELOG.md) |
+| **Default branches** | **`develop`** — day-to-day · **`main`** — release / sidecar worktrees |
 | **Primary data** | `data/bot.sqlite3` · optional JSONL under `data/logs/` |
 | **Stack** | Python 3.11+ · FastAPI · React 18 · TypeScript · Vite · Recharts |
+
+> **Safety (read once)**  
+> **Only Lab A** is on the intentional path toward Live, with confirmations and gates. **Real-money** paths stay behind explicit acks and `simulate` / `live_paper_trading` settings — never strip those checks. **Back up** `data/bot.sqlite3` before destructive resets. Kalshibot is **not affiliated with Kalshi**; trading involves risk.
+
+---
+
+## Run it (TL;DR)
+
+**Windows (happy path)** — from repo root in **PowerShell**:
+
+```powershell
+.\scripts\create_venv.ps1
+Copy-Item .env.example .env   # then edit: Kalshi keys, KALSHI_ENV, ports
+.\scripts\launch_local.ps1     # API + Vite; see script for -SkipMainSidecar / main sidecar
+```
+
+Open **`http://127.0.0.1:5174`** (develop Vite). API default **`http://127.0.0.1:8765`** · OpenAPI **`/docs`** on that host.
+
+**macOS / Linux** — same idea, two terminals from repo root:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -U pip && pip install -r requirements.txt
+cp .env.example .env && ${EDITOR:-vi} .env
+python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8765
+```
+
+Second terminal: `cd frontend && npm ci && npm run dev` — put your Vite origin in **`CORS_ORIGINS`** in `.env` and restart the API.
 
 ---
 
 ## Table of contents
 
-1. [Why run Kalshibot](#why-run-kalshibot)
-2. [What you get out of the box](#what-you-get-out-of-the-box)
-3. [Architecture](#architecture)
-4. [Branch model (Live + labs)](#branch-model-live--labs)
-5. [Prerequisites](#prerequisites)
-6. [Quick start — Windows (recommended path)](#quick-start--windows-recommended-path)
-7. [Quick start — macOS / Linux](#quick-start--macos--linux)
-8. [Packaged API (Windows exe)](#packaged-api-windows-exe)
-9. [Configuration: two layers](#configuration-two-layers)
-10. [Dashboard & Settings map](#dashboard--settings-map)
-11. [API reference](#api-reference)
-12. [Development: frontend & backend](#development-frontend--backend)
-13. [Testing](#testing)
-14. [Troubleshooting](#troubleshooting)
-15. [Security & operations](#security--operations)
-16. [Repository layout](#repository-layout)
-17. [Contributing](#contributing)
-18. [Further reading](#further-reading)
+1. [Run it (TL;DR)](#run-it-tldr)
+2. [Why run Kalshibot](#why-run-kalshibot)
+3. [What you get out of the box](#what-you-get-out-of-the-box)
+4. [Labs Breeding (the closed loop)](#labs-breeding-the-closed-loop)
+5. [Operator playbook](#operator-playbook)
+6. [Architecture](#architecture)
+7. [Branch model (Live + labs)](#branch-model-live--labs)
+8. [Prerequisites](#prerequisites)
+9. [Quick start — Windows (recommended path)](#quick-start--windows-recommended-path)
+10. [Quick start — macOS / Linux](#quick-start--macos--linux)
+11. [Packaged API (Windows exe)](#packaged-api-windows-exe)
+12. [Configuration: two layers](#configuration-two-layers)
+13. [Dashboard & Settings map](#dashboard--settings-map)
+14. [API reference](#api-reference)
+15. [Development & testing](#development--testing)
+16. [Upgrading & parallel checkouts](#upgrading--parallel-checkouts)
+17. [Troubleshooting](#troubleshooting)
+18. [Security & operations](#security--operations)
+19. [Repository layout](#repository-layout)
+20. [Contributing](#contributing)
+21. [Glossary](#glossary)
+22. [Further reading](#further-reading)
 
 ---
 
 ## Why run Kalshibot
 
-- **Single glass pane** — Live paper or real-money path, **Lab A** staging, **Labs B–E** as parallel paper “personalities,” and **child** engines — all in one UI: equity, MTM, signals, trades, open sims, optimizer radar, and breeder tree.
-- **Rules stay on your disk** — Config is JSON merged from SQLite; per-lab overlays; **only Lab A** is on the intentional promotion path toward Live (gated, not automatic).
-- **Observable by design** — Structured logging, health routes, equity snapshots, signal/trade trails, optional JSONL, OpenAPI at `/docs`.
-- **No SaaS in the middle** — API keys and DB files stay on the host you control.
+- **Single glass pane** — Live (paper or real), **Lab A**, **Labs B–E** breeders, **`lab_child_*`** slots, Optimizer **Breeder / Tree**, equity, MTM, signals, trades, open sims, personality radar, lineage.
+
+- **Rules stay on your disk** — JSON merged in SQLite; per-lab overlays; **config_history** on successful saves.
+
+- **Observable by design** — structlog, health routes, snapshots, optional JSONL, **`/docs`** OpenAPI.
+
+- **No SaaS in the middle** — keys and DB stay on hardware you control.
 
 ---
 
@@ -47,12 +82,45 @@
 
 | Area | Details |
 |------|---------|
-| **Engines** | `dual_engine_loop` ticks Live + Lab A–E + children with **stagger** between labs to reduce Kalshi public API burst. |
+| **Engines** | `dual_engine_loop` ticks Live + Lab A–E + children with **stagger** to reduce Kalshi API burst. |
 | **Paper sim** | Per-branch bankroll, fees, patient stop-loss, swing exits, windowed budget caps, one-open-per-series guards in SQLite. |
-| **Optimizer** | Internal pulse / optional Claude path; breeding children and adoption flows documented under `.cursor/rules/`. |
-| **Think Tank** | Ephemeral breeder dialogue via `GET /labs/chat` — **not** persisted; **DEBUG**-level structlog by default (`LAB_THINK_TANK_LOG_INFO=1` for noisy INFO). |
-| **Audit** | Successful config writes append **`config_history`** (full JSON snapshots). |
+| **Labs Breeding** | Parents **B–E** → **`lab_child_*`** GA → pool / death chamber → gated **adoption → Lab A**. Not the Think Tank. |
+| **Optimizer** | Internal pulse (default); optional Claude path. Telemetry via **`GET /api/optimizer/status`**. |
+| **Think Tank** | Ephemeral dialogue via `GET /labs/chat`; **no** per-message server log unless **`LAB_THINK_TANK_LOG_INFO=1`**. |
+| **Audit** | **`config_history`** stores full JSON snapshots on successful config writes. |
 
+---
+
+## Labs Breeding (the closed loop)
+
+Breeding answers: **which simulated strategies deserve to move toward Live**, without auto-promoting real money.
+
+| Stage | What happens |
+|-------|----------------|
+| **1. Parents** | **Labs B–E** run full paper ticks with distinct rules/sizing; behavior and settled history feed scoring. |
+| **2. Children** | Up to six **`lab_child_*`** branches hold candidate configs (crossover / mutation); they tick in the dual loop and accumulate **fitness** (see [`lab_breeding.py`](backend/app/lab_breeding.py)). |
+| **3. Pressure** | Weak lines hit the **death chamber**; survivors stay in the **pool** (Tree tab + optimizer status). |
+| **4. Adoption → Lab A** | **Gated** promotion of a child’s traits into **Lab A** (still not Live). |
+| **5. Lab A → Live** | Explicit operator flow with confirmations — see [operating contract](.cursor/rules/kalshibot-operating-contract.mdc). |
+
+**Where to see it:** Dashboard **Optimizer** → **Breeder** (12-axis radar) and **Tree** (lineage, pool, culls). The **Breeding: …** strip under the Optimizer title is live telemetry.
+
+**Think Tank is not breeding** — B–E chat lines are **flavor** for the UI; disabling or ignoring them does **not** stop the GA.
+
+---
+
+## Operator playbook
+
+| Goal | What to do |
+|------|------------|
+| **Paper everything first** | Keep **`simulate`** / **`live_paper_trading`** in paper-friendly modes; use Live branch in paper until you deliberately switch. |
+| **Turn several lab engines on at once** | **Settings → Simulation labs → Mass apply** — engines ON for selected labs; persists via **`PUT /api/config/lab-branches`**. |
+| **One lab (e.g. E) won’t stay on after refresh** | Same **`PUT /api/config/lab-branches`** path (avoid legacy toggle-only flows on old builds). |
+| **Copy sizing / patient stop across labs** | Mass apply: copy sizing from active tab; copy patient stop from a chosen source lab. |
+| **Inspect config the API sees** | **`GET /api/config`** and **`GET /api/dashboard`**; writes use **`PUT /api/config`** or lab-branch merge routes. |
+| **Two browser tabs (5174 vs 5175)** | Default **:5174** = develop pill; **:5175** = **test** pill (see [`frontend/src/uiTrack.ts`](frontend/src/uiTrack.ts)). Same data if both proxy the same API — change **`frontend/.env`** `VITE_API_ORIGIN` for a second stack. |
+| **Quiet Think Tank structlog** | Leave **`LAB_THINK_TANK_LOG_INFO`** unset or `0`. |
+| **Cold start / dashboard latency** | See [`docs/startup_performance.md`](docs/startup_performance.md). |
 ---
 
 ## Architecture
@@ -84,158 +152,162 @@ flowchart TB
   ENG --> STORE
 ```
 
-**How to read this**
+**Pointers**
 
-- **`backend/app/main.py`** — HTTP routes, dashboard assembly, engine toggle endpoints, lab-branch merge API.
-- **`backend/app/engines/`** — `tick_once`, simulated order flow, equity snapshots, think-tank hooks per tick.
-- **`backend/app/persistence.py`** — `Store`, defaults, `expand_partial_lab_branch`, migrations, `config_history` on save.
-- **`backend/app/branch_config.py`** — Effective merged config per branch (`merge_branch_config`, engine-running coercion).
-- **`backend/app/lab_breeding.py`** — Breeding GA / children (distinct from Think Tank chatter).
-- **`backend/app/lab_communication.py`** — Think Tank bus + council/strategic dialogue templates.
-- **`frontend/src/App.tsx`** — Dashboard shell, polling, lab toggles (persist via **`PUT /api/config/lab-branches`**).
+- **`backend/app/main.py`** — Routes, dashboard assembly, engine toggles, **`PUT /api/config/lab-branches`**.  
+
+- **`backend/app/engines/`** — `tick_once`, sim flow, equity snapshots, think-tank hooks.  
+
+- **`backend/app/persistence.py`** — `Store`, migrations, **`config_history`**.  
+
+- **`backend/app/branch_config.py`** — Merged effective config per branch.  
+
+- **`backend/app/lab_breeding.py`** — GA / children / adoption gates.  
+
+- **`backend/app/lab_communication.py`** — Think Tank bus.  
+
+- **`frontend/src/App.tsx`** — Shell, polling, lab toggles.
 
 ---
 
 ## Branch model (Live + labs)
 
-| Branch key | UI / product role |
-|------------|-------------------|
-| **`live`** | Your production path: **paper** or **real** Kalshi orders depending on `simulate` / `live_paper_trading`. |
-| **`lab_a`** | Staging / blend; optimizer and promotion workflows focus here first. |
-| **`lab_b`** | Conservative breeder reference. |
-| **`lab_c`** | Aggressive breeder reference. |
-| **`lab_d`** | Higher-variance reference. |
-| **`lab_e`** | Balanced / adaptive fourth breeder (Breeding Council). |
-| **`lab_child_*`** | Ephemeral children; engines follow breeding defaults (see architecture rule doc). |
+| Branch key | UI / product role | Breeding role |
+|------------|-------------------|---------------|
+| **`live`** | Production path: **paper** or **real** per `simulate` / `live_paper_trading`. | N/A |
+| **`lab_a`** | Staging; optimizer nudges + **child adoption** target. | **Destination** for adopted configs before Live. |
+| **`lab_b`** … **`lab_e`** | Distinct paper personalities. | **Parents** — GA diversity. |
+| **`lab_child_*`** | Hidden tournament slots in the dual loop. | **Candidates** — mutation / crossover / fitness / cull / adopt. |
 
-Legacy rows may still say `sim_lab` in SQLite; the app treats that as **Lab A** for rollups and charts.
+Legacy **`sim_lab`** in SQLite is treated as **Lab A** for rollups and charts.
 
 ---
 
 ## Prerequisites
 
-- **Python** 3.11+ (venv recommended; `scripts/create_venv.ps1` on Windows).
-- **Node.js** 20+ (for Vite; `npm ci` / `npm run dev` / `npm run build`).
-- **Kalshi** API key id + private key (PEM or path); demo vs prod controlled via env (see `.env.example`).
-- **Git** (optional worktrees for `main` + `develop` side-by-side — see `scripts/bootstrap-main-worktree.ps1`).
+- **Python** 3.11+ (venv; Windows: `scripts/create_venv.ps1`).
+
+- **Node.js** 20+ (`npm ci`, `npm run dev`, `npm run build`).
+
+- **Kalshi** API key id + private key (PEM or path); demo vs prod via env (`.env.example`).
+
+- **Git** (optional **worktrees** for `main` + `develop` — `scripts/bootstrap-main-worktree.ps1`).
 
 ---
 
 ## Quick start — Windows (recommended path)
 
-From the **repo root** in **PowerShell**:
+From **repo root** in **PowerShell**:
 
-### 1. Create the virtual environment
+### 1. Virtual environment
 
 ```powershell
 .\scripts\create_venv.ps1
 ```
 
-### 2. Configure environment variables
+### 2. Environment variables
 
 ```powershell
 Copy-Item .env.example .env
-# Edit .env: KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PEM or KALSHI_PRIVATE_KEY_PATH, KALSHI_ENV, ports, etc.
+# Edit .env: KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_PEM or KALSHI_PRIVATE_KEY_PATH, KALSHI_ENV, CORS_ORIGINS, ports, etc.
 ```
 
-### 3. Start API + Vite together
+### 3. API + Vite
 
 ```powershell
 .\scripts\launch_local.ps1
 ```
 
-**Defaults (develop worktree):**
+**Defaults (develop worktree)**
 
 | Service | URL / port |
 |---------|------------|
 | **Dashboard (Vite)** | `http://127.0.0.1:5174` |
-| **API** | `http://127.0.0.1:8765` (override with `KALSHI_BOT_PORT` if needed) |
+| **API** | `http://127.0.0.1:8765` (`KALSHI_BOT_PORT` overrides) |
 
-**Optional:** `.\scripts\launch_local.ps1 -SkipMainSidecar` — only this checkout’s API + UI.  
-**Worktrees:** a linked **`main`** sidecar can use **API :8770** and **UI :5173** — see comments inside `launch_local.ps1`.
+A second dev UI on **:5175** (`cd frontend; npm run dev -- --port 5175`) shows a **`test`** track pill so it is not confused with **:5174** (same API unless you change `frontend/.env`).
+
+**Options:** `.\scripts\launch_local.ps1 -SkipMainSidecar` — this checkout only. **Main sidecar:** API **:8770** + Vite **:5173** — see `launch_local.ps1` comments.
 
 ### 4. Open the app
 
-Use the Vite URL above. With the API running, open **`/docs`** on the API port for interactive OpenAPI.
+Use the Vite URL. **`http://127.0.0.1:8765/docs`** (or your API port) for OpenAPI.
 
 ---
 
 ## Quick start — macOS / Linux
 
-There is no single first-party shell script for all Unix setups; mirror the Windows flow:
+Use the [Run it (TL;DR)](#run-it-tldr) bash block, then:
 
-1. `python3 -m venv .venv` and install backend deps the way your team does (or adapt `create_venv.ps1` logic).
-2. Copy `.env.example` → `.env` and fill Kalshi credentials.
-3. Run the FastAPI app (module / uvicorn command your team uses) on your chosen port.
-4. `cd frontend && npm ci && npm run dev` — ensure **`CORS_ORIGINS`** in `.env` includes your Vite origin.
+- Ensure **`.env`** `CORS_ORIGINS` lists your Vite origin (e.g. `http://localhost:5174`).
+
+- API must be up **before** the dashboard can load config; watch the uvicorn console for import errors.
 
 ---
 
 ## Packaged API (Windows exe)
 
-When you ship or download **`kalshibot-api.exe`:**
+- Set **`KALSHI_BOT_PORT`** if the default collides.
 
-- Set **`KALSHI_BOT_PORT`** if the default port collides.
-- Serve **`frontend/dist`** from any static host, or point Vite’s dev proxy at the exe’s HTTP port.
-- **Rebuild the exe** after pulling changes: older builds may lack newer query parameters; the UI prefers **`PUT /api/config/lab-branches`** for lab engine toggles so **Lab E** and others stay in sync with SQLite.
+- Serve **`frontend/dist`** statically, or point Vite’s dev **`VITE_API_ORIGIN`** at the exe port.
+
+- **Rebuild** the exe after major API changes; UI lab toggles should use **`PUT /api/config/lab-branches`** so **Lab E** and SQLite stay aligned.
 
 ---
 
 ## Configuration: two layers
 
-### 1. SQLite runtime config (`bot_config`)
+### 1. SQLite (`bot_config`)
 
-Edited from **Settings** in the UI and via **`GET/PUT /api/config`**, **`PUT /api/config/lab-branches`**, and related routes. Includes rules, sizing, per-lab overlays, optimizer JSON, engine flags, etc. Every successful save should go through **`config_history`** for rollback forensics.
+Edited in **Settings** and via **`GET/PUT /api/config`**, **`PUT /api/config/lab-branches`**, etc. Includes rules, sizing, per-lab overlays, optimizer JSON, engine flags. Successful saves append **`config_history`**.
 
 ### 2. `.env` (process / host)
 
-Ports, Kalshi base URL, logging, HTTP timeouts, optional WebSocket, dashboard MTM caps, Think Tank log verbosity, optional **`KALSHI_API_BEARER_TOKEN`** for locking down `/api`. **Authoritative definitions:** [`.env.example`](.env.example) and [`backend/app/settings_env.py`](backend/app/settings_env.py).
+Ports, Kalshi base URL, logging, timeouts, WebSocket, dashboard MTM caps, Think Tank logging, optional **`KALSHI_API_BEARER_TOKEN`**. **Source of truth:** [`.env.example`](.env.example) · [`backend/app/settings_env.py`](backend/app/settings_env.py).
 
-**Selected environment variables**
+**Selected variables**
 
 | Variable | Role |
 |----------|------|
-| `LOG_LEVEL` | `DEBUG` \| `INFO` \| … — stdlib / structlog baseline. |
-| `LOG_JSON` | `1` — one JSON object per line (containers / aggregators). |
-| `LAB_THINK_TANK_LOG_INFO` | `1` — log each Think Tank bus line at **INFO** (default is **DEBUG** only). |
-| `SQLITE_PATH` | SQLite file; relative paths anchor to **repo root**. |
-| `DATA_LOG_DIR` | JSONL log directory. |
-| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API. |
-| `KALSHI_WS_ENABLED` | Optional WS for orderbooks / tickers (REST cache remains). |
-
+| `LOG_LEVEL` | `DEBUG` \| `INFO` \| … |
+| `LOG_JSON` | `1` — JSON lines for aggregators. |
+| `LAB_THINK_TANK_LOG_INFO` | `1` — INFO log per Think Tank message (default **off**). |
+| `SQLITE_PATH` | DB path (relative → repo root). |
+| `DATA_LOG_DIR` | JSONL log dir. |
+| `CORS_ORIGINS` | Allowed browser origins (comma-separated). |
+| `KALSHI_WS_ENABLED` | Optional WS (REST cache remains). |
 ---
 
 ## Dashboard & Settings map
 
 | UI area | Purpose |
 |---------|---------|
-| **Hero / branch strip** | Live + Lab A–E at a glance; engine toggles; marquees. |
-| **Equity** | Live + five lab small-multiples and compare overlay. |
-| **Account / performance** | Holdings, metrics, and activity filtered by branch. |
-| **Optimizer** | Status, radar, breeding tree, **Lab Think Tank** transcript (`/labs/chat` polling). |
-| **Settings → Simulation labs** | Per-lab tabs, **Save all labs**, combined reset + sizing, **Mass apply** (batch **`PUT /api/config/lab-branches`**: engines on/off, uniform paper, copy sizing from active tab, copy patient stop from chosen source lab, auto-reset flags for checked labs). |
-| **Settings → Data** | Scoped resets, optional uniform paper after wipe, backup toggles. |
-
+| **Hero / branch strip** | Live + Lab A–E; engine toggles; marquees. |
+| **Equity** | Small multiples + compare overlay. |
+| **Account / performance** | Holdings, metrics, activity by branch. |
+| **Optimizer** | **Breeder** + **Tree**; **Lab Think Tank** strip (`/labs/chat`). |
+| **Settings → Simulation labs** | Per-lab tabs, **Save all labs**, **Mass apply** (`PUT /api/config/lab-branches`: engines, paper, sizing, patient stop, auto-reset). |
+| **Settings → Data** | Scoped resets, backups. |
 ---
 
 ## API reference
 
-| Area | Endpoints (representative) |
-|------|------------------------------|
-| **Dashboard** | `GET /api/dashboard`, `GET /api/dashboard/equity`, `GET /api/dashboard/orderbooks`, … |
-| **Health** | `GET /api/health`, deeper variants as listed in `routers/health`. |
-| **Trades / signals / history** | `GET /api/trades`, `GET /api/history/{table}`, export CSV routes. |
-| **Config** | `GET/PUT /api/config`, **`PUT /api/config/lab-branches`**, `POST /api/engine/toggle` (Live / simulate / legacy sim_lab), promote Lab A, data reset. |
-| **Optimizer** | `GET /api/optimizer/status`, `POST` run routes as exposed in `optimizer_routes` / `main`. |
-| **Think Tank** | **`GET /labs/chat`** — rolling JSON lines (`reply_to` optional). |
+| Area | Examples |
+|------|----------|
+| **Dashboard** | `GET /api/dashboard`, `GET /api/dashboard/equity`, … |
+| **Health** | `GET /api/health` (+ variants in health router). |
+| **History** | `GET /api/trades`, `GET /api/history/{table}`, CSV exports. |
+| **Config** | `GET/PUT /api/config`, **`PUT /api/config/lab-branches`**, `POST /api/engine/toggle`, promote Lab A, data reset. |
+| **Optimizer** | `GET /api/optimizer/status` — pulse, breeding blocks, radar; related `POST` routes. |
+| **Think Tank** | **`GET /labs/chat`** — JSON lines, optional `reply_to`. |
 
-Full interactive schema: **`http://<api-host>:<port>/docs`** while the server is running.
+Interactive: **`http://<api-host>:<port>/docs`** while running.
 
 ---
 
-## Development: frontend & backend
+## Development & testing
 
-### Frontend (`frontend/`)
+**Frontend**
 
 ```powershell
 cd frontend
@@ -244,13 +316,16 @@ npm run dev
 npm run build
 ```
 
-- **Output:** `frontend/dist/` for static hosting.
-- **Proxy:** Vite dev server proxies `/api` and `/labs` — see [`frontend/vite.config.ts`](frontend/vite.config.ts) (`VITE_API_ORIGIN`, default `http://127.0.0.1:8765`).
+Output: **`frontend/dist/`**. Dev proxy: **`frontend/vite.config.ts`** (`VITE_API_ORIGIN`, default `http://127.0.0.1:8765`).
 
-### Backend (`backend/app/`)
+**Backend** — repo root, venv active:
 
-- Entry: FastAPI app in **`main.py`**; engines initialized in app lifespan.
-- **Run tests** (repo root, venv active):
+```powershell
+.\scripts\run_backend.ps1
+# or: python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8765
+```
+
+**Tests** (money-path, stop-loss, breeding-sensitive suites should stay **green** before merge):
 
 ```powershell
 pytest -q
@@ -258,13 +333,13 @@ pytest -q
 
 ---
 
-## Testing
+## Upgrading & parallel checkouts
 
-```powershell
-pytest -q
-```
+- **`git pull`** then reinstall if `requirements.txt` / `package-lock.json` changed; restart API + Vite.
 
-Money-path, stop-loss, and breeding-sensitive tests are expected to stay green before merge; see CI or local `pytest` output for the authoritative list.
+- **Two worktrees** (`develop` + `main`): use **separate** `data/` (or distinct `SQLITE_PATH`) so two APIs do not fight one SQLite file.
+
+- **Versioning:** after **v0.4**, routine releases bump **patch** under 0.4 (`VERSION` + `CHANGELOG`); larger bumps only when the operator asks.
 
 ---
 
@@ -272,22 +347,26 @@ Money-path, stop-loss, and breeding-sensitive tests are expected to stay green b
 
 | Symptom | Things to check |
 |---------|------------------|
-| **UI 404 on `/api`** | Use the **Vite** dev URL so `/api` is proxied, not the raw API port alone. |
-| **CORS errors** | Add your Vite origin to **`CORS_ORIGINS`** in `.env`; restart API. |
-| **Lab E (or any lab) won’t stay “on”** | Confirm API version; UI persists lab engines with **`PUT /api/config/lab-branches`**. In SQLite, `lab_e` migrated from missing keys may default `engine_running` false — toggle once or use **Mass apply → engines ON**. |
-| **Think Tank spam in logs** | Default is **DEBUG**; unset **`LAB_THINK_TANK_LOG_INFO`** or set to `0`. |
-| **Dashboard slow / MTM flat** | Fewer open sims, shorter MTM gather cap env (`DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S`), or temporarily disable fast MTM (`DASHBOARD_FAST_PAPER_MTM=0`) — see `.env.example`. |
-| **`database is locked`** | SQLite busy timeout is set in the store; avoid two processes writing the **same** `SQLITE_PATH` unintentionally (parallel worktrees should use **separate** `data/` paths). |
-
+| **UI 404 on `/api`** | Open the **Vite** URL so `/api` is proxied, not the raw API origin alone. |
+| **CORS errors** | Add Vite origin to **`CORS_ORIGINS`**; restart API. |
+| **Lab won’t stay “on”** | **`PUT /api/config/lab-branches`** from UI; migrated `lab_e` may default `engine_running` false — Mass apply engines ON. |
+| **5174 and 5175 “look the same”** | Same app + same `VITE_API_ORIGIN` → same data; pills differ (**dev** vs **test**) after refresh. |
+| **Think Tank lines in logs** | **`LAB_THINK_TANK_LOG_INFO=0`** or unset (default silent). |
+| **Dashboard slow / MTM flat** | Fewer open sims; **`DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S`**; **`DASHBOARD_FAST_PAPER_MTM=0`** — see `.env.example`. |
+| **`database is locked`** | Two processes on one **`SQLITE_PATH`**; separate `data/` per checkout. |
 ---
 
 ## Security & operations
 
-- **Host = trust boundary** — There is no built-in multi-user auth on the API; use **firewall**, **VPN**, **`KALSHI_API_BEARER_TOKEN`**, or a reverse proxy if you expose beyond localhost.
-- **Secrets** — Keep `.env` out of git; rotate Kalshi keys if leaked.
-- **Live money** — Promotion and real-order paths require explicit confirmations and config gates; do not strip those checks.
-- **Backups** — Copy `data/bot.sqlite3` before risky resets; JSONL under `data/logs/` is optional telemetry.
-- **Production logs** — `LOG_JSON=1` helps centralized logging; tune `LOG_LEVEL` per environment.
+- **Host = trust boundary** — No built-in multi-user API auth; use firewall, VPN, **`KALSHI_API_BEARER_TOKEN`**, or reverse proxy if exposed beyond localhost.
+
+- **Secrets** — Never commit `.env`; rotate keys if leaked.
+
+- **Live money** — Keep confirmation and config gates intact.
+
+- **Backups** — Copy **`data/bot.sqlite3`** before risky operations.
+
+- **Centralized logs** — `LOG_JSON=1` + tuned `LOG_LEVEL`.
 
 ---
 
@@ -295,32 +374,44 @@ Money-path, stop-loss, and breeding-sensitive tests are expected to stay green b
 
 | Path | Contents |
 |------|----------|
-| `backend/app/` | FastAPI app, engines, persistence, optimizer, breeding, Kalshi client, WS. |
-| `frontend/src/` | React dashboard, settings, charts, lab hive UI. |
-| `scripts/` | Windows bootstrap: venv, `launch_local`, worktree helpers. |
-| `data/` | Local SQLite + logs (gitignored except examples). |
-| `.cursor/rules/` | Architecture and operating contract for contributors / agents. |
-
+| `backend/app/` | FastAPI, engines, persistence, optimizer, breeding, Kalshi client, WS. |
+| `frontend/src/` | Dashboard, settings, charts, lab hive. |
+| `scripts/` | Windows venv, `launch_local`, worktree helpers. |
+| `data/` | SQLite + logs (gitignored). |
+| `.cursor/rules/` | Architecture + operating contract. |
 ---
 
 ## Contributing
 
-1. Branch from **`develop`**; open PRs against **`develop`** (or follow your team’s promotion to **`main`**).
-2. Keep diffs focused; match existing patterns (types, structlog, React hooks style).
-3. Ship user-visible behavior with **`CHANGELOG.md`** + **`VERSION`** bumps per project convention.
+1. Branch from **`develop`**; PRs target **`develop`** (promote to **`main`** per team process).
 
+2. Small, focused diffs; match existing TypeScript / structlog / FastAPI style.
+
+3. User-visible changes: **`CHANGELOG.md`** + **`VERSION`** per project convention.
+
+4. Run **`pytest -q`** before push.
+
+---
+
+## Glossary
+
+| Term | Meaning |
+|------|---------|
+| **MTM** | Mark-to-market vs book / start-of-window — dashboard equity readouts. |
+| **GA** | Genetic-style tournament over **`lab_child_*`** configs (not the Think Tank). |
+| **Breeder / parent** | **Lab B–E** paper branches whose behavior seeds child diversity. |
+| **Staging** | **Lab A** — experiments and adopted children before any Live promotion. |
 ---
 
 ## Further reading
 
-| Document | Why open it |
-|----------|-------------|
-| [`CHANGELOG.md`](CHANGELOG.md) | Release-by-release behavior changes. |
-| [`README-short.md`](README-short.md) | Ultra-compact elevator pitch. |
-| [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md) | Breeding vs dashboard engines, children, adoption. |
-| [`.cursor/rules/kalshibot-operating-contract.mdc`](.cursor/rules/kalshibot-operating-contract.mdc) | Non-negotiables (Lab A promotion, live money gates, patch versioning). |
-| [`docs/startup_performance.md`](docs/startup_performance.md) | Cold start, cache, and dashboard latency notes. |
-
+| Document | Why |
+|----------|-----|
+| [`CHANGELOG.md`](CHANGELOG.md) | Release notes. |
+| [`README-short.md`](README-short.md) | One-page pitch. |
+| [`.cursor/rules/architecture-breeding.md`](.cursor/rules/architecture-breeding.md) | Breeding vs engines. |
+| [`.cursor/rules/kalshibot-operating-contract.mdc`](.cursor/rules/kalshibot-operating-contract.mdc) | Non-negotiables. |
+| [`docs/startup_performance.md`](docs/startup_performance.md) | Startup and dashboard latency. |
 ---
 
 *Kalshibot is independent software, not affiliated with Kalshi. Trading involves risk; paper and simulation modes exist to experiment without live exchange orders.*

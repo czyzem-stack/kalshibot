@@ -4,8 +4,8 @@ Self-hosted **Kalshi** stack: **FastAPI + React**, **Live + Lab A–E** (+ optio
 
 | | |
 |---|---|
-| **Version** | `v0.4.15.011` |
-| **Stand-out** | Breeder tournament + synergy · Family tree UI · Lab A–E parity · Settings **Mass apply** + lab-branches toggles · Think Tank (DEBUG logs by default) · Lab A–only promotion to Live |
+| **Version** | See [`VERSION`](VERSION) · [`CHANGELOG.md`](CHANGELOG.md) |
+| **Stand-out** | **Labs Breeding** closed loop (B–E parents → `lab_child_*` → pool/death chamber → gated adoption → Lab A) · Family tree + Breeder radar · Lab A–E parity · Mass apply / lab-branches toggles · Think Tank = dialogue only · Lab A–only promotion to Live |
 
 ## Quick start (Windows)
 

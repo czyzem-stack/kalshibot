@@ -2,6 +2,26 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.015 - README overhaul - 2026-04-29
+
+- **README:** Stronger onboarding — **Run it (TL;DR)** (Windows + Unix copy-paste), **Safety** callout, **Operator playbook** (Mass apply, lab toggles, Think Tank logs, dual Vite ports), **Upgrading & parallel checkouts**, **Glossary**, expanded troubleshooting, merged duplicate testing into **Development & testing**, fixed dynamic version line (see **`VERSION`**).
+- **README-short:** Version row points at **`VERSION`** / **`CHANGELOG`** instead of a stale literal.
+
+## v0.4.15.014 - UI track pill: port 5175 + dev port wins - 2026-04-29
+
+- **Frontend (`uiTrack.ts`, `App.tsx` tooltip, `frontend/.env.example`):** Map dev URL **:5175** → **`test`** (tab title / pill). In **`vite dev`**, **5173 / 5174 / 5175** infer track **before** `VITE_UI_TRACK`, so **:5174** and **:5175** are not both labeled **`dev`** when `.env` pins `VITE_UI_TRACK=dev`.
+
+## v0.4.15.013 - Think Tank default silent logs - 2026-04-29
+
+- **Backend (`lab_communication.py`):** **`think_tank_message`** is emitted only when **`LAB_THINK_TANK_LOG_INFO=1`**. Default no longer logs at **DEBUG** (that still flooded consoles when **`LOG_LEVEL=DEBUG`**).
+- **Docs:** **README**, **`.env.example`**, **`settings_env.py`** comments aligned.
+
+## v0.4.15.012 - Breeding relevance (docs + Optimizer hook) - 2026-04-29
+
+- **README / README-short:** Lead with **Labs Breeding** as the strategic loop (B–E → `lab_child_*` → pool / death chamber → gated adoption → Lab A); new section **Labs Breeding (the closed loop)**; branch table gains **Breeding role** column; Think Tank explicitly **cosmetic**; API/dashboard rows clarified.
+- **Frontend (`App.tsx`):** Optimizer card — short **Labs Breeding** hook paragraph above the pool/death-chamber strip; **Info** overlay opens with a **Labs Breeding (substance)** paragraph before the existing Optimizer explanation.
+- **Frontend (`SettingsOverlay.tsx`, `settingsHelpPlaybook.tsx`):** Simulation labs + help playbook tie **Labs B–E** to breeder parents and point to **Optimizer → Breeder / Tree**.
+
 ## v0.4.15.011 - Settings mass apply + lab toggle fix + Think Tank log hygiene - 2026-04-29
 
 - **Frontend (`SettingsOverlay.tsx`):** **Mass apply** under Simulation labs — select Labs A–E, choose action (engines on/off, uniform paper, copy sizing from active tab, copy patient stop from a source lab, auto-reset on/off), confirm once; uses **`PUT /api/config/lab-branches`**.
