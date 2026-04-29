@@ -1049,14 +1049,6 @@ input[type="number"] {
   flex-shrink: 0;
 }
 
-.dash-optimizer-panel .dash-optimizer-breeding-hook {
-  margin: 0 0 8px;
-  max-width: 100%;
-  font-size: 11px;
-  line-height: 1.35;
-  color: rgba(186, 205, 255, 0.82);
-}
-
 /* Branch performance header: compact breeding pill (same API as Optimizer Breeding row). */
 .dash-branch-breeding-pill {
   display: inline-flex;

@@ -93,6 +93,10 @@ logger = logging.getLogger("kalshibot.api")
 # never disagree when ``paper_balance_cents`` is unset.
 _DEFAULT_PAPER_BALANCE_CENTS = 500_000
 
+# Newest-first cap per branch for dashboard equity charts (dense rolling windows on D/D+ tabs).
+DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT = 4000
+
+
 def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
     """Stable id for slimmed change_history rows so clients do not regenerate different legacy-* ids per poll."""
     rid = x.get("id")
@@ -1597,12 +1601,12 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     ) = await asyncio.gather(
         store.recent_trades(limit=500),
         store.recent_signals(limit=500),
-        store.equity_series(limit=2000, branch=BRANCH_LIVE),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_A),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_B),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_C),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_D),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_E),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LIVE),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_A),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_B),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_C),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_D),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_E),
         store.dashboard_branch_trade_rollups(BRANCH_LIVE, mode_live),
         store.dashboard_branch_trade_rollups(BRANCH_LAB_A, "simulate"),
         store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate"),

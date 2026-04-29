@@ -2,6 +2,19 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.041 - Equity charts: linear time on X-axis (``tsMs``) - 2026-04-29
+
+- **Frontend (`App.tsx`):** Equity **``LineChart``** used **``XAxis`` ``dataKey="t"``** (formatted strings), so Recharts treated the axis as **categories** — consecutive points were **evenly spaced** regardless of real time. That made a **~52 minute** gap and a **~40 second** gap look the same and produced misleading “same timestamp” clusters. Switched to **``type="number"``**, **``dataKey="tsMs"``**, **``domain={['dataMin','dataMax']}``** (epoch ms, linear scale), tick + tooltip formatters from milliseconds. Applied the same fix to the **Compare** overlay chart. **``fmtEquityCompareXTick``** now formats numeric ticks; string fallback kept for edge labels.
+
+## v0.4.15.040 - Optimizer: remove breeding blurb under title - 2026-04-29
+
+- **Frontend (`App.tsx`):** Removed the extra **``dash-optimizer-breeding-hook``** paragraph (breeding / manual nukes / POST endpoints) above the breeding snapshot pill — the pill and **Info** tooltip still cover that context.
+
+## v0.4.15.039 - Equity D/D–Y/Y: dense rolling snapshot history - 2026-04-29
+
+- **Frontend (`dashboardPolling.ts`, `App.tsx`):** **D / D**, **W / W**, **M / M**, and **Y / Y** equity tabs no longer use **one point per closed calendar bucket** (which looked empty or flat until a new “resolved” period). They now use the **same dense SQLite tick stream** as **Intraday**, filtered by a **rolling wall-clock window** per tab and **uniformly downsampled** to at most **280** points for chart performance. **Intraday** (24h) and **Live** (hourly buckets, 7d) behavior is unchanged. Added **``surfaceHint``** “Rolling history — dense ticks” under each equity chart and the Compare overlay when those tabs are active.
+- **Backend (`main.py`):** Raised per-branch **``equity_series``** fetch limit for the dashboard payload from **2000 → 4000** so long windows still have enough newest-first rows after the client window filter.
+
 ## v0.4.15.038 - Bottom marquee: hide horizontal scrollbar (clip + drift) - 2026-04-29
 
 - **Frontend (`styles.css`):** Bottom ticker viewport used **``overflow-x: auto``**, which showed the **native horizontal scrollbar** under the text. Switched to **``overflow: hidden``** so the strip **clips** while **CSS drift** still scrolls the track; removed the reduced-motion **``overflow-x: auto !important``** override for the bottom variant. **``justify-content: center``** on the scroll row to help **vertical** centering of the line in the host.

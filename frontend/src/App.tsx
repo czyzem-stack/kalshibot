@@ -31,6 +31,10 @@ import {
   DASHBOARD_EQUITY_POLL_MS,
   DASHBOARD_EQUITY_POLL_MS_LIVE_TAB,
   DASHBOARD_FULL_POLL_MS,
+  EQUITY_DENSE_CHART_MAX_POINTS,
+  EQUITY_GRANULAR_ROLLING_WINDOW_MS,
+  downsampleEquityDenseTicks,
+  equityTabUsesDenseRollingHistory,
   subscribeDashboardCatchUp,
 } from "./dashboardPolling";
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
@@ -3346,13 +3350,17 @@ const EQUITY_GRANULARITY_TAB_DEFS = [
     "Rolling 7 days: one point per local clock hour from SQLite, plus a trailing point from the latest dashboard metrics each fast refresh — same book/MTM as the hero strip and bottom marquee.",
   ],
   ["intraday", "Intraday", "Rolling last 24 hours of snapshots (wall clock), dense ticks."],
-  ["dd", "D / D", "Last snapshot per local calendar day (need multiple days of history for several points)."],
-  ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
-  ["mm", "M / M", "Last snapshot per UTC calendar month."],
-  ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
+  ["dd", "D / D", "Rolling local-calendar window: same dense SQLite ticks as Intraday (capped for chart speed)."],
+  ["ww", "W / W", "Rolling multi-month window: dense ticks, not one point per closed week."],
+  ["mm", "M / M", "Rolling multi-year window: dense ticks, not one point per closed month."],
+  ["yy", "Y / Y", "Rolling long window: dense ticks, not one point per closed year."],
 ] as const;
 
 function fmtEquityCompareXTick(v: unknown): string {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const d = new Date(v);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
   const s = String(v ?? "").trim();
   if (!s) return "";
   if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
@@ -3397,18 +3405,6 @@ function scaleEquityRowsPctFromWindowStart(rows: EquityChartRow[]): EquityChartR
 function applyEquityValueScale(rows: EquityChartRow[], scale: EquityValueScale): EquityChartRow[] {
   if (scale === "dollars") return rows;
   return scaleEquityRowsPctFromWindowStart(rows);
-}
-
-function mondayUtcKey(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const day = d.getUTCDate();
-  const dow = d.getUTCDay();
-  const mondayOffset = dow === 0 ? -6 : 1 - dow;
-  const mon = new Date(Date.UTC(y, m, day + mondayOffset));
-  return `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, "0")}-${String(mon.getUTCDate()).padStart(2, "0")}`;
 }
 
 function buildEquityChartSeries(
@@ -3477,59 +3473,23 @@ function buildEquityChartSeries(
     });
   }
 
-  const bucketKey = (iso: string): string => {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
-    const y = d.getUTCFullYear();
-    const mo = d.getUTCMonth();
-    const day = d.getUTCDate();
-    /* Local calendar day: aligns D/D with labels and avoids UTC midnight splitting one session across two buckets. */
-    if (mode === "dd") {
-      const ly = d.getFullYear();
-      const lmo = d.getMonth();
-      const lday = d.getDate();
-      return `${ly}-${String(lmo + 1).padStart(2, "0")}-${String(lday).padStart(2, "0")}`;
-    }
-    if (mode === "mm") return `${y}-${String(mo + 1).padStart(2, "0")}`;
-    if (mode === "yy") return `${y}`;
-    if (mode === "ww") return mondayUtcKey(iso);
-    return iso.slice(0, 10);
-  };
-
-  const best = new Map<string, { ts: number; eq: number; mtm: number | null; sampleIso: string }>();
-  for (const r of rows) {
-    const b = bucketKey(r.at);
-    if (!b) continue;
-    const cur = best.get(b);
-    if (!cur || r.ts >= cur.ts) best.set(b, { ts: r.ts, eq: r.eq, mtm: r.mtm, sampleIso: r.at });
+  if (mode === "dd" || mode === "ww" || mode === "mm" || mode === "yy") {
+    const windowMs = EQUITY_GRANULAR_ROLLING_WINDOW_MS[mode];
+    const cutoff = Date.now() - windowMs;
+    const dense = rows.filter((r) => r.ts >= cutoff);
+    const capped =
+      dense.length > EQUITY_DENSE_CHART_MAX_POINTS
+        ? downsampleEquityDenseTicks(dense, EQUITY_DENSE_CHART_MAX_POINTS)
+        : dense;
+    return capped.map((r) => ({
+      t: fmtIsoLocalFn(r.at, false),
+      tsMs: r.ts,
+      equity: r.eq,
+      mtm: r.mtm,
+    }));
   }
 
-  const keys = [...best.keys()].sort();
-  return keys.map((k) => {
-    const cell = best.get(k)!;
-    let t = k;
-    if (mode === "dd") {
-      t = fmtIsoLocalFn(cell.sampleIso, false);
-      const comma = t.indexOf(",");
-      if (comma > 0) t = t.slice(0, comma).trim();
-    } else if (mode === "mm") {
-      const d = new Date(cell.sampleIso);
-      t = d.toLocaleString(undefined, { month: "short", year: "numeric", timeZone: "UTC" });
-    } else if (mode === "ww") {
-      const parts = k.split("-").map((x) => Number(x));
-      if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
-        const mon = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
-        t = `Week of ${mon.toLocaleDateString(undefined, {
-          weekday: "short",
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-          timeZone: "UTC",
-        })}`;
-      }
-    }
-    return { t, tsMs: cell.ts, equity: cell.eq, mtm: cell.mtm };
-  });
+  return [];
 }
 
 /** Append trailing book/MTM from latest ``metrics`` (same instant as hero + bottom marquee on each fast dashboard merge). */
@@ -3687,26 +3647,29 @@ function EquityDualLineChart({
   const fmtY = (v: number) =>
     yFormat === "pct" ? `${Number(v).toFixed(2)}%` : `$${Number(v).toFixed(2)}`;
   const fmtTick = (v: number) => (yFormat === "pct" ? `${Number(v).toFixed(1)}%` : `$${Number(v).toFixed(0)}`);
-  const fmtXTick = (v: unknown) => {
-    const s = String(v ?? "").trim();
-    if (!s) return "";
-    if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
-    const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
-    if (parts.length >= 3) return `${parts[1]} ${parts[2]}`;
-    if (parts.length === 2) return parts[1];
-    return s.length > 14 ? `${s.slice(0, 14)}...` : s;
+  /** X-axis uses ``tsMs`` (linear time). Do not use formatted ``t`` strings — categorical axes equalize ~1h and ~40s gaps. */
+  const fmtXTickMs = (v: unknown) => {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n)) return "";
+    const d = new Date(n);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  };
+  const tooltipTimeLabel = (label: unknown) => {
+    const n = typeof label === "number" ? label : Number(label);
+    if (!Number.isFinite(n)) return String(label ?? "");
+    return new Date(n).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   };
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={plotData} margin={{ left: 18, right: 28, top: 8, bottom: 20 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis
-          dataKey="t"
+          type="number"
+          dataKey="tsMs"
+          domain={["dataMin", "dataMax"]}
           stroke="#7f8ab5"
           tick={{ fontSize: 11 }}
-          minTickGap={34}
-          interval="preserveStartEnd"
-          tickFormatter={fmtXTick}
+          tickFormatter={fmtXTickMs}
         />
         <YAxis
           stroke="#7f8ab5"
@@ -3724,6 +3687,7 @@ function EquityDualLineChart({
             whiteSpace: "normal",
             wordBreak: "break-word",
           }}
+          labelFormatter={tooltipTimeLabel}
           formatter={(value: number, name: string) => [fmtY(value), name]}
         />
         <Line
@@ -5171,6 +5135,10 @@ export default function App() {
     [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw, chartDataLabERaw],
   );
 
+  const equityDenseRollingSurfaceHint = equityTabUsesDenseRollingHistory(equityGranularity)
+    ? "Rolling history — dense ticks"
+    : undefined;
+
   const assets = (cfg.assets || {}) as AnyObj;
   const assetSnaps = (dash?.asset_snapshots || {}) as AnyObj;
   const engineSnapsLive = (assetSnaps.live || {}) as AnyObj;
@@ -6107,11 +6075,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <p className="sub dash-optimizer-breeding-hook">
-              <strong>Breeding</strong> — B–E evolve <code>lab_child_*</code> (pool vs death chamber); adoption to Lab A is gated.{" "}
-              <strong>Breeder</strong> / <strong>Tree</strong> for detail. Manual nukes: <strong>Settings</strong> → Optimizer (
-              <code>POST /api/optimizer/force-internal-mutation</code>, <code>POST /labs/diversify</code>).
-            </p>
             <button
               type="button"
               className="dash-optimizer-breeding-summary"
@@ -6776,6 +6739,7 @@ export default function App() {
                   title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metrics} name={activityBranchTabLabel("live")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6803,6 +6767,7 @@ export default function App() {
                   title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabA} name={activityBranchTabLabel("lab_a")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6830,6 +6795,7 @@ export default function App() {
                   title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabB} name={activityBranchTabLabel("lab_b")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6857,6 +6823,7 @@ export default function App() {
                   title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabC} name={activityBranchTabLabel("lab_c")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6884,6 +6851,7 @@ export default function App() {
                   title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabD} name={activityBranchTabLabel("lab_d")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6911,6 +6879,7 @@ export default function App() {
                   title={`${activityBranchTabLabel("lab_e")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabE} name={activityBranchTabLabel("lab_e")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -7593,6 +7562,7 @@ export default function App() {
                 }
                 defaultHeight={460}
                 expandedHeight={560}
+                surfaceHint={equityDenseRollingSurfaceHint}
                 detail={
                   <p style={{ margin: 0, lineHeight: 1.45 }}>
                     Mode <strong>{equityCompareMode === "blended" ? "Blended" : "Potential"}</strong>: {equityCompareMode === "blended"
@@ -7607,12 +7577,12 @@ export default function App() {
                       <LineChart data={equityOverlayData} margin={{ left: 10, right: 28, top: 10, bottom: 18 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" strokeOpacity={0.85} />
                         <XAxis
-                          dataKey="t"
+                          type="number"
+                          dataKey="tsMs"
+                          domain={["dataMin", "dataMax"]}
                           stroke="#7f8ab5"
                           tick={{ fontSize: 10 }}
                           tickMargin={6}
-                          minTickGap={18}
-                          interval="preserveStartEnd"
                           tickFormatter={fmtEquityCompareXTick}
                         />
                         <YAxis
@@ -7632,6 +7602,12 @@ export default function App() {
                             maxWidth: "min(280px, calc(100vw - 32px))",
                             whiteSpace: "normal",
                             wordBreak: "break-word",
+                          }}
+                          labelFormatter={(label) => {
+                            const n = typeof label === "number" ? label : Number(label);
+                            return Number.isFinite(n)
+                              ? new Date(n).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+                              : String(label ?? "");
                           }}
                           formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
                         />
