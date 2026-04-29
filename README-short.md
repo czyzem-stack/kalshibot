@@ -4,8 +4,8 @@ Self-hosted **Kalshi** stack: **FastAPI + React**, **Live + Lab A–E** (+ optio
 
 | | |
 |---|---|
-| **Version** | `v0.4.15.010` |
-| **Stand-out** | Breeder tournament + synergy metadata · Family tree UI · Lab E parity · Think Tank dialogue · Lab A–only promotion path to Live |
+| **Version** | `v0.4.15.011` |
+| **Stand-out** | Breeder tournament + synergy · Family tree UI · Lab A–E parity · Settings **Mass apply** + lab-branches toggles · Think Tank (DEBUG logs by default) · Lab A–only promotion to Live |
 
 ## Quick start (Windows)
 
