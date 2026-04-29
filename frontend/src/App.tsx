@@ -3339,15 +3339,16 @@ type EquityGranularity = "intraday" | "hourly" | "dd" | "ww" | "mm" | "yy";
 const EQUITY_INTRADAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const EQUITY_INTRADAY_MAX_POINTS = 2500;
 
-/** Live tab (granularity id ``hourly``): bucket one point per local clock hour; rolling window below. */
-const EQUITY_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Live tab (granularity id ``hourly``): dense SQLite ticks, rolling wall-clock window below (same shape as Intraday). */
+const EQUITY_HOURLY_WINDOW_MS = 6 * 60 * 60 * 1000;
+const EQUITY_HOURLY_MAX_POINTS = 2500;
 
 /** Shared by dashboard equity tabs and Compare overlay (same `equityGranularity` state). */
 const EQUITY_GRANULARITY_TAB_DEFS = [
   [
     "hourly",
     "Live",
-    "Rolling 7 days: one point per local clock hour from SQLite, plus a trailing point from the latest dashboard metrics each fast refresh — same book/MTM as the hero strip and bottom marquee.",
+    "Rolling last 6 hours of dense SQLite ticks (wall clock), plus a trailing point from the latest dashboard metrics each fast refresh — same book/MTM as the hero strip and bottom marquee.",
   ],
   ["intraday", "Intraday", "Rolling last 24 hours of snapshots (wall clock), dense ticks."],
   ["dd", "D / D", "Rolling local-calendar window: same dense SQLite ticks as Intraday (capped for chart speed)."],
@@ -3430,47 +3431,24 @@ function buildEquityChartSeries(
     .filter((r) => r.at && Number.isFinite(r.ts));
   rows.sort((a, b) => a.ts - b.ts);
 
-  if (mode === "intraday") {
-    const cutoff = Date.now() - EQUITY_INTRADAY_WINDOW_MS;
+  const mapDenseWindow = (windowMs: number, maxPoints: number): EquityChartRow[] => {
+    const cutoff = Date.now() - windowMs;
     let windowed = rows.filter((r) => r.ts >= cutoff);
-    if (windowed.length > EQUITY_INTRADAY_MAX_POINTS) windowed = windowed.slice(-EQUITY_INTRADAY_MAX_POINTS);
+    if (windowed.length > maxPoints) windowed = windowed.slice(-maxPoints);
     return windowed.map((r) => ({
       t: fmtIsoLocalFn(r.at, false),
       tsMs: r.ts,
       equity: r.eq,
       mtm: r.mtm,
     }));
+  };
+
+  if (mode === "intraday") {
+    return mapDenseWindow(EQUITY_INTRADAY_WINDOW_MS, EQUITY_INTRADAY_MAX_POINTS);
   }
 
   if (mode === "hourly") {
-    const cutoff = Date.now() - EQUITY_HOURLY_WINDOW_MS;
-    const filtered = rows.filter((r) => r.ts >= cutoff);
-    const localHourKey = (iso: string): string => {
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return "";
-      const y = d.getFullYear();
-      const mo = d.getMonth();
-      const day = d.getDate();
-      const h = d.getHours();
-      return `${y}-${String(mo + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(h).padStart(2, "0")}`;
-    };
-    const hourBest = new Map<string, { ts: number; eq: number; mtm: number | null; sampleIso: string }>();
-    for (const r of filtered) {
-      const b = localHourKey(r.at);
-      if (!b) continue;
-      const cur = hourBest.get(b);
-      if (!cur || r.ts >= cur.ts) hourBest.set(b, { ts: r.ts, eq: r.eq, mtm: r.mtm, sampleIso: r.at });
-    }
-    const hourKeys = [...hourBest.keys()].sort();
-    return hourKeys.map((k) => {
-      const cell = hourBest.get(k)!;
-      return {
-        t: fmtIsoLocalFn(cell.sampleIso, false),
-        tsMs: cell.ts,
-        equity: cell.eq,
-        mtm: cell.mtm,
-      };
-    });
+    return mapDenseWindow(EQUITY_HOURLY_WINDOW_MS, EQUITY_HOURLY_MAX_POINTS);
   }
 
   if (mode === "dd" || mode === "ww" || mode === "mm" || mode === "yy") {
@@ -6607,7 +6585,7 @@ export default function App() {
                 title={
                   "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
-                  "Time-scale tabs re-bucket stored snapshots: Live = hourly buckets (rolling 7 days) plus a trailing metrics point each fast refresh; Intraday = last 24h raw ticks; D/W/M/Y = one point per calendar bucket. " +
+                  "Time-scale tabs: Live = rolling 6h dense ticks plus a trailing metrics point each fast refresh; Intraday = last 24h dense; D/W/M/Y = longer rolling dense windows (downsampled). " +
                   "Use Compare to overlay branches in one frame. " +
                   "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
                 }
@@ -6642,9 +6620,8 @@ export default function App() {
                         </p>
                         <p>
                           <strong>Time-scale tabs (Live, Intraday, D, W, M, Y).</strong> All apply to <em>all six</em> charts.{" "}
-                          <strong>Live</strong> buckets one point per <strong>local clock hour</strong> (latest snapshot in that hour) over <strong>rolling 7 days</strong>, then appends the same book/MTM as the hero and bottom marquee on each fast refresh. <strong>Intraday</strong> is raw snapshots from roughly the <strong>last 24 hours</strong>.{" "}
-                          <strong>D / D</strong> uses <strong>local calendar days</strong> (one point per day where you have data).{" "}
-                          <strong>W / M / Y</strong> still bucket by <strong>UTC</strong> week (Monday start), month, and year. Kalshi runs 24/7 — days are calendar buckets, not equity market sessions.
+                          <strong>Live</strong> is the <strong>last 6 hours</strong> of dense SQLite ticks (same stream as Intraday), then appends the same book/MTM as the hero and bottom marquee on each fast refresh. <strong>Intraday</strong> is roughly the <strong>last 24 hours</strong> of dense ticks.{" "}
+                          <strong>D / D</strong> through <strong>Y / Y</strong> use longer rolling windows of the same dense tick stream (capped / downsampled for speed). Kalshi runs 24/7 — windows are wall-clock, not equity “sessions”.
                         </p>
                         <p>
                           <strong>Compare</strong> (next to Info above). That overlay puts multiple branch curves in one frame with toggles so you

@@ -14,7 +14,7 @@
 export const DASHBOARD_FULL_POLL_MS = 12_000;
 /** Partial dashboard (`GET /api/dashboard/equity`) — faster than full poll but avoid hammering uvicorn access logs. */
 export const DASHBOARD_EQUITY_POLL_MS = 6_000;
-/** When Equity “Live” (hourly buckets + live tail) tab is selected — snappier hero / marquee / chart alignment. */
+/** When Equity “Live” (6h dense window + live tail) tab is selected — snappier hero / marquee / chart alignment. */
 export const DASHBOARD_EQUITY_POLL_MS_LIVE_TAB = 2_500;
 /** Think Tank transcript (`GET /labs/chat`) — cosmetic strip; no need for sub‑5s cadence. */
 export const LAB_CHAT_POLL_MS = 12_000;

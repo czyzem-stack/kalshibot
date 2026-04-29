@@ -2,6 +2,10 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.042 - Equity “Live” tab: 6-hour dense window - 2026-04-29
+
+- **Frontend (`App.tsx`, `dashboardPolling.ts`):** The **Live** time-scale tab (granularity id ``hourly``) now plots a **rolling 6 hours** of **dense** SQLite ticks (same treatment as **Intraday**, no hourly bucketing). Caps at **2500** points like Intraday. Tab tooltips and Equity **Info** copy updated (removed outdated “7 days / hourly bucket / calendar bucket” language for Live and D–Y).
+
 ## v0.4.15.041 - Equity charts: linear time on X-axis (``tsMs``) - 2026-04-29
 
 - **Frontend (`App.tsx`):** Equity **``LineChart``** used **``XAxis`` ``dataKey="t"``** (formatted strings), so Recharts treated the axis as **categories** — consecutive points were **evenly spaced** regardless of real time. That made a **~52 minute** gap and a **~40 second** gap look the same and produced misleading “same timestamp” clusters. Switched to **``type="number"``**, **``dataKey="tsMs"``**, **``domain={['dataMin','dataMax']}``** (epoch ms, linear scale), tick + tooltip formatters from milliseconds. Applied the same fix to the **Compare** overlay chart. **``fmtEquityCompareXTick``** now formats numeric ticks; string fallback kept for edge labels.
