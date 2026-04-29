@@ -149,6 +149,8 @@ class DashboardResponse(TypedDict, total=False):
     optimizer_activity: dict[str, Any]
     # ISO UTC — lets the UI reject overlapping responses delivered out of order (charts vs hero stay one generation).
     dashboard_payload_at: str
+    # Monotonic counter bumped on each ``reset_trading_data`` — fast equity merge treats empty arrays as authoritative when this advances.
+    trading_data_revision: int
 
 
 class OptimizerStatusResponse(TypedDict, total=False):
@@ -182,6 +184,8 @@ class OptimizerStatusResponse(TypedDict, total=False):
     breeding_last_run_minutes_ago: float | None
     # ISO UTC: Think Tank adversarial mix boosted until this instant (``POST /labs/diversify``).
     labs_council_diversity_until: str
+    # True when breeder engines are applying Think Tank / council_signal tilt (or a live signal is queued).
+    council_influence_active: bool
     internal_optimizer_trace: list[dict[str, Any]]
     advanced_metrics_last: dict[str, Any]
     acceptance_rate_pct: float

@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import math
+import random
 import re
 import uuid
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from urllib.parse import quote
 from dateutil import parser as dateparser
 
 from ..branch_config import (
+    BRANCH_BREEDERS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
     BRANCH_LAB_C,
@@ -38,10 +40,13 @@ from ..kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kals
 from ..kalshi_client import KalshiClient
 from ..lab_communication import (
     LAB_CHATTER_BRANCHES,
+    council_diversity_pulse_active,
     finalize_think_tank_tick,
     get_lab_communication_bus,
+    peek_engine_council_signal,
     think_tank_on_ranked_market,
     think_tank_on_sim_open,
+    think_tank_yes_no_bias_last_n,
 )
 from ..persistence import Store, _data_log
 from ..settings_env import env
@@ -482,6 +487,9 @@ def pick_trade_rule(
     """
     Choose one rule to execute: when implied YES is below ``no_bet_when_yes_below_pct``, only NO-side rules
     are considered; otherwise YES rules are tried first, then NO rules (binary YES-then-NO vs list order).
+
+    Breeder branches (B–E) may pass a **pre-adjusted** ``prob_yes`` from :func:`handle_market` so council
+    personality and Think Tank YES/NO lean affect which band matches without changing logged mid prices.
     """
     cutoff = no_bet_yes_implied_cutoff(cfg)
     yes_rules = [r for r in rules if isinstance(r, dict) and rule_trade_side(r) != "no"]
@@ -506,6 +514,106 @@ def pick_trade_rule(
     return scan(no_rules)
 
 
+def _breeder_rng(branch: str, tick: int, stable: str) -> random.Random:
+    h = hash((branch, int(tick), stable)) & 0xFFFFFFFF
+    return random.Random(h)
+
+
+def _breeder_effective_prob_yes(
+    prob: float,
+    mins: float,
+    branch: str,
+    *,
+    full_cfg: dict[str, Any] | None,
+    engine: TradingEngine,
+    ticker: str,
+) -> tuple[float, bool]:
+    """
+    YES-mid tilt for **rule matching only**: Think Tank YES/NO lean, ``peek_engine_council_signal``,
+    diversity fade vs follow, and per-lab personality drift.
+    """
+    bus = get_lab_communication_bus()
+    bias_msgs, _, _ = think_tank_yes_no_bias_last_n(bus, 3)
+    sig = peek_engine_council_signal(bus)
+    div = council_diversity_pulse_active(full_cfg)
+    r = _breeder_rng(branch, engine._tick_count, ticker)
+    scales = {BRANCH_LAB_B: 0.008, BRANCH_LAB_C: 0.014, BRANCH_LAB_D: 0.017, BRANCH_LAB_E: 0.011}
+    sc = scales.get(branch, 0.010)
+    drift = r.uniform(-sc, sc)
+    if branch == BRANCH_LAB_B:
+        drift -= 0.0042
+    elif branch == BRANCH_LAB_C:
+        drift += 0.0055
+    elif branch == BRANCH_LAB_D and r.random() < 0.5:
+        drift *= 1.35
+
+    lean = bias_msgs * 0.5
+    st_sig = float(sig.get("strength", 0.0)) if sig else 0.0
+    if sig:
+        sb = float(sig.get("bias", 0.0))
+        lean = lean * (1.0 - 0.4 * st_sig) + sb * (0.4 * st_sig)
+
+    follow_w = {BRANCH_LAB_B: 0.34, BRANCH_LAB_C: 0.60, BRANCH_LAB_D: 0.26, BRANCH_LAB_E: 0.74}.get(branch, 0.42)
+    if div:
+        follow_w = max(0.1, follow_w - 0.24)
+
+    council_push = 0.0
+    council_active = False
+    amp = 0.038
+    eff_lean = lean
+    if branch == BRANCH_LAB_D and abs(lean) > 0.18 and r.random() < 0.15:
+        eff_lean = -lean * 0.9
+
+    rolled = r.random()
+    if sig and rolled < follow_w * min(1.0, st_sig + 0.28):
+        council_push = float(sig.get("bias", 0.0)) * amp * max(0.25, st_sig)
+        council_active = abs(council_push) > 1e-6
+    elif (div or (sig and rolled > 0.55)) and abs(eff_lean) > 0.12:
+        council_push = -eff_lean * amp * (0.72 if div else 0.48)
+        council_active = abs(council_push) > 1e-6
+    else:
+        council_push = eff_lean * amp * 0.32
+        council_active = abs(eff_lean) > 0.08 and abs(council_push) > 1e-6
+
+    time_w = min(1.12, max(0.68, float(mins) / 16.0))
+    council_push *= time_w
+    if branch == BRANCH_LAB_E and sig is not None and st_sig > 0.35:
+        council_push += float(sig.get("bias", 0.0)) * 0.0065
+
+    out = prob + drift + council_push
+    out = max(0.01, min(0.99, out))
+    if sig is not None and st_sig >= 0.22 and abs(float(sig.get("bias", 0.0))) > 0.04:
+        council_active = True
+    return out, council_active
+
+
+def _breeder_touch_ranked_edge(
+    edge: float,
+    prob: float,
+    mins: float,
+    branch: str,
+    *,
+    full_cfg: dict[str, Any] | None,
+    engine: TradingEngine,
+    ticker: str,
+    matched_rule: dict[str, Any],
+) -> float:
+    """Scale sim-rank edge by time-to-close and weak alignment with council lean (breeders only)."""
+    _ = full_cfg
+    r = _breeder_rng(branch, engine._tick_count, f"{ticker}|edge")
+    time_scale = 0.84 + 0.26 * min(1.0, max(0.0, float(mins)) / 20.0)
+    edge = edge * time_scale
+    sig = peek_engine_council_signal(get_lab_communication_bus())
+    if not sig:
+        return edge
+    b = float(sig.get("bias", 0.0))
+    st = float(sig.get("strength", 0.0))
+    side = rule_trade_side(matched_rule)
+    raw_bonus = st * b * (0.028 if side == "yes" else -0.028)
+    pers = {BRANCH_LAB_B: 0.72, BRANCH_LAB_C: 1.12, BRANCH_LAB_D: 0.95 + 0.2 * r.random(), BRANCH_LAB_E: 1.02}.get(branch, 1.0)
+    return edge * (1.0 + raw_bonus * pers)
+
+
 def _market_sim_trade_rank(
     market: dict[str, Any],
     *,
@@ -516,6 +624,9 @@ def _market_sim_trade_rank(
     now: dt.datetime,
     dev_floor: float | None,
     simulate_orders: bool,
+    breeder_branch: str | None = None,
+    full_cfg: dict[str, Any] | None = None,
+    engine: TradingEngine | None = None,
 ) -> tuple[int, float, float]:
     """
     Sort key for ``reverse=True`` (best first): among markets with a matched rule and tradable book,
@@ -548,8 +659,18 @@ def _market_sim_trade_rank(
     has_no_book = na is not None and 0 < na < 1
     if prob is None or (not has_yes_rules and not has_no_book):
         return (0, -1e18, float(mins))
+    prob_pick = prob
+    if (
+        breeder_branch
+        and breeder_branch in BRANCH_BREEDERS
+        and full_cfg is not None
+        and engine is not None
+    ):
+        prob_pick, _ = _breeder_effective_prob_yes(
+            float(prob), float(mins), breeder_branch, full_cfg=full_cfg, engine=engine, ticker=ticker
+        )
     matched_rule = pick_trade_rule(
-        prob,
+        prob_pick,
         mins,
         rules,
         has_yes_rules=has_yes_rules,
@@ -578,6 +699,23 @@ def _market_sim_trade_rank(
     from ..optimizer.weighted_edge import calculate_weighted_edge
 
     edge = float(calculate_weighted_edge(market, matched_rule))
+    if (
+        breeder_branch
+        and breeder_branch in BRANCH_BREEDERS
+        and full_cfg is not None
+        and engine is not None
+        and prob is not None
+    ):
+        edge = _breeder_touch_ranked_edge(
+            edge,
+            float(prob),
+            float(mins),
+            breeder_branch,
+            full_cfg=full_cfg,
+            engine=engine,
+            ticker=ticker,
+            matched_rule=matched_rule,
+        )
     return (1, edge, float(mins))
 
 
@@ -668,6 +806,7 @@ class TradingEngine:
         self._lab_think_tank_msgs_this_tick: int = 0
         self._lab_think_tank_market_note_sent: bool = False
         self._lab_think_tank_intro_done: bool = False
+        self._breeder_council_influence_active: bool = False
 
 
 def _is_lab_branch(branch: str) -> bool:
@@ -719,6 +858,7 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     if branch in LAB_CHATTER_BRANCHES:
         engine._lab_think_tank_msgs_this_tick = 0
         engine._lab_think_tank_market_note_sent = False
+        engine._breeder_council_influence_active = False
 
     balance_cents = 0
     if _is_lab_branch(branch):
@@ -799,6 +939,9 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
             series=series,
         )
         no_rule = 0
+        _br = branch if branch in BRANCH_BREEDERS else None
+        _fc = full_cfg if _br else None
+        _eng = engine if _br else None
         ranked_markets = sorted(
             [m for m in markets if isinstance(m, dict)],
             key=lambda mm: _market_sim_trade_rank(
@@ -810,6 +953,9 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
                 now=now,
                 dev_floor=dev_floor,
                 simulate_orders=sim_orders,
+                breeder_branch=_br,
+                full_cfg=_fc,
+                engine=_eng,
             ),
             reverse=True,
         )
@@ -1262,8 +1408,15 @@ async def handle_market(
     if prob is None or (not has_yes_rules and not has_no_book):
         return None
 
+    prob_for_rules = float(prob)
+    if branch in BRANCH_BREEDERS and full_cfg is not None:
+        prob_for_rules, council_used = _breeder_effective_prob_yes(
+            float(prob), float(mins), branch, full_cfg=full_cfg, engine=engine, ticker=ticker
+        )
+        if council_used:
+            engine._breeder_council_influence_active = True
     matched_rule = pick_trade_rule(
-        prob,
+        prob_for_rules,
         mins,
         rules,
         has_yes_rules=has_yes_rules,

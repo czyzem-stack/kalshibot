@@ -10,6 +10,7 @@ Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ opti
 from __future__ import annotations
 
 import random
+import re
 import time
 import uuid
 from collections import Counter, deque
@@ -54,6 +55,8 @@ class LabCommunicationBus:
 
     def __init__(self) -> None:
         self._dq: deque[dict[str, Any]] = deque(maxlen=96)
+        # Ephemeral signal for breeder TradingEngine ticks (refreshed each Think Tank finalize + diversify).
+        self._engine_council_signal: dict[str, Any] | None = None
 
     @classmethod
     def instance(cls) -> LabCommunicationBus:
@@ -104,6 +107,70 @@ class LabCommunicationBus:
 
 def get_lab_communication_bus() -> LabCommunicationBus:
     return LabCommunicationBus.instance()
+
+
+def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = 3) -> tuple[float, int, int]:
+    """
+    Scan the last ``n`` breeder bus lines (most recent first scan, chronological return).
+
+    Returns ``(bias, yes_hits, no_hits)`` where bias is in [-1, 1] from word-boundary YES vs NO counts.
+    """
+    texts: list[str] = []
+    for row in reversed(list(bus._dq)):
+        if str(row.get("lab") or "") not in BRANCH_BREEDERS:
+            continue
+        texts.append(str(row.get("message") or ""))
+        if len(texts) >= n:
+            break
+    texts = list(reversed(texts))
+    yes_h = 0
+    no_h = 0
+    for t in texts:
+        yes_h += len(re.findall(r"\bYES\b", t, re.I))
+        no_h += len(re.findall(r"\bNO\b", t, re.I))
+    tot = yes_h + no_h
+    bias = (yes_h - no_h) / tot if tot else 0.0
+    return bias, yes_h, no_h
+
+
+def peek_engine_council_signal(bus: LabCommunicationBus | None = None) -> dict[str, Any] | None:
+    """Last published council signal for engines, or None if expired / unset."""
+    b = bus or get_lab_communication_bus()
+    sig = getattr(b, "_engine_council_signal", None)
+    if not isinstance(sig, dict):
+        return None
+    exp = float(sig.get("expires_mono") or 0.0)
+    if exp and time.monotonic() > exp:
+        b._engine_council_signal = None
+        return None
+    return dict(sig)
+
+
+def refresh_engine_council_signal(bus: LabCommunicationBus, full_cfg: dict[str, Any] | None) -> None:
+    """
+    Recompute ``_engine_council_signal`` from recent Think Tank lines + diversity window.
+
+    Engines read this on the **next** tick (finalize runs after ``handle_market`` for the same branch).
+    """
+    bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
+    div = council_diversity_pulse_active(full_cfg)
+    tot = yes_h + no_h
+    strength = min(1.0, tot / 4.0) * (1.18 if div else 1.0)
+    if tot >= 2 and abs(bias) >= 0.34:
+        strength = max(strength, 0.55)
+    if div:
+        strength = max(strength, 0.48)
+    if tot == 0 and not div:
+        bus._engine_council_signal = None
+        return
+    bus._engine_council_signal = {
+        "bias": float(bias),
+        "yes_ct": int(yes_h),
+        "no_ct": int(no_h),
+        "strength": float(min(1.0, strength)),
+        "diversity": bool(div),
+        "expires_mono": time.monotonic() + 120.0,
+    }
 
 
 def conversation_tail(bus: LabCommunicationBus, limit: int = _CONV_MEMORY) -> list[dict[str, Any]]:
@@ -1377,6 +1444,8 @@ def finalize_think_tank_tick(
         )
         if _seconds_since_publish(engine) >= 10.0:
             _publish_tracked(engine, bus, branch, msg, confidence=0.62, action="breeding_whisper", reply_to=anchor_id)
+
+    refresh_engine_council_signal(bus, full_cfg)
 
 
 finalize_lab_chatter_tick = finalize_think_tank_tick

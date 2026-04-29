@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from ..lab_breeding import LABS_BREEDING_VERSION, build_labs_breeding_personality_radar, build_labs_breeding_tree_snapshot
+from ..lab_communication import peek_engine_council_signal
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
 from ..types_api import OptimizerStatusResponse
@@ -166,6 +167,15 @@ async def optimizer_status() -> OptimizerStatusResponse:
     cfg = await state.store.load_config()
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     _bla = str(oc.get("breeding_last_run_at") or "").strip()
+    sig = peek_engine_council_signal()
+    sig_on = sig is not None and float(sig.get("strength", 0.0)) >= 0.22
+    eng_on = False
+    for nm in ("engine_lab_b", "engine_lab_c", "engine_lab_d", "engine_lab_e"):
+        eng = getattr(state, nm, None)
+        if eng is not None and getattr(eng, "_breeder_council_influence_active", False):
+            eng_on = True
+            break
+    council_influence_active = bool(sig_on or eng_on)
     return {
         "enabled": bool(oc.get("enabled")),
         "adaptive_enabled": bool(oc.get("adaptive_enabled", True)),
@@ -174,6 +184,7 @@ async def optimizer_status() -> OptimizerStatusResponse:
         "breeding_last_summary": str(oc.get("breeding_last_summary") or ""),
         "breeding_last_run_minutes_ago": _breeding_minutes_ago(_bla),
         "labs_council_diversity_until": str(oc.get("labs_council_diversity_until") or ""),
+        "council_influence_active": council_influence_active,
         "model": str(oc.get("model") or "internal"),
         "optimizer_cycle_count": int(oc.get("optimizer_cycle_count") or 0),
         "pulse_eval_count": int(oc.get("pulse_eval_count") or 0),

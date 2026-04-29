@@ -2,6 +2,26 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.046 - Reset: stop trade toast spam (SQLite id recycle) - 2026-04-29
+
+- **Frontend (`App.tsx`):** When ``dashboard.trading_data_revision`` advances after ``POST /api/data/reset``, clear trade toast bootstrap state and ``seen`` id sets, drop queued ``trade-initiated-*`` / ``trade-resolved-*`` cards, then re-bootstrap from the current trade lists only — so recycled low SQLite ids are not treated as brand-new fills across every branch.
+
+## v0.4.15.045 - Fast equity merge: Lab E stale chart after reset - 2026-04-29
+
+- **Frontend (`App.tsx`):** When ``trading_data_revision`` advances, ``mergeDashboardFastPoll`` now treats **missing** ``equity_snapshots_lab_*`` / list keys on the partial ``GET /api/dashboard/equity`` payload as **empty arrays** instead of leaving the previous merge spread (often leaving **Lab E** with old points while C/D cleared).
+
+## v0.4.15.044 - Reset clears chart data (revision + merge fix) - 2026-04-29
+
+- **Frontend (`App.tsx`):** ``mergeDashboardFastPoll`` no longer resurrects **pre-reset** equity/trade series when the fast GET ``/api/dashboard/equity`` returns empty arrays after a wipe — it treats empty arrays as authoritative when ``trading_data_revision`` has advanced (see backend).
+- **Backend (`persistence.py`, `main.py`):** ``Store`` tracks a monotonic ``trading_data_revision`` incremented on every ``reset_trading_data`` commit; **full and partial** dashboard payloads include it; reset API responses include the new revision. **``all_labs``** wipes now also delete **``lab_child_1``–``lab_child_6``** SQLite rows (aligned with seed snapshots and breeding engines).
+
+## v0.4.15.043 - Breeder council trading + distinct B–E defaults - 2026-04-29
+
+- **Backend (`lab_communication.py`):** Think Tank bus now maintains an ephemeral **`council_signal`** for engines (`think_tank_yes_no_bias_last_n`, `refresh_engine_council_signal`, `peek_engine_council_signal`). It refreshes at the end of each breeder **`finalize_think_tank_tick`** and after **`POST /labs/diversify`** so the next tick can read YES/NO lean, strength, and diversity context.
+- **Backend (`engines/engine.py`):** Labs **B–E** apply per-lab **personality drift**, **follow vs fade** of council lean (stronger under **diversity pulse**), **Lab D** occasional consensus flip, **Lab E** extra weight on strong signals, **time-to-close** scaling on tilt and sim-rank **edge**. Rule matching uses an effective YES probability; logged mids stay the real book. **`GET /api/optimizer/status`** exposes **`council_influence_active`** when a signal is queued or a breeder tick applied tilt.
+- **Backend (`persistence.py`):** When a breeder has **no rules** and there is no global rules list, each lab gets its own **`_breeder_fallback_rules_for`** pack (tight B, wide/aggressive C, experimental D, balanced E). Default config uses those packs and raised **lab_b** / lowered **lab_c** optimizer yes-floor defaults.
+- **Frontend (`App.tsx`, `SettingsOverlay.tsx`):** Optimizer strip shows **Council influence active** when the status flag is true; Settings **Diversify council** control is a **compact secondary** button next to the primary **Force** action.
+
 ## v0.4.15.042 - Equity “Live” tab: 6-hour dense window - 2026-04-29
 
 - **Frontend (`App.tsx`, `dashboardPolling.ts`):** The **Live** time-scale tab (granularity id ``hourly``) now plots a **rolling 6 hours** of **dense** SQLite ticks (same treatment as **Intraday**, no hourly bucketing). Caps at **2500** points like Intraday. Tab tooltips and Equity **Info** copy updated (removed outdated “7 days / hourly bucket / calendar bucket” language for Live and D–Y).

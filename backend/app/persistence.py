@@ -73,23 +73,53 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
     ]
 
 
+def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
+    """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
+    if lab_key == "lab_b":
+        return [
+            {"name": "B tight mid YES", "min_prob": 0.52, "max_prob": 0.72, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
+            {"name": "B high conviction YES", "min_prob": 0.68, "max_prob": 0.92, "min_minutes_left": 2.0, "max_minutes_left": 14.0},
+            {"name": "B late NO", "side": "no", "min_prob": 0.48, "max_prob": 0.78, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
+        ]
+    if lab_key == "lab_c":
+        return [
+            {"name": "C wide mid YES", "min_prob": 0.38, "max_prob": 0.78, "min_minutes_left": 1.0, "max_minutes_left": 22.0},
+            {"name": "C scalp YES", "min_prob": 0.32, "max_prob": 0.52, "min_minutes_left": 1.0, "max_minutes_left": 16.0},
+            {"name": "C NO fade", "side": "no", "min_prob": 0.42, "max_prob": 0.88, "min_minutes_left": 1.0, "max_minutes_left": 20.0},
+        ]
+    if lab_key == "lab_d":
+        return [
+            {"name": "D contrarian NO mid", "side": "no", "min_prob": 0.42, "max_prob": 0.62, "min_minutes_left": 1.5, "max_minutes_left": 18.0},
+            {"name": "D long-tail YES", "min_prob": 0.40, "max_prob": 0.90, "min_minutes_left": 1.0, "max_minutes_left": 24.0},
+            {"name": "D spike YES", "min_prob": 0.55, "max_prob": 0.95, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
+        ]
+    if lab_key == "lab_e":
+        return [
+            {"name": "E balanced mid YES", "min_prob": 0.44, "max_prob": 0.76, "min_minutes_left": 1.5, "max_minutes_left": 20.0},
+            {"name": "E tier YES", "min_prob": 0.56, "max_prob": 0.88, "min_minutes_left": 2.0, "max_minutes_left": 16.0},
+            {"name": "E NO hedge", "side": "no", "min_prob": 0.48, "max_prob": 0.82, "min_minutes_left": 1.5, "max_minutes_left": 18.0},
+        ]
+    return _breeder_loose_rules_fallback()
+
+
 def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
     """
     Breeding Council labs must never run with ``rules: []`` (no signals). Copy global rules or inject a loose pack.
     """
     glob = cfg.get("rules")
-    fallback: list[dict[str, Any]] = []
+    global_rules: list[dict[str, Any]] = []
     if isinstance(glob, list) and glob:
-        fallback = [dict(r) for r in glob if isinstance(r, dict)]
-    if not fallback:
-        fallback = _breeder_loose_rules_fallback()
+        global_rules = [dict(r) for r in glob if isinstance(r, dict)]
     for lk in _BREEDER_PARENT_LABS:
         block = cfg.get(lk)
         if not isinstance(block, dict):
             continue
         rules = block.get("rules")
         if not isinstance(rules, list) or len(rules) == 0:
-            block["rules"] = [dict(r) for r in fallback]
+            if global_rules:
+                block["rules"] = [dict(r) for r in global_rules]
+            else:
+                block["rules"] = _breeder_fallback_rules_for(lk)
             cfg[lk] = block
 
 
@@ -311,8 +341,8 @@ def default_bot_config() -> dict[str, Any]:
             "min_hold_minutes_before_stop": 30,
             "balance_fraction_per_window": 0.055,
             "window_minutes": 18,
-            "no_bet_when_yes_below_pct": 24,
-            "rules": _copy_trading_rules_default(),
+            "no_bet_when_yes_below_pct": 30,
+            "rules": _breeder_fallback_rules_for("lab_b"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -328,8 +358,8 @@ def default_bot_config() -> dict[str, Any]:
             "min_hold_minutes_before_stop": 60,
             "balance_fraction_per_window": 0.11,
             "window_minutes": 12,
-            "no_bet_when_yes_below_pct": 28,
-            "rules": _copy_trading_rules_default(),
+            "no_bet_when_yes_below_pct": 26,
+            "rules": _breeder_fallback_rules_for("lab_c"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -346,7 +376,7 @@ def default_bot_config() -> dict[str, Any]:
             "balance_fraction_per_window": 0.13,
             "window_minutes": 10,
             "no_bet_when_yes_below_pct": 22,
-            "rules": _copy_trading_rules_default(),
+            "rules": _breeder_fallback_rules_for("lab_d"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -363,7 +393,7 @@ def default_bot_config() -> dict[str, Any]:
             "balance_fraction_per_window": 0.095,
             "window_minutes": 11,
             "no_bet_when_yes_below_pct": 24,
-            "rules": _copy_trading_rules_default(),
+            "rules": _breeder_fallback_rules_for("lab_e"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -410,9 +440,9 @@ def default_bot_config() -> dict[str, Any]:
             "minute_step": 2,
             "max_history": 120,
             "lab_a_yes_floor_pct": 56,
-            "lab_b_yes_floor_pct": 51,
-            "lab_c_yes_floor_pct": 52,
-            "lab_d_yes_floor_pct": 48,
+            "lab_b_yes_floor_pct": 58,
+            "lab_c_yes_floor_pct": 44,
+            "lab_d_yes_floor_pct": 46,
             "lab_e_yes_floor_pct": 50,
             "lab_a_min_minutes_left": 5,
             "lab_b_min_minutes_left": 2,
@@ -674,6 +704,13 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
 class Store:
     def __init__(self, path: str | None = None) -> None:
         self.path = path or env.sqlite_path
+        # Bumped on every ``reset_trading_data`` commit so dashboard clients can accept empty equity/trade arrays
+        # without merge logic resurrecting pre-reset chart series (see ``mergeDashboardFastPoll``).
+        self._trading_data_revision: int = 0
+
+    @property
+    def trading_data_revision(self) -> int:
+        return self._trading_data_revision
 
     @asynccontextmanager
     async def _open_db(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -1594,7 +1631,7 @@ class Store:
         Delete signals, trades, and equity snapshots. Keeps ``bot_config``.
 
         * ``branch`` is None / ``\"all\"`` / empty: delete **all** rows (legacy behaviour).
-        * ``branch`` in ``live`` / ``lab_a`` / ``lab_b`` / ``lab_c`` / ``lab_d``: delete only rows for that branch
+        * ``branch`` in ``live`` / ``lab_a`` … ``lab_e`` / ``lab_child_*``: delete only rows for that branch
           (Lab A predicate includes legacy ``sim_lab``).
 
         When ``backup`` is True, copies the SQLite file and exports JSONL dumps under ``DATA_LOG_DIR/exports``.
@@ -1645,6 +1682,7 @@ class Store:
                     await db.commit()
                 except Exception as e:
                     exports.append(f"vacuum_skipped:{e}")
+        self._trading_data_revision += 1
         _data_log(
             "system",
             {
@@ -1652,6 +1690,7 @@ class Store:
                 "backup": backup,
                 "branch": scope,
                 "vacuum": vacuum,
+                "trading_data_revision": self._trading_data_revision,
                 "exports": exports,
                 "at": datetime.now(timezone.utc).isoformat(),
             },

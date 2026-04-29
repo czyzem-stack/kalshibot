@@ -91,11 +91,16 @@ const FAST_POLL_METRIC_KEYS = [
 
 /**
  * Merge GET /api/dashboard/equity — same as original ``{ ...prev, ...d }`` plus:
- * - Do not replace equity / trade arrays with ``[]`` or non-arrays (that alone caused wiped charts).
+ * - Do not replace equity / trade arrays with ``[]`` or non-arrays **unless** ``trading_data_revision`` advanced
+ *   (otherwise post-reset empty arrays were overwritten by this merge and charts kept stale history).
  * - Shallow-merge metrics blobs so a partial key set cannot drop ``current_mtm_dollars``.
  * Do **not** strip arbitrary keys from the payload (that froze live tiles / MTM).
  */
 function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
+  const prevRev = Number((prev as AnyObj).trading_data_revision ?? 0);
+  const incRev = Number((incoming as AnyObj).trading_data_revision ?? 0);
+  const revisionAdvanced = Number.isFinite(incRev) && incRev > prevRev;
+
   const next: AnyObj = { ...prev, ...incoming };
   next.config =
     incoming.config && typeof incoming.config === "object"
@@ -108,6 +113,21 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
     if (inc && typeof inc === "object" && !Array.isArray(inc) && old && typeof old === "object" && !Array.isArray(old)) {
       next[mk] = { ...(old as AnyObj), ...(inc as AnyObj) };
     }
+  }
+
+  if (revisionAdvanced) {
+    // Replace each series entirely — if ``incoming`` omits a key (partial payload / strip), treat as ``[]``.
+    // Otherwise the spread above keeps ``prev.equity_snapshots_lab_*`` and one branch (often last in the object)
+    // can retain pre-reset history while others cleared — classic Lab E vs C/D mismatch after reset.
+    for (const k of FAST_POLL_EQ_KEYS) {
+      const inc = incoming[k];
+      next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
+    }
+    for (const k of FAST_POLL_LIST_KEYS) {
+      const inc = incoming[k];
+      next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
+    }
+    return next;
   }
 
   for (const k of FAST_POLL_EQ_KEYS) {
@@ -1201,6 +1221,7 @@ function BreedingFamilyTreePanel({
 function OptimizerMutationPulseStrip({
   labThoughts,
   mutationStatus,
+  councilInfluenceActive,
 }: {
   labThoughts: AnyObj | undefined;
   mutationStatus: {
@@ -1208,9 +1229,24 @@ function OptimizerMutationPulseStrip({
     effectiveMutationScale: number;
     mutationDial: number;
   };
+  councilInfluenceActive?: boolean;
 }) {
   return (
     <div className="dash-optimizer-panel__status-strip" role="region" aria-label="Mutation tier and lab pulse">
+      {councilInfluenceActive ? (
+        <p
+          className="sub"
+          style={{
+            margin: "0 0 6px 0",
+            fontSize: 10,
+            lineHeight: 1.35,
+            letterSpacing: 0.02,
+            color: "rgba(165, 180, 252, 0.95)",
+          }}
+        >
+          Council influence active — Labs B–E weight Think Tank YES/NO lean and council signal when ranking trades.
+        </p>
+      ) : null}
       <div
         className="sub dash-optimizer-panel__mutation-dial"
         style={{
@@ -3939,6 +3975,8 @@ export default function App() {
   const tradeToastsBootstrappedRef = useRef(false);
   const seenTradeInitRef = useRef<Set<string>>(new Set());
   const seenTradeSettleRef = useRef<Set<string>>(new Set());
+  /** Baseline ``dash.trading_data_revision`` — when it jumps (data reset), recycle trade ids must not fire toasts for every row. */
+  const lastTradeToastDataRevisionRef = useRef<number | null>(null);
   /** User-dismissed trade toast ids (``trade-initiated-*`` / ``trade-resolved-*``); survives effect re-runs. */
   const dismissedTradeToastIdsRef = useRef<Set<string>>(new Set());
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
@@ -4450,6 +4488,28 @@ export default function App() {
       toastAutoDismissTimeoutsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    const raw = (dash as AnyObj | null)?.trading_data_revision;
+    if (raw === undefined || raw === null) return;
+    const rev = Number(raw);
+    if (!Number.isFinite(rev)) return;
+    if (lastTradeToastDataRevisionRef.current === null) {
+      lastTradeToastDataRevisionRef.current = rev;
+      return;
+    }
+    if (rev <= lastTradeToastDataRevisionRef.current) return;
+    lastTradeToastDataRevisionRef.current = rev;
+    seenTradeInitRef.current.clear();
+    seenTradeSettleRef.current.clear();
+    tradeToastsBootstrappedRef.current = false;
+    setOptimizerNotifs((prev) =>
+      prev.filter((n) => {
+        const id = String(n.id || "");
+        return !id.startsWith("trade-initiated-") && !id.startsWith("trade-resolved-");
+      }),
+    );
+  }, [dash?.trading_data_revision]);
 
   /**
    * Bottom-right cards when a sim/live trade row first appears or settles.
@@ -6189,6 +6249,7 @@ export default function App() {
                 effectiveMutationScale: optimizerStatus.effectiveMutationScale,
                 mutationDial: optimizerStatus.mutationDial,
               }}
+              councilInfluenceActive={Boolean((breederStatusPayload as AnyObj | null)?.council_influence_active)}
             />
             <LabThinkTank
               messages={labHiveMessages}

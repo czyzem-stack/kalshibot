@@ -1623,7 +1623,16 @@ export default function SettingsOverlay({
                 </button>
                 <button
                   type="button"
-                  className="primary"
+                  className="dash-panel-btn"
+                  style={{
+                    fontSize: 11,
+                    padding: "4px 10px",
+                    fontWeight: 500,
+                    border: "1px solid rgba(100, 120, 180, 0.55)",
+                    background: "rgba(16, 22, 42, 0.72)",
+                    color: "var(--text)",
+                    opacity: 0.95,
+                  }}
                   disabled={busy || optimizerSaving || forcingMutation || diversifyCouncilBusy || !onDiversifyLabsNow}
                   title="POST /labs/diversify: 45m Breeding Council Think Tank diversity pulse (B–E only). Nuke option (Settings only). No Lab A internal mutation."
                   onClick={() =>
@@ -1638,7 +1647,7 @@ export default function SettingsOverlay({
                     })()
                   }
                 >
-                  {diversifyCouncilBusy ? "Diversifying council…" : "Diversify council (Think Tank)"}
+                  {diversifyCouncilBusy ? "Diversifying…" : "Diversify council"}
                 </button>
               </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>

@@ -876,7 +876,7 @@ async def data_reset(
     backup: bool = Query(True, description="Copy sqlite + JSONL table dumps before delete"),
     branch: str = Query(
         "all",
-        description="all | all_labs (Live + A–D) | live | lab_a | lab_b | lab_c | lab_d — scope of DELETE on signals/trades/equity_snapshots",
+        description="all | all_labs (Live + labs A–E + lab_child slots) | live | lab_a … lab_e — scope of DELETE on signals/trades/equity_snapshots",
     ),
     uniform_paper_balance_cents: int | None = Query(
         None,
@@ -887,7 +887,8 @@ async def data_reset(
     Wipe **signals**, **trades**, and **equity_snapshots** (all rows, or one branch). ``bot_config`` is kept.
     Optional env ``DATA_RESET_TOKEN``: then require header ``X-Reset-Token`` matching it.
 
-    ``branch`` = **all_labs**: deletes trading rows for **Live** and **lab_a–lab_d** (not only labs). When
+    ``branch`` = **all_labs**: deletes trading rows for **Live**, **lab_a–lab_e**, and **lab_child_*** slots.
+    When
     ``uniform_paper_balance_cents`` is set, Live paper and each lab's ``paper_balance_cents`` are updated to that
     value after the wipe, using a single locked read-modify-write so ``optimizer`` and the rest of ``bot_config``
     are not clobbered by a stale snapshot.
@@ -913,16 +914,18 @@ async def data_reset(
         )
     try:
         if br == "all_labs":
-            for br2 in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+            for br2 in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 _clear_engine_mem_after_reset(br2)
             out = await store.reset_trading_data(backup=backup, branch="lab_a")
             await store.reset_trading_data(backup=False, branch="lab_b")
             await store.reset_trading_data(backup=False, branch="lab_c")
             await store.reset_trading_data(backup=False, branch="lab_d")
             await store.reset_trading_data(backup=False, branch="lab_e")
+            for ck in BRANCH_CHILD_LABS:
+                await store.reset_trading_data(backup=False, branch=ck)
             _clear_engine_mem_after_reset("live")
             await store.reset_trading_data(backup=False, branch="live")
-            for br2 in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+            for br2 in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 _clear_engine_mem_after_reset(br2)
             _clear_engine_mem_after_reset("live")
             out = dict(out)
@@ -932,6 +935,7 @@ async def data_reset(
                 if u:
                     out["uniform_paper_balance"] = u
             await _seed_equity_snapshots_after_reset("all_labs")
+            out["trading_data_revision"] = store.trading_data_revision
             return out
         pre_scope = "all" if br == "all" else br
         _clear_engine_mem_after_reset(pre_scope)
@@ -946,6 +950,7 @@ async def data_reset(
         if u:
             out_final["uniform_paper_balance"] = u
     await _seed_equity_snapshots_after_reset(scope_ret)
+    out_final["trading_data_revision"] = store.trading_data_revision
     return out_final
 
 
@@ -1050,22 +1055,24 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     """
     Merge ``lab_a`` / ``lab_b`` / ``lab_c`` / ``lab_d`` / ``lab_e`` without the general ``BotConfigPayload`` shape.
 
-    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``lab_c`` | ``lab_d`` | ``lab_e`` | ``both`` (A+B) | ``all_labs`` (Live + A–E; trading rows for Live and all labs).
+    Optional ``reset_data``: ``none`` | ``lab_a`` … ``lab_e`` | ``both`` (A+B) | ``all_labs`` (Live + A–E + ``lab_child_*``; trading rows).
     ``backup`` (default true) is passed to the first wipe in a multi-branch reset.
     """
     reset = str(body.get("reset_data") or "none").strip().lower()
     backup = bool(body.get("backup", True))
     if reset == "all_labs":
-        for br in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+        for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             _clear_engine_mem_after_reset(br)
         await store.reset_trading_data(backup=backup, branch="lab_a")
         await store.reset_trading_data(backup=False, branch="lab_b")
         await store.reset_trading_data(backup=False, branch="lab_c")
         await store.reset_trading_data(backup=False, branch="lab_d")
         await store.reset_trading_data(backup=False, branch="lab_e")
+        for ck in BRANCH_CHILD_LABS:
+            await store.reset_trading_data(backup=False, branch=ck)
         _clear_engine_mem_after_reset("live")
         await store.reset_trading_data(backup=False, branch="live")
-        for br in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+        for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             _clear_engine_mem_after_reset(br)
         _clear_engine_mem_after_reset("live")
         await _seed_equity_snapshots_after_reset("all_labs")
@@ -2080,6 +2087,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             ][:14],
         },
         "dashboard_payload_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "trading_data_revision": store.trading_data_revision,
     }
 
 

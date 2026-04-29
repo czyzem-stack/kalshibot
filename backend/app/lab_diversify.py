@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from .branch_config import BRANCH_BREEDERS
-from .lab_communication import _voice_prefix, get_lab_communication_bus
+from .lab_communication import _voice_prefix, get_lab_communication_bus, refresh_engine_council_signal
 
 logger = logging.getLogger("kalshibot.api")
 
@@ -131,6 +131,8 @@ async def apply_emergency_diversify(store: Any) -> dict[str, Any]:
         if len(line) > 69:
             line = line[:69].rsplit(" ", 1)[0]
         bus.publish(br, line, kind="say", action="council_diversity_pulse")
+
+    refresh_engine_council_signal(bus, cfg)
 
     return {
         "ok": True,
