@@ -118,6 +118,9 @@ class EnvSettings:
     # Logging: LOG_JSON=1 for one JSON line per log (Docker / prod). LOG_LEVEL=DEBUG|INFO|…
     log_json: bool = _get("LOG_JSON", "0").lower() in ("1", "true", "yes")
     log_level: str = _get("LOG_LEVEL", "INFO") or "INFO"
+    # Breeder Lab Hive lines (council_reply, strategic_pulse, …): **off** by default (no structlog line per message).
+    # Set LAB_THINK_TANK_LOG_INFO=1 to log each line at INFO (still chatty; use for debugging council cadence only).
+    lab_think_tank_log_info: bool = _get("LAB_THINK_TANK_LOG_INFO", "0").lower() in ("1", "true", "yes")
     # When set, all /api routes require Authorization: Bearer <token> except /api/health*. Disabled by default (local dev).
     api_bearer_token: str = _get("KALSHI_API_BEARER_TOKEN", "")
     # Optional OS keychain: if KALSHI_USE_KEYRING=1 and PEM/path are empty, load PEM from keyring (requires `pip install keyring`).

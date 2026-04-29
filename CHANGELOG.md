@@ -2,6 +2,34 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.015 - README overhaul - 2026-04-29
+
+- **README:** Stronger onboarding — **Run it (TL;DR)** (Windows + Unix copy-paste), **Safety** callout, **Operator playbook** (Mass apply, lab toggles, Think Tank logs, dual Vite ports), **Upgrading & parallel checkouts**, **Glossary**, expanded troubleshooting, merged duplicate testing into **Development & testing**, fixed dynamic version line (see **`VERSION`**).
+- **README-short:** Version row points at **`VERSION`** / **`CHANGELOG`** instead of a stale literal.
+
+## v0.4.15.014 - UI track pill: port 5175 + dev port wins - 2026-04-29
+
+- **Frontend (`uiTrack.ts`, `App.tsx` tooltip, `frontend/.env.example`):** Map dev URL **:5175** → **`test`** (tab title / pill). In **`vite dev`**, **5173 / 5174 / 5175** infer track **before** `VITE_UI_TRACK`, so **:5174** and **:5175** are not both labeled **`dev`** when `.env` pins `VITE_UI_TRACK=dev`.
+
+## v0.4.15.013 - Think Tank default silent logs - 2026-04-29
+
+- **Backend (`lab_communication.py`):** **`think_tank_message`** is emitted only when **`LAB_THINK_TANK_LOG_INFO=1`**. Default no longer logs at **DEBUG** (that still flooded consoles when **`LOG_LEVEL=DEBUG`**).
+- **Docs:** **README**, **`.env.example`**, **`settings_env.py`** comments aligned.
+
+## v0.4.15.012 - Breeding relevance (docs + Optimizer hook) - 2026-04-29
+
+- **README / README-short:** Lead with **Labs Breeding** as the strategic loop (B–E → `lab_child_*` → pool / death chamber → gated adoption → Lab A); new section **Labs Breeding (the closed loop)**; branch table gains **Breeding role** column; Think Tank explicitly **cosmetic**; API/dashboard rows clarified.
+- **Frontend (`App.tsx`):** Optimizer card — short **Labs Breeding** hook paragraph above the pool/death-chamber strip; **Info** overlay opens with a **Labs Breeding (substance)** paragraph before the existing Optimizer explanation.
+- **Frontend (`SettingsOverlay.tsx`, `settingsHelpPlaybook.tsx`):** Simulation labs + help playbook tie **Labs B–E** to breeder parents and point to **Optimizer → Breeder / Tree**.
+
+## v0.4.15.011 - Settings mass apply + lab toggle fix + Think Tank log hygiene - 2026-04-29
+
+- **Frontend (`SettingsOverlay.tsx`):** **Mass apply** under Simulation labs — select Labs A–E, choose action (engines on/off, uniform paper, copy sizing from active tab, copy patient stop from a source lab, auto-reset on/off), confirm once; uses **`PUT /api/config/lab-branches`**.
+- **Frontend (`App.tsx`):** Lab engine **Turn A/B/C/D/E on|off** now persists via **`PUT /api/config/lab-branches`** (same as Mass apply) instead of **`POST /api/engine/toggle?*_running=`**, so Lab **E** (and consistency across labs) works even when the API build predates **`lab_e_running`** on the toggle route.
+- **Backend (`main.py`):** Dashboard **`lab_*_engine_on`** / Live uses **`_coerce_engine_running_flag`** so stringly-typed config matches **`dual_engine_loop`** coercion.
+- **Backend (`lab_communication.py`, `settings_env.py`):** **`think_tank_message`** logs default to **DEBUG**; optional **`LAB_THINK_TANK_LOG_INFO=1`** restores **INFO** per line.
+- **Docs:** [`.env.example`](.env.example) documents **`LAB_THINK_TANK_LOG_INFO`**; **README** Configuration section expanded.
+
 ## v0.4.15.010 - Lab E full-stack UI + optimizer radar - 2026-04-28
 
 - **Frontend:** Lab **E** wired through **branch performance**, **equity** (six small multiples + compare overlay), **Assets to watch**, **Account** holdings/engine tabs, **optimizer thinking radar** (seven traces), **hero marquee/snapshot**, **Lab pulse**, **ActivityHints** for D/E engines, **promote Lab A→Live** vs B/C/D/E, **Settings** (engines, patient stop, simulation labs bulk save/reset, optimizer Lab E toggles/style/floors), and **help playbook** copy. **`BranchMarketTickers`:** `lab_e` in hero order, norms, positions, compact segments. **`labHiveChat`:** Breeding Council header (“working together”); **`balanceHiveMessagesForTicker`** now round-robins **lab_e** with B/C/D (was omitting E).

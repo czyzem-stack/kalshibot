@@ -34,6 +34,7 @@ from .branch_config import (
     BRANCH_LABS,
     BRANCH_LIVE,
     LAB_BRANCH_OVERLAY_KEYS,
+    _coerce_engine_running_flag,
     build_optimizer_radar_payload,
     fleet_visible_paper_start_cents,
     lab_paper_equity_start_cents,
@@ -1612,12 +1613,22 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     lab_e = cfg.get("lab_e") if isinstance(cfg.get("lab_e"), dict) else {}
-    live_engine_on = bool(cfg.get("engine_running"))
-    lab_a_engine_on = bool(lab_a.get("engine_running")) if isinstance(lab_a, dict) else False
-    lab_b_engine_on = bool(lab_b.get("engine_running")) if isinstance(lab_b, dict) else False
-    lab_c_engine_on = bool(lab_c.get("engine_running")) if isinstance(lab_c, dict) else False
-    lab_d_engine_on = bool(lab_d.get("engine_running")) if isinstance(lab_d, dict) else False
-    lab_e_engine_on = bool(lab_e.get("engine_running")) if isinstance(lab_e, dict) else False
+    live_engine_on = _coerce_engine_running_flag(cfg.get("engine_running"), default_if_missing=False)
+    lab_a_engine_on = (
+        _coerce_engine_running_flag(lab_a.get("engine_running"), default_if_missing=False) if isinstance(lab_a, dict) else False
+    )
+    lab_b_engine_on = (
+        _coerce_engine_running_flag(lab_b.get("engine_running"), default_if_missing=False) if isinstance(lab_b, dict) else False
+    )
+    lab_c_engine_on = (
+        _coerce_engine_running_flag(lab_c.get("engine_running"), default_if_missing=False) if isinstance(lab_c, dict) else False
+    )
+    lab_d_engine_on = (
+        _coerce_engine_running_flag(lab_d.get("engine_running"), default_if_missing=False) if isinstance(lab_d, dict) else False
+    )
+    lab_e_engine_on = (
+        _coerce_engine_running_flag(lab_e.get("engine_running"), default_if_missing=False) if isinstance(lab_e, dict) else False
+    )
     def _child_lab_polling_on(raw: Any) -> bool:
         slab = raw if isinstance(raw, dict) else {}
         return slab.get("engine_running") is not False
