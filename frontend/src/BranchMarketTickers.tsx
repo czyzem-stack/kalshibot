@@ -860,6 +860,12 @@ export function BranchHeroMarquee({
     restartCssAutoplay();
   }, [loopSec, normalizeOffset, restartCssAutoplay]);
 
+  /** When ticker text updates without width/duration change, restart drift so the strip matches charts + snapshot immediately. */
+  useLayoutEffect(() => {
+    if (manualDragRef.current || throwActiveRef.current) return;
+    restartCssAutoplay();
+  }, [combined, restartCssAutoplay]);
+
   useEffect(() => {
     return () => {
       if (throwRafRef.current) window.cancelAnimationFrame(throwRafRef.current);
@@ -1028,6 +1034,23 @@ export function BranchHeroMarquee({
 
 /** Centered header snapshot (under title): Live + Lab A–E, no marquee/scrolling track. */
 export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }): ReactNode {
+  const syncClock = useMemo(() => {
+    const raw = dash?.dashboard_payload_at;
+    const s = raw != null ? String(raw).trim() : "";
+    if (!s) return null;
+    const ms = Date.parse(s);
+    if (!Number.isFinite(ms)) return null;
+    try {
+      return new Date(ms).toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return null;
+    }
+  }, [dash?.dashboard_payload_at]);
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const livePaper = Boolean(cfg.simulate);
@@ -1072,7 +1095,16 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
       className="branch-hero-snapshot branch-hero-snapshot--header"
       role="list"
       aria-live="polite"
-      aria-label="Live and Lab A through E: balance and return each"
+      aria-label={
+        syncClock
+          ? `Live and Lab A through E: balance and return each — data as of ${syncClock}`
+          : "Live and Lab A through E: balance and return each"
+      }
+      title={
+        syncClock
+          ? `Hero balances · same refresh clock as equity charts (${syncClock})`
+          : "Live and Lab A through E balance and return"
+      }
     >
       {rows.map((row) => (
         <div

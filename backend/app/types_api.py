@@ -147,6 +147,8 @@ class DashboardResponse(TypedDict, total=False):
     lab_thoughts: dict[str, list[str]]
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
     optimizer_activity: dict[str, Any]
+    # ISO UTC — lets the UI reject overlapping responses delivered out of order (charts vs hero stay one generation).
+    dashboard_payload_at: str
 
 
 class OptimizerStatusResponse(TypedDict, total=False):

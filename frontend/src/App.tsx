@@ -28,6 +28,7 @@ import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import { withApiAuth } from "./apiAuth";
 import {
   DASHBOARD_EQUITY_POLL_MS,
+  DASHBOARD_EQUITY_POLL_MS_LIVE_TAB,
   DASHBOARD_FULL_POLL_MS,
   subscribeDashboardCatchUp,
 } from "./dashboardPolling";
@@ -123,6 +124,38 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
   }
 
   return next;
+}
+
+function dashboardPayloadMs(raw: unknown): number | null {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Hero strip + equity charts share ``dash`` — reject older payloads when full vs fast dashboard GETs finish out of order on the wire. */
+function shouldApplyDashboardPayload(prev: AnyObj | null, incoming: AnyObj): boolean {
+  if (!prev) return true;
+  const incMs = dashboardPayloadMs(incoming.dashboard_payload_at);
+  if (incMs == null) return true;
+  const prevMs = dashboardPayloadMs(prev.dashboard_payload_at);
+  if (prevMs == null) return true;
+  return incMs >= prevMs;
+}
+
+function dashboardSyncedClockLabel(rawAt: unknown): string | null {
+  const ms = dashboardPayloadMs(rawAt);
+  if (ms == null) return null;
+  try {
+    return new Date(ms).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function branchLabelForTradeToast(branch: unknown): string {
@@ -3295,13 +3328,17 @@ type EquityGranularity = "intraday" | "hourly" | "dd" | "ww" | "mm" | "yy";
 const EQUITY_INTRADAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const EQUITY_INTRADAY_MAX_POINTS = 2500;
 
-/** Hourly = last snapshot per local clock hour (noise-reduced intraday). Rolling window below. */
+/** Live tab (granularity id ``hourly``): bucket one point per local clock hour; rolling window below. */
 const EQUITY_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Shared by dashboard equity tabs and Compare overlay (same `equityGranularity` state). */
 const EQUITY_GRANULARITY_TAB_DEFS = [
+  [
+    "hourly",
+    "Live",
+    "Rolling 7 days: one point per local clock hour from SQLite, plus a trailing point from the latest dashboard metrics each fast refresh — same book/MTM as the hero strip and bottom marquee.",
+  ],
   ["intraday", "Intraday", "Rolling last 24 hours of snapshots (wall clock), dense ticks."],
-  ["hourly", "Hourly", "One point per local clock hour (latest snapshot in that hour), rolling 7 days."],
   ["dd", "D / D", "Last snapshot per local calendar day (need multiple days of history for several points)."],
   ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
   ["mm", "M / M", "Last snapshot per UTC calendar month."],
@@ -3488,16 +3525,13 @@ function buildEquityChartSeries(
   });
 }
 
-/** Intraday: append one point from latest dashboard metrics so the curve moves on every /api/dashboard poll. */
-function equitySeriesWithLiveTail(
+/** Append trailing book/MTM from latest ``metrics`` (same instant as hero + bottom marquee on each fast dashboard merge). */
+function appendEquityLiveTailFromMetrics(
+  base: EquityChartRow[],
   snaps: AnyObj[],
-  mode: EquityGranularity,
   metrics: AnyObj,
   fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
 ): EquityChartRow[] {
-  const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
-  if (mode !== "intraday") return base;
-
   const ce = metrics?.current_equity_dollars;
   let equity: number | null = ce != null && Number.isFinite(Number(ce)) ? Number(ce) : null;
   if (equity == null && snaps.length) {
@@ -3535,6 +3569,18 @@ function equitySeriesWithLiveTail(
   }
   const tailMs = Date.now();
   return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
+}
+
+/** Intraday + Live (hourly buckets): trailing point from latest dashboard metrics so curves move on each fast equity poll. */
+function equitySeriesWithLiveTail(
+  snaps: AnyObj[],
+  mode: EquityGranularity,
+  metrics: AnyObj,
+  fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
+): EquityChartRow[] {
+  const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
+  if (mode !== "intraday" && mode !== "hourly") return base;
+  return appendEquityLiveTailFromMetrics(base, snaps, metrics, fmtIsoLocalFn);
 }
 
 type OverlayBranchKey = "live" | "a" | "b" | "c" | "d" | "e";
@@ -3646,7 +3692,7 @@ function EquityDualLineChart({
   };
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={plotData} margin={{ left: 18, right: 12, top: 8, bottom: 20 }}>
+      <LineChart data={plotData} margin={{ left: 18, right: 28, top: 8, bottom: 20 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis
           dataKey="t"
@@ -3663,8 +3709,15 @@ function EquityDualLineChart({
           tickFormatter={fmtTick}
         />
         <Tooltip
-          allowEscapeViewBox={{ x: true, y: true }}
-          contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
+          allowEscapeViewBox={{ x: false, y: false }}
+          wrapperStyle={{ zIndex: 30 }}
+          contentStyle={{
+            background: "#0b1228",
+            border: "1px solid #243055",
+            maxWidth: "min(260px, calc(100vw - 32px))",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+          }}
           formatter={(value: number, name: string) => [fmtY(value), name]}
         />
         <Line
@@ -3947,6 +4000,7 @@ export default function App() {
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
   const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
+  const [emergencyDiversifyBusy, setEmergencyDiversifyBusy] = useState(false);
   /** LABS BREEDING — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
   const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder" | "tree">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
@@ -3981,7 +4035,7 @@ export default function App() {
   const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d" | "e">("live");
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
-  const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
+  const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("hourly");
   const [equityValueScale, setEquityValueScale] = useState<EquityValueScale>("dollars");
   const [equityVisible, setEquityVisible] = useState<Record<"live" | "a" | "b" | "c" | "d" | "e", boolean>>({
     live: true,
@@ -4010,6 +4064,10 @@ export default function App() {
   /** False until the dashboard poll effect runs — avoids treating the tree as mounted before listeners are ready. */
   const dashboardPollMountedRef = useRef(false);
   const dashboardFetchEpochRef = useRef(0);
+  /** Toast trade bootstrap poll — abort + epoch mirror ``/api/dashboard`` so Strict Mode does not double-hit the API. */
+  const tradesPollMountedRef = useRef(false);
+  const tradesAbortRef = useRef<AbortController | null>(null);
+  const tradesFetchEpochRef = useRef(0);
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
     const inFlight = dashboardInFlightRef.current;
@@ -4059,8 +4117,13 @@ export default function App() {
         })();
         if (!dashboardPollMountedRef.current) return null;
         if (epochAtStart !== dashboardFetchEpochRef.current) return null;
-        setErr(null);
-        setDash(d);
+        let appliedFreshDashboard = false;
+        setDash((prev) => {
+          if (!shouldApplyDashboardPayload(prev, d)) return prev;
+          appliedFreshDashboard = true;
+          return d;
+        });
+        if (appliedFreshDashboard) setErr(null);
         payload = d;
       } catch (e: any) {
         if (!dashboardPollMountedRef.current) return null;
@@ -4167,6 +4230,7 @@ export default function App() {
   }, []);
 
   const refreshEquityLight = useCallback((): void => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     void (async () => {
       try {
         const r = await fetch("/api/dashboard/equity", withApiAuth());
@@ -4175,6 +4239,7 @@ export default function App() {
         if (!d || typeof d !== "object" || Array.isArray(d)) return;
         setDash((prev) => {
           if (!prev) return prev;
+          if (!shouldApplyDashboardPayload(prev, d)) return prev;
           return mergeDashboardFastPoll(prev, d);
         });
       } catch {
@@ -4196,7 +4261,7 @@ export default function App() {
     dashboardPollMountedRef.current = true;
     void refreshRef.current();
     const idFull = window.setInterval(() => void refreshRef.current(), DASHBOARD_FULL_POLL_MS);
-    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), DASHBOARD_EQUITY_POLL_MS);
+    // Equity poll cadence follows ``equityGranularity`` in a separate effect (Live tab = faster partial refresh).
     // Background tabs throttle timers; editing looked like the “fix” because Vite remount re-ran this effect.
     const unsubCatchUp = subscribeDashboardCatchUp(() => {
       refreshEquityLightRef.current();
@@ -4205,7 +4270,6 @@ export default function App() {
     return () => {
       unsubCatchUp();
       window.clearInterval(idFull);
-      window.clearInterval(idEq);
       dashboardPollMountedRef.current = false;
       dashboardAbortRef.current?.abort();
       // Strict Mode (or tab background): abort leaves the old promise in ``dashboardInFlightRef`` until it
@@ -4216,6 +4280,13 @@ export default function App() {
       dashboardFetchEpochRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    const ms = equityGranularity === "hourly" ? DASHBOARD_EQUITY_POLL_MS_LIVE_TAB : DASHBOARD_EQUITY_POLL_MS;
+    void refreshEquityLightRef.current();
+    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), ms);
+    return () => window.clearInterval(idEq);
+  }, [equityGranularity]);
 
   const loadOptimizer = useCallback(async () => {
     try {
@@ -4235,24 +4306,42 @@ export default function App() {
   }, [optimizerOpen, loadOptimizer]);
 
   useEffect(() => {
-    let alive = true;
+    tradesPollMountedRef.current = true;
     const poll = async () => {
+      tradesAbortRef.current?.abort();
+      const epochAtStart = tradesFetchEpochRef.current;
+      const ac = new AbortController();
+      tradesAbortRef.current = ac;
       try {
-        const d = await apiGet<AnyObj>("/api/trades?limit=160");
-        if (!alive) return;
+        const r = await fetch("/api/trades?limit=160", withApiAuth({ signal: ac.signal }));
+        if (!tradesPollMountedRef.current) return;
+        if (epochAtStart !== tradesFetchEpochRef.current) return;
+        if (!r.ok) throw new Error(`/api/trades ${r.status}`);
+        const d = (await r.json()) as unknown;
+        if (!tradesPollMountedRef.current) return;
+        if (epochAtStart !== tradesFetchEpochRef.current) return;
         const rows = Array.isArray(d) ? d : Array.isArray((d as AnyObj)?.rows) ? ((d as AnyObj).rows as AnyObj[]) : [];
         setToastTradeRows(rows);
-      } catch {
-        if (!alive) return;
+      } catch (e: unknown) {
+        if (!tradesPollMountedRef.current) return;
+        if (epochAtStart !== tradesFetchEpochRef.current) return;
+        const msg = String((e as AnyObj)?.message ?? e);
+        const aborted =
+          String((e as AnyObj)?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
+        if (aborted) return;
         // First completed attempt (even on failure) unblocks toast bootstrap so we do not treat
         // the full merged history as "new" when /api/trades is slow or errors once.
         setToastTradeRows((prev) => (prev === null ? [] : prev));
+      } finally {
+        if (tradesAbortRef.current === ac) tradesAbortRef.current = null;
       }
     };
     void poll();
     const id = window.setInterval(() => void poll(), 10000);
     return () => {
-      alive = false;
+      tradesPollMountedRef.current = false;
+      tradesAbortRef.current?.abort();
+      tradesFetchEpochRef.current += 1;
       window.clearInterval(id);
     };
   }, []);
@@ -5407,6 +5496,20 @@ export default function App() {
     }
   }, [loadOptimizer, refresh]);
 
+  const emergencyDiversifyNow = useCallback(async () => {
+    setEmergencyDiversifyBusy(true);
+    try {
+      await apiPostJson("/labs/diversify", {});
+      await loadOptimizer();
+      await refresh({ force: true });
+      setBreederRefetchNonce((n) => n + 1);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setEmergencyDiversifyBusy(false);
+    }
+  }, [loadOptimizer, refresh]);
+
   const applyLabBranchesBulk = async (body: AnyObj) => {
     setBusy(true);
     try {
@@ -5933,6 +6036,19 @@ export default function App() {
                   }
                 >
                   {forceInternalMutationBusy ? "…" : "force"}
+                </button>
+                <button
+                  type="button"
+                  className="dash-panel-btn dash-optimizer-emergency-diversify"
+                  aria-label="Emergency diversify: temporarily tighten breeder B–E gates and yes floors, force internal mutation, log to Think Tank."
+                  disabled={!dash || busy || emergencyDiversifyBusy || forceInternalMutationBusy}
+                  title={
+                    "Emergency diversify (~45m): raises optimizer yes floors for Labs B–E, tightens each lab’s no_bet_when_yes_below_pct, runs one internal mutation, " +
+                    "and posts DIVERSIFY TRIGGERED lines to the Breeding Council Think Tank. POST /labs/diversify."
+                  }
+                  onClick={() => void emergencyDiversifyNow()}
+                >
+                  {emergencyDiversifyBusy ? "…" : "🚨 Emergency Diversify"}
                 </button>
                 <button
                   type="button"
@@ -6475,7 +6591,7 @@ export default function App() {
               id="dash-heading-equity-curves"
               className="dash-section__title dash-equity-panel__title"
               style={{ margin: 0 }}
-              title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
+              title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Live and Intraday tabs append a trailing point from latest dashboard metrics on each fast refresh (same book/MTM as hero + bottom marquee); paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
             >
               Equity curves
             </h2>
@@ -6494,7 +6610,7 @@ export default function App() {
                 title={
                   "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
-                  "Time-scale tabs re-bucket stored snapshots: Intraday = last 24h raw ticks; Hourly = last snapshot per local hour (rolling 7 days); D/W/M/Y = one point per calendar bucket. " +
+                  "Time-scale tabs re-bucket stored snapshots: Live = hourly buckets (rolling 7 days) plus a trailing metrics point each fast refresh; Intraday = last 24h raw ticks; D/W/M/Y = one point per calendar bucket. " +
                   "Use Compare to overlay branches in one frame. " +
                   "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
                 }
@@ -6528,8 +6644,8 @@ export default function App() {
                           on every dashboard refresh so the tail tracks “right now” more closely than a sparse historical series.
                         </p>
                         <p>
-                          <strong>Time-scale tabs (Intraday, Hourly, D, W, M, Y).</strong> All apply to <em>all six</em> charts.{" "}
-                          <strong>Intraday</strong> is raw snapshots from roughly the <strong>last 24 hours</strong>. <strong>Hourly</strong> keeps one point per <strong>local clock hour</strong> (latest snapshot in that hour) over a <strong>rolling 7 days</strong> — smoother than Intraday when the engine writes many ticks per hour.{" "}
+                          <strong>Time-scale tabs (Live, Intraday, D, W, M, Y).</strong> All apply to <em>all six</em> charts.{" "}
+                          <strong>Live</strong> buckets one point per <strong>local clock hour</strong> (latest snapshot in that hour) over <strong>rolling 7 days</strong>, then appends the same book/MTM as the hero and bottom marquee on each fast refresh. <strong>Intraday</strong> is raw snapshots from roughly the <strong>last 24 hours</strong>.{" "}
                           <strong>D / D</strong> uses <strong>local calendar days</strong> (one point per day where you have data).{" "}
                           <strong>W / M / Y</strong> still bucket by <strong>UTC</strong> week (Monday start), month, and year. Kalshi runs 24/7 — days are calendar buckets, not equity market sessions.
                         </p>
@@ -6600,6 +6716,19 @@ export default function App() {
               </button>
             </div>
           </div>
+          {(() => {
+            const clk = dashboardSyncedClockLabel(dash?.dashboard_payload_at);
+            if (!clk) return null;
+            return (
+              <p
+                className="sub dash-equity-chart-fp"
+                style={{ marginTop: 2, marginBottom: 10 }}
+                title="Matches the hero snapshot strip — one merged dashboard generation per refresh (full /api/dashboard or fast /api/dashboard/equity)."
+              >
+                Data as of {clk}
+              </p>
+            );
+          })()}
           <div className="dash-equity-charts">
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
@@ -7434,13 +7563,13 @@ export default function App() {
                     Mode <strong>{equityCompareMode === "blended" ? "Blended" : "Potential"}</strong>: {equityCompareMode === "blended"
                       ? "one line per branch, average of book and MTM at each time step."
                       : "MTM minus book (open-risk mark) at each time step."}{" "}
-                    Use the checkboxes below to show or hide branches (same toggles as the dashboard). Pick <strong>Intraday</strong>, <strong>Hourly</strong>, <strong>D/D</strong>, etc. in this popup — they mirror the main Equity curves tabs. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
+                    Use the checkboxes below to show or hide branches (same toggles as the dashboard). Pick <strong>Live</strong>, <strong>Intraday</strong>, <strong>D/D</strong>, etc. in this popup — they mirror the main Equity curves tabs. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
                   </p>
                 }
                 render={({ h }) => (
                   <div style={{ width: "100%", height: h }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={equityOverlayData} margin={{ left: 10, right: 14, top: 10, bottom: 18 }}>
+                      <LineChart data={equityOverlayData} margin={{ left: 10, right: 28, top: 10, bottom: 18 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" strokeOpacity={0.85} />
                         <XAxis
                           dataKey="t"
@@ -7459,8 +7588,16 @@ export default function App() {
                           width={44}
                         />
                         <Tooltip
-                          allowEscapeViewBox={{ x: true, y: true }}
-                          contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
+                          allowEscapeViewBox={{ x: false, y: false }}
+                          wrapperStyle={{ zIndex: 30 }}
+                          contentStyle={{
+                            background: "#0b1228",
+                            border: "1px solid #243055",
+                            fontSize: 12,
+                            maxWidth: "min(280px, calc(100vw - 32px))",
+                            whiteSpace: "normal",
+                            wordBreak: "break-word",
+                          }}
                           formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
                         />
                         {equityVisible.live ? (

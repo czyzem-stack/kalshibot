@@ -33,7 +33,9 @@ _LAB_LABEL = {
     BRANCH_LAB_E: "Lab E",
 }
 
-_MSG_SOFT_MAX = 62  # dialogue-only strip; ~55–65 chars effective
+_MSG_SOFT_MAX = 69  # dialogue strip; keep <70 chars per product note
+_ADVERSARIAL_REPLY_FRACTION = 0.40
+_ADVERSARIAL_STRATEGIC_FRACTION = 0.40
 _CONV_MEMORY = 6  # tail scanned for “reply to last 1–2 other labs”
 _RECENT_SHARE_WINDOW = 14  # shorter window — faster recovery from skew
 _PROACTIVE_SHARE_CAP = 0.46  # old 0.31 caused long silent stretches (strategic pulse kept deferring)
@@ -306,10 +308,10 @@ def _breeder_overrepresented(bus: LabCommunicationBus, branch: str, window: int 
         return False
     c = Counter(labs)
     my = int(c.get(branch, 0))
-    if my < 3:
+    if my < 2:
         return False
     mx = max(c.get(bk, 0) for bk in LAB_THINK_TANK_BRANCHES)
-    return my == mx and my >= 3
+    return my == mx and my >= 2
 
 
 def _proactive_hot_streak(bus: LabCommunicationBus, lab: str, *, window: int = 5, need: int = 3) -> bool:
@@ -343,8 +345,8 @@ def _needs_voice_turn(bus: LabCommunicationBus, branch: str) -> bool:
     d_ct = tail8.count(BRANCH_LAB_D)
     e_ct = tail8.count(BRANCH_LAB_E)
 
-    # C ran the board — force other breeders back in.
-    if branch in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E) and c_ct >= 4 and (b_ct + d_ct + e_ct) <= 3:
+    # C ran the board — force other breeders back in sooner.
+    if branch in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E) and c_ct >= 3 and (b_ct + d_ct + e_ct) <= 2:
         return True
     last5 = [lb for lb in labs_seq[-5:] if lb in LAB_THINK_TANK_BRANCHES]
     for br in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E):
@@ -352,7 +354,7 @@ def _needs_voice_turn(bus: LabCommunicationBus, branch: str) -> bool:
             return True
 
     # C does not need a "priority bump" when already dominant.
-    if branch == BRANCH_LAB_C and c_ct >= 5:
+    if branch == BRANCH_LAB_C and c_ct >= 4:
         return False
 
     seen = {lb for lb in labs_seq[-6:]}
@@ -371,6 +373,9 @@ def _can_proactive_voice(bus: LabCommunicationBus, lab: str) -> bool:
         return True
     if _needs_voice_turn(bus, lab):
         return True
+    # Lab C monopoly damp: throttle C unless another lab is due for airtime.
+    if lab == BRANCH_LAB_C and _recent_lab_share(bus, BRANCH_LAB_C) >= 0.36 and not _needs_voice_turn(bus, lab):
+        return False
     # Same lab rapid-fire (common when only one breeder engine is on — still cap spam).
     if _proactive_hot_streak(bus, lab):
         return False
@@ -427,6 +432,98 @@ def _peer_blurb(peer_row: dict[str, Any] | None, *, max_len: int = 18) -> str:
     return _cap_msg(raw, max_len)
 
 
+def _adversarial_peer_lines(
+    branch: str,
+    nick: str,
+    nick2: str,
+    peer_lab: str,
+    blur: str,
+) -> list[str]:
+    """Counter-thesis / pushback lines — short, natural, Breeding Council only."""
+    voc = _voice_prefix(branch)
+    lines: list[str] = []
+    # Opposing side / sizing (generic)
+    lines.extend(
+        [
+            f"{voc} fake edge—I'm on NO here.",
+            f"{voc} team—YES looks like a trap; I pass.",
+            f"{voc} opposite read: smaller NO lean.",
+            f"{voc} I'm fading that—half size YES max.",
+            f"{voc} counter: tighten, skip this rush.",
+            f"{voc} that tape screams NO to me.",
+            f"{voc} I sell the hype—sitting out.",
+            f"{voc} thesis flip—NO over YES here.",
+        ]
+    )
+    if peer_lab == BRANCH_LAB_C:
+        lines.extend(
+            [
+                f"{voc} C too aggressive—dangerous.",
+                f"{voc} C's take is hot air—I'm out.",
+                f"{voc} pushback on C—I'm smaller.",
+                f"{voc} C you're loud—I'm NO-side.",
+                f"{voc} disagree C—edge feels cooked.",
+                f"{voc} C wild—I'm the brake.",
+            ]
+        )
+    if peer_lab == BRANCH_LAB_B:
+        lines.append(f"{voc} B too safe—I'm leaning YES anyway.")
+    if peer_lab == BRANCH_LAB_D:
+        lines.append(f"{voc} D you're wild but wrong here.")
+    if nick2:
+        lines.extend(
+            [
+                f"{voc} {nick2} + {nick}—both wrong; NO.",
+                f"{voc} split you two—I take opposite.",
+                f"{voc} {nick} hype vs {nick2}—I'm out.",
+            ]
+        )
+    if blur and blur != "that":
+        lines.append(f"{voc} '{blur}'? I'm countering that.")
+    if branch == BRANCH_LAB_B:
+        lines.extend([f"{voc} conservative pass—NO tilt.", f"{voc} I brake the pack—smaller."])
+    if branch == BRANCH_LAB_D:
+        lines.extend([f"{voc} remix hot—still say NO.", f"{voc} wild card: opposite side."])
+    if branch == BRANCH_LAB_E:
+        lines.extend([f"{voc} balance vote: oppose the pile-on.", f"{voc} E says diversify—hold."])
+    return lines
+
+
+def _adversarial_strategic_lines(
+    branch: str,
+    nick_last: str,
+    nick_prev: str,
+    blurb_last: str,
+    had_two_peers: bool,
+    had_one_peer: bool,
+) -> list[str]:
+    vp = _voice_prefix(branch)
+    out: list[str] = [
+        f"{vp} council—this edge is fake; sitting.",
+        f"{vp} team NO-huddle: I oppose the YES pile.",
+        f"{vp} diversify—I'm taking the other lane.",
+        f"{vp} counter-thesis: shrink YES, add NO.",
+        f"{vp} groupthink alert—I'm braking.",
+        f"{vp} opposite sizing—half what we'd do.",
+        f"{vp} I veto the rush—tighten bands.",
+    ]
+    if branch in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E):
+        out.extend(
+            [
+                f"{vp} C can't own this—pushback time.",
+                f"{vp} slow C's train—I'm dissenting.",
+                f"{vp} anti-pile-on: NO > YES here.",
+            ]
+        )
+    if had_two_peers and nick_last and nick_prev:
+        out.append(f"{vp} {nick_prev} vs {nick_last}—I choose neither YES.")
+    if had_one_peer and nick_last:
+        out.append(f"{vp} {nick_last}—I go the other way.")
+    if blurb_last:
+        out.append(f"{vp} against '{blurb_last}'—counter yes/no flip.")
+    return out
+
+
 def _team_peer_reply_line(
     branch: str,
     peer_row: dict[str, Any],
@@ -442,7 +539,7 @@ def _team_peer_reply_line(
 
     team_tag = ""
     if breeding_enabled and random.random() < 0.22:
-        # Short tails only — long tags + 62-char cap caused ``…that's the`` + ``Ship…`` merge glitches.
+        # Short tails only — long tags + char cap caused ``…that's the`` + ``Ship…`` merge glitches.
         team_tag = random.choice(
             [
                 "Team—strong edge.",
@@ -469,6 +566,12 @@ def _team_peer_reply_line(
         else:
             t = _cap_msg(t)
         return t, random.uniform(0.44, 0.78)
+
+    if random.random() < _ADVERSARIAL_REPLY_FRACTION:
+        adv_opts = _adversarial_peer_lines(branch, nick, nick2, peer_lab, blur)
+        raw_adv = _pick_varied(adv_opts, bus)
+        if raw_adv.strip():
+            return _finish(raw_adv)
 
     # Two other voices in tail — weave both (reply_to stays primary peer).
     if nick2 and nick2 != nick and random.random() < 0.48:
@@ -860,6 +963,17 @@ def _contextual_strategic_pulse(
         }
         msg = _pick_varied(cold[branch], bus)
         reply_to = None
+
+    if random.random() < _ADVERSARIAL_STRATEGIC_FRACTION:
+        adv = _adversarial_strategic_lines(
+            branch,
+            nick_last,
+            nick_prev,
+            blurb_last,
+            bool(last_o and prev_o and nick_last and nick_prev and nick_last != nick_prev),
+            bool(last_o),
+        )
+        msg = _pick_varied(adv, bus)
 
     if team:
         msg = _merge_dialogue_suffix(msg, team, max_len=_MSG_SOFT_MAX)

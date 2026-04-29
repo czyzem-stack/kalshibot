@@ -751,6 +751,17 @@ def labs_chat() -> dict[str, Any]:
     return {"messages": get_lab_communication_bus().recent()}
 
 
+@app.post("/labs/diversify")
+async def labs_diversify() -> dict[str, Any]:
+    """
+    Emergency diversify: temporarily raises breeder yes floors + tightens ``no_bet_when_yes_below_pct`` on
+    Labs B–E (~45m), forces one internal mutation pulse, and broadcasts to the Think Tank.
+    """
+    from .lab_diversify import apply_emergency_diversify
+
+    return await apply_emergency_diversify(store)
+
+
 @app.post("/api/config/validate-rules")
 async def validate_rules_endpoint(body: dict[str, Any]) -> dict[str, Any]:
     """Validate a proposed ``rules`` array with the same ``RuleCfg`` checks as persisted lab/live saves."""
@@ -2058,6 +2069,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
                 if isinstance(p, dict)
             ][:14],
         },
+        "dashboard_payload_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
 
 

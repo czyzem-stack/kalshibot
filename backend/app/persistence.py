@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import sqlite3
 from collections.abc import AsyncIterator
@@ -20,6 +21,7 @@ from .branch_config import (
 from .settings_env import env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_logger = logging.getLogger("kalshibot.store")
 
 
 def _data_log(stream: str, payload: dict[str, Any]) -> None:
@@ -700,37 +702,47 @@ class Store:
             cur = await db.execute("SELECT json FROM bot_config WHERE id=1")
             row = await cur.fetchone()
             if not row:
-                return default_bot_config()
-            raw = row["json"]
-            try:
-                parsed = json.loads(raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                merged = default_bot_config()
-                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
-                await db.commit()
-                _data_log(
-                    "system",
-                    {
-                        "event": "bot_config_json_repaired",
-                        "reason": "invalid_or_unreadable_json",
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                return _normalize_loaded_config(merged)
-            if not isinstance(parsed, dict):
-                merged = default_bot_config()
-                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
-                await db.commit()
-                _data_log(
-                    "system",
-                    {
-                        "event": "bot_config_json_repaired",
-                        "reason": "json_not_object",
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                return _normalize_loaded_config(merged)
-            return _normalize_loaded_config(parsed)
+                out = default_bot_config()
+            else:
+                raw = row["json"]
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    merged = default_bot_config()
+                    await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                    await db.commit()
+                    _data_log(
+                        "system",
+                        {
+                            "event": "bot_config_json_repaired",
+                            "reason": "invalid_or_unreadable_json",
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    out = _normalize_loaded_config(merged)
+                else:
+                    if not isinstance(parsed, dict):
+                        merged = default_bot_config()
+                        await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                        await db.commit()
+                        _data_log(
+                            "system",
+                            {
+                                "event": "bot_config_json_repaired",
+                                "reason": "json_not_object",
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        out = _normalize_loaded_config(merged)
+                    else:
+                        out = _normalize_loaded_config(parsed)
+        try:
+            from .lab_diversify import maybe_revert_emergency_diversify_if_due
+
+            await maybe_revert_emergency_diversify_if_due(self, out)
+        except Exception as exc:
+            _logger.warning("emergency_diversify revert check failed: %s", exc)
+        return out
 
     async def save_config(
         self,

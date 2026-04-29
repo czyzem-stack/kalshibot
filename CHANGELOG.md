@@ -2,6 +2,12 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.021 - Think Tank adversarial + Emergency Diversify - 2026-04-29
+
+- **Backend (`lab_communication.py`):** Breeding Council dialogue — **~40% adversarial** peer replies and strategic pulses (counter-thesis YES/NO, pushback on **C**, “fake edge / sitting out”, opposing sizing). **Stronger anti-monopoly:** C proactive damp when C’s recent share is high; tighter **overrepresented** / **needs voice** thresholds so **B/D/E** re-enter sooner against **C** dominance. Message cap **69** chars.
+- **Backend (`lab_diversify.py`, `main.py`, `persistence.py`):** **`POST /labs/diversify`** — bumps **optimizer** `lab_*_yes_floor_pct` and per-lab **`no_bet_when_yes_below_pct`** for breeders **B–E**, persists **`emergency_diversify_revert_at`** (~45m) + baseline snapshot, **`force_internal_mutation_once`**, and **Think Tank** banner from each breeder. **`load_config`** (outside DB lock) auto-reverts when the window expires.
+- **Frontend (`App.tsx`, `styles.css`):** Optimizer title row — **Emergency Diversify** button (🚨) next to **force**; calls **`POST /labs/diversify`** with loading state + refresh hooks.
+
 ## v0.4.15.020 - equity UX + README equity deep dive - 2026-04-29
 
 - **Frontend (`App.tsx`, `styles.css`):** Equity **Compare** overlay — **granularity tabs** (Intraday…Y/Y) in-modal synced with dashboard; **Compare** moved beside **Info**; dashboard controls layout (**$/%Δ** toggle, no orphan scrollbar); overlay chart **step-after** lines, compact axes, duplicate legend removed; shared **`EQUITY_GRANULARITY_TAB_DEFS`**.

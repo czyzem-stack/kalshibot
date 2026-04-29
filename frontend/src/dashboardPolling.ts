@@ -12,9 +12,12 @@
  */
 
 export const DASHBOARD_FULL_POLL_MS = 12_000;
-export const DASHBOARD_EQUITY_POLL_MS = 3_000;
-/** Labs B/C/D hive chat (`GET /labs/chat`). */
-export const LAB_CHAT_POLL_MS = 2_500;
+/** Partial dashboard (`GET /api/dashboard/equity`) — faster than full poll but avoid hammering uvicorn access logs. */
+export const DASHBOARD_EQUITY_POLL_MS = 6_000;
+/** When Equity “Live” (hourly buckets + live tail) tab is selected — snappier hero / marquee / chart alignment. */
+export const DASHBOARD_EQUITY_POLL_MS_LIVE_TAB = 2_500;
+/** Think Tank transcript (`GET /labs/chat`) — cosmetic strip; no need for sub‑5s cadence. */
+export const LAB_CHAT_POLL_MS = 12_000;
 
 /** Run ``fn`` when the document becomes usable again (tab visible, back/forward cache, network back). */
 export function subscribeDashboardCatchUp(fn: () => void): () => void {

@@ -1034,6 +1034,24 @@ input[type="number"] {
   min-width: 0;
 }
 
+.dash-optimizer-panel .dash-optimizer-emergency-diversify {
+  font-weight: 750;
+  color: #fff8ed;
+  border: 1px solid rgba(253, 186, 116, 0.95);
+  background: linear-gradient(180deg, rgba(249, 115, 22, 0.96), rgba(194, 65, 12, 0.99));
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+
+.dash-optimizer-panel .dash-optimizer-emergency-diversify:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.dash-optimizer-panel .dash-optimizer-emergency-diversify:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}
+
 .dash-optimizer-panel .dash-optimizer-mode-toggle {
   flex: 1 1 auto;
   display: flex;
