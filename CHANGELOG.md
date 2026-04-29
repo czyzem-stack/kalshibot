@@ -2,6 +2,14 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.017 - series_open log gate tightened - 2026-04-29
+
+- **Backend (engines/engine.py):** series_has_open_sim dedupe key no longer includes matched rule/side (dedupe_key). It now gates by **window + branch + series**, preventing repeated INFO lines for the same blocked series in one window when different rules fire.
+
+## v0.4.15.016 - sim_trade_block log dedupe - 2026-04-29
+
+- **Backend (`engines/engine.py`):** **`[sim_trade_block] series_has_open_sim`** `logger.info` now shares the same **`_sim_transient_skip_logged`** gate as **`log_signal`** — one line per window+key per branch, not every tick while an older contract blocks the series.
+
 ## v0.4.15.015 - README overhaul - 2026-04-29
 
 - **README:** Stronger onboarding — **Run it (TL;DR)** (Windows + Unix copy-paste), **Safety** callout, **Operator playbook** (Mass apply, lab toggles, Think Tank logs, dual Vite ports), **Upgrading & parallel checkouts**, **Glossary**, expanded troubleshooting, merged duplicate testing into **Development & testing**, fixed dynamic version line (see **`VERSION`**).
@@ -183,3 +191,4 @@ All notable project-level changes should be documented in this file.
 - **Patch train (default):** From **v0.4** onward, incremental work ships as **`v0.4.01`**, **`v0.4.02`**, **`v0.4.03`**, … (three-part tag in `VERSION` + matching `CHANGELOG` section title). Agents and contributors bump this for every merge-worthy slice unless the operator says otherwise.
 - **Bump (explicit only):** When the operator says **“bump”** (or names a new minor/major, e.g. **v0.5**), advance the **middle or major** segment and reset the patch (e.g. **v0.5** or **v0.5.01** per whatever scheme is agreed then)—do not keep incrementing `0.4.x` after a deliberate bump.
 - Add a **dated** section per release and summarize **behavior-impacting** changes; doc-only patch entries are fine with a single-line summary.
+
