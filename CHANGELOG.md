@@ -2,6 +2,135 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.056 - Lab B–E never ticked: stub ``engine_running: false`` + missing-key defaults - 2026-04-29
+
+- **Backend (`persistence.py`):** Legacy ``_normalize_loaded_config`` stubs for **lab_b–lab_e** embedded ``engine_running: false``. ``expand_partial_lab_branch`` merges user dict over defaults, so **False overwrote** shipped breeder defaults (**True**) and kept those labs permanently off. **Fix:** stubs no longer set ``engine_running``; **``_maybe_strip_legacy_breeder_stub_engine_false``** removes the stale false flag when a lab block still matches the old stub fingerprint so the next merge restores defaults.
+- **Backend (`branch_config.py`):** ``effective_parent_lab_engine_running`` — when ``engine_running`` is **omitted** on any parent lab (**lab_a–lab_e**), default **on** (explicit ``false`` still pauses).
+- **Frontend (`App.tsx`):** Engine polling hint no longer claims outdated global defaults.
+
+## v0.4.15.055 - Paper Live + Lab A: engines on by default - 2026-04-29
+
+- **Backend (`branch_config.py`, `main.py`, `engines/dual_engine_loop.py`):** Introduced ``effective_live_engine_running`` and ``effective_parent_lab_engine_running``. When ``engine_running`` is **omitted**, **Live** ticks in **paper** mode by default (still **off** when ``live_paper_trading`` is false / real money until explicitly enabled). **Lab A** defaults **on** when the key is omitted (staging aligned with breeder labs). Dashboard ``engine_running`` flags and ``/api/engine/status`` use the same semantics so the UI matches the dual loop.
+- **Backend (`persistence.py`):** Fresh ``default_bot_config()`` no longer writes ``engine_running: false`` for Live or Lab A (omit keys so effective defaults apply).
+
+## v0.4.15.046 - Reset: stop trade toast spam (SQLite id recycle) - 2026-04-29
+
+- **Frontend (`App.tsx`):** When ``dashboard.trading_data_revision`` advances after ``POST /api/data/reset``, clear trade toast bootstrap state and ``seen`` id sets, drop queued ``trade-initiated-*`` / ``trade-resolved-*`` cards, then re-bootstrap from the current trade lists only — so recycled low SQLite ids are not treated as brand-new fills across every branch.
+
+## v0.4.15.045 - Fast equity merge: Lab E stale chart after reset - 2026-04-29
+
+- **Frontend (`App.tsx`):** When ``trading_data_revision`` advances, ``mergeDashboardFastPoll`` now treats **missing** ``equity_snapshots_lab_*`` / list keys on the partial ``GET /api/dashboard/equity`` payload as **empty arrays** instead of leaving the previous merge spread (often leaving **Lab E** with old points while C/D cleared).
+
+## v0.4.15.044 - Reset clears chart data (revision + merge fix) - 2026-04-29
+
+- **Frontend (`App.tsx`):** ``mergeDashboardFastPoll`` no longer resurrects **pre-reset** equity/trade series when the fast GET ``/api/dashboard/equity`` returns empty arrays after a wipe — it treats empty arrays as authoritative when ``trading_data_revision`` has advanced (see backend).
+- **Backend (`persistence.py`, `main.py`):** ``Store`` tracks a monotonic ``trading_data_revision`` incremented on every ``reset_trading_data`` commit; **full and partial** dashboard payloads include it; reset API responses include the new revision. **``all_labs``** wipes now also delete **``lab_child_1``–``lab_child_6``** SQLite rows (aligned with seed snapshots and breeding engines).
+
+## v0.4.15.043 - Breeder council trading + distinct B–E defaults - 2026-04-29
+
+- **Backend (`lab_communication.py`):** Think Tank bus now maintains an ephemeral **`council_signal`** for engines (`think_tank_yes_no_bias_last_n`, `refresh_engine_council_signal`, `peek_engine_council_signal`). It refreshes at the end of each breeder **`finalize_think_tank_tick`** and after **`POST /labs/diversify`** so the next tick can read YES/NO lean, strength, and diversity context.
+- **Backend (`engines/engine.py`):** Labs **B–E** apply per-lab **personality drift**, **follow vs fade** of council lean (stronger under **diversity pulse**), **Lab D** occasional consensus flip, **Lab E** extra weight on strong signals, **time-to-close** scaling on tilt and sim-rank **edge**. Rule matching uses an effective YES probability; logged mids stay the real book. **`GET /api/optimizer/status`** exposes **`council_influence_active`** when a signal is queued or a breeder tick applied tilt.
+- **Backend (`persistence.py`):** When a breeder has **no rules** and there is no global rules list, each lab gets its own **`_breeder_fallback_rules_for`** pack (tight B, wide/aggressive C, experimental D, balanced E). Default config uses those packs and raised **lab_b** / lowered **lab_c** optimizer yes-floor defaults.
+- **Frontend (`App.tsx`, `SettingsOverlay.tsx`):** Optimizer strip shows **Council influence active** when the status flag is true; Settings **Diversify council** control is a **compact secondary** button next to the primary **Force** action.
+
+## v0.4.15.042 - Equity “Live” tab: 6-hour dense window - 2026-04-29
+
+- **Frontend (`App.tsx`, `dashboardPolling.ts`):** The **Live** time-scale tab (granularity id ``hourly``) now plots a **rolling 6 hours** of **dense** SQLite ticks (same treatment as **Intraday**, no hourly bucketing). Caps at **2500** points like Intraday. Tab tooltips and Equity **Info** copy updated (removed outdated “7 days / hourly bucket / calendar bucket” language for Live and D–Y).
+
+## v0.4.15.041 - Equity charts: linear time on X-axis (``tsMs``) - 2026-04-29
+
+- **Frontend (`App.tsx`):** Equity **``LineChart``** used **``XAxis`` ``dataKey="t"``** (formatted strings), so Recharts treated the axis as **categories** — consecutive points were **evenly spaced** regardless of real time. That made a **~52 minute** gap and a **~40 second** gap look the same and produced misleading “same timestamp” clusters. Switched to **``type="number"``**, **``dataKey="tsMs"``**, **``domain={['dataMin','dataMax']}``** (epoch ms, linear scale), tick + tooltip formatters from milliseconds. Applied the same fix to the **Compare** overlay chart. **``fmtEquityCompareXTick``** now formats numeric ticks; string fallback kept for edge labels.
+
+## v0.4.15.040 - Optimizer: remove breeding blurb under title - 2026-04-29
+
+- **Frontend (`App.tsx`):** Removed the extra **``dash-optimizer-breeding-hook``** paragraph (breeding / manual nukes / POST endpoints) above the breeding snapshot pill — the pill and **Info** tooltip still cover that context.
+
+## v0.4.15.039 - Equity D/D–Y/Y: dense rolling snapshot history - 2026-04-29
+
+- **Frontend (`dashboardPolling.ts`, `App.tsx`):** **D / D**, **W / W**, **M / M**, and **Y / Y** equity tabs no longer use **one point per closed calendar bucket** (which looked empty or flat until a new “resolved” period). They now use the **same dense SQLite tick stream** as **Intraday**, filtered by a **rolling wall-clock window** per tab and **uniformly downsampled** to at most **280** points for chart performance. **Intraday** (24h) and **Live** (hourly buckets, 7d) behavior is unchanged. Added **``surfaceHint``** “Rolling history — dense ticks” under each equity chart and the Compare overlay when those tabs are active.
+- **Backend (`main.py`):** Raised per-branch **``equity_series``** fetch limit for the dashboard payload from **2000 → 4000** so long windows still have enough newest-first rows after the client window filter.
+
+## v0.4.15.038 - Bottom marquee: hide horizontal scrollbar (clip + drift) - 2026-04-29
+
+- **Frontend (`styles.css`):** Bottom ticker viewport used **``overflow-x: auto``**, which showed the **native horizontal scrollbar** under the text. Switched to **``overflow: hidden``** so the strip **clips** while **CSS drift** still scrolls the track; removed the reduced-motion **``overflow-x: auto !important``** override for the bottom variant. **``justify-content: center``** on the scroll row to help **vertical** centering of the line in the host.
+
+## v0.4.15.037 - Bottom marquee: one horizontal row (nowrap + fixed strip height) - 2026-04-29
+
+- **Frontend (`styles.css`, `App.tsx`):** The bottom **``BranchHeroMarquee``** could still render as **many wrapped lines** (Live + each Lab read like separate rows) because long copy **wraps at spaces** inside **inline-block** chunks and the host **grew in height**. Enforced **``white-space: nowrap``** on the track, chunks, branches, and **``.ticker-seg``**; **``inline-flex``** + **``flex-wrap: nowrap``** on chunks/branches; **``width: max-content``** on the track; **``overflow-x: auto``** on the marquee viewport; **``max-height``** on **``.app-bottom-marquee``** and the inner root so the strip stays **one scannable line** (scroll/drag when wider than the screen). Host inline **``height`` / ``maxHeight`` / ``overflow: hidden``** aligned with **``--app-bottom-marquee-h``** for page padding.
+- **Frontend (`BranchMarketTickers.tsx`, `styles.css`):** Under **``prefers-reduced-motion``**, the bottom strip still **runs the CSS drift** (``embedVariant === "bottomBodyRoot"`` skips the JS animation kill) so **all-branch text keeps cycling horizontally**; wrap/no-animation rules are scoped to **``.branch-hero-marquee:not(.branch-hero-marquee--bottom-body-root)``** only.
+
+## v0.4.15.036 - Bottom marquee vs reduced-motion wrap - 2026-04-29
+
+- **Frontend (`styles.css`):** Under **`prefers-reduced-motion: reduce`**, global ticker rules set **`flex-wrap: wrap`** and **`white-space: normal`** on **``.branch-ticker-track-inner``** / **``.branch-ticker-chunk``**, which turned the **fixed bottom** **``BranchHeroMarquee``** into **many wrapped lines** inside a **short** host (dead space on top, **bottom rows clipped**). Added overrides for **``.branch-hero-marquee--bottom-body-root``** so that strip stays **one row** (**``nowrap``**, **``width: max-content``**) and uses the existing **horizontal scroll** on the marquee viewport.
+
+## v0.4.15.035 - Bottom marquee: vertical center + border chrome - 2026-04-29
+
+- **Frontend (`styles.css`, `App.tsx`):** The body ticker host is a **flex row** with **`align-items: center`** so the marquee sits vertically in the strip. **Bottom-body-root** uses **flex** on the scroll row and marquee (replacing **`display: block`**, which dropped **`align-items: center`**). **Nested card** border, radius, and gradient on **``.branch-hero-marquee``** are cleared inside **``.app-bottom-marquee``** so only the host **top border** frames the strip (avoids uneven / clipped rounded corners at the screen edge). **``outline: none``** on focus for that subtree so a clipped default focus ring does not read as a stray white border.
+
+## v0.4.15.034 - Bottom marquee: ``embedVariant="bottomBodyRoot"`` (no ticker-only collapse) - 2026-04-29
+
+- **Frontend (`BranchMarketTickers.tsx`, `App.tsx`, `styles.css`):** The body-mounted bottom strip still used **``branch-hero-marquee--ticker-only``** (flex + ``min-height: 0``), which could **collapse the scrolling row** outside the main dashboard flex context. Added **``embedVariant="bottomBodyRoot"``** on **``BranchHeroMarquee``** for the **``createRoot``** host only, with class **``branch-hero-marquee--bottom-body-root``** and **block layout + explicit min-heights** so the marquee track always has height. Removed the **``data-kalshibot-bottom-ticker``** attribute and the v0.4.15.033 host-only overrides (superseded by this layout variant).
+
+## v0.4.15.033 - Bottom ticker visible (fix ticker-only collapse) - 2026-04-29
+
+- **Frontend (`styles.css`):** When the hero marquee runs as **ticker-only** inside the **body-mounted** host (`[data-kalshibot-bottom-ticker="1"]`), **flex + ``min-height: 0``** on ``.branch-hero-marquee__scroll`` could **collapse the scroll row to zero height** — only the host’s **top border** (looked like a thin cyan line) stayed visible. Added overrides: **non-zero min-heights**, **``flex: 0 1 auto``**, **``position: relative``**, **``overflow: visible``** on the strip, and **removed ``mask-image``** on the track for that host so text always paints.
+- **Frontend (`App.tsx`):** Host **``borderTop``** toned down from a thick cyan debug line to **``1px solid var(--border)``** (CSS variables apply on ``body``).
+
+## v0.4.15.032 - Bottom ticker: dedicated ``createRoot`` on ``body`` - 2026-04-29
+
+- **Frontend (`App.tsx`):** Replaced **`createPortal`** with a **``<div>`` on ``document.body``** plus **`createRoot`** from **`react-dom/client`**. One **`useLayoutEffect`** creates the host (if needed) and **`root.render(<BranchHeroMarquee … />)`** on each **`dash` / `cfg` / hero speed** update — **not** split into mount + update effects, because **React Strict Mode** was running the mount effect’s cleanup and **removing the host before the update effect ran**, so the ticker never appeared. A separate **`useEffect`** with an empty dependency array **only** tears down the root on **App unmount**. **Try/catch** around **`root.render`**; inline **`z-index: 2400`**. Root **``.page``** is a **single div** again.
+
+## v0.4.15.031 - Bottom ticker: always-on body portal - 2026-04-29
+
+- **Frontend (`App.tsx`):** Root return is now a **fragment**: **``.page``** and the bottom ticker **portal are siblings** (portal is no longer nested under ``#root``’s div tree). The ticker **always** mounts to **`document.body`** in the browser — it is **no longer gated on ``tickerDash``**, so the strip is present even before the first `/api/dashboard` payload; **`BranchHeroMarquee`** receives **`tickerDash ?? {}`** (placeholders until data exists). **Critical layout** (``position``, ``zIndex: 2400``, ``minHeight``, solid background) is applied with **inline styles** so outer CSS cannot collapse or hide the bar.
+
+## v0.4.15.030 - Bottom ticker: body portal + no blur compositing - 2026-04-29
+
+- **Frontend (`App.tsx`):** Bottom **`BranchHeroMarquee`** again uses **`createPortal(..., document.body)`** so it is not clipped by **`#root` / `.page`** or nested scroll/overflow. Renders only when **`tickerDash`** is set (live **`dash`** or **`dashSnapshotRef`** fallback).
+- **Frontend (`styles.css`):** Removed **`backdrop-filter`** / **`translateZ(0)`** / **`isolation`** / **`backface-visibility`** from **`.app-bottom-marquee`** — on some Windows + GPU drivers those compositing paths made the fixed strip **not paint**. Solid **`#0d1228`** background and **`z-index: 1950`** (below loading **2000**, above chart overlays).
+
+## v0.4.15.029 - Bottom ticker: first paint + snapshot dash - 2026-04-29
+
+- **Frontend (`App.tsx`):** Dropped **`createPortal`** for the bottom ticker. The strip is the **first child** of **`.page`** (above the toast stack and dashboard grid) so it is **never under Recharts** / transformed subtrees. It renders from **`tickerDash = dash ?? dashSnapshotRef.current`** so it stays on screen if `dash` is briefly unset while a prior payload remains in the ref. **`cfgWithHeroMarqueeSpeed`** now prefers **`tickerDash.config`** with **`dashboardConfigFallbackRef`** so the marquee still has simulate / lab keys when only the snapshot ref is available. **`.page--bottom-marquee`** follows **`tickerDash`** so bottom padding matches whenever the strip is shown.
+
+## v0.4.15.028 - Bottom branch ticker portal - 2026-04-29
+
+- **Superseded by v0.4.15.029** (portal alone did not reliably restore the bar in practice). Kept **`z-index: 1350`** on **`.app-bottom-marquee`** from this release.
+
+## v0.4.15.027 - Equity charts after reset + paper MTM refresh - 2026-04-29
+
+- **Frontend (`App.tsx`):** Equity **live tail** from dashboard metrics (book + MTM) now appends on **every** granularity tab (D/D, W/W, M/M, Y/Y), not only Intraday/Hourly — so after a data reset, curves still track **current** values between snapshot buckets instead of looking flat vs open positions.
+- **Backend (`main.py`, `settings_env.py`):** Paper MTM refresh uses a **per-branch** `asyncio.wait_for` instead of one timeout on the whole batch — one slow lab no longer cancels mark refresh for all branches. Default **`DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S`** raised **22 → 30** (still capped 5–120s).
+
+## v0.4.15.026 - Optimizer nukes → Settings only - 2026-04-29
+
+- **Frontend:** Removed **force** and **Diversify Labs** from the Optimizer dashboard card (automation-first). **Nuke options** remain under **Settings → Optimizer → Manual / nuke**: **Force Internal Mutation Now** and **Diversify council (Think Tank)** (same `POST` endpoints as before). **Info** copy and breeding blurb point to Settings / `curl`. Backend routes unchanged.
+
+## v0.4.15.025 - Optimizer force vs Diversify visuals - 2026-04-29
+
+- **Frontend (`App.tsx`, `styles.css`):** **force** and **Diversify Labs** are no longer the same “primary” pill — **force** uses an **amber / warm** stacked button (“Self-correct Lab A”); **Diversify Labs** uses a **teal** stacked button (“Self-correct council”). **report** / **Info** stay the standard primary style. Tooltips and Info copy frame both as **self-correcting** controls (Lab A mutation+replay vs council-only dispute window).
+
+## v0.4.15.024 - Optimizer header layout + less copy - 2026-04-29
+
+- **Frontend (`App.tsx`, `styles.css`):** Optimizer title row wrapped in **`dash-optimizer-panel__head-top`** so **Optimizer** no longer truncates beside buttons; removed redundant **force / Diversify** legend line (tooltips + **Info** keep detail). **Breeding** blurb shortened to one tight line.
+
+## v0.4.15.023 - Force vs Diversify split (council quota) - 2026-04-29
+
+- **Think Tank (`lab_communication.py`):** During **`labs_council_diversity_until`**, a rolling deque holds **~40–50%** of recent peer + strategic lines on the **adversarial (direct counter)** pool; quota nudges probabilities up/down to stay in band. **Extra opposing-thesis lines** when the pulse is active; **less “team” fluff** on peer/strategic lines; **breeding_whisper** cooperative lines **suppressed** for that window so they do not dilute the dispute tone.
+- **Frontend:** One-line **legend** under the Optimizer action row (**force** = Lab A mutation + replay; **Diversify Labs** = B–E chat-only 45m). Tooltips/aria updated to match.
+
+## v0.4.15.022 - Optimizer Think Tank + diversify UX - 2026-04-29
+
+- **POST /labs/diversify** is now a **council-only** pulse: sets **`labs_council_diversity_until`** (~45m), posts **DIVERSITY PULSE** lines to the Think Tank, and **does not** run internal mutation or change breeder gates (distinct from **force**). Legacy **`emergency_diversify_*`** gate windows still auto-revert on expiry. **`load_config`** also clears expired **`labs_council_diversity_until`**.
+- **Think Tank (`lab_communication.py`):** reads the diversity window to **raise adversarial/strategic fractions**, slightly **tighter pulse gaps**, and **looser proactive share caps**; message cap **58** chars; a bit blunter copy. **`GET /api/optimizer/status`** exposes **`labs_council_diversity_until`** for the UI.
+- **Frontend:** **force** unchanged; **Diversify Labs** is a small neutral button. **Lab Think Tank** — no emoji avatars, **why?** per-line explainer (action / confidence / thread), diversity banner when the window is active. **Tree → Family** adds an **SVG lineage graph** from **`labs_breeding_tree_snapshot.edges`**. **Info** copy distinguishes force vs diversify.
+
+## v0.4.15.021 - Think Tank adversarial + Emergency Diversify - 2026-04-29
+
+- **Backend (`lab_communication.py`):** Breeding Council dialogue — **~40% adversarial** peer replies and strategic pulses (counter-thesis YES/NO, pushback on **C**, “fake edge / sitting out”, opposing sizing). **Stronger anti-monopoly:** C proactive damp when C’s recent share is high; tighter **overrepresented** / **needs voice** thresholds so **B/D/E** re-enter sooner against **C** dominance. Message cap **69** chars.
+- **Backend (`lab_diversify.py`, `main.py`, `persistence.py`):** **`POST /labs/diversify`** — bumps **optimizer** `lab_*_yes_floor_pct` and per-lab **`no_bet_when_yes_below_pct`** for breeders **B–E**, persists **`emergency_diversify_revert_at`** (~45m) + baseline snapshot, **`force_internal_mutation_once`**, and **Think Tank** banner from each breeder. **`load_config`** (outside DB lock) auto-reverts when the window expires.
+- **Frontend (`App.tsx`, `styles.css`):** Optimizer title row — **Emergency Diversify** button (🚨) next to **force**; calls **`POST /labs/diversify`** with loading state + refresh hooks.
+
 ## v0.4.15.020 - equity UX + README equity deep dive - 2026-04-29
 
 - **Frontend (`App.tsx`, `styles.css`):** Equity **Compare** overlay — **granularity tabs** (Intraday…Y/Y) in-modal synced with dashboard; **Compare** moved beside **Info**; dashboard controls layout (**$/%Δ** toggle, no orphan scrollbar); overlay chart **step-after** lines, compact axes, duplicate legend removed; shared **`EQUITY_GRANULARITY_TAB_DEFS`**.

@@ -477,11 +477,20 @@ function mtmArrowSegments(r: number): TickerSeg[] {
   return [seg(`${arrow} `, t), seg(dir, t), seg(`${sign}${r.toFixed(1)}%`, t)];
 }
 
+/** Open exposure tag: not the "Live" engine branch name — book = Kalshi, paper = sim on Live, sim = paper labs. */
+function exposureMetaLabel(branch: BranchKey, livePaper: boolean): string {
+  if (branch === "live") {
+    return livePaper ? "paper" : "book";
+  }
+  return "sim";
+}
+
 function compactPositionVerdict(
   branch: BranchKey,
   metrics: AnyObj,
   positionByAsset: AnyObj | undefined,
   kalshiPrivateOk: boolean,
+  livePaper: boolean,
 ): TickerSeg[] {
   const posSecs = positionSegmentsForBranch(positionByAsset, branch, kalshiPrivateOk);
   const hasBook = posSecs.length > 0;
@@ -491,6 +500,7 @@ function compactPositionVerdict(
     rawMtm != null && Number.isFinite(Number(rawMtm)) ? Number(rawMtm) : Number(metrics?.return_vs_start_pct);
   const retOk = Number.isFinite(r);
   const exposed = hasBook || openN > 0;
+  const expTag = exposureMetaLabel(branch, livePaper);
 
   if (!exposed) {
     if (retOk) {
@@ -499,13 +509,13 @@ function compactPositionVerdict(
     return [seg("P/L ", "muted"), seg("bench — no MTM", "muted")];
   }
   if (!retOk) {
-    const bits = [openN ? `${openN} sim` : null, hasBook ? "live" : null].filter(Boolean) as string[];
+    const bits = [openN ? `${openN} sim` : null, hasBook ? expTag : null].filter(Boolean) as string[];
     const head = bits.length ? `${bits.join(" · ")} · ` : "";
     return [seg("P/L ", "muted"), seg(head, "muted"), seg("open · ", "warn"), seg("— MTM?", "warn")];
   }
   const meta: string[] = [];
   if (openN > 0) meta.push(`${openN} sim`);
-  if (hasBook) meta.push("live");
+  if (hasBook) meta.push(expTag);
   const pre = meta.length ? `${meta.join(" · ")} · ` : "";
   return [seg("P/L ", "muted"), seg(pre, "muted"), seg("open ", "muted"), ...mtmArrowSegments(r)];
 }
@@ -520,6 +530,7 @@ function buildHeroCompactSegments(args: {
   kalshiPrivateOk: boolean;
 }): TickerSeg[] {
   const { branch, cfg, metrics, snaps, engineBlock, positionByAsset, kalshiPrivateOk } = args;
+  const livePaper = Boolean(cfg.simulate);
   const flat: TickerSeg[] = [];
   const mon = compactBtcEthSegments(cfg, snaps);
   if (mon.length) {
@@ -527,7 +538,7 @@ function buildHeroCompactSegments(args: {
   } else {
     flat.push(seg("BTC/ETH —", "muted"));
   }
-  flat.push(dot(), ...compactPositionVerdict(branch, metrics, positionByAsset, kalshiPrivateOk));
+  flat.push(dot(), ...compactPositionVerdict(branch, metrics, positionByAsset, kalshiPrivateOk, livePaper));
   const err = engineBlock?.last_error ? String(engineBlock.last_error) : "";
   if (err && !isCredentialOrEnvMarqueeNoise(err)) {
     flat.push(dot(), seg(err.slice(0, 52), "warn"));
@@ -615,10 +626,13 @@ export function BranchHeroMarquee({
   dash,
   cfg,
   showSnapshot = true,
+  embedVariant = "default",
 }: {
   dash: AnyObj;
   cfg: AnyObj;
   showSnapshot?: boolean;
+  /** ``bottomBodyRoot`` = mounted under ``document.body`` via a second ``createRoot``; avoids ticker-only flex collapse. */
+  embedVariant?: "default" | "bottomBodyRoot";
 }): ReactNode {
   const kalshiPrivateOk = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const acct = dash?.account_snapshot as AnyObj | undefined;
@@ -790,7 +804,10 @@ export function BranchHeroMarquee({
     const w = halfWidthRef.current;
     if (!el || w <= 1) return;
     if (manualDragRef.current || throwActiveRef.current) return;
-    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const reduceMotion =
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    /* Bottom strip: keep horizontal drift so all-branch copy still “cycles”; dashboard hero still honors reduce-motion. */
+    if (reduceMotion && embedVariant !== "bottomBodyRoot") {
       el.style.animation = "none";
       el.style.transform = "none";
       return;
@@ -801,7 +818,7 @@ export function BranchHeroMarquee({
     const delay = -p * loop;
     el.style.transform = "";
     el.style.animation = `branch-hero-css-drift ${loop}s linear ${delay}s infinite`;
-  }, [normalizeOffset]);
+  }, [normalizeOffset, embedVariant]);
 
   /* Omit `combined` from deps: listing it reconnected RO every dashboard poll. ResizeObserver still remeasures when width changes. */
   useLayoutEffect(() => {
@@ -859,6 +876,12 @@ export function BranchHeroMarquee({
     }
     restartCssAutoplay();
   }, [loopSec, normalizeOffset, restartCssAutoplay]);
+
+  /** When ticker text updates without width/duration change, restart drift so the strip matches charts + snapshot immediately. */
+  useLayoutEffect(() => {
+    if (manualDragRef.current || throwActiveRef.current) return;
+    restartCssAutoplay();
+  }, [combined, restartCssAutoplay]);
 
   useEffect(() => {
     return () => {
@@ -962,9 +985,16 @@ export function BranchHeroMarquee({
     </span>
   );
 
+  const layoutExtra =
+    embedVariant === "bottomBodyRoot"
+      ? " branch-hero-marquee--bottom-body-root"
+      : showSnapshot
+        ? ""
+        : " branch-hero-marquee--ticker-only";
+
   return (
     <div
-      className={`branch-hero-marquee section-tip${showSnapshot ? "" : " branch-hero-marquee--ticker-only"}`}
+      className={`branch-hero-marquee section-tip${layoutExtra}`}
       title="All-branch market readout. Drag to throw. Right: six-row snapshot of Live and Lab A–E ($ and return)."
       aria-label="Combined Live and lab market ticker with all-branch balance snapshot"
     >
@@ -1028,6 +1058,23 @@ export function BranchHeroMarquee({
 
 /** Centered header snapshot (under title): Live + Lab A–E, no marquee/scrolling track. */
 export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: AnyObj }): ReactNode {
+  const syncClock = useMemo(() => {
+    const raw = dash?.dashboard_payload_at;
+    const s = raw != null ? String(raw).trim() : "";
+    if (!s) return null;
+    const ms = Date.parse(s);
+    if (!Number.isFinite(ms)) return null;
+    try {
+      return new Date(ms).toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return null;
+    }
+  }, [dash?.dashboard_payload_at]);
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
   const livePaper = Boolean(cfg.simulate);
@@ -1072,7 +1119,16 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
       className="branch-hero-snapshot branch-hero-snapshot--header"
       role="list"
       aria-live="polite"
-      aria-label="Live and Lab A through E: balance and return each"
+      aria-label={
+        syncClock
+          ? `Live and Lab A through E: balance and return each — data as of ${syncClock}`
+          : "Live and Lab A through E: balance and return each"
+      }
+      title={
+        syncClock
+          ? `Hero balances · same refresh clock as equity charts (${syncClock})`
+          : "Live and Lab A through E balance and return"
+      }
     >
       {rows.map((row) => (
         <div

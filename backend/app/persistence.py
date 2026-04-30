@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import sqlite3
 from collections.abc import AsyncIterator
@@ -20,6 +21,7 @@ from .branch_config import (
 from .settings_env import env
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_logger = logging.getLogger("kalshibot.store")
 
 
 def _data_log(stream: str, payload: dict[str, Any]) -> None:
@@ -71,23 +73,120 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
     ]
 
 
+def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
+    """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
+    if lab_key == "lab_b":
+        # Ultra-tight risk + explicit counter-thesis NO lane (fade crowded YES).
+        return [
+            {"name": "B tight mid YES", "min_prob": 0.58, "max_prob": 0.74, "min_minutes_left": 4.0, "max_minutes_left": 14.0},
+            {"name": "B narrow high YES", "min_prob": 0.72, "max_prob": 0.88, "min_minutes_left": 3.0, "max_minutes_left": 11.0},
+            {"name": "B late scalp YES", "min_prob": 0.44, "max_prob": 0.62, "min_minutes_left": 1.0, "max_minutes_left": 8.0},
+            {
+                "name": "B counter-thesis: fade crowded YES",
+                "side": "no",
+                "min_prob": 0.55,
+                "max_prob": 0.82,
+                "min_minutes_left": 2.0,
+                "max_minutes_left": 16.0,
+            },
+        ]
+    if lab_key == "lab_c":
+        # Aggressive sizing tolerance — wide bands + slam-NO when YES overheated.
+        return [
+            {"name": "C wide rip YES", "min_prob": 0.28, "max_prob": 0.84, "min_minutes_left": 0.5, "max_minutes_left": 24.0},
+            {"name": "C momentum YES", "min_prob": 0.48, "max_prob": 0.92, "min_minutes_left": 1.0, "max_minutes_left": 18.0},
+            {"name": "C NO cannon", "side": "no", "min_prob": 0.52, "max_prob": 0.94, "min_minutes_left": 1.0, "max_minutes_left": 20.0},
+            {
+                "name": "C counter-thesis: slam NO on overheated YES",
+                "side": "no",
+                "min_prob": 0.38,
+                "max_prob": 0.72,
+                "min_minutes_left": 0.5,
+                "max_minutes_left": 22.0,
+            },
+        ]
+    if lab_key == "lab_d":
+        # Contrarian — bias to opposing YES consensus via NO-first lanes.
+        return [
+            {
+                "name": "D counter-thesis: oppose consensus YES",
+                "side": "no",
+                "min_prob": 0.36,
+                "max_prob": 0.68,
+                "min_minutes_left": 1.0,
+                "max_minutes_left": 22.0,
+            },
+            {"name": "D fade YES band", "side": "no", "min_prob": 0.48, "max_prob": 0.78, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
+            {"name": "D lone wolf YES", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 2.0, "max_minutes_left": 14.0},
+            {"name": "D chaos YES tail", "min_prob": 0.62, "max_prob": 0.96, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
+        ]
+    if lab_key == "lab_e":
+        # Blend + strong adaptive fade (dual NO lanes).
+        return [
+            {"name": "E balanced core YES", "min_prob": 0.46, "max_prob": 0.78, "min_minutes_left": 2.0, "max_minutes_left": 19.0},
+            {"name": "E tier2 YES", "min_prob": 0.58, "max_prob": 0.90, "min_minutes_left": 2.5, "max_minutes_left": 15.0},
+            {"name": "E hedge NO", "side": "no", "min_prob": 0.50, "max_prob": 0.74, "min_minutes_left": 3.0, "max_minutes_left": 17.0},
+            {
+                "name": "E counter-thesis: adaptive fade",
+                "side": "no",
+                "min_prob": 0.44,
+                "max_prob": 0.86,
+                "min_minutes_left": 1.5,
+                "max_minutes_left": 21.0,
+            },
+        ]
+    return _breeder_loose_rules_fallback()
+
+
+def breeder_smart_defaults_snapshot(lab_key: str) -> dict[str, Any]:
+    """
+    Payload for **Reset to Smart Defaults** on breeder labs: fresh ``rules`` plus sizing/council keys from
+    :func:`default_bot_config`, and matching optimizer YES-floor / min-minutes keys.
+    """
+    lk = str(lab_key or "").strip().lower()
+    if lk not in _BREEDER_PARENT_LABS:
+        raise ValueError(f"unsupported breeder lab: {lab_key!r}")
+    full = default_bot_config()
+    lab_base = full.get(lk)
+    if not isinstance(lab_base, dict):
+        raise ValueError("default_bot_config missing lab block")
+    oc = full.get("optimizer") if isinstance(full.get("optimizer"), dict) else {}
+    floor_k = f"{lk}_yes_floor_pct"
+    mins_k = f"{lk}_min_minutes_left"
+    lab_patch: dict[str, Any] = {
+        "rules": _breeder_fallback_rules_for(lk),
+        "balance_fraction_per_window": lab_base.get("balance_fraction_per_window"),
+        "window_minutes": lab_base.get("window_minutes"),
+        "no_bet_when_yes_below_pct": lab_base.get("no_bet_when_yes_below_pct"),
+        "council_influence_weight_pct": lab_base.get("council_influence_weight_pct"),
+        "breeder_personality": lab_base.get("breeder_personality"),
+    }
+    optimizer_patch: dict[str, Any] = {}
+    if floor_k in oc:
+        optimizer_patch[floor_k] = oc[floor_k]
+    if mins_k in oc:
+        optimizer_patch[mins_k] = oc[mins_k]
+    return {"lab_key": lk, "lab_patch": lab_patch, "optimizer_patch": optimizer_patch}
+
+
 def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
     """
     Breeding Council labs must never run with ``rules: []`` (no signals). Copy global rules or inject a loose pack.
     """
     glob = cfg.get("rules")
-    fallback: list[dict[str, Any]] = []
+    global_rules: list[dict[str, Any]] = []
     if isinstance(glob, list) and glob:
-        fallback = [dict(r) for r in glob if isinstance(r, dict)]
-    if not fallback:
-        fallback = _breeder_loose_rules_fallback()
+        global_rules = [dict(r) for r in glob if isinstance(r, dict)]
     for lk in _BREEDER_PARENT_LABS:
         block = cfg.get(lk)
         if not isinstance(block, dict):
             continue
         rules = block.get("rules")
         if not isinstance(rules, list) or len(rules) == 0:
-            block["rules"] = [dict(r) for r in fallback]
+            if global_rules:
+                block["rules"] = [dict(r) for r in global_rules]
+            else:
+                block["rules"] = _breeder_fallback_rules_for(lk)
             cfg[lk] = block
 
 
@@ -255,7 +354,7 @@ def default_bot_config() -> dict[str, Any]:
     return {
         "simulate": True,
         "live_paper_trading": True,  # canonical; mirrored to ``simulate`` (see ``sync_live_paper_trading_keys``)
-        "engine_running": False,
+        # Omit ``engine_running``: paper Live defaults on via ``effective_live_engine_running``; real-money defaults off.
         "poll_seconds": 8,
         "balance_fraction_per_window": 0.03,
         "window_minutes": 18,
@@ -285,8 +384,8 @@ def default_bot_config() -> dict[str, Any]:
         "paper_fee_bps": 0,
         "paper_balance_cents": 500_000,
         # Lab A: staging / blend before Live — internal auto-tune may adjust sizing from PnL.
+        # Omit ``engine_running``: staging branch defaults on (see ``effective_parent_lab_engine_running``).
         "lab_a": {
-            "engine_running": False,
             "auto_optimize": True,
             "auto_reset_paper_on_tick_failure": False,
             "enable_patient_stop_loss": True,
@@ -299,7 +398,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab B: conservative paper reference (does not apply scheduled optimizer rule changes).
+        # Lab B: ultra-conservative breeder — tight fractions, high skip floor, lower council coupling.
         "lab_b": {
             "engine_running": True,
             "auto_optimize": False,
@@ -307,16 +406,18 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.0,
             "min_hold_minutes_before_stop": 30,
-            "balance_fraction_per_window": 0.055,
-            "window_minutes": 18,
-            "no_bet_when_yes_below_pct": 24,
-            "rules": _copy_trading_rules_default(),
+            "balance_fraction_per_window": 0.038,
+            "window_minutes": 22,
+            "no_bet_when_yes_below_pct": 36,
+            "council_influence_weight_pct": 78,
+            "breeder_personality": "conservative",
+            "rules": _breeder_fallback_rules_for("lab_b"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab C: aggressive paper reference (does not apply scheduled optimizer rule changes).
+        # Lab C: aggressive breeder — large fractions, short window, wide rule bands.
         "lab_c": {
             "engine_running": True,
             "auto_optimize": False,
@@ -324,16 +425,18 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -12.0,
             "min_hold_minutes_before_stop": 60,
-            "balance_fraction_per_window": 0.11,
-            "window_minutes": 12,
-            "no_bet_when_yes_below_pct": 28,
-            "rules": _copy_trading_rules_default(),
+            "balance_fraction_per_window": 0.155,
+            "window_minutes": 8,
+            "no_bet_when_yes_below_pct": 21,
+            "council_influence_weight_pct": 100,
+            "breeder_personality": "aggressive",
+            "rules": _breeder_fallback_rules_for("lab_c"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab D: wild reference branch; optimizer may use B/C momentum to influence Lab A sizing.
+        # Lab D: contrarian breeder — opposes consensus in-engine; moderate sizing, longer window.
         "lab_d": {
             "engine_running": True,
             "auto_optimize": False,
@@ -341,16 +444,18 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -7.0,
             "min_hold_minutes_before_stop": 25,
-            "balance_fraction_per_window": 0.13,
-            "window_minutes": 10,
-            "no_bet_when_yes_below_pct": 22,
-            "rules": _copy_trading_rules_default(),
+            "balance_fraction_per_window": 0.105,
+            "window_minutes": 14,
+            "no_bet_when_yes_below_pct": 19,
+            "council_influence_weight_pct": 92,
+            "breeder_personality": "contrarian",
+            "rules": _breeder_fallback_rules_for("lab_d"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab E: balanced / adaptive breeder (Breeding Council).
+        # Lab E: adaptive blend + strong fade capability.
         "lab_e": {
             "engine_running": True,
             "auto_optimize": False,
@@ -358,10 +463,12 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.5,
             "min_hold_minutes_before_stop": 28,
-            "balance_fraction_per_window": 0.095,
-            "window_minutes": 11,
-            "no_bet_when_yes_below_pct": 24,
-            "rules": _copy_trading_rules_default(),
+            "balance_fraction_per_window": 0.088,
+            "window_minutes": 13,
+            "no_bet_when_yes_below_pct": 22,
+            "council_influence_weight_pct": 100,
+            "breeder_personality": "adaptive",
+            "rules": _breeder_fallback_rules_for("lab_e"),
             "paper_fee_model": "kalshi_taker",
             "kalshi_fee_multiplier": 1.0,
             "paper_fee_bps": 0,
@@ -408,15 +515,15 @@ def default_bot_config() -> dict[str, Any]:
             "minute_step": 2,
             "max_history": 120,
             "lab_a_yes_floor_pct": 56,
-            "lab_b_yes_floor_pct": 51,
-            "lab_c_yes_floor_pct": 52,
-            "lab_d_yes_floor_pct": 48,
-            "lab_e_yes_floor_pct": 50,
+            "lab_b_yes_floor_pct": 62,
+            "lab_c_yes_floor_pct": 41,
+            "lab_d_yes_floor_pct": 44,
+            "lab_e_yes_floor_pct": 51,
             "lab_a_min_minutes_left": 5,
-            "lab_b_min_minutes_left": 2,
-            "lab_c_min_minutes_left": 3,
-            "lab_d_min_minutes_left": 2,
-            "lab_e_min_minutes_left": 2,
+            "lab_b_min_minutes_left": 4,
+            "lab_c_min_minutes_left": 2,
+            "lab_d_min_minutes_left": 3,
+            "lab_e_min_minutes_left": 3,
             "min_trades_for_optimize": 8,
             "min_profitable_trades": 2,
             "optimize_bet_size": True,
@@ -548,6 +655,38 @@ async def _migrate_trades_open_sim_unique(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+def _maybe_strip_legacy_breeder_stub_engine_false(cfg: dict[str, Any]) -> None:
+    """
+    Older ``_normalize_loaded_config`` stubs for lab_b–e embedded ``engine_running: false``. Because
+    ``expand_partial_lab_branch`` overlays the saved dict on defaults, that **false** overwrote breeder ``True``
+    and kept engines off. Drop ``engine_running`` when the block still matches the legacy stub fingerprint so the
+    next merge restores shipped defaults (operators who truly want off can set ``engine_running: false`` again).
+    """
+    sigs = {
+        "lab_b": (0.05, 15),
+        "lab_c": (0.08, 12),
+        "lab_d": (0.13, 10),
+        "lab_e": (0.095, 11),
+    }
+    for lk, (frac, wmin) in sigs.items():
+        block = cfg.get(lk)
+        if not isinstance(block, dict):
+            continue
+        if block.get("engine_running") is not False:
+            continue
+        if block.get("auto_optimize") is not False:
+            continue
+        try:
+            bf = float(block.get("balance_fraction_per_window"))
+            wi = int(float(block.get("window_minutes")))
+        except (TypeError, ValueError):
+            continue
+        if abs(bf - frac) > 1e-4 or wi != wmin:
+            continue
+        del block["engine_running"]
+        cfg[lk] = block
+
+
 def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Legacy default skipped every Kalshi demo row ("Target price: TBD") for *trading* while the
     # dashboard could still show prices — sim never fired. Clear exact lone "tbd"; use ",tbd" if you need it back.
@@ -588,9 +727,10 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": legacy.get("window_minutes", 15),
             "paper_balance_cents": legacy.get("paper_balance_cents", cfg.get("paper_balance_cents") or 500_000),
         }
+    # Omit ``engine_running`` on breeder stubs so ``expand_partial_lab_branch`` keeps ``default_bot_config`` True — an
+    # explicit False here overwrote defaults and left Lab B–E permanently off after migration.
     if "lab_b" not in cfg or not isinstance(cfg.get("lab_b"), dict):
         cfg["lab_b"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.05,
             "window_minutes": 15,
@@ -598,7 +738,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     if "lab_c" not in cfg or not isinstance(cfg.get("lab_c"), dict):
         cfg["lab_c"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.08,
             "window_minutes": 12,
@@ -606,7 +745,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     if "lab_d" not in cfg or not isinstance(cfg.get("lab_d"), dict):
         cfg["lab_d"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.13,
             "window_minutes": 10,
@@ -614,7 +752,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     if "lab_e" not in cfg or not isinstance(cfg.get("lab_e"), dict):
         cfg["lab_e"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.095,
             "window_minutes": 11,
@@ -652,6 +789,7 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Dev sim high-YES bypass: migrate legacy boolean to percent field
     if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(cfg.get("dev_sim_yes_implied_ge_70")):
         cfg["dev_sim_yes_implied_ge_pct"] = 70.0
+    _maybe_strip_legacy_breeder_stub_engine_false(cfg)
     for lk in ALL_CFG_LAB_KEYS:
         if isinstance(cfg.get(lk), dict):
             cfg[lk] = expand_partial_lab_branch(lk, dict(cfg[lk]))
@@ -672,6 +810,13 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
 class Store:
     def __init__(self, path: str | None = None) -> None:
         self.path = path or env.sqlite_path
+        # Bumped on every ``reset_trading_data`` commit so dashboard clients can accept empty equity/trade arrays
+        # without merge logic resurrecting pre-reset chart series (see ``mergeDashboardFastPoll``).
+        self._trading_data_revision: int = 0
+
+    @property
+    def trading_data_revision(self) -> int:
+        return self._trading_data_revision
 
     @asynccontextmanager
     async def _open_db(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -700,37 +845,48 @@ class Store:
             cur = await db.execute("SELECT json FROM bot_config WHERE id=1")
             row = await cur.fetchone()
             if not row:
-                return default_bot_config()
-            raw = row["json"]
-            try:
-                parsed = json.loads(raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                merged = default_bot_config()
-                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
-                await db.commit()
-                _data_log(
-                    "system",
-                    {
-                        "event": "bot_config_json_repaired",
-                        "reason": "invalid_or_unreadable_json",
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                return _normalize_loaded_config(merged)
-            if not isinstance(parsed, dict):
-                merged = default_bot_config()
-                await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
-                await db.commit()
-                _data_log(
-                    "system",
-                    {
-                        "event": "bot_config_json_repaired",
-                        "reason": "json_not_object",
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
-                return _normalize_loaded_config(merged)
-            return _normalize_loaded_config(parsed)
+                out = default_bot_config()
+            else:
+                raw = row["json"]
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    merged = default_bot_config()
+                    await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                    await db.commit()
+                    _data_log(
+                        "system",
+                        {
+                            "event": "bot_config_json_repaired",
+                            "reason": "invalid_or_unreadable_json",
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    out = _normalize_loaded_config(merged)
+                else:
+                    if not isinstance(parsed, dict):
+                        merged = default_bot_config()
+                        await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                        await db.commit()
+                        _data_log(
+                            "system",
+                            {
+                                "event": "bot_config_json_repaired",
+                                "reason": "json_not_object",
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        out = _normalize_loaded_config(merged)
+                    else:
+                        out = _normalize_loaded_config(parsed)
+        try:
+            from .lab_diversify import maybe_revert_council_diversity_if_due, maybe_revert_emergency_diversify_if_due
+
+            await maybe_revert_emergency_diversify_if_due(self, out)
+            await maybe_revert_council_diversity_if_due(self, out)
+        except Exception as exc:
+            _logger.warning("diversity / emergency_diversify revert check failed: %s", exc)
+        return out
 
     async def save_config(
         self,
@@ -1581,7 +1737,7 @@ class Store:
         Delete signals, trades, and equity snapshots. Keeps ``bot_config``.
 
         * ``branch`` is None / ``\"all\"`` / empty: delete **all** rows (legacy behaviour).
-        * ``branch`` in ``live`` / ``lab_a`` / ``lab_b`` / ``lab_c`` / ``lab_d``: delete only rows for that branch
+        * ``branch`` in ``live`` / ``lab_a`` … ``lab_e`` / ``lab_child_*``: delete only rows for that branch
           (Lab A predicate includes legacy ``sim_lab``).
 
         When ``backup`` is True, copies the SQLite file and exports JSONL dumps under ``DATA_LOG_DIR/exports``.
@@ -1632,6 +1788,7 @@ class Store:
                     await db.commit()
                 except Exception as e:
                     exports.append(f"vacuum_skipped:{e}")
+        self._trading_data_revision += 1
         _data_log(
             "system",
             {
@@ -1639,6 +1796,7 @@ class Store:
                 "backup": backup,
                 "branch": scope,
                 "vacuum": vacuum,
+                "trading_data_revision": self._trading_data_revision,
                 "exports": exports,
                 "at": datetime.now(timezone.utc).isoformat(),
             },

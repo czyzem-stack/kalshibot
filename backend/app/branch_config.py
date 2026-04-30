@@ -102,6 +102,9 @@ LAB_BRANCH_OVERLAY_KEYS = (
     "paper_fee_bps",
     "paper_fee_model",
     "kalshi_fee_multiplier",
+    # Breeder council tuning (Labs B–E): merged onto branch cfg for engines + UI.
+    "council_influence_weight_pct",
+    "breeder_personality",
 )
 
 
@@ -163,6 +166,10 @@ def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
 
 def pulse_effective_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]:
     """Config used for UI pulse / dry-run (does not require engine_running)."""
+    if not isinstance(full_cfg, dict):
+        from .persistence import default_bot_config
+
+        return dict(default_bot_config())
     lab_key = _lab_key_for_branch(branch)
     if lab_key is None:
         return dict(full_cfg)
@@ -180,6 +187,33 @@ def pulse_effective_config(full_cfg: dict[str, Any], branch: str) -> dict[str, A
             continue
         out[k] = v
     return out
+
+
+def effective_live_engine_running(full_cfg: dict[str, Any]) -> bool:
+    """
+    Whether the Live branch should tick.
+
+    A **missing** top-level ``engine_running`` defaults to **on** in paper mode so Kalshi public sim matches breeder
+    labs out of the box; it defaults **off** when ``live_paper_trading`` is false (real money) until explicitly enabled.
+    """
+    if not isinstance(full_cfg, dict):
+        return False
+    return _coerce_engine_running_flag(
+        full_cfg.get("engine_running"),
+        default_if_missing=live_paper_trading_enabled(full_cfg),
+    )
+
+
+def effective_parent_lab_engine_running(lab: dict[str, Any] | None, lab_key: str) -> bool:
+    """
+    Parent lab ``lab_a``…``lab_e`` engines.
+
+    A **missing** ``engine_running`` defaults **on** for every parent lab (matches ``default_bot_config`` breeders + staging).
+    Set ``engine_running: false`` explicitly to pause a branch.
+    """
+    raw = lab.get("engine_running") if isinstance(lab, dict) else None
+    default_missing = lab_key in BRANCH_LABS
+    return _coerce_engine_running_flag(raw, default_if_missing=default_missing)
 
 
 def _coerce_engine_running_flag(
@@ -207,10 +241,10 @@ def _coerce_engine_running_flag(
 
 def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any] | None:
     """Build effective config for one engine branch. Returns None if that branch should not run."""
+    if not isinstance(full_cfg, dict):
+        return None
     if branch == BRANCH_LIVE:
-        if not _coerce_engine_running_flag(
-            full_cfg.get("engine_running"), default_if_missing=False
-        ):
+        if not effective_live_engine_running(full_cfg):
             return None
         out = dict(full_cfg)
         out["_branch"] = BRANCH_LIVE
@@ -232,10 +266,7 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
                 lab.get("engine_running"), default_if_missing=True
             ):
                 return None
-        elif not isinstance(lab, dict) or not _coerce_engine_running_flag(
-            lab.get("engine_running") if isinstance(lab, dict) else None,
-            default_if_missing=False,
-        ):
+        elif not isinstance(lab, dict) or not effective_parent_lab_engine_running(lab, lab_key):
             return None
         out = dict(full_cfg)
         for k in LAB_BRANCH_OVERLAY_KEYS:

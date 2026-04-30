@@ -2,7 +2,7 @@
 Breeding Council / Lab Think Tank — Labs B, C, D, E publish short lines with explicit conversational threading.
 
 Rolling **last 6** bus lines drive prompts; every line reacts to **other labs** by name; optional ``reply_to`` UUID ties replies.
-**~62** chars; **anti-repeat** vs last 8 lines; **rotation boost** + **hot-lab damp** when one breeder dominates; council **6–15s**; no ticker ranked hook.
+**~58** chars; **anti-repeat** vs last 8 lines; **rotation boost** + **hot-lab damp** when one breeder dominates; council **6–15s**; no ticker ranked hook.
 
 Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ optional ``reply_to`` field).
 """
@@ -10,6 +10,7 @@ Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ opti
 from __future__ import annotations
 
 import random
+import re
 import time
 import uuid
 from collections import Counter, deque
@@ -33,7 +34,9 @@ _LAB_LABEL = {
     BRANCH_LAB_E: "Lab E",
 }
 
-_MSG_SOFT_MAX = 62  # dialogue-only strip; ~55–65 chars effective
+_MSG_SOFT_MAX = 58  # blunt council lines; keep tight for ticker + UI
+_ADVERSARIAL_REPLY_FRACTION = 0.40
+_ADVERSARIAL_STRATEGIC_FRACTION = 0.40
 _CONV_MEMORY = 6  # tail scanned for “reply to last 1–2 other labs”
 _RECENT_SHARE_WINDOW = 14  # shorter window — faster recovery from skew
 _PROACTIVE_SHARE_CAP = 0.46  # old 0.31 caused long silent stretches (strategic pulse kept deferring)
@@ -52,6 +55,8 @@ class LabCommunicationBus:
 
     def __init__(self) -> None:
         self._dq: deque[dict[str, Any]] = deque(maxlen=96)
+        # Ephemeral signal for breeder TradingEngine ticks (refreshed each Think Tank finalize + diversify).
+        self._engine_council_signal: dict[str, Any] | None = None
 
     @classmethod
     def instance(cls) -> LabCommunicationBus:
@@ -102,6 +107,81 @@ class LabCommunicationBus:
 
 def get_lab_communication_bus() -> LabCommunicationBus:
     return LabCommunicationBus.instance()
+
+
+def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = 3) -> tuple[float, int, int]:
+    """
+    Scan the last ``n`` breeder bus lines (most recent first scan, chronological return).
+
+    Returns ``(bias, yes_hits, no_hits)`` where bias is in [-1, 1] from word-boundary YES vs NO counts.
+    """
+    texts: list[str] = []
+    for row in reversed(list(bus._dq)):
+        if str(row.get("lab") or "") not in BRANCH_BREEDERS:
+            continue
+        texts.append(str(row.get("message") or ""))
+        if len(texts) >= n:
+            break
+    texts = list(reversed(texts))
+    yes_h = 0
+    no_h = 0
+    for t in texts:
+        yes_h += len(re.findall(r"\bYES\b", t, re.I))
+        no_h += len(re.findall(r"\bNO\b", t, re.I))
+    tot = yes_h + no_h
+    bias = (yes_h - no_h) / tot if tot else 0.0
+    return bias, yes_h, no_h
+
+
+def peek_engine_council_signal(bus: LabCommunicationBus | None = None) -> dict[str, Any] | None:
+    """Last published council signal for engines, or None if expired / unset."""
+    b = bus or get_lab_communication_bus()
+    sig = getattr(b, "_engine_council_signal", None)
+    if not isinstance(sig, dict):
+        return None
+    exp = float(sig.get("expires_mono") or 0.0)
+    if exp and time.monotonic() > exp:
+        b._engine_council_signal = None
+        return None
+    return dict(sig)
+
+
+def refresh_engine_council_signal(
+    bus: LabCommunicationBus,
+    full_cfg: dict[str, Any] | None,
+    *,
+    diversify_pulse: bool = False,
+) -> None:
+    """
+    Recompute ``_engine_council_signal`` from recent Think Tank lines + diversity window.
+
+    Engines read this on the **next** tick (finalize runs after ``handle_market`` for the same branch).
+    ``diversify_pulse=True`` is used right after ``POST /labs/diversify`` so breeders feel a short, strong pulse.
+    """
+    bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
+    div = council_diversity_pulse_active(full_cfg)
+    tot = yes_h + no_h
+    strength = min(1.0, tot / 4.0) * (1.18 if div else 1.0)
+    if tot >= 2 and abs(bias) >= 0.34:
+        strength = max(strength, 0.55)
+    if div:
+        strength = max(strength, 0.48)
+    if diversify_pulse:
+        strength = max(strength, 0.91)
+        strength = min(1.0, strength * 1.35)
+    if tot == 0 and not div and not diversify_pulse:
+        bus._engine_council_signal = None
+        return
+    ttl = 420.0 if diversify_pulse else 120.0
+    bus._engine_council_signal = {
+        "bias": float(bias),
+        "yes_ct": int(yes_h),
+        "no_ct": int(no_h),
+        "strength": float(min(1.0, strength)),
+        "diversity": bool(div),
+        "diversify_pulse": bool(diversify_pulse),
+        "expires_mono": time.monotonic() + ttl,
+    }
 
 
 def conversation_tail(bus: LabCommunicationBus, limit: int = _CONV_MEMORY) -> list[dict[str, Any]]:
@@ -306,10 +386,10 @@ def _breeder_overrepresented(bus: LabCommunicationBus, branch: str, window: int 
         return False
     c = Counter(labs)
     my = int(c.get(branch, 0))
-    if my < 3:
+    if my < 2:
         return False
     mx = max(c.get(bk, 0) for bk in LAB_THINK_TANK_BRANCHES)
-    return my == mx and my >= 3
+    return my == mx and my >= 2
 
 
 def _proactive_hot_streak(bus: LabCommunicationBus, lab: str, *, window: int = 5, need: int = 3) -> bool:
@@ -343,8 +423,8 @@ def _needs_voice_turn(bus: LabCommunicationBus, branch: str) -> bool:
     d_ct = tail8.count(BRANCH_LAB_D)
     e_ct = tail8.count(BRANCH_LAB_E)
 
-    # C ran the board — force other breeders back in.
-    if branch in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E) and c_ct >= 4 and (b_ct + d_ct + e_ct) <= 3:
+    # C ran the board — force other breeders back in sooner.
+    if branch in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E) and c_ct >= 3 and (b_ct + d_ct + e_ct) <= 2:
         return True
     last5 = [lb for lb in labs_seq[-5:] if lb in LAB_THINK_TANK_BRANCHES]
     for br in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E):
@@ -352,7 +432,7 @@ def _needs_voice_turn(bus: LabCommunicationBus, branch: str) -> bool:
             return True
 
     # C does not need a "priority bump" when already dominant.
-    if branch == BRANCH_LAB_C and c_ct >= 5:
+    if branch == BRANCH_LAB_C and c_ct >= 4:
         return False
 
     seen = {lb for lb in labs_seq[-6:]}
@@ -365,18 +445,24 @@ def _needs_voice_turn(bus: LabCommunicationBus, branch: str) -> bool:
     return counts.get(branch, 0) < mx
 
 
-def _can_proactive_voice(bus: LabCommunicationBus, lab: str) -> bool:
+def _can_proactive_voice(bus: LabCommunicationBus, lab: str, *, full_cfg: dict[str, Any] | None = None) -> bool:
     # Early thread: allow everyone to speak so the UI isn’t an empty box waiting on share math.
     if len(bus._dq) < _BOOTSTRAP_BUS_LINES:
         return True
     if _needs_voice_turn(bus, lab):
         return True
+    div = council_diversity_pulse_active(full_cfg)
+    # Lab C monopoly damp: throttle C unless another lab is due for airtime.
+    c_cap = 0.42 if div else 0.36
+    if lab == BRANCH_LAB_C and _recent_lab_share(bus, BRANCH_LAB_C) >= c_cap and not _needs_voice_turn(bus, lab):
+        return False
     # Same lab rapid-fire (common when only one breeder engine is on — still cap spam).
     if _proactive_hot_streak(bus, lab):
         return False
-    if _breeder_overrepresented(bus, lab):
+    if _breeder_overrepresented(bus, lab) and not div:
         return False
-    return _recent_lab_share(bus, lab) <= _PROACTIVE_SHARE_CAP
+    cap = min(0.52, _PROACTIVE_SHARE_CAP + (0.06 if div else 0.0))
+    return _recent_lab_share(bus, lab) <= cap
 
 
 def _optimizer_breeding_enabled(full_cfg: dict[str, Any] | None) -> bool:
@@ -384,6 +470,78 @@ def _optimizer_breeding_enabled(full_cfg: dict[str, Any] | None) -> bool:
         return False
     oc = full_cfg["optimizer"]
     return bool(oc.get("breeding_enabled", True))
+
+
+def _optimizer_section(full_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    if not full_cfg or not isinstance(full_cfg.get("optimizer"), dict):
+        return {}
+    return full_cfg["optimizer"]
+
+
+def council_diversity_pulse_active(full_cfg: dict[str, Any] | None) -> bool:
+    """True while ``labs_council_diversity_until`` (ISO UTC) is in the future."""
+    oc = _optimizer_section(full_cfg)
+    raw = str(oc.get("labs_council_diversity_until") or "").strip()
+    if not raw:
+        return False
+    try:
+        t = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    return datetime.now(timezone.utc) < t
+
+
+# During ``labs_council_diversity_until``, track adversarial pool usage on peer + strategic lines (~40–50% counters).
+_DIVERSITY_ADV_RECENT: deque[int] = deque(maxlen=28)
+
+
+def _diversity_counter_record(full_cfg: dict[str, Any] | None, was_adversarial: bool) -> None:
+    if not council_diversity_pulse_active(full_cfg):
+        return
+    _DIVERSITY_ADV_RECENT.append(1 if was_adversarial else 0)
+
+
+def _diversity_counter_adversarial_rate() -> float:
+    if not _DIVERSITY_ADV_RECENT:
+        return 0.45
+    return sum(_DIVERSITY_ADV_RECENT) / float(len(_DIVERSITY_ADV_RECENT))
+
+
+def _adversarial_fractions(full_cfg: dict[str, Any] | None) -> tuple[float, float]:
+    if council_diversity_pulse_active(full_cfg):
+        return 0.50, 0.52
+    return _ADVERSARIAL_REPLY_FRACTION, _ADVERSARIAL_STRATEGIC_FRACTION
+
+
+def _quota_adjust_peer_frac(adv_reply_frac: float, full_cfg: dict[str, Any] | None) -> float:
+    """Bias peer-reply random draw so rolling counter stays ~40–50% adversarial during diversity."""
+    if not council_diversity_pulse_active(full_cfg):
+        return adv_reply_frac
+    n = len(_DIVERSITY_ADV_RECENT)
+    rate = _diversity_counter_adversarial_rate()
+    if n < 8:
+        return max(adv_reply_frac, 0.48)
+    if rate < 0.40:
+        return max(adv_reply_frac, 0.93)
+    if rate > 0.50:
+        return min(adv_reply_frac, 0.34)
+    return adv_reply_frac
+
+
+def _quota_adjust_strat_frac(adv_strat_frac: float, full_cfg: dict[str, Any] | None) -> float:
+    if not council_diversity_pulse_active(full_cfg):
+        return adv_strat_frac
+    n = len(_DIVERSITY_ADV_RECENT)
+    rate = _diversity_counter_adversarial_rate()
+    if n < 8:
+        return max(adv_strat_frac, 0.50)
+    if rate < 0.40:
+        return max(adv_strat_frac, 0.90)
+    if rate > 0.50:
+        return min(adv_strat_frac, 0.36)
+    return adv_strat_frac
 
 
 def _peer_nick(peer_row: dict[str, Any]) -> str:
@@ -427,22 +585,142 @@ def _peer_blurb(peer_row: dict[str, Any] | None, *, max_len: int = 18) -> str:
     return _cap_msg(raw, max_len)
 
 
+def _adversarial_peer_lines(
+    branch: str,
+    nick: str,
+    nick2: str,
+    peer_lab: str,
+    blur: str,
+    *,
+    diversity_pulse: bool = False,
+) -> list[str]:
+    """Counter-thesis / pushback lines — short, natural, Breeding Council only."""
+    voc = _voice_prefix(branch)
+    lines: list[str] = []
+    # Opposing side / sizing (generic)
+    lines.extend(
+        [
+            f"{voc} fake edge—I'm on NO here.",
+            f"{voc} team—YES looks like a trap; I pass.",
+            f"{voc} opposite read: smaller NO lean.",
+            f"{voc} I'm fading that—half size YES max.",
+            f"{voc} counter: tighten, skip this rush.",
+            f"{voc} that tape screams NO to me.",
+            f"{voc} I sell the hype—sitting out.",
+            f"{voc} thesis flip—NO over YES here.",
+        ]
+    )
+    if peer_lab == BRANCH_LAB_C:
+        lines.extend(
+            [
+                f"{voc} C too aggressive—dangerous.",
+                f"{voc} C's take is hot air—I'm out.",
+                f"{voc} pushback on C—I'm smaller.",
+                f"{voc} C you're loud—I'm NO-side.",
+                f"{voc} disagree C—edge feels cooked.",
+                f"{voc} C wild—I'm the brake.",
+            ]
+        )
+    if peer_lab == BRANCH_LAB_B:
+        lines.append(f"{voc} B too safe—I'm leaning YES anyway.")
+    if peer_lab == BRANCH_LAB_D:
+        lines.append(f"{voc} D you're wild but wrong here.")
+    if nick2:
+        lines.extend(
+            [
+                f"{voc} {nick2} + {nick}—both wrong; NO.",
+                f"{voc} split you two—I take opposite.",
+                f"{voc} {nick} hype vs {nick2}—I'm out.",
+            ]
+        )
+    if blur and blur != "that":
+        lines.append(f"{voc} '{blur}'? I'm countering that.")
+    if branch == BRANCH_LAB_B:
+        lines.extend([f"{voc} conservative pass—NO tilt.", f"{voc} I brake the pack—smaller."])
+    if branch == BRANCH_LAB_D:
+        lines.extend([f"{voc} remix hot—still say NO.", f"{voc} wild card: opposite side."])
+    if branch == BRANCH_LAB_E:
+        lines.extend([f"{voc} balance vote: oppose the pile-on.", f"{voc} E says diversify—hold."])
+    if diversity_pulse:
+        lines.extend(
+            [
+                f"{voc} hard counter: I bid the other side.",
+                f"{voc} NO is my base case; prove YES.",
+                f"{voc} YES only if you halve size—else NO.",
+                f"{voc} I file the dissent—flat opposite.",
+                f"{voc} pile-on rejected—I fade consensus.",
+            ]
+        )
+    return lines
+
+
+def _adversarial_strategic_lines(
+    branch: str,
+    nick_last: str,
+    nick_prev: str,
+    blurb_last: str,
+    had_two_peers: bool,
+    had_one_peer: bool,
+    *,
+    diversity_pulse: bool = False,
+) -> list[str]:
+    vp = _voice_prefix(branch)
+    out: list[str] = [
+        f"{vp} council—this edge is fake; sitting.",
+        f"{vp} team NO-huddle: I oppose the YES pile.",
+        f"{vp} diversify—I'm taking the other lane.",
+        f"{vp} counter-thesis: shrink YES, add NO.",
+        f"{vp} groupthink alert—I'm braking.",
+        f"{vp} opposite sizing—half what we'd do.",
+        f"{vp} I veto the rush—tighten bands.",
+    ]
+    if branch in (BRANCH_LAB_B, BRANCH_LAB_D, BRANCH_LAB_E):
+        out.extend(
+            [
+                f"{vp} C can't own this—pushback time.",
+                f"{vp} slow C's train—I'm dissenting.",
+                f"{vp} anti-pile-on: NO > YES here.",
+            ]
+        )
+    if had_two_peers and nick_last and nick_prev:
+        out.append(f"{vp} {nick_prev} vs {nick_last}—I choose neither YES.")
+    if had_one_peer and nick_last:
+        out.append(f"{vp} {nick_last}—I go the other way.")
+    if blurb_last:
+        out.append(f"{vp} against '{blurb_last}'—counter yes/no flip.")
+    if diversity_pulse:
+        out.extend(
+            [
+                f"{vp} council split: I stake the contra.",
+                f"{vp} diversity mode—I sell your YES.",
+                f"{vp} I lean NO; fight me on price.",
+                f"{vp} forced dissent: smaller YES, fat NO.",
+                f"{vp} I call bogus—take other side.",
+            ]
+        )
+    return out
+
+
 def _team_peer_reply_line(
     branch: str,
     peer_row: dict[str, Any],
     bus: LabCommunicationBus,
     *,
     breeding_enabled: bool,
+    full_cfg: dict[str, Any] | None = None,
 ) -> tuple[str, float | None]:
     """Varied natural reply — always anchored to peer(s); anti-repeat vs recent bus lines."""
     voc = _voice_prefix(branch)
+    div = council_diversity_pulse_active(full_cfg)
+    adv_reply_frac, _ = _adversarial_fractions(full_cfg)
+    adv_reply_frac = _quota_adjust_peer_frac(adv_reply_frac, full_cfg)
     nick = _peer_nick(peer_row)
     peer_lab = str(peer_row.get("lab") or "")
     blur = _peer_blurb(peer_row, max_len=14)
 
     team_tag = ""
-    if breeding_enabled and random.random() < 0.22:
-        # Short tails only — long tags + 62-char cap caused ``…that's the`` + ``Ship…`` merge glitches.
+    if breeding_enabled and random.random() < (0.08 if div else 0.22):
+        # Short tails only — long tags + char cap caused ``…that's the`` + ``Ship…`` merge glitches.
         team_tag = random.choice(
             [
                 "Team—strong edge.",
@@ -462,13 +740,20 @@ def _team_peer_reply_line(
         if cand.get("id") != peer_row.get("id"):
             nick2 = _peer_nick(cand)
 
-    def _finish(text: str) -> tuple[str, float | None]:
+    def _finish(text: str, *, adv: bool = False) -> tuple[str, float | None]:
         t = text.strip()
         if team_tag:
             t = _merge_dialogue_suffix(t, team_tag, max_len=_MSG_SOFT_MAX)
         else:
             t = _cap_msg(t)
+        _diversity_counter_record(full_cfg, adv)
         return t, random.uniform(0.44, 0.78)
+
+    if random.random() < adv_reply_frac:
+        adv_opts = _adversarial_peer_lines(branch, nick, nick2, peer_lab, blur, diversity_pulse=div)
+        raw_adv = _pick_varied(adv_opts, bus)
+        if raw_adv.strip():
+            return _finish(raw_adv, adv=True)
 
     # Two other voices in tail — weave both (reply_to stays primary peer).
     if nick2 and nick2 != nick and random.random() < 0.48:
@@ -525,7 +810,7 @@ def _team_peer_reply_line(
             f"{voc} yeah I'm with you on that.",
             f"{voc} heard '{blur}'—fair pushback.",
             f"{voc} what do you think—same page?",
-            f"{voc} too spicy for me—thanks {nick}.",
+            f"{voc} too hot—pass {nick}.",
             f"{voc} slow down—I'm chewing on that.",
             f"{voc} nod—I'll echo lighter than you.",
             f"{voc} hmm—half agree, half scared.",
@@ -694,6 +979,7 @@ def _contextual_strategic_pulse(
     ticker_hint: str | None,
     scanned: int,
     breeding_enabled: bool,
+    full_cfg: dict[str, Any] | None = None,
 ) -> tuple[str, float | None, str, str | None]:
     """
     Team dialogue only — reacts to other labs' lines by name. No tickers, scans, or market slang.
@@ -702,6 +988,9 @@ def _contextual_strategic_pulse(
     _ = ticker_hint
     _ = scanned
 
+    div = council_diversity_pulse_active(full_cfg)
+    _, adv_strat_frac = _adversarial_fractions(full_cfg)
+    adv_strat_frac = _quota_adjust_strat_frac(adv_strat_frac, full_cfg)
     vp = _voice_prefix(branch)
     others = thread_other_lines(bus, branch, _CONV_MEMORY)
     last_o = others[-1] if others else None
@@ -709,7 +998,7 @@ def _contextual_strategic_pulse(
     reply_to: str | None = str(last_o["id"]) if last_o and last_o.get("id") else None
 
     team = ""
-    if breeding_enabled and random.random() < 0.28:
+    if breeding_enabled and random.random() < (0.10 if div else 0.28):
         team = random.choice(
             [
                 "Team—strong edge.",
@@ -779,7 +1068,7 @@ def _contextual_strategic_pulse(
                 f"{vp} agree but I'd slow-roll after you.",
                 f"{vp} what do you think—same doubt?",
                 f"{vp} heard you {nick_last}; let me sit.",
-                f"{vp} too spicy for me—thanks.",
+                f"{vp} too hot—I'm out.",
                 f"{vp} interesting take {nick_last}.",
                 f"{vp} building on that—small nod.",
                 f"{vp} oh you did this—let me look.",
@@ -861,10 +1150,26 @@ def _contextual_strategic_pulse(
         msg = _pick_varied(cold[branch], bus)
         reply_to = None
 
+    strat_used_adv = False
+    if random.random() < adv_strat_frac:
+        adv = _adversarial_strategic_lines(
+            branch,
+            nick_last,
+            nick_prev,
+            blurb_last,
+            bool(last_o and prev_o and nick_last and nick_prev and nick_last != nick_prev),
+            bool(last_o),
+            diversity_pulse=div,
+        )
+        msg = _pick_varied(adv, bus)
+        strat_used_adv = True
+
     if team:
         msg = _merge_dialogue_suffix(msg, team, max_len=_MSG_SOFT_MAX)
     else:
         msg = _cap_msg(msg)
+
+    _diversity_counter_record(full_cfg, strat_used_adv)
 
     conf_hi = 0.82 if branch == BRANCH_LAB_C else 0.78
     return msg, _clamp01(random.uniform(0.44, conf_hi)), "strategic_pulse", reply_to
@@ -876,8 +1181,9 @@ def _council_reply_message(
     bus: LabCommunicationBus,
     *,
     breeding_enabled: bool,
+    full_cfg: dict[str, Any] | None = None,
 ) -> tuple[str, float | None]:
-    return _team_peer_reply_line(branch, peer_row, bus, breeding_enabled=breeding_enabled)
+    return _team_peer_reply_line(branch, peer_row, bus, breeding_enabled=breeding_enabled, full_cfg=full_cfg)
 
 
 def publish_council_reply_if_due(
@@ -886,6 +1192,7 @@ def publish_council_reply_if_due(
     bus: LabCommunicationBus,
     *,
     breeding_enabled: bool,
+    full_cfg: dict[str, Any] | None = None,
 ) -> bool:
     """Prefer answering another lab — chains unfold across breeder loop ticks. Returns True if a line was sent."""
     if branch not in LAB_THINK_TANK_BRANCHES:
@@ -901,7 +1208,7 @@ def publish_council_reply_if_due(
     if _seconds_since_publish(engine) < need:
         return False
 
-    msg, conf = _council_reply_message(branch, peer, bus, breeding_enabled=breeding_enabled)
+    msg, conf = _council_reply_message(branch, peer, bus, breeding_enabled=breeding_enabled, full_cfg=full_cfg)
     pid = peer.get("id")
     _publish_tracked(
         engine,
@@ -924,6 +1231,7 @@ def publish_strategic_pulse_if_due(
     snapshots: dict[str, dict[str, Any]],
     scanned: int,
     breeding_enabled: bool,
+    full_cfg: dict[str, Any] | None = None,
 ) -> None:
     if branch not in LAB_THINK_TANK_BRANCHES:
         return
@@ -937,7 +1245,7 @@ def publish_strategic_pulse_if_due(
     if now_m < nxt:
         return
 
-    if not _can_proactive_voice(bus, branch):
+    if not _can_proactive_voice(bus, branch, full_cfg=full_cfg):
         engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(4.0, 11.0)
         return
 
@@ -946,7 +1254,8 @@ def publish_strategic_pulse_if_due(
         engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(5.0, 12.0)
         return
 
-    engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(*_STRATEGIC_PULSE_GAP_S)
+    gap = (5.0, 12.0) if council_diversity_pulse_active(full_cfg) else _STRATEGIC_PULSE_GAP_S
+    engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(*gap)
 
     msg, conf, kind, reply_to = _contextual_strategic_pulse(
         branch,
@@ -954,6 +1263,7 @@ def publish_strategic_pulse_if_due(
         ticker_hint=None,
         scanned=0,
         breeding_enabled=breeding_enabled,
+        full_cfg=full_cfg,
     )
     _publish_tracked(engine, bus, branch, msg, confidence=conf, action=kind, reply_to=reply_to)
 
@@ -966,6 +1276,7 @@ def publish_think_tank_break_silence_if_due(
     snapshots: dict[str, dict[str, Any]],
     scanned: int,
     breeding_enabled: bool,
+    full_cfg: dict[str, Any] | None = None,
 ) -> None:
     """
     Share-cap can defer strategic pulses forever for one lab (mostly C). If this branch has been quiet
@@ -975,7 +1286,7 @@ def publish_think_tank_break_silence_if_due(
         return
     if len(bus._dq) < _BOOTSTRAP_BUS_LINES:
         return
-    if _can_proactive_voice(bus, branch):
+    if _can_proactive_voice(bus, branch, full_cfg=full_cfg):
         return
     if _seconds_since_publish(engine) < 14.0:
         return
@@ -989,9 +1300,11 @@ def publish_think_tank_break_silence_if_due(
         ticker_hint=None,
         scanned=0,
         breeding_enabled=breeding_enabled,
+        full_cfg=full_cfg,
     )
     _publish_tracked(engine, bus, branch, msg, confidence=conf, action="strategic_pulse_break", reply_to=reply_to)
-    engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(*_STRATEGIC_PULSE_GAP_S)
+    gap = (5.0, 12.0) if council_diversity_pulse_active(full_cfg) else _STRATEGIC_PULSE_GAP_S
+    engine._lab_think_tank_next_pulse_mono = now_m + random.uniform(*gap)
 
 
 def think_tank_on_ranked_market(
@@ -1017,6 +1330,7 @@ def think_tank_on_sim_open(
     implied_yes: float | None,
     rule_name: str,
     bus: LabCommunicationBus,
+    full_cfg: dict[str, Any] | None = None,
 ) -> None:
     """Sim opens don't narrate tickers — emit team dialogue anchored to peers."""
     if branch not in LAB_THINK_TANK_BRANCHES:
@@ -1027,7 +1341,7 @@ def think_tank_on_sim_open(
     if not peer:
         return
     py = _clamp01(implied_yes)
-    msg, conf = _team_peer_reply_line(branch, peer, bus, breeding_enabled=False)
+    msg, conf = _team_peer_reply_line(branch, peer, bus, breeding_enabled=False, full_cfg=full_cfg)
     pid = peer.get("id")
     use_conf = _clamp01(py) if py is not None else conf
     _publish_tracked(
@@ -1104,7 +1418,7 @@ def finalize_think_tank_tick(
         _publish_tracked(engine, bus, branch, intro, confidence=0.55, action="council_intro")
         engine._lab_think_tank_next_pulse_mono = time.monotonic() + random.uniform(*_INTRO_NEXT_STRATEGIC_GAP_S)
 
-    publish_council_reply_if_due(engine, branch, bus, breeding_enabled=breeding_enabled)
+    publish_council_reply_if_due(engine, branch, bus, breeding_enabled=breeding_enabled, full_cfg=full_cfg)
     publish_strategic_pulse_if_due(
         engine,
         branch,
@@ -1112,6 +1426,7 @@ def finalize_think_tank_tick(
         snapshots=snapshots,
         scanned=scanned,
         breeding_enabled=breeding_enabled,
+        full_cfg=full_cfg,
     )
     publish_think_tank_break_silence_if_due(
         engine,
@@ -1120,11 +1435,12 @@ def finalize_think_tank_tick(
         snapshots=snapshots,
         scanned=scanned,
         breeding_enabled=breeding_enabled,
+        full_cfg=full_cfg,
     )
 
     tc = int(getattr(engine, "_tick_count", 0) or 0)
     lab_ord = {BRANCH_LAB_B: 0, BRANCH_LAB_C: 1, BRANCH_LAB_D: 2, BRANCH_LAB_E: 3}.get(branch, 0)
-    if breeding_enabled and (tc + lab_ord) % 19 == 0 and random.random() < 0.26:
+    if breeding_enabled and not council_diversity_pulse_active(full_cfg) and (tc + lab_ord) % 19 == 0 and random.random() < 0.26:
         tail = conversation_tail(bus, 2)
         anchor_id = str(tail[-1]["id"]) if tail else None
         msg = _cap_msg(
@@ -1139,6 +1455,8 @@ def finalize_think_tank_tick(
         )
         if _seconds_since_publish(engine) >= 10.0:
             _publish_tracked(engine, bus, branch, msg, confidence=0.62, action="breeding_whisper", reply_to=anchor_id)
+
+    refresh_engine_council_signal(bus, full_cfg, diversify_pulse=False)
 
 
 finalize_lab_chatter_tick = finalize_think_tank_tick

@@ -62,7 +62,8 @@ _load_dotenv(_REPO_ROOT / ".env")
 def _resolved_path_env(name: str, *, default: Path) -> str:
     """
     Resolve SQLITE_PATH / DATA_LOG_DIR: relative values are anchored at this checkout's repo root
-    (not the process cwd), so parallel develop + worktree APIs never accidentally share one file.
+    (not the process cwd). Each clone/worktree therefore gets its own default DB unless you set an
+    absolute SQLITE_PATH shared across instances — develop data and main data are independent folders by design.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -107,6 +108,10 @@ class EnvSettings:
     kalshi_private_key_path: str = _get("KALSHI_PRIVATE_KEY_PATH")
     kalshi_private_key_pem: str = _get("KALSHI_PRIVATE_KEY_PEM")
     kalshi_env: str = _get("KALSHI_ENV", "demo") or "demo"
+    # Optional label for parallel checkouts (develop vs main worktree). Used in /api/data/storage and scripts — does not change paths unless you set SQLITE_PATH yourself.
+    kalshibot_data_profile: str = _get("KALSHIBOT_DATA_PROFILE", "")
+    # Default DB only when SQLITE_PATH is unset: **never** infer from KALSHIBOT_DATA_PROFILE — changing DB filename
+    # without copying the file makes the UI look “wiped”. Use scripts/bootstrap-develop-env.ps1 / bootstrap-main-worktree.ps1.
     sqlite_path: str = _resolved_path_env(
         "SQLITE_PATH",
         default=_REPO_ROOT / "data" / "bot.sqlite3",
@@ -182,8 +187,8 @@ class EnvSettings:
     dashboard_orderbook_cache_ttl_s: float = _get_float("DASHBOARD_ORDERBOOK_CACHE_TTL_S", 5.0, min_value=0.5)
     # If false, ``GET /api/dashboard/equity`` skips the parallel paper mark refresh (saves Kalshi I/O; chart MTM lags between full 12s polls).
     dashboard_fast_paper_mtm: bool = _get("DASHBOARD_FAST_PAPER_MTM", "1").lower() not in ("0", "false", "no", "off")
-    # Wall-clock cap for **all** paper MTM subtasks on the fast equity poll (Live + Lab A–D in parallel). 5s was too tight and timed out often → flat MTM / overlapped book lines until the full dashboard poll.
-    dashboard_fast_mtm_gather_timeout_s: float = _get_float("DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S", 22.0, min_value=5.0, max_value=120.0)
+    # Per-branch wall-clock cap for each paper MTM refresh on the fast equity poll (Live + labs run concurrently; each branch gets this budget). One slow branch no longer cancels the others.
+    dashboard_fast_mtm_gather_timeout_s: float = _get_float("DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S", 30.0, min_value=5.0, max_value=120.0)
     engine_study_trade_window_minutes: int = _get_int("ENGINE_STUDY_TRADE_WINDOW_MINUTES", 15, min_value=1)
     engine_orderbook_enrich_first_tick_cap: int = _get_int("ENGINE_ORDERBOOK_ENRICH_FIRST_TICK_CAP", 10, min_value=1)
     engine_orderbook_enrich_steady_cap: int = _get_int("ENGINE_ORDERBOOK_ENRICH_STEADY_CAP", 20, min_value=1)

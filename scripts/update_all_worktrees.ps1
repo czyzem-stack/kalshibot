@@ -1,4 +1,5 @@
 # Git pull (and optional pip/npm) on **develop** (this repo) + **main** worktree.
+# Each checkout pulls **its checked-out branch** from ``origin`` (develop repo pulls ``develop``, main worktree pulls ``main``) — not a merge between them.
 # Main path resolution matches ``launch_local.ps1`` (git [main] worktree, sibling Kalshibot-main, or -MainWorktreePath).
 #
 # Usage (from develop repo root):

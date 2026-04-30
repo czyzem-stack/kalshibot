@@ -96,6 +96,7 @@ export function useLabHiveChat(dashReady: boolean): {
     let cancelled = false;
 
     const poll = async () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       try {
         const r = await fetch("/labs/chat", { cache: "no-store" });
         if (!r.ok || cancelled) return;

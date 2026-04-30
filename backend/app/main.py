@@ -35,6 +35,8 @@ from .branch_config import (
     BRANCH_LIVE,
     LAB_BRANCH_OVERLAY_KEYS,
     _coerce_engine_running_flag,
+    effective_live_engine_running,
+    effective_parent_lab_engine_running,
     build_optimizer_radar_payload,
     fleet_visible_paper_start_cents,
     lab_paper_equity_start_cents,
@@ -55,7 +57,7 @@ from .kalshi_portfolio import fetch_portfolio_snapshot
 from .lab_communication import get_lab_communication_bus, seed_think_tank_breeder_intros_at_startup
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
-from .persistence import expand_partial_lab_branch
+from .persistence import breeder_smart_defaults_snapshot, expand_partial_lab_branch
 from .optimizer.promotion import lab_a_promotion_report
 from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
 from .middleware import ApiBearerAuthMiddleware, SecurityHeadersMiddleware
@@ -92,6 +94,10 @@ logger = logging.getLogger("kalshibot.api")
 # Must match ``default_bot_config`` / snapshot_equity Live paper fallback so tiles and chart tail
 # never disagree when ``paper_balance_cents`` is unset.
 _DEFAULT_PAPER_BALANCE_CENTS = 500_000
+
+# Newest-first cap per branch for dashboard equity charts (dense rolling windows on D/D+ tabs).
+DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT = 4000
+
 
 def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
     """Stable id for slimmed change_history rows so clients do not regenerate different legacy-* ids per poll."""
@@ -621,6 +627,35 @@ def _lab_thought_stream(
     }
 
 
+def _warn_if_legacy_sqlite_may_hold_history() -> None:
+    """Changing SQLITE_PATH points the API at another file; SQLite does not migrate rows (looks like a wipe)."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    active = Path(env.sqlite_path).resolve()
+    legacy = (repo / "data" / "bot.sqlite3").resolve()
+    if active == legacy:
+        return
+    try:
+        if not legacy.is_file():
+            return
+        lg = int(legacy.stat().st_size)
+        ag = int(active.stat().st_size) if active.is_file() else 0
+    except OSError:
+        return
+    if lg <= ag:
+        return
+    logger.warning(
+        "sqlite active %s (%s bytes) is smaller than legacy %s (%s bytes). "
+        "Changing SQLITE_PATH does not copy trading history; the larger file may still hold your data — "
+        "stop the API, align files or SQLITE_PATH, then restart.",
+        active,
+        ag,
+        legacy,
+        lg,
+    )
+
+
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     t0 = time.perf_counter()
@@ -634,6 +669,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             logger.info("kalshibot_startup phase=%s total_ms=%.1f", name, (time.perf_counter() - t0) * 1000.0)
 
     reset_uvicorn_loggers_to_root()
+    _warn_if_legacy_sqlite_may_hold_history()
     state.stop_event.clear()
     state.startup_complete.clear()
     state.kalshi_ws_task = None
@@ -751,6 +787,17 @@ def labs_chat() -> dict[str, Any]:
     return {"messages": get_lab_communication_bus().recent()}
 
 
+@app.post("/labs/diversify")
+async def labs_diversify() -> dict[str, Any]:
+    """
+    Council diversity pulse (~45m): sets ``labs_council_diversity_until`` so Think Tank runs a hotter
+    adversarial mix; posts ``DIVERSITY PULSE`` lines. Does **not** run internal mutation (use ``force`` for that).
+    """
+    from .lab_diversify import apply_emergency_diversify
+
+    return await apply_emergency_diversify(store)
+
+
 @app.post("/api/config/validate-rules")
 async def validate_rules_endpoint(body: dict[str, Any]) -> dict[str, Any]:
     """Validate a proposed ``rules`` array with the same ``RuleCfg`` checks as persisted lab/live saves."""
@@ -861,7 +908,7 @@ async def data_reset(
     backup: bool = Query(True, description="Copy sqlite + JSONL table dumps before delete"),
     branch: str = Query(
         "all",
-        description="all | all_labs (Live + A–D) | live | lab_a | lab_b | lab_c | lab_d — scope of DELETE on signals/trades/equity_snapshots",
+        description="all | all_labs (Live + labs A–E + lab_child slots) | live | lab_a … lab_e — scope of DELETE on signals/trades/equity_snapshots",
     ),
     uniform_paper_balance_cents: int | None = Query(
         None,
@@ -872,7 +919,8 @@ async def data_reset(
     Wipe **signals**, **trades**, and **equity_snapshots** (all rows, or one branch). ``bot_config`` is kept.
     Optional env ``DATA_RESET_TOKEN``: then require header ``X-Reset-Token`` matching it.
 
-    ``branch`` = **all_labs**: deletes trading rows for **Live** and **lab_a–lab_d** (not only labs). When
+    ``branch`` = **all_labs**: deletes trading rows for **Live**, **lab_a–lab_e**, and **lab_child_*** slots.
+    When
     ``uniform_paper_balance_cents`` is set, Live paper and each lab's ``paper_balance_cents`` are updated to that
     value after the wipe, using a single locked read-modify-write so ``optimizer`` and the rest of ``bot_config``
     are not clobbered by a stale snapshot.
@@ -898,16 +946,18 @@ async def data_reset(
         )
     try:
         if br == "all_labs":
-            for br2 in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+            for br2 in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 _clear_engine_mem_after_reset(br2)
             out = await store.reset_trading_data(backup=backup, branch="lab_a")
             await store.reset_trading_data(backup=False, branch="lab_b")
             await store.reset_trading_data(backup=False, branch="lab_c")
             await store.reset_trading_data(backup=False, branch="lab_d")
             await store.reset_trading_data(backup=False, branch="lab_e")
+            for ck in BRANCH_CHILD_LABS:
+                await store.reset_trading_data(backup=False, branch=ck)
             _clear_engine_mem_after_reset("live")
             await store.reset_trading_data(backup=False, branch="live")
-            for br2 in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+            for br2 in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 _clear_engine_mem_after_reset(br2)
             _clear_engine_mem_after_reset("live")
             out = dict(out)
@@ -917,6 +967,7 @@ async def data_reset(
                 if u:
                     out["uniform_paper_balance"] = u
             await _seed_equity_snapshots_after_reset("all_labs")
+            out["trading_data_revision"] = store.trading_data_revision
             return out
         pre_scope = "all" if br == "all" else br
         _clear_engine_mem_after_reset(pre_scope)
@@ -931,6 +982,7 @@ async def data_reset(
         if u:
             out_final["uniform_paper_balance"] = u
     await _seed_equity_snapshots_after_reset(scope_ret)
+    out_final["trading_data_revision"] = store.trading_data_revision
     return out_final
 
 
@@ -1030,27 +1082,38 @@ async def put_config(
     return merged
 
 
+@app.get("/api/config/breeder-smart-defaults/{lab_key}")
+async def get_breeder_smart_defaults(lab_key: str) -> dict[str, Any]:
+    """Rules + sizing/council defaults for breeder labs B–E (Settings → Reset to Smart Defaults)."""
+    try:
+        return breeder_smart_defaults_snapshot(lab_key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @app.put("/api/config/lab-branches")
 async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     """
     Merge ``lab_a`` / ``lab_b`` / ``lab_c`` / ``lab_d`` / ``lab_e`` without the general ``BotConfigPayload`` shape.
 
-    Optional ``reset_data``: ``none`` | ``lab_a`` | ``lab_b`` | ``lab_c`` | ``lab_d`` | ``lab_e`` | ``both`` (A+B) | ``all_labs`` (Live + A–E; trading rows for Live and all labs).
+    Optional ``reset_data``: ``none`` | ``lab_a`` … ``lab_e`` | ``both`` (A+B) | ``all_labs`` (Live + A–E + ``lab_child_*``; trading rows).
     ``backup`` (default true) is passed to the first wipe in a multi-branch reset.
     """
     reset = str(body.get("reset_data") or "none").strip().lower()
     backup = bool(body.get("backup", True))
     if reset == "all_labs":
-        for br in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+        for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             _clear_engine_mem_after_reset(br)
         await store.reset_trading_data(backup=backup, branch="lab_a")
         await store.reset_trading_data(backup=False, branch="lab_b")
         await store.reset_trading_data(backup=False, branch="lab_c")
         await store.reset_trading_data(backup=False, branch="lab_d")
         await store.reset_trading_data(backup=False, branch="lab_e")
+        for ck in BRANCH_CHILD_LABS:
+            await store.reset_trading_data(backup=False, branch=ck)
         _clear_engine_mem_after_reset("live")
         await store.reset_trading_data(backup=False, branch="live")
-        for br in ("lab_a", "lab_b", "lab_c", "lab_d", "lab_e"):
+        for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             _clear_engine_mem_after_reset(br)
         _clear_engine_mem_after_reset("live")
         await _seed_equity_snapshots_after_reset("all_labs")
@@ -1280,37 +1343,37 @@ async def engine_status() -> EngineStatusResponse:
     return {
         "live": _engine_status_block(
             state.engine_live,
-            engine_running=bool(cfg.get("engine_running")),
+            engine_running=effective_live_engine_running(cfg),
             simulate_orders=live_paper_trading_enabled(cfg),
             extra={"simulate": live_paper_trading_enabled(cfg)},
         ),
         "lab_a": _engine_status_block(
             state.engine_lab_a,
-            engine_running=bool(lab_a.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_a, BRANCH_LAB_A),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_a.get("auto_optimize")), "optimizer_note": lab_a.get("optimizer_note")},
         ),
         "lab_b": _engine_status_block(
             state.engine_lab_b,
-            engine_running=bool(lab_b.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_b, BRANCH_LAB_B),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_b.get("auto_optimize")), "optimizer_note": lab_b.get("optimizer_note")},
         ),
         "lab_c": _engine_status_block(
             state.engine_lab_c,
-            engine_running=bool(lab_c.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_c, BRANCH_LAB_C),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_c.get("auto_optimize")), "optimizer_note": lab_c.get("optimizer_note")},
         ),
         "lab_d": _engine_status_block(
             state.engine_lab_d,
-            engine_running=bool(lab_d.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_d, BRANCH_LAB_D),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_d.get("auto_optimize")), "optimizer_note": lab_d.get("optimizer_note")},
         ),
         "lab_e": _engine_status_block(
             state.engine_lab_e,
-            engine_running=bool(lab_e.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_e, BRANCH_LAB_E),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_e.get("auto_optimize")), "optimizer_note": lab_e.get("optimizer_note")},
         ),
@@ -1560,10 +1623,10 @@ def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: st
 async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     """
     Assemble the full dashboard JSON. When ``with_marks`` is False, the same
-    ``_refresh_paper_mtm_from_marks`` work runs with a configurable timeout
-    (``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``, default ~22s) so ``GET /api/dashboard/equity``
-    can still update paper MTM between full ~12s refreshes; on timeout, metrics fall back to
-    snapshot-based values from ``_enrich_strategy_metrics`` (flat MTM vs book until the next full poll).
+    ``_refresh_paper_mtm_from_marks`` runs per branch with ``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``
+    (default ~30s) so ``GET /api/dashboard/equity`` can refresh paper MTM between full polls; a slow
+    branch times out alone — others still get live marks. On per-branch timeout, that branch falls
+    back to snapshot-based values from ``_enrich_strategy_metrics`` until the next poll.
     """
     cfg = await store.load_config()
     mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
@@ -1586,12 +1649,12 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     ) = await asyncio.gather(
         store.recent_trades(limit=500),
         store.recent_signals(limit=500),
-        store.equity_series(limit=2000, branch=BRANCH_LIVE),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_A),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_B),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_C),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_D),
-        store.equity_series(limit=2000, branch=BRANCH_LAB_E),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LIVE),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_A),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_B),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_C),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_D),
+        store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=BRANCH_LAB_E),
         store.dashboard_branch_trade_rollups(BRANCH_LIVE, mode_live),
         store.dashboard_branch_trade_rollups(BRANCH_LAB_A, "simulate"),
         store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate"),
@@ -1613,22 +1676,12 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     lab_e = cfg.get("lab_e") if isinstance(cfg.get("lab_e"), dict) else {}
-    live_engine_on = _coerce_engine_running_flag(cfg.get("engine_running"), default_if_missing=False)
-    lab_a_engine_on = (
-        _coerce_engine_running_flag(lab_a.get("engine_running"), default_if_missing=False) if isinstance(lab_a, dict) else False
-    )
-    lab_b_engine_on = (
-        _coerce_engine_running_flag(lab_b.get("engine_running"), default_if_missing=False) if isinstance(lab_b, dict) else False
-    )
-    lab_c_engine_on = (
-        _coerce_engine_running_flag(lab_c.get("engine_running"), default_if_missing=False) if isinstance(lab_c, dict) else False
-    )
-    lab_d_engine_on = (
-        _coerce_engine_running_flag(lab_d.get("engine_running"), default_if_missing=False) if isinstance(lab_d, dict) else False
-    )
-    lab_e_engine_on = (
-        _coerce_engine_running_flag(lab_e.get("engine_running"), default_if_missing=False) if isinstance(lab_e, dict) else False
-    )
+    live_engine_on = effective_live_engine_running(cfg)
+    lab_a_engine_on = effective_parent_lab_engine_running(lab_a if isinstance(lab_a, dict) else None, BRANCH_LAB_A)
+    lab_b_engine_on = effective_parent_lab_engine_running(lab_b if isinstance(lab_b, dict) else None, BRANCH_LAB_B)
+    lab_c_engine_on = effective_parent_lab_engine_running(lab_c if isinstance(lab_c, dict) else None, BRANCH_LAB_C)
+    lab_d_engine_on = effective_parent_lab_engine_running(lab_d if isinstance(lab_d, dict) else None, BRANCH_LAB_D)
+    lab_e_engine_on = effective_parent_lab_engine_running(lab_e if isinstance(lab_e, dict) else None, BRANCH_LAB_E)
     def _child_lab_polling_on(raw: Any) -> bool:
         slab = raw if isinstance(raw, dict) else {}
         return slab.get("engine_running") is not False
@@ -1790,27 +1843,33 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     # ``/api/dashboard/equity`` can opt out of this batch via env (DASHBOARD_FAST_PAPER_MTM=0) to test or reduce load; full ``/api/dashboard`` always runs it.
     if mtm_tasks and (with_marks or env.dashboard_fast_paper_mtm):
         mtm_timeout = 50.0 if with_marks else float(env.dashboard_fast_mtm_gather_timeout_s)
-        try:
-            mtm_res = await asyncio.wait_for(
-                asyncio.gather(*mtm_tasks, return_exceptions=True),
-                timeout=mtm_timeout,
-            )
-            for idx, r in enumerate(mtm_res or []):
-                if isinstance(r, Exception):
-                    logger.debug("paper MTM subtask %d failed: %s", idx, r)
-        except asyncio.TimeoutError:
-            if with_marks:
-                logger.warning(
-                    "dashboard MTM refresh hit 50s cap — returning partial MTM (open sim marks skipped for slow branch/es)."
-                )
-            else:
-                logger.warning(
-                    "dashboard fast MTM refresh hit %.1fs cap — charts may flatline MTM vs book until next full /api/dashboard (raise DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S or reduce open sims).",
-                    mtm_timeout,
-                )
-            # Fast path timeout: leave ``metrics*`` on snapshot-based values from _enrich_strategy_metrics (stale vs live marks).
-        except Exception as e:
-            logger.warning("dashboard paper MTM batch failed: %s", e)
+
+        async def _run_one_paper_mtm(idx: int, coro: Any) -> None:
+            try:
+                await asyncio.wait_for(coro, timeout=mtm_timeout)
+            except asyncio.TimeoutError:
+                if with_marks:
+                    logger.warning(
+                        "dashboard MTM refresh branch index=%d hit per-branch %.1fs cap (other branches may still be fresh).",
+                        idx,
+                        mtm_timeout,
+                    )
+                else:
+                    logger.warning(
+                        "dashboard fast MTM refresh branch index=%d hit %.1fs cap (raise DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S or reduce open sims on that branch).",
+                        idx,
+                        mtm_timeout,
+                    )
+            except Exception as e:
+                logger.debug("paper MTM subtask %d failed: %s", idx, e)
+
+        mtm_res = await asyncio.gather(
+            *(_run_one_paper_mtm(i, t) for i, t in enumerate(mtm_tasks)),
+            return_exceptions=True,
+        )
+        for idx, r in enumerate(mtm_res or []):
+            if isinstance(r, Exception):
+                logger.debug("paper MTM gather wrapper %d failed: %s", idx, r)
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
@@ -2058,6 +2117,8 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
                 if isinstance(p, dict)
             ][:14],
         },
+        "dashboard_payload_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "trading_data_revision": store.trading_data_revision,
     }
 
 

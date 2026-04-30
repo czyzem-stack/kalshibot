@@ -109,8 +109,11 @@ def storage_dict() -> dict[str, Any]:
     logd = Path(env.data_log_dir)
     if not logd.is_absolute():
         logd = REPO_ROOT / logd
+    dp = getattr(env, "kalshibot_data_profile", "") or ""
+    dp = str(dp).strip()
     return {
         "sqlite_path": str(Path(store.path).resolve()),
+        "data_profile": dp,
         "data_log_dir": str(logd.resolve()),
         "data_logging_enabled": bool(env.data_logging_enabled),
         "data_log_equity": bool(env.data_log_equity),

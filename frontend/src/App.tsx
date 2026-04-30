@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import {
   CartesianGrid,
   Line,
@@ -28,12 +29,18 @@ import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import { withApiAuth } from "./apiAuth";
 import {
   DASHBOARD_EQUITY_POLL_MS,
+  DASHBOARD_EQUITY_POLL_MS_LIVE_TAB,
   DASHBOARD_FULL_POLL_MS,
+  EQUITY_DENSE_CHART_MAX_POINTS,
+  EQUITY_GRANULAR_ROLLING_WINDOW_MS,
+  downsampleEquityDenseTicks,
+  equityTabUsesDenseRollingHistory,
   subscribeDashboardCatchUp,
 } from "./dashboardPolling";
 import { resolveDocumentTitle, resolveUiTrack } from "./uiTrack";
 import APP_VERSION_RAW from "../../VERSION?raw";
 import { useLabHiveChat } from "./labHiveChat";
+import BreedingLineageGraph from "./components/BreedingLineageGraph";
 import LabThinkTank from "./components/LabThinkTank";
 
 type AnyObj = Record<string, any>;
@@ -48,8 +55,9 @@ const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
 const EMPTY_LAB: AnyObj = Object.freeze({});
 
 /**
- * SQLite equity series for charts. Skips non-arrays (e.g. ``{}``). With multiple candidates (Lab A + legacy ``sim_lab``),
- * prefer the first **non-empty** array so ``[]`` does not hide data in the other field.
+ * SQLite equity series for charts. Skips non-arrays (e.g. ``{}``).
+ * With multiple candidates, prefer the first **non-empty** array so ``[]`` does not hide data in the other field.
+ * The API never sends legacy ``equity_snapshots_sim_lab`` (Lab A series is ``equity_snapshots_lab_a`` only).
  */
 function equitySnapshotsArray(...candidates: unknown[]): AnyObj[] {
   const arrays: AnyObj[][] = [];
@@ -68,7 +76,6 @@ const FAST_POLL_EQ_KEYS = [
   "equity_snapshots_lab_c",
   "equity_snapshots_lab_d",
   "equity_snapshots_lab_e",
-  "equity_snapshots_sim_lab",
 ] as const;
 
 const FAST_POLL_LIST_KEYS = ["recent_trades", "recent_signals", "not_traded_signals"] as const;
@@ -84,11 +91,18 @@ const FAST_POLL_METRIC_KEYS = [
 
 /**
  * Merge GET /api/dashboard/equity — same as original ``{ ...prev, ...d }`` plus:
- * - Do not replace equity / trade arrays with ``[]`` or non-arrays (that alone caused wiped charts).
+ * - Do not replace equity / trade arrays with ``[]`` or non-arrays **unless** ``trading_data_revision`` advanced
+ *   (otherwise post-reset empty arrays were overwritten by this merge and charts kept stale history).
  * - Shallow-merge metrics blobs so a partial key set cannot drop ``current_mtm_dollars``.
  * Do **not** strip arbitrary keys from the payload (that froze live tiles / MTM).
+ * Always drop ``equity_snapshots_sim_lab`` — it is not returned by the server; retaining it from ``prev`` made Lab A
+ * charts fall back to stale ghost history whenever ``equity_snapshots_lab_a`` was ``[]`` after a reset.
  */
 function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
+  const prevRev = Number((prev as AnyObj).trading_data_revision ?? 0);
+  const incRev = Number((incoming as AnyObj).trading_data_revision ?? 0);
+  const revisionAdvanced = Number.isFinite(incRev) && incRev > prevRev;
+
   const next: AnyObj = { ...prev, ...incoming };
   next.config =
     incoming.config && typeof incoming.config === "object"
@@ -101,6 +115,22 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
     if (inc && typeof inc === "object" && !Array.isArray(inc) && old && typeof old === "object" && !Array.isArray(old)) {
       next[mk] = { ...(old as AnyObj), ...(inc as AnyObj) };
     }
+  }
+
+  if (revisionAdvanced) {
+    // Replace each series entirely — if ``incoming`` omits a key (partial payload / strip), treat as ``[]``.
+    // Otherwise the spread above keeps ``prev.equity_snapshots_lab_*`` and one branch (often last in the object)
+    // can retain pre-reset history while others cleared — classic Lab E vs C/D mismatch after reset.
+    for (const k of FAST_POLL_EQ_KEYS) {
+      const inc = incoming[k];
+      next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
+    }
+    for (const k of FAST_POLL_LIST_KEYS) {
+      const inc = incoming[k];
+      next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
+    }
+    delete next.equity_snapshots_sim_lab;
+    return next;
   }
 
   for (const k of FAST_POLL_EQ_KEYS) {
@@ -122,16 +152,52 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
     }
   }
 
+  delete next.equity_snapshots_sim_lab;
   return next;
 }
 
-function branchLabelForTradeToast(branch: unknown): string {
+function dashboardPayloadMs(raw: unknown): number | null {
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Hero strip + equity charts share ``dash`` — reject older payloads when full vs fast dashboard GETs finish out of order on the wire. */
+function shouldApplyDashboardPayload(prev: AnyObj | null, incoming: AnyObj): boolean {
+  if (!prev) return true;
+  const incMs = dashboardPayloadMs(incoming.dashboard_payload_at);
+  if (incMs == null) return true;
+  const prevMs = dashboardPayloadMs(prev.dashboard_payload_at);
+  if (prevMs == null) return true;
+  return incMs >= prevMs;
+}
+
+function dashboardSyncedClockLabel(rawAt: unknown): string | null {
+  const ms = dashboardPayloadMs(rawAt);
+  if (ms == null) return null;
+  try {
+    return new Date(ms).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Paper trades on the Live branch — distinct label/swatches from real-money Live so “Sim purchase” is not paired with “Live”. */
+function branchLabelForTradeToast(branch: unknown, simulated?: boolean): string {
   const s = String(branch || "live").trim().toLowerCase();
+  const sim = simulated === true;
   if (s === "lab_a" || s === "sim_lab") return "Lab A";
   if (s === "lab_b") return "Lab B";
   if (s === "lab_c") return "Lab C";
   if (s === "lab_d") return "Lab D";
   if (s === "lab_e") return "Lab E";
+  if (s === "live") return sim ? "Live paper" : "Live";
   return "Live";
 }
 
@@ -167,6 +233,10 @@ async function apiPut(path: string, body: AnyObj) {
     throw new Error(detail ? `${path} ${r.status}: ${detail}` : `${path} ${r.status}`);
   }
   return await r.json();
+}
+
+async function fetchBreederSmartDefaults(labKey: string): Promise<AnyObj> {
+  return apiGet(`/api/config/breeder-smart-defaults/${encodeURIComponent(labKey)}`);
 }
 
 async function apiPutLabBranches(body: AnyObj): Promise<AnyObj> {
@@ -464,6 +534,17 @@ function fmtMoney(n: number) {
   const sign = n < 0 ? "-" : "";
   const v = Math.abs(n);
   return `${sign}$${v.toFixed(2)}`;
+}
+
+const EQUITY_CHART_OPEN_HINT =
+  "Settled = finalized contracts with PnL in SQLite. Open = paper positions still held (premium committed); book can move with 0 settled until markets resolve.";
+
+function equityChartSubtitlePtsBookSettledOpen(snapCount: number, m: AnyObj | undefined | null): string {
+  const mm = m && typeof m === "object" ? (m as AnyObj) : {};
+  const book = fmtMoney(Number(mm.current_equity_dollars ?? 0));
+  const settled = Number(mm.settled_trades ?? 0) || 0;
+  const open = Number(mm.open_sim_trades ?? 0) || 0;
+  return `${snapCount} pts · book ${book} · ${settled} settled · ${open} open`;
 }
 
 const HERO_MARQUEE_SPEED_KEY = "kalshibot_hero_marquee_speed_mult_v1";
@@ -949,6 +1030,7 @@ function BreedingFamilyTreePanel({
       <div className="dash-breeding-tree-scroll" style={{ height: maxH, minHeight: maxH, maxHeight: maxH, overflowY: "auto", paddingRight: 4, boxSizing: "border-box" as const }}>
         {sub === "family" ? (
           <div>
+            <BreedingLineageGraph tree={tree} />
             <div className="dash-breeding-tree-node" style={{ marginBottom: 10 }}>
               <strong>Family tree · generation {Number(tree.generation_index ?? 0)}</strong>
               <div className="sub" style={{ marginTop: 4, fontSize: 12 }}>
@@ -977,7 +1059,6 @@ function BreedingFamilyTreePanel({
                   const pText = pLabels.length ? pLabels.join(" + ") : String(n.parent || "—");
                   const fit = Number(n.fitness ?? 0);
                   const delta = Number(n.fitness_delta ?? 0);
-                  const deltaArrow = delta >= 0 ? "▲" : "▼";
                   const deltaTone = delta >= 0 ? "#5ef3a9" : "#fca5a5";
                   const why = String(n.breeder_reason_short || n.breeder_reason_full || "lineage carry-forward");
                   const traits = Array.isArray(n.inherited_traits_summary) ? (n.inherited_traits_summary as AnyObj[]).map((x) => String(x)).filter(Boolean).slice(0, 3) : [];
@@ -999,7 +1080,11 @@ function BreedingFamilyTreePanel({
                         </div>
                         <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>← {pText}</div>
                         <div className="sub" style={{ marginTop: 3, fontSize: 12 }}>
-                          fitness {fit.toFixed(3)} <span style={{ color: deltaTone, fontWeight: 700 }}>{deltaArrow} {delta >= 0 ? "+" : ""}{delta.toFixed(3)}</span>
+                          fitness {fit.toFixed(3)}{" "}
+                          <span style={{ color: deltaTone, fontWeight: 700 }}>
+                            d {delta >= 0 ? "+" : ""}
+                            {delta.toFixed(3)}
+                          </span>
                         </div>
                         <div className="sub" style={{ marginTop: 3, fontSize: 12, color: "#c9d6f6" }}>{why}</div>
                         {traits.length ? (
@@ -1142,7 +1227,7 @@ function BreedingFamilyTreePanel({
         {...DASH_OPTIMIZER_RADAR_EXPAND_FONTS}
         compactOverlay
         surfaceHint="Double-click to enlarge · full lineage story in overlay · Esc/backdrop closes."
-        hint="Double-click to enlarge. Family tree explains who bred whom and why (tournament reason, synergy, inherited traits, fitness delta)."
+        hint="Double-click to enlarge. Family tab: SVG lineage graph from server tree edges, then cards for parents, children, and breeding story."
         detail={
           <p className="sub" style={{ margin: 0 }}>
             In overlay: click a child to inspect its breeding story (reason, parent pairing, synergy score, inherited rules/traits, and fitness delta vs parents). Other tabs remain lineage/children/culls/log from the same status payload.
@@ -1158,6 +1243,7 @@ function BreedingFamilyTreePanel({
 function OptimizerMutationPulseStrip({
   labThoughts,
   mutationStatus,
+  councilInfluenceActive,
 }: {
   labThoughts: AnyObj | undefined;
   mutationStatus: {
@@ -1165,9 +1251,24 @@ function OptimizerMutationPulseStrip({
     effectiveMutationScale: number;
     mutationDial: number;
   };
+  councilInfluenceActive?: boolean;
 }) {
   return (
     <div className="dash-optimizer-panel__status-strip" role="region" aria-label="Mutation tier and lab pulse">
+      {councilInfluenceActive ? (
+        <p
+          className="sub"
+          style={{
+            margin: "0 0 6px 0",
+            fontSize: 10,
+            lineHeight: 1.35,
+            letterSpacing: 0.02,
+            color: "rgba(165, 180, 252, 0.95)",
+          }}
+        >
+          Council influence active — Labs B–E weight Think Tank YES/NO lean and council signal when ranking trades.
+        </p>
+      ) : null}
       <div
         className="sub dash-optimizer-panel__mutation-dial"
         style={{
@@ -1494,10 +1595,7 @@ function buildOptimizerStatus(dash: AnyObj | null, cfg: AnyObj) {
   const total = trace.length;
   const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
   const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
-  const eqRows = equitySnapshotsArray(
-    dash ? (dash as AnyObj).equity_snapshots_lab_a : undefined,
-    dash ? (dash as AnyObj).equity_snapshots_sim_lab : undefined,
-  );
+  const eqRows = equitySnapshotsArray(dash ? (dash as AnyObj).equity_snapshots_lab_a : undefined);
   const chart = eqRows
     .slice(-20)
     .map((r, i) => ({
@@ -2144,7 +2242,7 @@ function recentSettledResolutionLinesWithLens(rows: AnyObj[], max = 10): string 
   if (!slice.length) return "";
   return slice
     .map((t) => {
-      const br = branchLabelForTradeToast(t.branch);
+      const br = branchLabelForTradeToast(t.branch, Boolean(Number(t.simulated)));
       const tick = String(t.ticker || "").slice(0, 40);
       const side = String(t.side || "").toUpperCase() || "—";
       const rawP = t.pnl_cents;
@@ -2604,7 +2702,7 @@ function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null 
           <>
             <ul className="optimizer-report-settle-list">
               {settledSlice.map((t) => {
-                const br = branchLabelForTradeToast(t.branch);
+                const br = branchLabelForTradeToast(t.branch, Boolean(Number(t.simulated)));
                 const tick = String(t.ticker || "").slice(0, 44) || "—";
                 const side = String(t.side || "").toUpperCase() || "—";
                 const rawP = t.pnl_cents;
@@ -2620,10 +2718,11 @@ function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null 
                 }
                 const res = t.result ? String(t.result) : "";
                 const rid = Number(t.id);
+                const nb = normalizeSignalTradeBranch(t.branch);
                 const roleTag =
-                  br === "Lab A" ? (
+                  nb === "lab_a" ? (
                     <span className="optimizer-report-settle-row__tag">Feeds adaptive + bet pulse</span>
-                  ) : br === "Live" ? (
+                  ) : nb === "live" ? (
                     <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Not in optimizer lookback</span>
                   ) : (
                     <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Reference context</span>
@@ -2686,7 +2785,7 @@ function optimizerBriefInfoBody(): ReactNode {
       <p>
         <strong>Health dot (title row).</strong> A small <strong>green / yellow / red</strong> circle reflects internal-mutation
         <em>acceptance rate</em>: over 60% → green, 30–60% → yellow, under 30% → red. Hover the dot for the full band explanation. There is
-        no duplicate health readout in the top page header; settings (⚙) in the header only open Settings.
+        no duplicate health readout in the top page header; the Settings control in the header only opens Settings.
       </p>
       <p>
         <strong>Suggested action (toasts, not the card).</strong> Long-form <code>optimizer_suggested_action</code> text is{" "}
@@ -2701,9 +2800,10 @@ function optimizerBriefInfoBody(): ReactNode {
         card.
       </p>
       <p>
-        <strong>Action buttons in the title row.</strong> <strong>force</strong> runs the same “internal mutation + replay gate” as
-        <code>POST /api/optimizer/force-internal-mutation</code> and bypasses the normal scheduler; it does not by itself post exchange
-        orders. The same action exists in <strong>Settings → Optimizer</strong> for convenience. <strong>report</strong> opens the full
+        <strong>Optimizer card actions.</strong> The dashboard card only has <strong>report</strong> and <strong>Info</strong>; scheduled work runs without manual clicks.{" "}
+        <strong>Nuke / manual</strong> lives in <strong>Settings → Optimizer</strong>: <strong>Force Internal Mutation Now</strong> (
+        <code>POST /api/optimizer/force-internal-mutation</code>) and <strong>Diversify council (Think Tank)</strong> (
+        <code>POST /labs/diversify</code>) — B–E council diversity window, cosmetic lines. <strong>report</strong> opens the full
         overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
         <strong>Optimizer / Breeder / Tree</strong> is a segmented control at the <strong>bottom-right of this card</strong>.{" "}
         <strong>Breeder</strong> shows the 12-axis personality radar from <code>GET /api/optimizer/status</code>; <strong>Tree</strong> is a
@@ -3037,8 +3137,13 @@ const BRANCH_SWATCH: Record<ActivityBranchKey, string> = {
   lab_e: "#5eead4",
 };
 
-function branchToastSwatch(branchRaw: unknown): string {
-  return BRANCH_SWATCH[normalizeSignalTradeBranch(branchRaw)];
+/** Live branch + simulated row: softer sky (real Kalshi Live book uses ``BRANCH_SWATCH.live`` cyan). */
+const LIVE_PAPER_SWATCH = "#93c5fd";
+
+function branchToastSwatch(branchRaw: unknown, simulated?: boolean): string {
+  const key = normalizeSignalTradeBranch(branchRaw);
+  if (key === "live" && simulated === true) return LIVE_PAPER_SWATCH;
+  return BRANCH_SWATCH[key];
 }
 
 /** Open / resting sim rows plus common Kalshi in-flight order states (see engine ``insert_trade``). */
@@ -3187,6 +3292,21 @@ function mergeTradeRowsForToastEffect(dashRows: unknown, pollRows: AnyObj[] | nu
   return Array.from(byKey.values());
 }
 
+/** Merge a single trade toast into the bottom-right stack (same cap/sort as batch merge). */
+function mergeOneTradeNotifIntoStack(prev: AnyObj[], n: AnyObj, dismissed: Set<string>): AnyObj[] {
+  const byId = new Map<string, AnyObj>();
+  for (const x of prev) {
+    const pid = String(x.id || "");
+    if (!pid || dismissed.has(pid)) continue;
+    byId.set(pid, x);
+  }
+  const nid = String(n.id || "");
+  if (nid && !dismissed.has(nid)) byId.set(nid, n);
+  const merged = Array.from(byId.values());
+  merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  return merged.slice(0, 28);
+}
+
 function tradeRowLooksResolved(t: AnyObj): boolean {
   const st = String(t?.status || "").trim().toLowerCase();
   if (
@@ -3295,20 +3415,29 @@ type EquityGranularity = "intraday" | "hourly" | "dd" | "ww" | "mm" | "yy";
 const EQUITY_INTRADAY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const EQUITY_INTRADAY_MAX_POINTS = 2500;
 
-/** Hourly = last snapshot per local clock hour (noise-reduced intraday). Rolling window below. */
-const EQUITY_HOURLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Live tab (granularity id ``hourly``): dense SQLite ticks, rolling wall-clock window below (same shape as Intraday). */
+const EQUITY_HOURLY_WINDOW_MS = 6 * 60 * 60 * 1000;
+const EQUITY_HOURLY_MAX_POINTS = 2500;
 
 /** Shared by dashboard equity tabs and Compare overlay (same `equityGranularity` state). */
 const EQUITY_GRANULARITY_TAB_DEFS = [
+  [
+    "hourly",
+    "Live",
+    "Rolling last 6 hours of dense SQLite ticks (wall clock), plus a trailing point from the latest dashboard metrics each fast refresh — same book/MTM as the hero strip and bottom marquee.",
+  ],
   ["intraday", "Intraday", "Rolling last 24 hours of snapshots (wall clock), dense ticks."],
-  ["hourly", "Hourly", "One point per local clock hour (latest snapshot in that hour), rolling 7 days."],
-  ["dd", "D / D", "Last snapshot per local calendar day (need multiple days of history for several points)."],
-  ["ww", "W / W", "Last snapshot per week bucket (Monday UTC week start)."],
-  ["mm", "M / M", "Last snapshot per UTC calendar month."],
-  ["yy", "Y / Y", "Last snapshot per UTC calendar year."],
+  ["dd", "D / D", "Rolling local-calendar window: same dense SQLite ticks as Intraday (capped for chart speed)."],
+  ["ww", "W / W", "Rolling multi-month window: dense ticks, not one point per closed week."],
+  ["mm", "M / M", "Rolling multi-year window: dense ticks, not one point per closed month."],
+  ["yy", "Y / Y", "Rolling long window: dense ticks, not one point per closed year."],
 ] as const;
 
 function fmtEquityCompareXTick(v: unknown): string {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const d = new Date(v);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
   const s = String(v ?? "").trim();
   if (!s) return "";
   if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
@@ -3355,18 +3484,6 @@ function applyEquityValueScale(rows: EquityChartRow[], scale: EquityValueScale):
   return scaleEquityRowsPctFromWindowStart(rows);
 }
 
-function mondayUtcKey(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  const day = d.getUTCDate();
-  const dow = d.getUTCDay();
-  const mondayOffset = dow === 0 ? -6 : 1 - dow;
-  const mon = new Date(Date.UTC(y, m, day + mondayOffset));
-  return `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, "0")}-${String(mon.getUTCDate()).padStart(2, "0")}`;
-}
-
 function buildEquityChartSeries(
   snaps: AnyObj[],
   mode: EquityGranularity,
@@ -3390,11 +3507,35 @@ function buildEquityChartSeries(
     .filter((r) => r.at && Number.isFinite(r.ts));
   rows.sort((a, b) => a.ts - b.ts);
 
-  if (mode === "intraday") {
-    const cutoff = Date.now() - EQUITY_INTRADAY_WINDOW_MS;
+  const mapDenseWindow = (windowMs: number, maxPoints: number): EquityChartRow[] => {
+    const cutoff = Date.now() - windowMs;
     let windowed = rows.filter((r) => r.ts >= cutoff);
-    if (windowed.length > EQUITY_INTRADAY_MAX_POINTS) windowed = windowed.slice(-EQUITY_INTRADAY_MAX_POINTS);
+    if (windowed.length > maxPoints) windowed = windowed.slice(-maxPoints);
     return windowed.map((r) => ({
+      t: fmtIsoLocalFn(r.at, false),
+      tsMs: r.ts,
+      equity: r.eq,
+      mtm: r.mtm,
+    }));
+  };
+
+  if (mode === "intraday") {
+    return mapDenseWindow(EQUITY_INTRADAY_WINDOW_MS, EQUITY_INTRADAY_MAX_POINTS);
+  }
+
+  if (mode === "hourly") {
+    return mapDenseWindow(EQUITY_HOURLY_WINDOW_MS, EQUITY_HOURLY_MAX_POINTS);
+  }
+
+  if (mode === "dd" || mode === "ww" || mode === "mm" || mode === "yy") {
+    const windowMs = EQUITY_GRANULAR_ROLLING_WINDOW_MS[mode];
+    const cutoff = Date.now() - windowMs;
+    const dense = rows.filter((r) => r.ts >= cutoff);
+    const capped =
+      dense.length > EQUITY_DENSE_CHART_MAX_POINTS
+        ? downsampleEquityDenseTicks(dense, EQUITY_DENSE_CHART_MAX_POINTS)
+        : dense;
+    return capped.map((r) => ({
       t: fmtIsoLocalFn(r.at, false),
       tsMs: r.ts,
       equity: r.eq,
@@ -3402,102 +3543,16 @@ function buildEquityChartSeries(
     }));
   }
 
-  if (mode === "hourly") {
-    const cutoff = Date.now() - EQUITY_HOURLY_WINDOW_MS;
-    const filtered = rows.filter((r) => r.ts >= cutoff);
-    const localHourKey = (iso: string): string => {
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return "";
-      const y = d.getFullYear();
-      const mo = d.getMonth();
-      const day = d.getDate();
-      const h = d.getHours();
-      return `${y}-${String(mo + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(h).padStart(2, "0")}`;
-    };
-    const hourBest = new Map<string, { ts: number; eq: number; mtm: number | null; sampleIso: string }>();
-    for (const r of filtered) {
-      const b = localHourKey(r.at);
-      if (!b) continue;
-      const cur = hourBest.get(b);
-      if (!cur || r.ts >= cur.ts) hourBest.set(b, { ts: r.ts, eq: r.eq, mtm: r.mtm, sampleIso: r.at });
-    }
-    const hourKeys = [...hourBest.keys()].sort();
-    return hourKeys.map((k) => {
-      const cell = hourBest.get(k)!;
-      return {
-        t: fmtIsoLocalFn(cell.sampleIso, false),
-        tsMs: cell.ts,
-        equity: cell.eq,
-        mtm: cell.mtm,
-      };
-    });
-  }
-
-  const bucketKey = (iso: string): string => {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
-    const y = d.getUTCFullYear();
-    const mo = d.getUTCMonth();
-    const day = d.getUTCDate();
-    /* Local calendar day: aligns D/D with labels and avoids UTC midnight splitting one session across two buckets. */
-    if (mode === "dd") {
-      const ly = d.getFullYear();
-      const lmo = d.getMonth();
-      const lday = d.getDate();
-      return `${ly}-${String(lmo + 1).padStart(2, "0")}-${String(lday).padStart(2, "0")}`;
-    }
-    if (mode === "mm") return `${y}-${String(mo + 1).padStart(2, "0")}`;
-    if (mode === "yy") return `${y}`;
-    if (mode === "ww") return mondayUtcKey(iso);
-    return iso.slice(0, 10);
-  };
-
-  const best = new Map<string, { ts: number; eq: number; mtm: number | null; sampleIso: string }>();
-  for (const r of rows) {
-    const b = bucketKey(r.at);
-    if (!b) continue;
-    const cur = best.get(b);
-    if (!cur || r.ts >= cur.ts) best.set(b, { ts: r.ts, eq: r.eq, mtm: r.mtm, sampleIso: r.at });
-  }
-
-  const keys = [...best.keys()].sort();
-  return keys.map((k) => {
-    const cell = best.get(k)!;
-    let t = k;
-    if (mode === "dd") {
-      t = fmtIsoLocalFn(cell.sampleIso, false);
-      const comma = t.indexOf(",");
-      if (comma > 0) t = t.slice(0, comma).trim();
-    } else if (mode === "mm") {
-      const d = new Date(cell.sampleIso);
-      t = d.toLocaleString(undefined, { month: "short", year: "numeric", timeZone: "UTC" });
-    } else if (mode === "ww") {
-      const parts = k.split("-").map((x) => Number(x));
-      if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
-        const mon = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
-        t = `Week of ${mon.toLocaleDateString(undefined, {
-          weekday: "short",
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-          timeZone: "UTC",
-        })}`;
-      }
-    }
-    return { t, tsMs: cell.ts, equity: cell.eq, mtm: cell.mtm };
-  });
+  return [];
 }
 
-/** Intraday: append one point from latest dashboard metrics so the curve moves on every /api/dashboard poll. */
-function equitySeriesWithLiveTail(
+/** Append trailing book/MTM from latest ``metrics`` (same instant as hero + bottom marquee on each fast dashboard merge). */
+function appendEquityLiveTailFromMetrics(
+  base: EquityChartRow[],
   snaps: AnyObj[],
-  mode: EquityGranularity,
   metrics: AnyObj,
   fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
 ): EquityChartRow[] {
-  const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
-  if (mode !== "intraday") return base;
-
   const ce = metrics?.current_equity_dollars;
   let equity: number | null = ce != null && Number.isFinite(Number(ce)) ? Number(ce) : null;
   if (equity == null && snaps.length) {
@@ -3535,6 +3590,17 @@ function equitySeriesWithLiveTail(
   }
   const tailMs = Date.now();
   return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
+}
+
+/** Every granularity: trailing point from latest dashboard metrics so curves move on each fast equity poll (not only intraday/hourly — D/D and coarser tabs were frozen after a reset until new snapshot buckets appeared). */
+function equitySeriesWithLiveTail(
+  snaps: AnyObj[],
+  mode: EquityGranularity,
+  metrics: AnyObj,
+  fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
+): EquityChartRow[] {
+  const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
+  return appendEquityLiveTailFromMetrics(base, snaps, metrics, fmtIsoLocalFn);
 }
 
 type OverlayBranchKey = "live" | "a" | "b" | "c" | "d" | "e";
@@ -3635,26 +3701,29 @@ function EquityDualLineChart({
   const fmtY = (v: number) =>
     yFormat === "pct" ? `${Number(v).toFixed(2)}%` : `$${Number(v).toFixed(2)}`;
   const fmtTick = (v: number) => (yFormat === "pct" ? `${Number(v).toFixed(1)}%` : `$${Number(v).toFixed(0)}`);
-  const fmtXTick = (v: unknown) => {
-    const s = String(v ?? "").trim();
-    if (!s) return "";
-    if (s.startsWith("Week of ")) return s.replace("Week of ", "Wk ");
-    const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
-    if (parts.length >= 3) return `${parts[1]} ${parts[2]}`;
-    if (parts.length === 2) return parts[1];
-    return s.length > 14 ? `${s.slice(0, 14)}...` : s;
+  /** X-axis uses ``tsMs`` (linear time). Do not use formatted ``t`` strings — categorical axes equalize ~1h and ~40s gaps. */
+  const fmtXTickMs = (v: unknown) => {
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isFinite(n)) return "";
+    const d = new Date(n);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  };
+  const tooltipTimeLabel = (label: unknown) => {
+    const n = typeof label === "number" ? label : Number(label);
+    if (!Number.isFinite(n)) return String(label ?? "");
+    return new Date(n).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   };
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={plotData} margin={{ left: 18, right: 12, top: 8, bottom: 20 }}>
+      <LineChart data={plotData} margin={{ left: 18, right: 28, top: 8, bottom: 20 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#223056" />
         <XAxis
-          dataKey="t"
+          type="number"
+          dataKey="tsMs"
+          domain={["dataMin", "dataMax"]}
           stroke="#7f8ab5"
           tick={{ fontSize: 11 }}
-          minTickGap={34}
-          interval="preserveStartEnd"
-          tickFormatter={fmtXTick}
+          tickFormatter={fmtXTickMs}
         />
         <YAxis
           stroke="#7f8ab5"
@@ -3663,8 +3732,16 @@ function EquityDualLineChart({
           tickFormatter={fmtTick}
         />
         <Tooltip
-          allowEscapeViewBox={{ x: true, y: true }}
-          contentStyle={{ background: "#0b1228", border: "1px solid #243055" }}
+          allowEscapeViewBox={{ x: false, y: false }}
+          wrapperStyle={{ zIndex: 30 }}
+          contentStyle={{
+            background: "#0b1228",
+            border: "1px solid #243055",
+            maxWidth: "min(260px, calc(100vw - 32px))",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+          }}
+          labelFormatter={tooltipTimeLabel}
           formatter={(value: number, name: string) => [fmtY(value), name]}
         />
         <Line
@@ -3938,6 +4015,8 @@ export default function App() {
   const tradeToastsBootstrappedRef = useRef(false);
   const seenTradeInitRef = useRef<Set<string>>(new Set());
   const seenTradeSettleRef = useRef<Set<string>>(new Set());
+  /** Baseline ``dash.trading_data_revision`` — when it jumps (data reset), recycle trade ids must not fire toasts for every row. */
+  const lastTradeToastDataRevisionRef = useRef<number | null>(null);
   /** User-dismissed trade toast ids (``trade-initiated-*`` / ``trade-resolved-*``); survives effect re-runs. */
   const dismissedTradeToastIdsRef = useRef<Set<string>>(new Set());
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
@@ -3946,7 +4025,6 @@ export default function App() {
   const [optimizerCfg, setOptimizerCfg] = useState<AnyObj>({});
   const [optimizerOpen, setOptimizerOpen] = useState(false);
   const [optimizerSaving, setOptimizerSaving] = useState(false);
-  const [forceInternalMutationBusy, setForceInternalMutationBusy] = useState(false);
   /** LABS BREEDING — Optimizer/Breeder toggle lives bottom-right of optimizer card; default Optimizer. */
   const [optimizerDashboardView, setOptimizerDashboardView] = useState<"optimizer" | "breeder" | "tree">("optimizer");
   const [breederStatusPayload, setBreederStatusPayload] = useState<AnyObj | null>(null);
@@ -3981,7 +4059,7 @@ export default function App() {
   const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d" | "e">("live");
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
-  const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("intraday");
+  const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("hourly");
   const [equityValueScale, setEquityValueScale] = useState<EquityValueScale>("dollars");
   const [equityVisible, setEquityVisible] = useState<Record<"live" | "a" | "b" | "c" | "d" | "e", boolean>>({
     live: true,
@@ -3998,6 +4076,8 @@ export default function App() {
   const dashSnapshotRef = useRef<AnyObj | null>(null);
   /** Last full ``config`` blob from any dashboard response (equity-only polls may drop nested config). */
   const dashboardConfigFallbackRef = useRef<AnyObj>({});
+  /** Bottom ticker: separate React root on ``document.body`` (``createPortal`` was still not visible for some users). */
+  const bottomTickerHostRef = useRef<{ el: HTMLDivElement; root: Root } | null>(null);
 
   /**
    * Dashboard fetch: dedupe in-flight; force aborts. ``dashboardFetchEpochRef`` bumps on Strict Mode
@@ -4010,6 +4090,10 @@ export default function App() {
   /** False until the dashboard poll effect runs — avoids treating the tree as mounted before listeners are ready. */
   const dashboardPollMountedRef = useRef(false);
   const dashboardFetchEpochRef = useRef(0);
+  /** Toast trade bootstrap poll — abort + epoch mirror ``/api/dashboard`` so Strict Mode does not double-hit the API. */
+  const tradesPollMountedRef = useRef(false);
+  const tradesAbortRef = useRef<AbortController | null>(null);
+  const tradesFetchEpochRef = useRef(0);
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
     const inFlight = dashboardInFlightRef.current;
@@ -4059,8 +4143,13 @@ export default function App() {
         })();
         if (!dashboardPollMountedRef.current) return null;
         if (epochAtStart !== dashboardFetchEpochRef.current) return null;
-        setErr(null);
-        setDash(d);
+        let appliedFreshDashboard = false;
+        setDash((prev) => {
+          if (!shouldApplyDashboardPayload(prev, d)) return prev;
+          appliedFreshDashboard = true;
+          return d;
+        });
+        if (appliedFreshDashboard) setErr(null);
         payload = d;
       } catch (e: any) {
         if (!dashboardPollMountedRef.current) return null;
@@ -4167,6 +4256,7 @@ export default function App() {
   }, []);
 
   const refreshEquityLight = useCallback((): void => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     void (async () => {
       try {
         const r = await fetch("/api/dashboard/equity", withApiAuth());
@@ -4175,6 +4265,7 @@ export default function App() {
         if (!d || typeof d !== "object" || Array.isArray(d)) return;
         setDash((prev) => {
           if (!prev) return prev;
+          if (!shouldApplyDashboardPayload(prev, d)) return prev;
           return mergeDashboardFastPoll(prev, d);
         });
       } catch {
@@ -4196,7 +4287,7 @@ export default function App() {
     dashboardPollMountedRef.current = true;
     void refreshRef.current();
     const idFull = window.setInterval(() => void refreshRef.current(), DASHBOARD_FULL_POLL_MS);
-    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), DASHBOARD_EQUITY_POLL_MS);
+    // Equity poll cadence follows ``equityGranularity`` in a separate effect (Live tab = faster partial refresh).
     // Background tabs throttle timers; editing looked like the “fix” because Vite remount re-ran this effect.
     const unsubCatchUp = subscribeDashboardCatchUp(() => {
       refreshEquityLightRef.current();
@@ -4205,7 +4296,6 @@ export default function App() {
     return () => {
       unsubCatchUp();
       window.clearInterval(idFull);
-      window.clearInterval(idEq);
       dashboardPollMountedRef.current = false;
       dashboardAbortRef.current?.abort();
       // Strict Mode (or tab background): abort leaves the old promise in ``dashboardInFlightRef`` until it
@@ -4216,6 +4306,13 @@ export default function App() {
       dashboardFetchEpochRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    const ms = equityGranularity === "hourly" ? DASHBOARD_EQUITY_POLL_MS_LIVE_TAB : DASHBOARD_EQUITY_POLL_MS;
+    void refreshEquityLightRef.current();
+    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), ms);
+    return () => window.clearInterval(idEq);
+  }, [equityGranularity]);
 
   const loadOptimizer = useCallback(async () => {
     try {
@@ -4235,24 +4332,42 @@ export default function App() {
   }, [optimizerOpen, loadOptimizer]);
 
   useEffect(() => {
-    let alive = true;
+    tradesPollMountedRef.current = true;
     const poll = async () => {
+      tradesAbortRef.current?.abort();
+      const epochAtStart = tradesFetchEpochRef.current;
+      const ac = new AbortController();
+      tradesAbortRef.current = ac;
       try {
-        const d = await apiGet<AnyObj>("/api/trades?limit=160");
-        if (!alive) return;
+        const r = await fetch("/api/trades?limit=160", withApiAuth({ signal: ac.signal }));
+        if (!tradesPollMountedRef.current) return;
+        if (epochAtStart !== tradesFetchEpochRef.current) return;
+        if (!r.ok) throw new Error(`/api/trades ${r.status}`);
+        const d = (await r.json()) as unknown;
+        if (!tradesPollMountedRef.current) return;
+        if (epochAtStart !== tradesFetchEpochRef.current) return;
         const rows = Array.isArray(d) ? d : Array.isArray((d as AnyObj)?.rows) ? ((d as AnyObj).rows as AnyObj[]) : [];
         setToastTradeRows(rows);
-      } catch {
-        if (!alive) return;
+      } catch (e: unknown) {
+        if (!tradesPollMountedRef.current) return;
+        if (epochAtStart !== tradesFetchEpochRef.current) return;
+        const msg = String((e as AnyObj)?.message ?? e);
+        const aborted =
+          String((e as AnyObj)?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
+        if (aborted) return;
         // First completed attempt (even on failure) unblocks toast bootstrap so we do not treat
         // the full merged history as "new" when /api/trades is slow or errors once.
         setToastTradeRows((prev) => (prev === null ? [] : prev));
+      } finally {
+        if (tradesAbortRef.current === ac) tradesAbortRef.current = null;
       }
     };
     void poll();
     const id = window.setInterval(() => void poll(), 10000);
     return () => {
-      alive = false;
+      tradesPollMountedRef.current = false;
+      tradesAbortRef.current?.abort();
+      tradesFetchEpochRef.current += 1;
       window.clearInterval(id);
     };
   }, []);
@@ -4279,6 +4394,69 @@ export default function App() {
       dashboardConfigFallbackRef.current = c as AnyObj;
     }
   }, [dash?.config]);
+
+  useLayoutEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!bottomTickerHostRef.current) {
+      const el = document.createElement("div");
+      el.className = "app-bottom-marquee";
+      Object.assign(el.style, {
+        position: "fixed",
+        left: "0",
+        right: "0",
+        bottom: "0",
+        width: "100%",
+        zIndex: "2400",
+        minHeight: "48px",
+        maxHeight: "56px",
+        height: "52px",
+        padding: "0 12px",
+        paddingBottom: "max(4px, env(safe-area-inset-bottom, 0px))",
+        boxSizing: "border-box",
+        background: "rgb(13, 18, 40)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "hidden",
+      });
+      document.body.appendChild(el);
+      bottomTickerHostRef.current = { el, root: createRoot(el) };
+    }
+    const h = bottomTickerHostRef.current!;
+    const tickerDashNow = (dash ?? dashSnapshotRef.current ?? {}) as AnyObj;
+    const cfgMerged = {
+      ...(((tickerDashNow?.config as AnyObj) || dashboardConfigFallbackRef.current || (cfg as AnyObj) || {}) as AnyObj),
+      hero_marquee_speed_mult: heroMarqueeSpeedMult,
+    };
+    try {
+      h.root.render(
+        <BranchHeroMarquee dash={tickerDashNow} cfg={cfgMerged} showSnapshot={false} embedVariant="bottomBodyRoot" />,
+      );
+    } catch (e) {
+      console.error("bottom ticker render failed", e);
+      h.el.replaceChildren();
+      const p = document.createElement("p");
+      p.style.margin = "0";
+      p.style.fontSize = "13px";
+      p.style.color = "#e8ecff";
+      p.textContent = "Branch ticker failed to render — check the browser console.";
+      h.el.appendChild(p);
+    }
+  }, [dash, cfg, heroMarqueeSpeedMult]);
+
+  useEffect(() => {
+    return () => {
+      const h = bottomTickerHostRef.current;
+      if (!h) return;
+      try {
+        h.root.unmount();
+      } catch {
+        /* ignore */
+      }
+      h.el.remove();
+      bottomTickerHostRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!infoPopup) return;
@@ -4309,10 +4487,52 @@ export default function App() {
 
   const TOAST_AUTOCLOSE_MIN_MS = 10_000;
   const TOAST_AUTOCLOSE_MAX_MS = 15_000;
+  /** Delay between successive trade open/settle cards so a burst of fills does not stack all at once. */
+  const TRADE_TOAST_STAGGER_MS = 520;
   /** ``optimizer_suggested_action`` toasts: always 10s (separate from trade toasts' random 10–15s). */
   const OPTIMIZER_SUGGESTED_TOAST_MS = 10_000;
   // LABS BREEDING — special toasts for birth and death/cull
   const LABS_BREEDING_TOAST_MS = 11_000;
+
+  /** FIFO queue + pump so trade toasts appear one-by-one with ``TRADE_TOAST_STAGGER_MS`` gaps. */
+  const tradeToastStaggerRef = useRef<{ queue: AnyObj[]; pumpTimer: number | null; processing: boolean }>({
+    queue: [],
+    pumpTimer: null,
+    processing: false,
+  });
+
+  const clearTradeToastStaggerQueue = useCallback(() => {
+    const s = tradeToastStaggerRef.current;
+    s.queue = [];
+    if (s.pumpTimer != null) {
+      window.clearTimeout(s.pumpTimer);
+      s.pumpTimer = null;
+    }
+    s.processing = false;
+  }, []);
+
+  const pumpTradeToastOnce = useCallback(() => {
+    const s = tradeToastStaggerRef.current;
+    if (s.processing) return;
+    const next = s.queue.shift();
+    if (!next) return;
+    s.processing = true;
+    setOptimizerNotifs((prev) => mergeOneTradeNotifIntoStack(prev, next, dismissedTradeToastIdsRef.current));
+    s.pumpTimer = window.setTimeout(() => {
+      s.processing = false;
+      s.pumpTimer = null;
+      if (s.queue.length > 0) pumpTradeToastOnce();
+    }, TRADE_TOAST_STAGGER_MS);
+  }, []);
+
+  const enqueueTradeToastBatch = useCallback(
+    (items: AnyObj[]) => {
+      if (!items.length) return;
+      tradeToastStaggerRef.current.queue.push(...items);
+      pumpTradeToastOnce();
+    },
+    [pumpTradeToastOnce],
+  );
 
   useEffect(() => {
     const activeIds = new Set<string>();
@@ -4348,8 +4568,32 @@ export default function App() {
         window.clearTimeout(tid);
       }
       toastAutoDismissTimeoutsRef.current.clear();
+      clearTradeToastStaggerQueue();
     };
-  }, []);
+  }, [clearTradeToastStaggerQueue]);
+
+  useEffect(() => {
+    const raw = (dash as AnyObj | null)?.trading_data_revision;
+    if (raw === undefined || raw === null) return;
+    const rev = Number(raw);
+    if (!Number.isFinite(rev)) return;
+    if (lastTradeToastDataRevisionRef.current === null) {
+      lastTradeToastDataRevisionRef.current = rev;
+      return;
+    }
+    if (rev <= lastTradeToastDataRevisionRef.current) return;
+    lastTradeToastDataRevisionRef.current = rev;
+    clearTradeToastStaggerQueue();
+    seenTradeInitRef.current.clear();
+    seenTradeSettleRef.current.clear();
+    tradeToastsBootstrappedRef.current = false;
+    setOptimizerNotifs((prev) =>
+      prev.filter((n) => {
+        const id = String(n.id || "");
+        return !id.startsWith("trade-initiated-") && !id.startsWith("trade-resolved-");
+      }),
+    );
+  }, [dash?.trading_data_revision, clearTradeToastStaggerQueue]);
 
   /**
    * Bottom-right cards when a sim/live trade row first appears or settles.
@@ -4386,10 +4630,10 @@ export default function App() {
       if (!idStr) continue;
       const st = String(t.status || "").toLowerCase();
       const resolved = tradeRowLooksResolved(t);
-      const branch = branchLabelForTradeToast(t.branch);
+      const sim = Boolean(Number(t.simulated));
+      const branch = branchLabelForTradeToast(t.branch, sim);
       const tick = String(t.ticker || "").slice(0, 48);
       const side = String(t.side || "").toUpperCase() || "—";
-      const sim = Boolean(Number(t.simulated));
       if (resolved) {
         if (seenTradeSettleRef.current.has(idStr)) continue;
         seenTradeSettleRef.current.add(idStr);
@@ -4420,7 +4664,7 @@ export default function App() {
             title: sim ? resMeta.title : resMeta.title.replace(/^Purchase /, "Trade "),
             body: "",
             tone: cardTone,
-            branch_swatch: branchToastSwatch(t.branch),
+            branch_swatch: branchToastSwatch(t.branch, sim),
             branch_tip: branch,
             segments: [
               { tier: "neutral", text: `${branch} · ${tick} ${side}` },
@@ -4443,12 +4687,12 @@ export default function App() {
           id: toastId,
           title: sim ? "Sim purchase" : "Purchase / order active",
           body: "",
-          tone: "green",
-          branch_swatch: branchToastSwatch(t.branch),
+          tone: sim ? "paper" : "green",
+          branch_swatch: branchToastSwatch(t.branch, sim),
           branch_tip: branch,
           segments: [
             { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-            { tier: "green", text: `≈ $${cost.toFixed(2)} debit · ${st}` },
+            { tier: sim ? "neutral" : "green", text: `≈ $${cost.toFixed(2)} debit · ${st}` },
             { tier: "neutral", text: "Awaiting resolution (settle or early exit)" },
           ],
           created_at: new Date().toISOString(),
@@ -4456,23 +4700,8 @@ export default function App() {
       }
     }
     if (!toAdd.length) return;
-    setOptimizerNotifs((prev) => {
-      const byId = new Map<string, AnyObj>();
-      for (const n of prev) {
-        const pid = String(n.id || "");
-        if (dismissedTradeToastIdsRef.current.has(pid)) continue;
-        byId.set(pid, n);
-      }
-      for (const n of toAdd) {
-        const nid = String(n.id || "");
-        if (dismissedTradeToastIdsRef.current.has(nid)) continue;
-        byId.set(nid, n);
-      }
-      const merged = Array.from(byId.values());
-      merged.sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-      return merged.slice(0, 28);
-    });
-  }, [dash, toastTradeRows, tradePopupToastsEnabled]);
+    enqueueTradeToastBatch(toAdd);
+  }, [dash, toastTradeRows, tradePopupToastsEnabled, enqueueTradeToastBatch]);
 
   const optimizerChangeHistoryMerged = useMemo(() => {
     const oc = (cfg as AnyObj)?.optimizer;
@@ -4616,7 +4845,14 @@ export default function App() {
           if (!cancelled) setBreederStatusPayload(j);
         })
         .catch((e: unknown) => {
-          if (!cancelled) setBreederStatusError(e instanceof Error ? e.message : "Failed to load breeder data");
+          if (!cancelled) {
+            const raw = e instanceof Error ? e.message : "Failed to load breeder data";
+            const hint =
+              /Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(raw)
+                ? " — API unreachable or /api not proxied: run the backend (default port 8765) and open the app via Vite dev/preview (localhost:5174), not the raw API URL alone."
+                : "";
+            setBreederStatusError(raw + hint);
+          }
         })
         .finally(() => {
           if (!cancelled) setBreederStatusLoading(false);
@@ -4651,7 +4887,14 @@ export default function App() {
           }
         })
         .catch((e: unknown) => {
-          if (!cancelled) setBreedingStripError(e instanceof Error ? e.message : "Breeding status failed");
+          if (!cancelled) {
+            const raw = e instanceof Error ? e.message : "Breeding status failed";
+            const hint =
+              /Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(raw)
+                ? " — Run the API on :8765; use the Vite app origin (e.g. localhost:5174) so /api proxies — vite preview now mirrors dev proxy."
+                : "";
+            setBreedingStripError(raw + hint);
+          }
         });
     };
     tick();
@@ -4829,7 +5072,7 @@ export default function App() {
   };
 
   const snaps = equitySnapshotsArray(dash?.equity_snapshots);
-  const equitySnapsLabA = equitySnapshotsArray(dash?.equity_snapshots_lab_a, dash?.equity_snapshots_sim_lab);
+  const equitySnapsLabA = equitySnapshotsArray(dash?.equity_snapshots_lab_a);
   const equitySnapsLabB = equitySnapshotsArray(dash?.equity_snapshots_lab_b);
   const equitySnapsLabC = equitySnapshotsArray(dash?.equity_snapshots_lab_c);
   const equitySnapsLabD = equitySnapshotsArray(dash?.equity_snapshots_lab_d);
@@ -5012,6 +5255,10 @@ export default function App() {
       ),
     [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw, chartDataLabERaw],
   );
+
+  const equityDenseRollingSurfaceHint = equityTabUsesDenseRollingHistory(equityGranularity)
+    ? "Rolling history — dense ticks"
+    : undefined;
 
   const assets = (cfg.assets || {}) as AnyObj;
   const assetSnaps = (dash?.asset_snapshots || {}) as AnyObj;
@@ -5407,6 +5654,17 @@ export default function App() {
     }
   }, [loadOptimizer, refresh]);
 
+  const emergencyDiversifyNow = useCallback(async () => {
+    try {
+      await apiPostJson("/labs/diversify", {});
+      await loadOptimizer();
+      await refresh({ force: true });
+      setBreederRefetchNonce((n) => n + 1);
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  }, [loadOptimizer, refresh]);
+
   const applyLabBranchesBulk = async (body: AnyObj) => {
     setBusy(true);
     try {
@@ -5492,19 +5750,29 @@ export default function App() {
   const acctSnap = dash?.account_snapshot as AnyObj | undefined;
   const accountLinked = Boolean(kalshi?.private_ok);
 
-  /** Stable reference so BranchHeroMarquee / snapshot header memos are not busted every parent render. */
+  /** Last good dashboard for bottom ticker when ``dash`` is momentarily null; keeps the fixed strip mounted. */
+  const tickerDash = (dash ?? dashSnapshotRef.current) as AnyObj | null;
+  /** Config for marquee: live ``dash.config`` or fallback when ticker uses snapshot ref only. */
   const cfgWithHeroMarqueeSpeed = useMemo(
-    () => ({ ...(cfg as AnyObj), hero_marquee_speed_mult: heroMarqueeSpeedMult }),
-    [cfg, heroMarqueeSpeedMult],
+    () => ({
+      ...(((tickerDash?.config as AnyObj) || dashboardConfigFallbackRef.current || (cfg as AnyObj) || {}) as AnyObj),
+      hero_marquee_speed_mult: heroMarqueeSpeedMult,
+    }),
+    [tickerDash, cfg, heroMarqueeSpeedMult],
   );
 
   return (
-    <div className={dash ? "page page--bottom-marquee" : "page"}>
+    <div className={tickerDash ? "page page--bottom-marquee" : "page"}>
       {visibleOptimizerNotifs.length ? (
         <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade and optimizer notifications">
           {visibleOptimizerNotifs.map((n) => {
             const tier =
-              String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
+              String(n.tone || "") === "red" ||
+              String(n.tone) === "yellow" ||
+              String(n.tone) === "green" ||
+              String(n.tone) === "paper"
+                ? String(n.tone)
+                : "";
             const cardTone = tier ? ` optimizer-toast--${tier}` : "";
             const segs = Array.isArray(n.segments) ? (n.segments as { tier?: string; text?: string }[]) : null;
             const swatch = typeof n.branch_swatch === "string" ? String(n.branch_swatch) : "";
@@ -5696,6 +5964,7 @@ export default function App() {
                       <p>
                         <strong>MTM (est.) and open / mark P&amp;L (est.) on paper / lab branches.</strong> MTM is a mark-to-market
                         or blended snapshot total for that branch, derived from the last engine tick and stored metrics.
+                        The subtitle under MTM shows configured paper <strong>basis</strong> (same seed as % math), not a second headline tile.
                         <strong> Open / mark P&amp;L</strong> is the unrealized component: how much the open book is up or down
                         versus bankroll and realized PnL combined. Reconcile mentally as: MTM (est.) &asymp; bankroll + settled +
                         mark on opens; the exact numbers follow backend helpers that may coalesce with cost-basis when marks are
@@ -5791,25 +6060,21 @@ export default function App() {
               />
             </>
           ) : (
-            <>
-              <MetricTile
-                label={`${perfBranchMeta.label} bankroll (start)`}
-                value={fmtMoney(Number(perfBranchMeta.metrics.paper_start_dollars ?? 0))}
-                title="Starting/cumulative paper basis used for return percentages."
-              />
-              <MetricTile
-                label={`${perfBranchMeta.label} MTM (est.)`}
-                value={fmtMoney(dashboardMtmDollars(perfBranchMeta.metrics))}
-                title="Mark-to-market from latest snapshot; falls back to cost-basis equity when needed."
-                sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(perfBranchMeta.metrics))} · chart last ${
-                  dashboardChartLastMtmOrEq(perfBranchMeta.metrics) != null
-                    ? fmtMoney(Number(dashboardChartLastMtmOrEq(perfBranchMeta.metrics)))
-                    : "—"
-                }`}
-                valueTone={metricEquityVsBankroll(dashboardMtmDollars(perfBranchMeta.metrics), perfBranchMeta.metrics.paper_start_dollars)}
-                subTone={metricSignedTone(dashboardMtmReturnPct(perfBranchMeta.metrics))}
-              />
-            </>
+            <MetricTile
+              label={`${perfBranchMeta.label} MTM (est.)`}
+              value={fmtMoney(dashboardMtmDollars(perfBranchMeta.metrics))}
+              title={
+                "Mark-to-market from latest snapshot; falls back to cost-basis equity when needed. " +
+                "Return % is vs configured paper basis (Settings → Lab branches); basis is repeated in the subtitle so it is not a separate headline tile."
+              }
+              sub={`Basis ${fmtMoney(Number(perfBranchMeta.metrics.paper_start_dollars ?? 0))} · return vs basis ${fmtPct(dashboardMtmReturnPct(perfBranchMeta.metrics))} · chart last ${
+                dashboardChartLastMtmOrEq(perfBranchMeta.metrics) != null
+                  ? fmtMoney(Number(dashboardChartLastMtmOrEq(perfBranchMeta.metrics)))
+                  : "—"
+              }`}
+              valueTone={metricEquityVsBankroll(dashboardMtmDollars(perfBranchMeta.metrics), perfBranchMeta.metrics.paper_start_dollars)}
+              subTone={metricSignedTone(dashboardMtmReturnPct(perfBranchMeta.metrics))}
+            />
           )}
           {(!cfg.simulate && perfBranchMeta.isLive) ? null : (() => {
             const u = paperUnrealizedPnlDollars(perfBranchMeta.metrics);
@@ -5872,6 +6137,15 @@ export default function App() {
           />
         </div>
         <div className="branch-performance-bottom">
+          <p
+            className="sub branch-performance-bottom__scope-hint"
+            style={{ margin: "0 0 8px", fontSize: 12, opacity: 0.92 }}
+            title={
+              "The Equity curves panel shows Live + Lab A–E all at once (one chart per branch). This marquee lists open sim trades only for the branch tab you selected here — not every branch at once."
+            }
+          >
+            Open sim ticker scope: <strong>{perfBranchMeta.label}</strong> — equity charts use separate ledgers per branch.
+          </p>
           <BranchPerfActiveTradesMarquee branchLabel={perfBranchMeta.label} activeRows={activeTradesForPerfBranch} />
           <button
             type="button"
@@ -5892,48 +6166,22 @@ export default function App() {
           aria-labelledby="dash-heading-optimizer"
         >
           <div className="branch-brain-inline branch-brain-inline--optimizer-stack">
-            <div className="branch-brain-inline__head">
-              <h2 id="dash-heading-optimizer" className="dash-section__title" style={{ margin: 0 }}>
-                Optimizer
-              </h2>
-              <span
-                className={`dash-optimizer-health-dot dash-optimizer-health-dot--${optimizerStatus.health}`}
-                role="img"
-                aria-label={`Optimizer health ${optimizerStatus.health}`}
-                title={
-                  `Optimizer health (${optimizerStatus.health}): from internal mutation acceptance rate — green if >60% accepted, yellow if 30–60%, red if <30%. ` +
-                  "Red usually means most proposed mutants failed replay or statistical gates. Check Internal Optimizer Trace in Settings, replay PnL vs gates, and any " +
-                  "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
-                }
-              />
-              <div className="dash-optimizer-actions">
-                <button
-                  type="button"
-                  className="primary dash-panel-btn"
-                  aria-label={
-                    "Force internal mutation: applies an internal rule or parameter change, runs replay fitness checks, and bypasses the normal optimizer scheduler. " +
-                    "POST /api/optimizer/force-internal-mutation. Does not submit exchange orders; it updates paper-side optimizer and config paths your rules consume."
-                  }
-                  disabled={!dash || busy || forceInternalMutationBusy}
+            <div className="branch-brain-inline__head dash-optimizer-panel__head">
+              <div className="dash-optimizer-panel__head-top">
+                <h2 id="dash-heading-optimizer" className="dash-section__title" style={{ margin: 0 }}>
+                  Optimizer
+                </h2>
+                <span
+                  className={`dash-optimizer-health-dot dash-optimizer-health-dot--${optimizerStatus.health}`}
+                  role="img"
+                  aria-label={`Optimizer health ${optimizerStatus.health}`}
                   title={
-                    "Force: run an internal mutation now — internal rule/parameter change plus replay fitness checks, bypassing the scheduler (POST /api/optimizer/force-internal-mutation). " +
-                    "Does not place Kalshi orders by itself; it changes what the bot simulates and gates on the next ticks."
+                    `Optimizer health (${optimizerStatus.health}): from internal mutation acceptance rate — green if >60% accepted, yellow if 30–60%, red if <30%. ` +
+                    "Red usually means most proposed mutants failed replay or statistical gates. Check Internal Optimizer Trace in Settings, replay PnL vs gates, and any " +
+                    "suggested_action lines delivered as bottom-right toasts (throttled) before loosening gates or resetting paper context."
                   }
-                  onClick={() =>
-                    void (async () => {
-                      if (!dash) return;
-                      setForceInternalMutationBusy(true);
-                      try {
-                        await forceInternalMutationNow();
-                        setBreederRefetchNonce((n) => n + 1);
-                      } finally {
-                        setForceInternalMutationBusy(false);
-                      }
-                    })()
-                  }
-                >
-                  {forceInternalMutationBusy ? "…" : "force"}
-                </button>
+                />
+                <div className="dash-optimizer-actions">
                 <button
                   type="button"
                   className="primary dash-panel-btn"
@@ -5950,27 +6198,15 @@ export default function App() {
                     "This card: main area switches Optimizer radar vs Breeder vs Tree; mutation dial + Lab pulse stay fixed just above the tab row on every tab. " +
                     "Under the title: Breeding pool / death-chamber snapshot (click → Tree tab). " +
                     "Suggested-action text may appear in bottom-right toasts (throttled, 10–15s auto-dismiss). " +
-                    "force / report: same row as this button; Optimizer / Breeder / Tree toggle is bottom-right. Pulse empty → check engine toggles and Account."
+                    "Manual optimizer nukes live under Settings → Optimizer (not on this card). Optimizer / Breeder / Tree toggle is bottom-right. Pulse empty → check engine toggles and Account."
                   }
                   onClick={() => setInfoPopup({ title: "Optimizer", body: optimizerBriefInfoBody() })}
                 >
                   Info
                 </button>
+                </div>
               </div>
             </div>
-            <p
-              className="sub dash-optimizer-breeding-hook"
-              style={{
-                margin: "4px 0 10px",
-                maxWidth: "52rem",
-                lineHeight: 1.48,
-                fontSize: 12,
-              }}
-            >
-              <strong>Labs Breeding</strong> — Parents <strong>B–E</strong> feed hidden <code>lab_child_*</code> candidates (replay fitness, pool vs{" "}
-              <strong>death chamber</strong>). <strong>Adoption → Lab A</strong> is gated; Live needs a separate promote. Use{" "}
-              <strong>Breeder</strong> &amp; <strong>Tree</strong> below · Think Tank chat is cosmetic.
-            </p>
             <button
               type="button"
               className="dash-optimizer-breeding-summary"
@@ -6107,8 +6343,18 @@ export default function App() {
                 effectiveMutationScale: optimizerStatus.effectiveMutationScale,
                 mutationDial: optimizerStatus.mutationDial,
               }}
+              councilInfluenceActive={Boolean((breederStatusPayload as AnyObj | null)?.council_influence_active)}
             />
-            <LabThinkTank messages={labHiveMessages} enabled={labChatEnabled} dashReady={Boolean(dash)} />
+            <LabThinkTank
+              messages={labHiveMessages}
+              enabled={labChatEnabled}
+              dashReady={Boolean(dash)}
+              councilDiversityUntil={String(
+                (breedingStripStatus as AnyObj | null)?.labs_council_diversity_until ||
+                  (cfg?.optimizer as AnyObj)?.labs_council_diversity_until ||
+                  "",
+              )}
+            />
           {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
@@ -6475,7 +6721,7 @@ export default function App() {
               id="dash-heading-equity-curves"
               className="dash-section__title dash-equity-panel__title"
               style={{ margin: 0 }}
-              title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Intraday adds a trailing point on each dashboard refresh from latest metrics; paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
+              title="Solid = book value (cost basis from rollups). Dashed = current worth (MTM). Live and Intraday tabs append a trailing point from latest dashboard metrics on each fast refresh (same book/MTM as hero + bottom marquee); paper MTM is recomputed on the server from current Kalshi mids between snapshot writes."
             >
               Equity curves
             </h2>
@@ -6494,7 +6740,7 @@ export default function App() {
                 title={
                   "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
-                  "Time-scale tabs re-bucket stored snapshots: Intraday = last 24h raw ticks; Hourly = last snapshot per local hour (rolling 7 days); D/W/M/Y = one point per calendar bucket. " +
+                  "Time-scale tabs: Live = rolling 6h dense ticks plus a trailing metrics point each fast refresh; Intraday = last 24h dense; D/W/M/Y = longer rolling dense windows (downsampled). " +
                   "Use Compare to overlay branches in one frame. " +
                   "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
                 }
@@ -6528,10 +6774,9 @@ export default function App() {
                           on every dashboard refresh so the tail tracks “right now” more closely than a sparse historical series.
                         </p>
                         <p>
-                          <strong>Time-scale tabs (Intraday, Hourly, D, W, M, Y).</strong> All apply to <em>all six</em> charts.{" "}
-                          <strong>Intraday</strong> is raw snapshots from roughly the <strong>last 24 hours</strong>. <strong>Hourly</strong> keeps one point per <strong>local clock hour</strong> (latest snapshot in that hour) over a <strong>rolling 7 days</strong> — smoother than Intraday when the engine writes many ticks per hour.{" "}
-                          <strong>D / D</strong> uses <strong>local calendar days</strong> (one point per day where you have data).{" "}
-                          <strong>W / M / Y</strong> still bucket by <strong>UTC</strong> week (Monday start), month, and year. Kalshi runs 24/7 — days are calendar buckets, not equity market sessions.
+                          <strong>Time-scale tabs (Live, Intraday, D, W, M, Y).</strong> All apply to <em>all six</em> charts.{" "}
+                          <strong>Live</strong> is the <strong>last 6 hours</strong> of dense SQLite ticks (same stream as Intraday), then appends the same book/MTM as the hero and bottom marquee on each fast refresh. <strong>Intraday</strong> is roughly the <strong>last 24 hours</strong> of dense ticks.{" "}
+                          <strong>D / D</strong> through <strong>Y / Y</strong> use longer rolling windows of the same dense tick stream (capped / downsampled for speed). Kalshi runs 24/7 — windows are wall-clock, not equity “sessions”.
                         </p>
                         <p>
                           <strong>Compare</strong> (next to Info above). That overlay puts multiple branch curves in one frame with toggles so you
@@ -6600,19 +6845,40 @@ export default function App() {
               </button>
             </div>
           </div>
+          {(() => {
+            const clk = dashboardSyncedClockLabel(dash?.dashboard_payload_at);
+            if (!clk) return null;
+            return (
+              <p
+                className="sub dash-equity-chart-fp"
+                style={{ marginTop: 2, marginBottom: 10 }}
+                title="Matches the hero snapshot strip — one merged dashboard generation per refresh (full /api/dashboard or fast /api/dashboard/equity)."
+              >
+                Data as of {clk}
+              </p>
+            );
+          })()}
           <div className="dash-equity-charts">
             <div className="dash-equity-chart-block">
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
                 {activityBranchTabLabel("live")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
-                {snaps.length} pts · book {fmtMoney(Number(metrics.current_equity_dollars ?? 0))} · {Number(metrics.settled_trades ?? 0)} settled
+              <p
+                className="sub dash-equity-chart-fp"
+                title={
+                  "Live paper: SQLite equity_snapshots append each poll even when the Live engine is off (flat/cost basis until trades exist). " +
+                  "Trade toasts use row.branch — Live vs labs are separate ledgers. " +
+                  EQUITY_CHART_OPEN_HINT
+                }
+              >
+                {equityChartSubtitlePtsBookSettledOpen(snaps.length, metrics)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("live")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metrics} name={activityBranchTabLabel("live")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6632,14 +6898,22 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_a")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
-                {equitySnapsLabA.length} pts · book {fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))} · {Number(metricsLabA.settled_trades ?? 0)} settled
+              <p
+                className="sub dash-equity-chart-fp"
+                title={
+                  "Lab A series from equity_snapshots_lab_a (SQLite canonical branch includes legacy sim_lab rows). " +
+                  "Trade toasts still label legacy sim_lab as Lab A. " +
+                  EQUITY_CHART_OPEN_HINT
+                }
+              >
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabA.length, metricsLabA)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_a")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabA} name={activityBranchTabLabel("lab_a")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6659,14 +6933,15 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_b")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_b.">
-                {equitySnapsLabB.length} pts · book {fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))} · {Number(metricsLabB.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_b. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabB.length, metricsLabB)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_b")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabB} name={activityBranchTabLabel("lab_b")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6686,14 +6961,15 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_c")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_c.">
-                {equitySnapsLabC.length} pts · book {fmtMoney(Number(metricsLabC.current_equity_dollars ?? 0))} · {Number(metricsLabC.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_c. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabC.length, metricsLabC)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_c")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabC} name={activityBranchTabLabel("lab_c")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6713,14 +6989,15 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_d")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_d")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_d.">
-                {equitySnapsLabD.length} pts · book {fmtMoney(Number(metricsLabD.current_equity_dollars ?? 0))} · {Number(metricsLabD.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_d. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabD.length, metricsLabD)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_d")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabD} name={activityBranchTabLabel("lab_d")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -6740,14 +7017,15 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_e")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_e")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_e.">
-                {equitySnapsLabE.length} pts · book {fmtMoney(Number(metricsLabE.current_equity_dollars ?? 0))} · {Number(metricsLabE.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_e. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabE.length, metricsLabE)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
                   title={`${activityBranchTabLabel("lab_e")} — book vs MTM · ${String(equityGranularity).toUpperCase()} · ${equityValueScale === "pct_change_window" ? "%Δ" : "$"}`}
                   defaultHeight={200}
                   expandedHeight={420}
+                  surfaceHint={equityDenseRollingSurfaceHint}
                   detail={<EquityDblReadout m={metricsLabE} name={activityBranchTabLabel("lab_e")} />}
                   render={({ h }) => (
                     <div className="chart--equity-stack-inner" style={{ width: "100%", height: h }}>
@@ -7318,8 +7596,10 @@ export default function App() {
         optimizerSaving={optimizerSaving}
         onRunOptimizerNow={runOptimizerNow}
         onForceInternalMutationNow={forceInternalMutationNow}
+        onDiversifyLabsNow={emergencyDiversifyNow}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
+        onFetchBreederSmartDefaults={fetchBreederSmartDefaults}
         liveEngineOn={liveBranchEngineOn}
         onToggleLive={() => void setRunning(!liveBranchEngineOn)}
         labEngineAOn={labABranchEngineOn}
@@ -7429,26 +7709,27 @@ export default function App() {
                 }
                 defaultHeight={460}
                 expandedHeight={560}
+                surfaceHint={equityDenseRollingSurfaceHint}
                 detail={
                   <p style={{ margin: 0, lineHeight: 1.45 }}>
                     Mode <strong>{equityCompareMode === "blended" ? "Blended" : "Potential"}</strong>: {equityCompareMode === "blended"
                       ? "one line per branch, average of book and MTM at each time step."
                       : "MTM minus book (open-risk mark) at each time step."}{" "}
-                    Use the checkboxes below to show or hide branches (same toggles as the dashboard). Pick <strong>Intraday</strong>, <strong>Hourly</strong>, <strong>D/D</strong>, etc. in this popup — they mirror the main Equity curves tabs. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
+                    Use the checkboxes below to show or hide branches (same toggles as the dashboard). Pick <strong>Live</strong>, <strong>Intraday</strong>, <strong>D/D</strong>, etc. in this popup — they mirror the main Equity curves tabs. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
                   </p>
                 }
                 render={({ h }) => (
                   <div style={{ width: "100%", height: h }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={equityOverlayData} margin={{ left: 10, right: 14, top: 10, bottom: 18 }}>
+                      <LineChart data={equityOverlayData} margin={{ left: 10, right: 28, top: 10, bottom: 18 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" strokeOpacity={0.85} />
                         <XAxis
-                          dataKey="t"
+                          type="number"
+                          dataKey="tsMs"
+                          domain={["dataMin", "dataMax"]}
                           stroke="#7f8ab5"
                           tick={{ fontSize: 10 }}
                           tickMargin={6}
-                          minTickGap={18}
-                          interval="preserveStartEnd"
                           tickFormatter={fmtEquityCompareXTick}
                         />
                         <YAxis
@@ -7459,8 +7740,22 @@ export default function App() {
                           width={44}
                         />
                         <Tooltip
-                          allowEscapeViewBox={{ x: true, y: true }}
-                          contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 12 }}
+                          allowEscapeViewBox={{ x: false, y: false }}
+                          wrapperStyle={{ zIndex: 30 }}
+                          contentStyle={{
+                            background: "#0b1228",
+                            border: "1px solid #243055",
+                            fontSize: 12,
+                            maxWidth: "min(280px, calc(100vw - 32px))",
+                            whiteSpace: "normal",
+                            wordBreak: "break-word",
+                          }}
+                          labelFormatter={(label) => {
+                            const n = typeof label === "number" ? label : Number(label);
+                            return Number.isFinite(n)
+                              ? new Date(n).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+                              : String(label ?? "");
+                          }}
                           formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
                         />
                         {equityVisible.live ? (
@@ -7544,9 +7839,6 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      <div className="app-bottom-marquee" aria-label="Live and lab branch tickers (persistent)">
-        <BranchHeroMarquee dash={dash} cfg={cfgWithHeroMarqueeSpeed} showSnapshot={false} />
-      </div>
         </>
       ) : null}
       {infoPopup ? (
@@ -7858,14 +8150,27 @@ function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj })
       text: `Cannot reach Kalshi (${String(k.api_base || "")}, env=${String(k.env || "")}). ${k.public_error ? String(k.public_error) : ""}`,
     });
   }
-  /* Public-only / missing keys: full copy lives on Settings → Kalshi & connection orb 4 (red ☐) — avoid duplicating here. */
+  const creds = k.credentials && typeof k.credentials === "object" ? (k.credentials as AnyObj) : {};
+  const keyConfigured = Boolean(creds.api_key_id_configured);
+  const pemConfigured = Boolean(creds.private_key_configured);
+  const signingReady = keyConfigured && pemConfigured;
+  /** Backend sends ``simulate_live`` — false means Live real-money mode (needs keys to pull balance / place orders). */
+  const livePaperMode = Boolean(k.simulate_live ?? cfg?.simulate ?? true);
+  if (k.public_ok && !signingReady && !livePaperMode) {
+    blocks.push({
+      tone: "warn",
+      text:
+        "Live is configured for real orders but Kalshi signing keys are missing — set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH (or PEM) in repo-root .env and restart the API.",
+      detail: "Unsigned mode cannot fetch portfolio balance or POST orders.",
+    });
+  }
   const polling = Boolean(k.polling_enabled);
   if (!polling && k.public_ok) {
     blocks.push({
       tone: "info",
-      text: "No engine polling yet — turn Live and/or Lab A / Lab B on in the toolbar for ticks.",
+      text: "No engine polling yet — turn Live and/or Lab A–E on under Settings → Engines & branches (each branch has its own toggle).",
       detail:
-        "At least one branch engine must be running so the dual loop scans markets and writes signals. Labs use the same Kalshi feed as Live but keep separate paper ledgers.",
+        "Paper branches only need public Kalshi reachability + engines on; API keys are optional unless you need portfolio link or real fills.",
     });
   }
 

@@ -3,17 +3,30 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 from typing import Any
 
 from fastapi import APIRouter, Query
 
 from ..lab_breeding import LABS_BREEDING_VERSION, build_labs_breeding_personality_radar, build_labs_breeding_tree_snapshot
+from ..lab_communication import peek_engine_council_signal
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
 from ..types_api import OptimizerStatusResponse
 
 router = APIRouter(prefix="/api/optimizer", tags=["optimizer"])
 logger = logging.getLogger("kalshibot.api")
+
+
+def _json_finite_deep(obj: Any) -> Any:
+    """Replace NaN/inf floats so JSON responses never break strict clients / serialization."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else 0.0
+    if isinstance(obj, dict):
+        return {k: _json_finite_deep(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_finite_deep(v) for v in obj]
+    return obj
 
 
 @router.get("/recommendations")
@@ -166,13 +179,52 @@ async def optimizer_status() -> OptimizerStatusResponse:
     cfg = await state.store.load_config()
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     _bla = str(oc.get("breeding_last_run_at") or "").strip()
-    return {
+    sig = peek_engine_council_signal()
+    try:
+        st = float(sig.get("strength", 0.0)) if sig else 0.0
+    except (TypeError, ValueError):
+        st = 0.0
+    if not math.isfinite(st):
+        st = 0.0
+    sig_on = sig is not None and st >= 0.22
+    eng_on = False
+    for nm in ("engine_lab_b", "engine_lab_c", "engine_lab_d", "engine_lab_e"):
+        eng = getattr(state, nm, None)
+        if eng is not None and getattr(eng, "_breeder_council_influence_active", False):
+            eng_on = True
+            break
+    council_influence_active = bool(sig_on or eng_on)
+    try:
+        tree_snap = build_labs_breeding_tree_snapshot(oc, cfg)
+    except Exception:
+        logger.exception("build_labs_breeding_tree_snapshot failed — returning minimal tree payload")
+        tree_snap = {
+            "version": LABS_BREEDING_VERSION,
+            "nodes": [],
+            "edges": [],
+            "summary": {},
+            "error": "snapshot_unavailable",
+        }
+    try:
+        radar = build_labs_breeding_personality_radar(cfg)
+    except Exception:
+        logger.exception("build_labs_breeding_personality_radar failed — returning minimal radar payload")
+        radar = {"dimensions": [], "series": [], "rows": [], "error": "radar_unavailable"}
+    try:
+        acc = float(oc.get("acceptance_rate_pct") or 0.0)
+    except (TypeError, ValueError):
+        acc = 0.0
+    if not math.isfinite(acc):
+        acc = 0.0
+    out: dict[str, Any] = {
         "enabled": bool(oc.get("enabled")),
         "adaptive_enabled": bool(oc.get("adaptive_enabled", True)),
         "breeding_enabled": bool(oc.get("breeding_enabled", True)),
         "breeding_last_run_at": str(oc.get("breeding_last_run_at") or ""),
         "breeding_last_summary": str(oc.get("breeding_last_summary") or ""),
         "breeding_last_run_minutes_ago": _breeding_minutes_ago(_bla),
+        "labs_council_diversity_until": str(oc.get("labs_council_diversity_until") or ""),
+        "council_influence_active": council_influence_active,
         "model": str(oc.get("model") or "internal"),
         "optimizer_cycle_count": int(oc.get("optimizer_cycle_count") or 0),
         "pulse_eval_count": int(oc.get("pulse_eval_count") or 0),
@@ -188,13 +240,14 @@ async def optimizer_status() -> OptimizerStatusResponse:
         ][:10],
         "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
         "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:10],
-        "labs_breeding_tree_snapshot": build_labs_breeding_tree_snapshot(oc, cfg),
+        "labs_breeding_tree_snapshot": tree_snap,
         "labs_breeding_version": LABS_BREEDING_VERSION,
         # LABS BREEDING — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).
-        "labs_breeding_personality_radar": build_labs_breeding_personality_radar(cfg),
+        "labs_breeding_personality_radar": radar,
         "labs_breeding_last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),
         "labs_breeding_replace_cooldown_until": str(oc.get("labs_breeding_replace_cooldown_until") or ""),
         "internal_optimizer_trace": [x for x in (oc.get("internal_optimizer_trace") or []) if isinstance(x, dict)][:30],
         "advanced_metrics_last": dict(oc.get("advanced_metrics_last") or {}),
-        "acceptance_rate_pct": float(oc.get("acceptance_rate_pct") or 0.0),
+        "acceptance_rate_pct": acc,
     }
+    return _json_finite_deep(out)  # type: ignore[return-value]

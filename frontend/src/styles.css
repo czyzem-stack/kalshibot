@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  --app-bottom-marquee-h: 52px;
+  --app-bottom-marquee-h: 56px;
   --bg: #0b1020;
   --panel: #121a33;
   --muted: #8b93b0;
@@ -67,24 +67,120 @@ a {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 1100;
-  padding: 4px 14px;
+  /* Above equity compare (1200) + chart zoom (1320); below loading overlay (2000), settings (2500), toasts (5000). */
+  z-index: 1950;
+  min-height: 44px;
+  max-height: 56px;
+  padding: 0 14px;
   padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-top: 1px solid var(--border);
-  /* Mostly solid + light blur: full-glass fixed bars often flicker when the page repaints behind them (dashboard polls). */
-  background: rgba(11, 16, 32, 0.985);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  /* Solid only: ``backdrop-filter`` + ``translateZ`` on fixed layers have caused the strip to disappear entirely on some Windows/GPU stacks. */
+  background: #0d1228;
   box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.32);
   box-sizing: border-box;
-  isolation: isolate;
-  transform: translateZ(0);
-  backface-visibility: hidden;
+  overflow: hidden;
 }
 
 .app-bottom-marquee .branch-hero-marquee {
   max-width: 1200px;
   margin: 0 auto;
+  width: 100%;
+}
+
+/* Flatten nested card chrome: one top rule on the host avoids clipped / uneven rounded borders at the viewport edge */
+.app-bottom-marquee .branch-hero-marquee--bottom-body-root {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+/* Draggable marquee can take focus; default outline reads as a broken white “L” when parent clips overflow */
+.app-bottom-marquee .branch-hero-marquee--bottom-body-root:focus,
+.app-bottom-marquee .branch-hero-marquee--bottom-body-root:focus-visible,
+.app-bottom-marquee .branch-hero-marquee--bottom-body-root .branch-hero-marquee__marquee:focus,
+.app-bottom-marquee .branch-hero-marquee--bottom-body-root .branch-hero-marquee__marquee:focus-visible {
+  outline: none;
+}
+
+/*
+ * Body-mounted bottom ticker: exactly one horizontal row. Long copy must not wrap at spaces
+ * (that stacked ~6 “Lab” lines inside a tall host). Lock height + nowrap + wide track; clip with
+ * ``overflow: hidden`` (CSS drift animates inside — no native horizontal scrollbar).
+ */
+.branch-hero-marquee--bottom-body-root {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  position: relative !important;
+  min-height: 32px !important;
+  max-height: 48px !important;
+  width: 100% !important;
+  overflow: hidden !important;
+}
+
+.branch-hero-marquee--bottom-body-root .branch-hero-marquee__scroll {
+  position: relative !important;
+  inset: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  min-height: 0 !important;
+  max-height: 48px !important;
+  flex: 0 1 auto !important;
+  z-index: 2;
+}
+
+.branch-hero-marquee--bottom-body-root .branch-hero-marquee__marquee {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  width: 100% !important;
+  min-height: 28px !important;
+  max-height: 44px !important;
+  padding: 0 10px !important;
+  border-top: none !important;
+  border-radius: 0;
+  box-sizing: border-box;
+  mask-image: none !important;
+  overflow: hidden !important;
+}
+
+.branch-hero-marquee--bottom-body-root .branch-hero-marquee__track-inner {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  width: max-content !important;
+  min-width: max-content !important;
+  white-space: nowrap !important;
+}
+
+.branch-hero-marquee--bottom-body-root .branch-hero-marquee__chunk,
+.branch-hero-marquee--bottom-body-root .branch-ticker-chunk--rich {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  white-space: nowrap !important;
+}
+
+.branch-hero-marquee--bottom-body-root .branch-hero-marquee__branch {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  white-space: nowrap !important;
+}
+
+.branch-hero-marquee--bottom-body-root .ticker-seg {
+  white-space: nowrap !important;
 }
 
 /* Trade toasts: float above the bottom ticker strip */
@@ -915,22 +1011,42 @@ input[type="number"] {
   }
 }
 
-.dash-optimizer-panel .branch-brain-inline__head {
-  flex-wrap: nowrap;
-  gap: 10px;
+/* Optimizer card: title + health + actions on one row (no legend in flex — avoids title truncation). */
+.dash-optimizer-panel .branch-brain-inline__head.dash-optimizer-panel__head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
   min-width: 0;
-  overflow-x: auto;
+  overflow-x: visible;
   overflow-y: visible;
-  padding-bottom: 2px;
-  scrollbar-width: thin;
+  padding-bottom: 0;
+  margin-bottom: 6px;
 }
 
-.dash-optimizer-panel .branch-brain-inline__head .dash-section__title {
-  flex: 1 1 auto;
+.dash-optimizer-panel__head-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  column-gap: 10px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.dash-optimizer-panel__head-top .dash-section__title {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: unset;
   white-space: nowrap;
+}
+
+.dash-optimizer-panel__head-top .dash-optimizer-health-dot {
+  flex-shrink: 0;
+}
+
+.dash-optimizer-panel__head-top .dash-optimizer-actions {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* Branch performance header: compact breeding pill (same API as Optimizer Breeding row). */
@@ -2110,6 +2226,11 @@ input[type="number"] {
 
 .optimizer-toast--green {
   border-color: rgba(72, 187, 120, 0.55);
+}
+
+/* Paper/sim fills — distinct from green “profit/success” borders used for real-money legible buys */
+.optimizer-toast--paper {
+  border-color: rgba(147, 197, 253, 0.65);
 }
 
 .optimizer-toast--red {
@@ -3662,7 +3783,11 @@ button[title].section-tip {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .branch-ticker-track-inner {
+  /*
+   * ``branch-ticker-track-inner`` is only used on ``BranchHeroMarquee``. Scope wrap + no CSS animation
+   * to the **dashboard** hero so the **body** bottom strip can keep drifting (single line + nowrap rules above).
+   */
+  .branch-hero-marquee:not(.branch-hero-marquee--bottom-body-root) .branch-ticker-track-inner.branch-hero-marquee__track-inner {
     animation: none !important;
     transform: none;
     flex-wrap: wrap;
@@ -3670,12 +3795,7 @@ button[title].section-tip {
     white-space: normal;
   }
 
-  .branch-hero-marquee__marquee .branch-hero-marquee__track-inner {
-    animation: none !important;
-    transform: none;
-  }
-
-  .branch-hero-marquee__marquee {
+  .branch-hero-marquee:not(.branch-hero-marquee--bottom-body-root) .branch-hero-marquee__marquee {
     overflow-x: auto;
   }
 
@@ -3685,6 +3805,18 @@ button[title].section-tip {
 
   .branch-ticker-chunk {
     white-space: normal;
+  }
+
+  /* Bottom strip: nowrap + max-content width (see ``.branch-hero-marquee--bottom-body-root`` above); drift animates inside ``overflow: hidden``. */
+  .branch-hero-marquee--bottom-body-root .branch-ticker-track-inner.branch-hero-marquee__track-inner {
+    flex-wrap: nowrap !important;
+    width: max-content !important;
+    white-space: nowrap !important;
+  }
+
+  .branch-hero-marquee--bottom-body-root .branch-ticker-chunk,
+  .branch-hero-marquee--bottom-body-root .branch-ticker-chunk--rich {
+    white-space: nowrap !important;
   }
 }
 
@@ -4274,10 +4406,21 @@ button[title].section-tip {
   flex-direction: column;
   gap: 0;
 }
+.lab-think-tank__diversity-banner {
+  margin: 2px 2px 4px;
+  padding: 3px 5px;
+  font-size: 9px;
+  line-height: 1.25;
+  color: rgba(196, 181, 253, 0.95);
+  border-radius: 3px;
+  border: 1px solid rgba(129, 140, 248, 0.35);
+  background: rgba(30, 27, 75, 0.35);
+}
 .lab-think-tank__line {
   display: flex;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
   margin: 0;
   padding: 1px 2px;
   border-radius: 2px;
@@ -4287,6 +4430,40 @@ button[title].section-tip {
   color: #dbe7ff;
   border-left: 2px solid rgba(148, 163, 184, 0.38);
   background: rgba(12, 18, 34, 0.55);
+}
+.lab-think-tank__line-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.lab-think-tank__line-main .lab-think-tank__msg {
+  flex: 1;
+  min-width: 0;
+}
+.lab-think-tank__detail-btn {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: rgba(165, 180, 252, 0.95);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 3px;
+  background: rgba(15, 23, 42, 0.65);
+  cursor: pointer;
+}
+.lab-think-tank__detail-btn:hover {
+  border-color: rgba(165, 180, 252, 0.55);
+  color: #eef2ff;
+}
+.lab-think-tank__detail {
+  margin: 2px 0 3px 14px;
+  padding: 3px 5px 4px;
+  border-radius: 2px;
+  border: 1px solid rgba(55, 65, 100, 0.45);
+  background: rgba(6, 10, 24, 0.75);
 }
 .lab-think-tank__line--reply {
   padding-left: 2px;
@@ -4304,14 +4481,17 @@ button[title].section-tip {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 1px;
-  font-size: 0.85rem;
-  line-height: 1;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(82, 97, 148, 0.45);
+  background: rgba(8, 12, 28, 0.85);
 }
 .lab-think-tank__letter {
   font-size: 8.5px;
   font-weight: 800;
-  opacity: 0.85;
+  opacity: 0.95;
   color: rgba(226, 232, 255, 0.92);
 }
 .lab-think-tank__msg {
