@@ -154,7 +154,7 @@ def refresh_engine_council_signal(
     Recompute ``_engine_council_signal`` from recent Think Tank lines.
 
     Engines read this on the **next** tick (finalize runs after ``handle_market`` for the same branch).
-    Strength is tuned for strong ongoing opposition between breeders (no manual diversity window).
+    Strength is tuned so engines read a decisive bias whenever the bus has YES/NO text.
     """
     _ = full_cfg
     bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
@@ -162,11 +162,11 @@ def refresh_engine_council_signal(
     if tot == 0:
         bus._engine_council_signal = None
         return
-    strength = min(1.0, tot / 4.0) * 1.32
-    if tot >= 2 and abs(bias) >= 0.26:
-        strength = max(strength, 0.66)
-    strength = max(strength, 0.85)
-    strength = min(1.0, strength * 1.18)
+    strength = min(1.0, tot / 4.0) * 1.48
+    if tot >= 2 and abs(bias) >= 0.14:
+        strength = max(strength, 0.78)
+    strength = max(strength, 0.92)
+    strength = min(1.0, strength * 1.28)
     ttl = 300.0
     bus._engine_council_signal = {
         "bias": float(bias),
@@ -609,7 +609,7 @@ def _adversarial_peer_lines(
     if branch == BRANCH_LAB_D:
         lines.extend([f"{voc} remix hot—still say NO.", f"{voc} wild card: opposite side."])
     if branch == BRANCH_LAB_E:
-        lines.extend([f"{voc} balance vote: oppose the pile-on.", f"{voc} E says diversify—hold."])
+        lines.extend([f"{voc} balance vote: oppose the pile-on.", f"{voc} E: veto the herd—flat this rush."])
     lines.extend(
         [
             f"{voc} hard counter: I bid the other side.",
@@ -634,7 +634,7 @@ def _adversarial_strategic_lines(
     out: list[str] = [
         f"{vp} council—this edge is fake; sitting.",
         f"{vp} team NO-huddle: I oppose the YES pile.",
-        f"{vp} diversify—I'm taking the other lane.",
+        f"{vp} splitting off—other lane only.",
         f"{vp} counter-thesis: shrink YES, add NO.",
         f"{vp} groupthink alert—I'm braking.",
         f"{vp} opposite sizing—half what we'd do.",
@@ -657,7 +657,7 @@ def _adversarial_strategic_lines(
     out.extend(
         [
             f"{vp} council split: I stake the contra.",
-            f"{vp} diversity mode—I sell your YES.",
+            f"{vp} forced contra—I sell your YES.",
             f"{vp} I lean NO; fight me on price.",
             f"{vp} forced dissent: smaller YES, fat NO.",
             f"{vp} I call bogus—take other side.",

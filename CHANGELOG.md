@@ -2,20 +2,40 @@
 
 All notable project-level changes should be documented in this file.
 
-## v0.4.15.062 - Remove manual diversify council API/UI - 2026-04-29
+## v0.4.15.064 - Breeder council v4: tighter D/E invert + UI copy - 2026-04-29
 
-- **Removed:** **`POST /labs/diversify`**, **`lab_diversify.py`**, **`labs_council_diversity_until`** / diversity-window gating in Think Tank and engine. Breeder **B–E** opposition (council signal, D/E inversion, personality drift, strong **`_breeder_effective_prob_yes`** amplitude) is **always on**.
-- **Frontend:** No **Diversify Labs** control; **`LabThinkTank`** no longer shows a diversity banner.
-- **Persistence:** Still strips stale **`labs_council_diversity_until`** from loaded optimizer config and keeps legacy **`emergency_diversify_*`** auto-revert for old DB rows.
+- **Backend (`engines/engine.py`):** **D/E** hard mirror-invert from **``|sig_bias|≥0.09``** at **~99.1% / 98.6%** of ticks; weaker-bias path lowers gates and raises flip probability; decorrelator fires more often from **``|combined|≥0.018``**. **B/C** message-vs-signal weights pushed further apart (**B** 0.66/0.34, **C** 0.38/0.62); herd damp **~0.026**, C amplify **~2.32**; blended council gain **~±150–238%** + stronger **raw_lane** (**0.72** base, wider personality multipliers). **``_BREEDER_STRUCT_PROB_SKEW``** and **``handle_market``** jitter widened. Ranked-edge council coupling tweaked (**B** softer, **C** harder). Per-tick **`_breeder_shared_council_inputs`** unchanged (still one deque walk per tick). Comment cleanup on breeder Think Tank field + prefetch docstring.
+- **Backend (`lab_communication.py`):** Docstring on **`refresh_engine_council_signal`** — describe decisive bias (drop legacy “manual diversity” phrasing).
+- **Frontend (`SettingsOverlay.tsx`, `App.tsx`):** Copy uses **automatic opposition / no extra UI toggle** (no “diversity” wording). Removed stale file-header comments in **`SettingsOverlay.tsx`**.
+- **Unchanged (per project rules):** ``lab_breeding.py``, Live execution paths, Lab A optimizer mutation, equity curve rendering.
 
-## v0.4.15.061 - Dashboard poll batch + trade toast branch labels - 2026-04-30
+## v0.4.15.063 - Breeder council v3: decisive consensus + anti-sync skew - 2026-04-29
 
-- **Frontend (`App.tsx`):** Queue **`/api/dashboard`** and **`/api/dashboard/equity`** responses into one microtask flush so **hero header**, **equity charts**, and **bottom branch ticker** apply the same **`dash`** update in a single paint (avoids staggered frames when both polls complete close together). Successful full dashboard responses still clear fetch **`err`** after the batched apply.
-- **Frontend (`App.tsx`):** Trade open/settle toasts use **branch-specific** titles (**``${branch} purchase``**, **``${branch} · Purchase resolved``**) instead of generic **Sim purchase**; **`lab_child_*`** maps to **Lab child N** in toast copy.
+- **Backend (`engines/engine.py`):** **Massive** council leverage on rule-matching YES-mid: higher amplitude (**~±138–212%** lane at full weight), **direct raw-signal lane** scaled per personality (**B** barely follows consensus, **C** amplifies, **D** flips against, **E** mixed adaptive fade). **Extreme** drift bands for conservative/aggressive/contrarian/adaptive. **D/E** hard mirror-invert from **``|sig_bias|≥0.14``** at **≥97–98.5%** of ticks; weaker-bias path inverts more often; decorrelator fires **~30–34%** on small **``|combined|``**. **B** herd damp **~0.032**, **C** amplify **~2.18**. **`handle_market`**: after effective YES, applies **`_BREEDER_STRUCT_PROB_SKEW`** (branch-fixed opposite directions) × council weight plus jitter so labs diverge on identical books. Ranked-edge council coupling slightly stronger with wider **B vs C vs D/E** spread.
+- **Backend (`lab_communication.py`):** **`refresh_engine_council_signal`** strength bumped again so **`bias`/`strength`** stay at ceiling more often when the bus has YES/NO text.
+- **Performance:** Per-tick **`_breeder_shared_council_inputs`** cache unchanged (still one deque walk per tick per breeder asset).
+
+## v0.4.15.062 - Breeder independence + council prefetch perf - 2026-04-29
+
+- **Backend (`engines/engine.py`):** Project-wide breeder pass — **per-tick cache** of Think Tank YES/NO bias + **`peek_engine_council_signal`** on ``TradingEngine`` (``_breeder_shared_council_inputs``) so ranked market sorting and ``handle_market`` **do not** re-scan the chatter deque **per ticker**. **B/C/D/E** rule-matching tilt pushed further apart: wider drift scales; **B** vs **C** use different message-vs-signal weights; **D/E** mirror-invert band starts at **``|bias|≥0.22``** with higher apply rates + stronger decorrelator; **B** herd damp **~0.048**, **C** amplify **~1.94**; council amplitude **~±116–168%** at full weight. Ranked-edge multiplier spreads **B** down / **C** up vs **D/E** jitter.
+- **Backend (`lab_communication.py`):** Slightly higher **`refresh_engine_council_signal`** strength floors so engine reads stay **decisive** against pile-on text.
+- **Frontend (`SettingsOverlay.tsx`):** Lab **E** breeder card blurb aligned with adaptive zigzag + council-veto behavior.
+- **Backend (`persistence.py`):** Comment on stripping legacy **`labs_council_diversity_until`** from optimizer blocks.
+- **Out of scope (unchanged per request):** ``lab_breeding.py``, Live branch execution paths, Lab A optimizer mutation pipeline, equity curve rendering.
+
+## v0.4.15.061 - Anti-sync audit: council hardening, UX copy, dense equity - 2026-04-29
+
+- **Backend (`engines/engine.py`):** Breeder opposition tightened — **D/E** mirror-invert from **``|sig_bias|≥0.26``** at **≥93–94%** tick rate; weaker-bias path uses lower thresholds + higher flip probability; **random contra slam** on **D/E** decorrelates pile-ons; **B** herd damp **0.055**, **C** amplify **1.84**; council amplitude **~±108–156%** at full weight (no manual diversity window). Message polarization gate **``strong_msgs``** uses **≥0.18** YES/NO spread.
+- **Backend (`lab_communication.py`):** **`refresh_engine_council_signal`** strength floors slightly higher so engines see a **decisive** council read more often. Think Tank candidate lines scrubbed of **“diversify”** wording (trader-blunt alternatives).
+- **Removed (prior releases, summarized):** **`POST /labs/diversify`**, **`lab_diversify.py`**, **`labs_council_diversity_until`** gating — breeder **B–E** opposition is **always on**.
+- **Frontend (`dashboardPolling.ts`):** **`EQUITY_DENSE_CHART_MAX_POINTS`** **280 → 420** so rolling tabs keep more SQLite ticks on-screen (still capped for perf).
+- **Frontend (`LabThinkTank.tsx`, `App.tsx` Info):** Blunter, shorter copy; no fluff; optimizer explainer drops **“diversify control”** phrasing.
+- **Misc:** **`optimizer_claude.py`** prompt line uses **widen probability bands** instead of **diversify bands**; **`persistence.py`** legacy gate docstring de-emphasizes old naming.
+- **Also in this release line:** Dashboard **`/api/dashboard`** + **`/api/dashboard/equity`** microtask batch (single paint); trade toasts use **branch-specific** titles; **`lab_child_*`** → **Lab child N** in toast copy.
 
 ## v0.4.15.060 - Breeder anti-sync: ±100–140% council + 90% D/E invert - 2026-04-29
 
-- **Backend (`engines/engine.py`):** ``_breeder_effective_prob_yes`` — council gain **~±100–140%** at full weight (normal), **~±120–160%** in diversity mode. Labs **D/E**: **``|sig_bias|≥0.35``** ⇒ **``combined = clamp(1.0 - combined)``** on **≥90%** of ticks. **B** herd damp **0.07**, **C** amplify **1.78**; personality **drift** widened again. **``# NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS``** retained on the council-gain block.
+- **Backend (`engines/engine.py`):** ``_breeder_effective_prob_yes`` — council gain **~±100–140%** at full weight. Labs **D/E**: **``|sig_bias|≥0.35``** ⇒ **``combined = clamp(1.0 - combined)``** on **≥90%** of ticks. **B** herd damp **0.07**, **C** amplify **1.78**; personality **drift** widened again. **``# NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS``** retained on the council-gain block.
 - **Backend (`persistence.py`):** ``_breeder_fallback_rules_for`` — **B** NO-first + one **21.5–22.5m** YES whisper; **C** **0.15–0.9m** YES + **36m** wide YES + sub-5m NO stack; **D** **2.5–4m** lone YES + NO elsewhere; **E** zigzag YES/NO windows + explicit counter-NO lane.
 - **Frontend (`App.tsx`, `styles.css`):** Dashboard **Info** buttons aligned as the **rightmost** header control (**Apply Lab A to Live** left of **Info** on Branch performance); shared **``.dash-panel-btn--info``** styling; header flex so titles do not crowd actions.
 - **README.md:** **Dashboard & Settings map** documents header layout; **Equity curves** time-tab table matches **Live / Intraday / D–Y** dense rolling behavior, **4000**-row API window, and linear **tsMs** axis note.

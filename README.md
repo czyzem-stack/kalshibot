@@ -119,7 +119,7 @@ Breeding answers: **which simulated strategies deserve to move toward Live**, wi
 | **One lab (e.g. E) won’t stay on after refresh** | Same **`PUT /api/config/lab-branches`** path (avoid legacy toggle-only flows on old builds). |
 | **Copy sizing / patient stop across labs** | Mass apply: copy sizing from active tab; copy patient stop from a chosen source lab. |
 | **Restore distinct B–E templates** | **Settings → Simulation labs → Breeder labs (B–E)** → **Reset to smart defaults** per lab — pulls **`GET /api/config/breeder-smart-defaults/{lab_b…lab_e}`** (rules + sizing + council weight + personality + patient-stop defaults + optimizer floors). |
-| **Force internal mutation** | **Settings → Optimizer:** **Force internal mutation** runs one **Lab A** optimizer cycle + replay gate. Breeder **B–E** council opposition (Think Tank signal into effective YES, D/E inversion, personality drift) stays **always on** — there is no separate diversify button or timed diversity window. |
+| **Force internal mutation** | **Settings → Optimizer:** **Force internal mutation** runs one **Lab A** optimizer cycle + replay gate. Breeder **B–E** council opposition (Think Tank signal into effective YES, D/E inversion, personality drift) stays **always on** — no manual council pulse or extra timed gate in the UI. |
 | **Inspect config the API sees** | **`GET /api/config`** and **`GET /api/dashboard`**; writes use **`PUT /api/config`** or lab-branch merge routes. |
 | **Two browser tabs (5174 vs 5175)** | Default **:5174** = develop pill; **:5175** = **test** pill (see [`frontend/src/uiTrack.ts`](frontend/src/uiTrack.ts)). Same data if both proxy the same API — change **`frontend/.env`** `VITE_API_ORIGIN` for a second stack. |
 | **Quiet Think Tank structlog** | Leave **`LAB_THINK_TANK_LOG_INFO`** unset or `0`. |
@@ -307,8 +307,8 @@ All tabs apply to **all six** charts at once; they only change **how raw snapsho
 |-----|----------------|
 | **Live** | Rolling **6 hours** of **dense** SQLite ticks (wall clock), up to **2500** points; a **trailing** point from the latest dashboard metrics on each fast refresh tracks the same book/MTM as the hero strip and bottom marquee. |
 | **Intraday** | Rolling **24 hours** of dense ticks, up to **2500** points; same trailing refresh behavior where applicable. |
-| **D / D** | Rolling **~120 days** of dense ticks, **uniformly downsampled** to at most **280** points (not one dot per closed calendar day). |
-| **W / W** | Rolling **~18 months** of dense ticks, same **280** cap. |
+| **D / D** | Rolling **~120 days** of dense ticks, **uniformly downsampled** to at most **420** points (not one dot per closed calendar day). |
+| **W / W** | Rolling **~18 months** of dense ticks, same **420** cap. |
 | **M / M** | Rolling **~4 years** of dense ticks, same cap. |
 | **Y / Y** | Rolling **~12 years** of dense ticks, same cap. |
 

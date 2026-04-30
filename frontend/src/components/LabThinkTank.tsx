@@ -18,12 +18,12 @@ function labLetter(lab: string): string {
 }
 
 const ACTION_DETAIL: Record<string, string> = {
-  council_reply: "Reply to another breeder, threaded by reply_to. Share caps rotate who speaks next.",
-  strategic_pulse: "Proactive line (not tied to a sim fill). Pulses on a staggered timer per lab.",
-  strategic_pulse_break: "Break-glass line when share math kept this lab quiet too long.",
-  council_intro: "Boot line when this engine first joined the in-memory bus.",
-  breeding_whisper: "Rare breeding-context nudge when GA breeding is enabled (still flavor only).",
-  team_dialogue_sim: "Anchored reply after a peer line; triggered on sim fills, not ranked scans.",
+  council_reply: "Reply anchored to another breeder (reply_to). Caps rotate who talks.",
+  strategic_pulse: "Unsolicited line on a stagger timer — not tied to a fill.",
+  strategic_pulse_break: "Forced line when share math kept this lab silent too long.",
+  council_intro: "Boot line when this engine joined the bus.",
+  breeding_whisper: "Rare GA breeding flavor — no execution link.",
+  team_dialogue_sim: "Reply after a peer line on sim fills, not ranked scans.",
 };
 
 type Props = {
@@ -62,15 +62,13 @@ export default function LabThinkTank({ messages, enabled, dashReady }: Props) {
       </button>
 
       {!expanded ? (
-        <p className="sub lab-think-tank__hint">{enabled ? "Collapsed." : "Off — enable Agent Collaboration in Settings."}</p>
+        <p className="sub lab-think-tank__hint">{enabled ? "Collapsed." : "Bus off — flip Collaboration in Settings."}</p>
       ) : !enabled ? (
-        <p className="sub lab-think-tank__hint">Enable Agent Collaboration under Settings → Global.</p>
+        <p className="sub lab-think-tank__hint">Collaboration disabled — Settings → Global.</p>
       ) : (
         <div className="lab-think-tank__viewport" role="log" aria-live="polite">
           {lines.length === 0 ? (
-            <p className="sub lab-think-tank__empty">
-              No lines yet — turn on Labs B, C, D, E engines (paper). Lines appear within a tick or two.
-            </p>
+            <p className="sub lab-think-tank__empty">Empty bus. Run B–E paper engines; lines hit next tick or two.</p>
           ) : (
             <ul className="lab-think-tank__log">
               {lines.map((m, i) => {
@@ -81,7 +79,7 @@ export default function LabThinkTank({ messages, enabled, dashReady }: Props) {
                 const action = String(m.action || "").trim();
                 const detail =
                   ACTION_DETAIL[action] ||
-                  (action ? `Server action tag: ${action}.` : "Cosmetic council line (no trade link).");
+                  (action ? `Tag: ${action}.` : "Flavor line — no trade link.");
                 const conf =
                   m.confidence != null && Number.isFinite(Number(m.confidence))
                     ? `Confidence ${Number(m.confidence).toFixed(2)} (synthetic).`

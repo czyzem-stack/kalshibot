@@ -20,7 +20,7 @@ export const DASHBOARD_EQUITY_POLL_MS_LIVE_TAB = 2_500;
 export const LAB_CHAT_POLL_MS = 12_000;
 
 /** After time-window filter for D/D, W/W, M/M, Y/Y — same SQLite tick density as Intraday; cap for chart perf. */
-export const EQUITY_DENSE_CHART_MAX_POINTS = 280;
+export const EQUITY_DENSE_CHART_MAX_POINTS = 420;
 
 /** One parsed snapshot row (chronological) before label formatting. */
 export type EquityDenseTickRow = { at: string; ts: number; eq: number; mtm: number | null };

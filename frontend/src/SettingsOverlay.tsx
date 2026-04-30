@@ -1,5 +1,3 @@
-// SETTINGS STREAMLINE — cleaned information architecture per user request
-// HELP CLEANUP — thorough & professional (tooltips, onboarding copy, Optimizer context).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -1252,7 +1250,7 @@ export default function SettingsOverlay({
                     key={`bl-e-${String(labE?.council_influence_weight_pct ?? "")}-${String(labE?.breeder_personality ?? "")}-${String(labE?.paper_balance_cents ?? "")}-${breederRulesKeyFragment(labE)}`}
                     which="e"
                     title="Lab E — adaptive"
-                    blurb="Balanced sizing with strong adaptive fade (dual NO lanes)."
+                    blurb="Staggered YES/NO clocks; adaptive drift + pile-on veto vs council."
                     lab={labE}
                     cfg={cfg}
                     optimizerCfg={optimizerCfg}
@@ -2025,7 +2023,7 @@ export default function SettingsOverlay({
               </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
                 <strong>Force</strong> runs one <strong>Lab A</strong> internal optimizer mutation plus replay fitness gate — it does <strong>not</strong> change breeder
-                B–E council math. Strong council opposition between breeders stays <strong>always on</strong> in the engine and Think Tank (no manual diversity toggle).
+                B–E council math: opposition between breeders is <strong>always on</strong> in the engine and Think Tank (automatic; no extra UI toggle).
               </p>
             </div>
             <div style={{ marginTop: 20 }}>

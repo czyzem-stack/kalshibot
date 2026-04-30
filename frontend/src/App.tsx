@@ -2950,7 +2950,7 @@ function optimizerBriefInfoBody(): ReactNode {
         <strong>Optimizer card actions.</strong> The dashboard card only has <strong>report</strong> and <strong>Info</strong>; scheduled work runs without manual clicks.{" "}
         <strong>Nuke / manual</strong> lives in <strong>Settings → Optimizer</strong>: <strong>Force Internal Mutation Now</strong> (
         <code>POST /api/optimizer/force-internal-mutation</code>) — one Lab A mutation cycle; breeder <strong>B–E</strong> council opposition stays{" "}
-        <strong>always on</strong> in the engine (no separate diversify control).{" "}
+        <strong>always on</strong> in the engine (automatic breeder opposition; no extra UI toggle).{" "}
         <strong>report</strong> opens the full
         overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
         <strong>Optimizer / Breeder / Tree</strong> is a segmented control at the <strong>bottom-right of this card</strong>.{" "}

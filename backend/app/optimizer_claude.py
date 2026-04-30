@@ -3193,7 +3193,7 @@ def _build_claude_system_prompt(*, mutant_run: bool, regime_hint: str) -> str:
         "- **Time decay:** minutes_left interacts with spread and liquidity; very late markets can gap on settlement.\n"
         "- **Liquidity:** thin YES books imply wider effective prices; NO-side needs explicit NO ask / mirror bid logic.\n"
         "- **Event / headline risk:** correlated series move together — avoid stacking identical macro exposures across tickers.\n"
-        "- **Correlation traps:** multiple rules hitting the same outcome type can over-concentrate; diversify bands.\n"
+        "- **Correlation traps:** multiple rules hitting the same outcome type can over-concentrate; widen probability bands.\n"
         f"- **Regime snapshot:** {regime_hint}\n"
         f"{diversity}\n{mutant}\n"
         "Think through the proposal quality internally, but output only strict JSON.\n"

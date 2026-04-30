@@ -38,7 +38,7 @@ def _parse_emergency_diversify_until_iso(raw: Any) -> datetime | None:
 
 
 def _restore_legacy_emergency_diversify_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
-    """Legacy pre–council diversify gate bumps — restore optimizer yes-floors / lab thresholds from snapshot."""
+    """Legacy timed optimizer gate bumps — restore yes-floors / lab thresholds from snapshot (old DB rows only)."""
     oc = cfg.setdefault("optimizer", {})
     if not isinstance(oc, dict):
         return
@@ -980,6 +980,7 @@ class Store:
             _logger.warning("emergency_diversify revert check failed: %s", exc)
         _opt = out.get("optimizer")
         if isinstance(_opt, dict):
+            # Legacy manual council window key — strip so nothing gates Think Tank / UI off stale ISO timestamps.
             _opt.pop("labs_council_diversity_until", None)
         return out
 
