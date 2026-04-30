@@ -790,8 +790,8 @@ def labs_chat() -> dict[str, Any]:
 @app.post("/labs/diversify")
 async def labs_diversify() -> dict[str, Any]:
     """
-    Council diversity pulse (~45m): sets ``labs_council_diversity_until`` so Think Tank runs a hotter
-    adversarial mix; posts ``DIVERSITY PULSE`` lines. Does **not** run internal mutation (use ``force`` for that).
+    Council diversity pulse (**60m**): sets ``labs_council_diversity_until`` so Think Tank runs a hotter
+    adversarial mix and engines use maximum council tilt; posts nuclear diversify lines. Does **not** run internal mutation (use ``force`` for that).
     """
     from .lab_diversify import apply_emergency_diversify
 
@@ -1200,12 +1200,27 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "config": await store.load_config()}
 
 
+@app.get("/api/config/lab-a-promotion-report")
+async def lab_a_promotion_report_endpoint() -> dict[str, Any]:
+    """
+    Read-only diagnostics for ``POST /api/config/promote-lab-a-to-live``: raw PnL vs B–E, composite scores,
+    median control score gate, and Welch / score-ratio statistical gate (controls B–D only in replay).
+    """
+    cfg = await store.load_config()
+    return await lab_a_promotion_report(store, cfg)
+
+
 @app.post("/api/config/promote-lab-a-to-live")
 async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     """
     Copy Lab A trading overlays (rules, sizing, filters, etc.) onto top-level Live config.
 
-    By default requires settled paper PnL (cents) on Lab A to exceed both Lab B and Lab C.
+    Requires (unless ``skip_pnl_gate``): Lab A settled sim PnL exceeds Labs B, C, D, and E on rollups.
+
+    Then requires (unless ``skip_composite_gate``): ``promotion_gates_ok`` from ``lab_a_promotion_report`` —
+    Lab A must beat the **median composite fitness** of Labs B/C/D on a replay tail and pass a statistical
+    gate (Welch one-sided vs pooled B+C+D per-trade PnLs, or composite score ≥ 115% of median controls).
+
     When ``simulate`` is false (real Kalshi orders), ``ack_live`` must match the UI confirmation token.
     """
     if not bool(body.get("confirm")):
@@ -1219,6 +1234,7 @@ async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict
                 detail="ack_live must be APPLY_LIVE when simulate is false (real-money Live branch).",
             )
     skip_gate = bool(body.get("skip_pnl_gate"))
+    skip_composite = bool(body.get("skip_composite_gate"))
     if not skip_gate:
         roll_a = await store.dashboard_branch_trade_rollups(BRANCH_LAB_A, "simulate")
         roll_b = await store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate")
@@ -1235,13 +1251,21 @@ async def promote_lab_a_to_live(body: dict[str, Any] = Body(default_factory=dict
                 status_code=400,
                 detail="lab_a_settled_pnl_cents_must_exceed_lab_b_c_d_and_e",
             )
-        promo = await lab_a_promotion_report(store, cfg)
-        if not bool(promo.get("promotion_gates_ok")):
-            logger.warning("promotion_blocked report=%s", promo)
-            raise HTTPException(
-                status_code=400,
-                detail="lab_a_must_pass_composite_and_statistical_gates_vs_controls",
-            )
+        if not skip_composite:
+            promo = await lab_a_promotion_report(store, cfg)
+            if not bool(promo.get("promotion_gates_ok")):
+                logger.warning("promotion_blocked report=%s", promo)
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "lab_a_must_pass_composite_and_statistical_gates_vs_controls",
+                        "message": (
+                            "Lab A composite fitness must exceed the median of Labs B–D and pass the "
+                            "statistical gate vs pooled B+C+D trades (or score ≥ 115% of median controls)."
+                        ),
+                        "report": promo,
+                    },
+                )
     lab_a = cfg.get("lab_a")
     if not isinstance(lab_a, dict):
         raise HTTPException(status_code=400, detail="lab_a_not_configured")

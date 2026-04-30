@@ -49,7 +49,8 @@ const UI_TRACK = resolveUiTrack();
 const APP_VERSION = String(APP_VERSION_RAW || "").trim() || "unknown";
 
 const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
-const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
+/** Supersede in-flight ``/api/dashboard`` after this — must stay near the client timeout so repeat polls / Retry do not keep returning one stuck promise for ~3 minutes. */
+const DASHBOARD_STALE_INFLIGHT_MS = DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
 
 /** Stable empty lab when config has no lab object yet — avoids `new {}` every render breaking PUT payloads. */
 const EMPTY_LAB: AnyObj = Object.freeze({});
@@ -140,16 +141,18 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
       next[k] = old;
       continue;
     }
-    if (Array.isArray(inc) && Array.isArray(old) && old.length > 0 && inc.length === 0) {
-      next[k] = old;
-    }
+    // When revision has not advanced, still trust an explicit empty equity series from the server.
+    // Otherwise a post-reset or post-delete `[]` was discarded here and one branch kept ghost history
+    // (~$5k default seed) while `metrics_lab_*` already reflected the new bankroll — subtitle vs chart mismatch.
   }
   for (const k of FAST_POLL_LIST_KEYS) {
     const inc = incoming[k];
     const old = prev[k];
-    if (Array.isArray(inc) && Array.isArray(old) && old.length > 0 && inc.length === 0) {
+    if (!Array.isArray(inc) && Array.isArray(old)) {
       next[k] = old;
+      continue;
     }
+    // Same as equity: do not resurrect stale trades/signals when the poll returns an explicit empty array.
   }
 
   delete next.equity_snapshots_sim_lab;
@@ -290,6 +293,43 @@ async function apiPostJson(path: string, body: AnyObj = {}): Promise<AnyObj> {
   return (await r.json()) as AnyObj;
 }
 
+/** Human-readable breakdown when POST promote fails composite/statistical gates (matches ``detail.report``). */
+function formatLabAPromotionBlockedMessage(report: AnyObj | undefined): string {
+  if (!report || typeof report !== "object") {
+    return (
+      "Promotion blocked: Lab A must beat Labs B–D on composite fitness (replay tail) and pass the statistical gate " +
+      "vs pooled B+C+D trades. Open GET /api/config/lab-a-promotion-report for JSON."
+    );
+  }
+  const lines: string[] = ["Lab A → Live blocked — fitness gates vs control labs (B–D in replay; raw PnL vs B–E):"];
+  const lp = report.legacy_pnl_cents as AnyObj | undefined;
+  if (lp && typeof lp === "object") {
+    lines.push(
+      `Raw settled PnL (¢): A=${lp.lab_a ?? "—"} B=${lp.lab_b ?? "—"} C=${lp.lab_c ?? "—"} D=${lp.lab_d ?? "—"} E=${lp.lab_e ?? "—"} → ${report.legacy_pnl_ok ? "pass" : "FAIL"}`,
+    );
+  }
+  const sa = Number((report.composite_scores as AnyObj)?.lab_a?.score_dollars);
+  const med = Number(report.score_median_controls);
+  lines.push(
+    `Composite score: Lab A ${Number.isFinite(sa) ? sa.toFixed(2) : "—"} vs median(B,C,D) ${Number.isFinite(med) ? med.toFixed(2) : "—"} → ${report.score_gate ? "pass" : "FAIL"} (need A > median)`,
+  );
+  const st = report.statistical_gate as AnyObj | undefined;
+  const p = st ? Number(st.welch_one_sided_p_approx) : NaN;
+  const ma = st ? Number(st.mean_a) : NaN;
+  const mb = st ? Number(st.mean_control) : NaN;
+  lines.push(
+    `Statistical gate: ${report.statistical_ok ? "pass" : "FAIL"} (Welch p<0.10 & mean A > mean pool with ≥3 trades each side, OR Lab A score ≥ 115% of median controls)`,
+  );
+  if (st && typeof st === "object") {
+    lines.push(
+      `  Welch p≈${Number.isFinite(p) ? p.toFixed(4) : "—"}, mean per-trade $ ${Number.isFinite(ma) ? ma.toFixed(4) : "—"} vs pool $ ${Number.isFinite(mb) ? mb.toFixed(4) : "—"}`,
+    );
+    lines.push(`  score_ratio_gate=${Boolean(st.score_ratio_gate)} · t_test_gate=${Boolean(st.t_test_gate)}`);
+  }
+  lines.push("Full diagnostics: GET /api/config/lab-a-promotion-report");
+  return lines.join("\n");
+}
+
 function labThoughtsToSentence(lines: unknown): string {
   if (!Array.isArray(lines) || lines.length === 0) return "Watching paper metrics and recent settles.";
   const parts = (lines as string[]).map((s) => String(s).trim()).filter(Boolean);
@@ -383,8 +423,7 @@ function BranchPerfActiveTradesMarquee({ branchLabel, activeRows }: { branchLabe
         className="branch-performance-bottom__ticker branch-perf-active-marquee branch-perf-active-marquee--empty"
         title={fullTitle}
       >
-        <span className="branch-perf-active-marquee__label">{branchLabel}</span>
-        <span className="branch-perf-active-marquee__muted"> — no active trades in feed</span>
+        <span className="branch-perf-active-marquee__muted">No active trades in feed for {branchLabel}.</span>
       </div>
     );
   }
@@ -396,7 +435,6 @@ function BranchPerfActiveTradesMarquee({ branchLabel, activeRows }: { branchLabe
       aria-label={`${branchLabel} active trades`}
       title={fullTitle}
     >
-      <span className="branch-perf-active-marquee__label">{branchLabel}</span>
       <div ref={viewportRef} className="branch-perf-active-marquee__viewport">
         <div
           className={`branch-perf-active-marquee__track${needsScroll ? " branch-perf-active-marquee__track--scroll" : " branch-perf-active-marquee__track--static"}`}
@@ -2803,7 +2841,8 @@ function optimizerBriefInfoBody(): ReactNode {
         <strong>Optimizer card actions.</strong> The dashboard card only has <strong>report</strong> and <strong>Info</strong>; scheduled work runs without manual clicks.{" "}
         <strong>Nuke / manual</strong> lives in <strong>Settings → Optimizer</strong>: <strong>Force Internal Mutation Now</strong> (
         <code>POST /api/optimizer/force-internal-mutation</code>) and <strong>Diversify council (Think Tank)</strong> (
-        <code>POST /labs/diversify</code>) — B–E council diversity window, cosmetic lines. <strong>report</strong> opens the full
+        <code>POST /labs/diversify</code>) — B–E <strong>60m maximum-opposition</strong> window (engine tilt + Think Tank adversarial mix).{" "}
+        <strong>report</strong> opens the full
         overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
         <strong>Optimizer / Breeder / Tree</strong> is a segmented control at the <strong>bottom-right of this card</strong>.{" "}
         <strong>Breeder</strong> shows the 12-axis personality radar from <code>GET /api/optimizer/status</code>; <strong>Tree</strong> is a
@@ -3327,6 +3366,19 @@ function tradeRowLooksResolved(t: AnyObj): boolean {
 }
 
 /** Kalshi market outcome (``yes``/``no``) vs paper sim exit before finalization. */
+/** Market outcome matches the ticket but settled ``pnl_cents`` is 0 — economics: paid ~full $1 face vs $1 payout (often YES ask at $1). */
+function tradeToastBreakevenLedgerNote(t: AnyObj): string | null {
+  const r = String(t?.result ?? "").trim().toLowerCase();
+  const side = String(t?.side ?? "yes").trim().toLowerCase();
+  const won = (side === "yes" && r === "yes") || (side === "no" && r === "no");
+  if (!won) return null;
+  const rawP = t.pnl_cents;
+  if (rawP == null || rawP === "") return null;
+  const n = Number(rawP);
+  if (!Number.isFinite(n) || n !== 0) return null;
+  return "Breakeven on ledger — paid ~$1/contract vs $1 payout (common when entry sat near max price).";
+}
+
 function tradeResolutionLines(t: AnyObj): { title: string; resolutionTier: "green" | "yellow" | "red" | "neutral"; lines: string[] } {
   const r = String(t?.result ?? "").trim().toLowerCase();
   const side = String(t?.side ?? "yes").trim().toLowerCase();
@@ -4006,6 +4058,9 @@ export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
   const [dash, setDash] = useState<AnyObj | null>(null);
+  /** True until first dashboard JSON applies — visibility / bfcache catch-up uses ``force`` so we do not dedupe against a hung fetch. */
+  const dashStillLoadingRef = useRef(true);
+  dashStillLoadingRef.current = dash == null;
   const { messages: labHiveMessages, labChatEnabled, setLabChatEnabled } = useLabHiveChat(Boolean(dash));
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -4096,6 +4151,12 @@ export default function App() {
   const tradesFetchEpochRef = useRef(0);
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
+    if (force) {
+      dashboardFetchEpochRef.current += 1;
+      dashboardAbortRef.current?.abort();
+      dashboardInFlightRef.current = null;
+      dashboardInFlightStartedAtRef.current = 0;
+    }
     const inFlight = dashboardInFlightRef.current;
     const hasFreshInFlight =
       inFlight &&
@@ -4109,10 +4170,6 @@ export default function App() {
       dashboardInFlightRef.current = null;
       dashboardInFlightStartedAtRef.current = 0;
       dashboardFetchEpochRef.current += 1;
-    }
-    if (force) {
-      dashboardFetchEpochRef.current += 1;
-      dashboardAbortRef.current?.abort();
     }
     const req = (async (): Promise<AnyObj | null> => {
       const epochAtStart = dashboardFetchEpochRef.current;
@@ -4291,7 +4348,7 @@ export default function App() {
     // Background tabs throttle timers; editing looked like the “fix” because Vite remount re-ran this effect.
     const unsubCatchUp = subscribeDashboardCatchUp(() => {
       refreshEquityLightRef.current();
-      void refreshRef.current();
+      void refreshRef.current({ force: dashStillLoadingRef.current });
     });
     return () => {
       unsubCatchUp();
@@ -4306,6 +4363,14 @@ export default function App() {
       dashboardFetchEpochRef.current += 1;
     };
   }, []);
+
+  /** If the first ``/api/dashboard`` never applies state (stuck promise, epoch mismatch), supersede after the HTTP timeout window. */
+  useEffect(() => {
+    if (dash != null) return;
+    const delay = DASHBOARD_REQUEST_TIMEOUT_MS + 12_000;
+    const id = window.setTimeout(() => void refreshRef.current({ force: true }), delay);
+    return () => window.clearTimeout(id);
+  }, [dash]);
 
   useEffect(() => {
     const ms = equityGranularity === "hourly" ? DASHBOARD_EQUITY_POLL_MS_LIVE_TAB : DASHBOARD_EQUITY_POLL_MS;
@@ -4587,6 +4652,9 @@ export default function App() {
     seenTradeInitRef.current.clear();
     seenTradeSettleRef.current.clear();
     tradeToastsBootstrappedRef.current = false;
+    // Force a fresh ``/api/trades`` read before re-bootstrap so we never mark bootstrapped on a transient
+    // empty merge while ``recent_trades`` repopulates on the next dashboard tick (SQLite id recycle → spam).
+    setToastTradeRows(null);
     setOptimizerNotifs((prev) =>
       prev.filter((n) => {
         const id = String(n.id || "");
@@ -4607,6 +4675,14 @@ export default function App() {
     const tradesPollCompleted = toastTradeRows !== null;
     if (!tradeToastsBootstrappedRef.current) {
       if (!dashReady || !tradesPollCompleted) return;
+      if (!rows.length) {
+        const dashRt = (dash as AnyObj | null)?.recent_trades;
+        const dashEmpty = Array.isArray(dashRt) && dashRt.length === 0;
+        const pollEmpty = Array.isArray(toastTradeRows) && toastTradeRows.length === 0;
+        if (!dashEmpty || !pollEmpty) return;
+        tradeToastsBootstrappedRef.current = true;
+        return;
+      }
       for (const t of rows) {
         const idStr = tradeToastRowKey(t);
         if (!idStr) continue;
@@ -4657,6 +4733,7 @@ export default function App() {
         const resMeta = tradeResolutionLines(t);
         const cardTone = pnl != null && pnl < 0 ? "red" : pnl != null && pnl > 0 ? "green" : "yellow";
         const pnlText = pnl == null ? "PnL —" : `PnL ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
+        const breakevenNote = tradeToastBreakevenLedgerNote(t);
         const toastId = `trade-resolved-${idStr}`;
         if (!dismissedTradeToastIdsRef.current.has(toastId)) {
           toAdd.push({
@@ -4669,6 +4746,7 @@ export default function App() {
             segments: [
               { tier: "neutral", text: `${branch} · ${tick} ${side}` },
               { tier: lineTier, text: pnlText },
+              ...(breakevenNote ? [{ tier: "neutral" as const, text: breakevenNote }] : []),
               { tier: resMeta.resolutionTier, text: resMeta.lines[0] ?? "" },
               ...(resMeta.lines[1] ? [{ tier: "neutral" as const, text: resMeta.lines[1] }] : []),
             ],
@@ -5046,8 +5124,8 @@ export default function App() {
     }
     const sim = Boolean(cfg.simulate);
     const msg = sim
-      ? `Copy Lab A trading settings (rules, window, bet fraction, filters, fees) to the Live branch?\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} vs E $${pnlE.toFixed(2)} settled PnL.`
-      : `LIVE / REAL MONEY: Copy Lab A settings onto the Live branch. Live uses Real $ when the engine is on.\n\nYou will be asked to type APPLY_LIVE next.\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} vs E $${pnlE.toFixed(2)} settled PnL.`;
+      ? `Copy Lab A trading settings (rules, window, bet fraction, filters, fees) to the Live branch?\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} vs E $${pnlE.toFixed(2)} settled PnL.\n\nServer also requires composite + statistical fitness vs Labs B–D (see error details if this step fails).`
+      : `LIVE / REAL MONEY: Copy Lab A settings onto the Live branch. Live uses Real $ when the engine is on.\n\nYou will be asked to type APPLY_LIVE next.\n\nLab A $${pnlA.toFixed(2)} vs B $${pnlB.toFixed(2)} vs C $${pnlC.toFixed(2)} vs D $${pnlD.toFixed(2)} vs E $${pnlE.toFixed(2)} settled PnL.\n\nServer also requires composite + statistical fitness vs Labs B–D.`;
     if (!window.confirm(msg)) return;
     let ack = "";
     if (!sim) {
@@ -5059,13 +5137,37 @@ export default function App() {
     }
     setBusy(true);
     try {
-      await apiPostJson("/api/config/promote-lab-a-to-live", {
-        confirm: true,
-        ack_live: ack,
-      });
+      const r = await fetch(
+        "/api/config/promote-lab-a-to-live",
+        withApiAuth({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm: true, ack_live: ack }),
+        }),
+      );
+      if (!r.ok) {
+        try {
+          const j = (await r.json()) as AnyObj;
+          const d = j?.detail;
+          if (
+            d &&
+            typeof d === "object" &&
+            !Array.isArray(d) &&
+            String((d as AnyObj).code || "") === "lab_a_must_pass_composite_and_statistical_gates_vs_controls"
+          ) {
+            setErr(formatLabAPromotionBlockedMessage((d as AnyObj).report as AnyObj));
+          } else {
+            setErr(typeof d === "string" ? d : JSON.stringify(d ?? j));
+          }
+        } catch {
+          setErr(`Promote failed (HTTP ${r.status}).`);
+        }
+        return;
+      }
+      await r.json();
       await refresh();
-    } catch (e: any) {
-      setErr(String(e?.message || e));
+    } catch (e: unknown) {
+      setErr(String((e as AnyObj)?.message || e));
     } finally {
       setBusy(false);
     }
@@ -5859,10 +5961,7 @@ export default function App() {
           </div>
         </div>
       ) : null}
-      <div
-        className="top"
-        style={!dash && !err ? { position: "relative", zIndex: 2500 } : undefined}
-      >
+      <div className="top">
         <div className="hero">
           <div className="hero-head">
             <div className="hero-head__main" style={{ width: "100%" }}>
@@ -5912,7 +6011,12 @@ export default function App() {
       </div>
 
       {!dash && err ? <ApiOfflineCallout message={err} /> : null}
-      {!dash && !err ? <DashboardLoadingScreen onRetry={() => void refresh({ force: true })} /> : null}
+      {!dash && !err ? (
+        <DashboardLoadingScreen
+          onRetry={() => void refresh({ force: true })}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      ) : null}
       {dash && err ? (
         <div className="error" title="Last API or validation error from this browser session.">
           {err}
@@ -5935,11 +6039,20 @@ export default function App() {
             <button
               type="button"
               className="primary dash-panel-btn"
+              disabled={busy || !canPromoteLabAToLive}
+              title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds B/C/D/E and server fitness gates pass. Extra confirmation when Live is in Real $ mode."
+              onClick={() => void promoteLabAToLive()}
+            >
+              Apply Lab A to Live
+            </button>
+            <button
+              type="button"
+              className="primary dash-panel-btn dash-panel-btn--info"
               title={
                 "Branch performance: five per-branch rollups in SQLite (not one wallet). Tabs switch the branch view; they do not re-run trades. " +
                 "Settled PnL = realized on closed rows only. Open/marks = unrealized. Live Real $: cash from Kalshi when linked; labs = paper. " +
-                "Marquee = active trades for the selected tab; promote uses settled PnL. Bottom-right: optional trade toasts (Settings toggle) plus Optimizer toasts—shared stack, auto-dismiss 10–15s. " +
-                "Reconcile: settled vs open vs bankroll."
+                "Marquee = active trades for the selected tab. Apply Lab A to Live = header button (settled PnL + server gates). " +
+                "Bottom-right: optional trade toasts (Settings) plus Optimizer toasts. Reconcile: settled vs open vs bankroll."
               }
               onClick={() =>
                 setInfoPopup({
@@ -5986,11 +6099,10 @@ export default function App() {
                         headroom for new entries. Cross-check with Holdings under Account and with “Assets to watch” snapshots.
                       </p>
                         <p>
-                        <strong>Active trades marquee and Apply Lab A to Live.</strong> The scrolling strip lists open / in-flight
-                        trades from the recent feed for whichever branch tab is selected (Live, Lab A–D). Promote gating still uses
-                        settled PnL sums from the tiles above, not this strip. “Apply Lab A to Live” copies Lab A’s trading overlays
-                        into the Live config only when Lab A’s settled PnL strictly exceeds B, C, and D, plus extra confirmation when
-                        not in sim mode. It does <em>not</em> merge bankrolls; it is a config promotion, not a money transfer.
+                        <strong>Active trades marquee.</strong> The scrolling strip lists open / in-flight trades from the recent
+                        feed for whichever branch tab is selected (Live, Labs A–E). Promote gating uses settled PnL from the tiles
+                        above, not this strip. <strong>Apply Lab A to Live</strong> sits to the left of <strong>Info</strong> in the header (Info stays top-right)
+                        — it copies Lab A’s trading overlays into Live config when gates pass; it does <em>not</em> merge bankrolls.
                       </p>
                       <p>
                         <strong>Bottom-right notifications.</strong> The same fixed corner stack shows (1) <strong>trade</strong> open/close
@@ -6137,25 +6249,7 @@ export default function App() {
           />
         </div>
         <div className="branch-performance-bottom">
-          <p
-            className="sub branch-performance-bottom__scope-hint"
-            style={{ margin: "0 0 8px", fontSize: 12, opacity: 0.92 }}
-            title={
-              "The Equity curves panel shows Live + Lab A–E all at once (one chart per branch). This marquee lists open sim trades only for the branch tab you selected here — not every branch at once."
-            }
-          >
-            Open sim ticker scope: <strong>{perfBranchMeta.label}</strong> — equity charts use separate ledgers per branch.
-          </p>
           <BranchPerfActiveTradesMarquee branchLabel={perfBranchMeta.label} activeRows={activeTradesForPerfBranch} />
-          <button
-            type="button"
-            className="primary"
-            disabled={busy || !canPromoteLabAToLive}
-            title="Copies Lab A overlays (rules, window, bet fraction, filters, fees, assets) to top-level Live when Lab A settled PnL exceeds B/C/D/E. Extra confirmation when Live is in Real $ mode."
-            onClick={() => void promoteLabAToLive()}
-          >
-            Apply Lab A to Live
-          </button>
         </div>
       </section>
       </div>
@@ -6193,7 +6287,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className="primary dash-panel-btn"
+                  className="primary dash-panel-btn dash-panel-btn--info"
                   title={
                     "This card: main area switches Optimizer radar vs Breeder vs Tree; mutation dial + Lab pulse stay fixed just above the tab row on every tab. " +
                     "Under the title: Breeding pool / death-chamber snapshot (click → Tree tab). " +
@@ -6406,7 +6500,7 @@ export default function App() {
               </h2>
               <button
                 type="button"
-                className="primary dash-panel-btn"
+                className="primary dash-panel-btn dash-panel-btn--info"
                 title={
                   "Per-asset engine snapshot cards: Live vs Lab A–E select which branch’s last tick view you read; config is unchanged. " +
                   "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
@@ -6736,7 +6830,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="primary dash-panel-btn"
+                className="primary dash-panel-btn dash-panel-btn--info"
                 title={
                   "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
@@ -7066,7 +7160,7 @@ export default function App() {
               </span>
               <button
                 type="button"
-                className="primary dash-panel-btn"
+                className="primary dash-panel-btn dash-panel-btn--info"
                 title={
                   "Account: signed balance/positions when API keys are set; otherwise public market data only. Holdings: Kalshi open vs " +
                   "per-branch sim columns. Engine strip = dashboard poll, not the exchange. Credentials: KALSHI_API_KEY_ID + private key in " +
@@ -7288,7 +7382,7 @@ export default function App() {
               </h3>
               <button
                 type="button"
-                className="primary dash-panel-btn"
+                className="primary dash-panel-btn dash-panel-btn--info"
                 title={
                   "Capped signal + trade history; Live/Lab tabs filter rows (legacy sim_lab → Lab A). “Bets not traded” uses separate branch pickers. " +
                   "Not shown: optimizer suggested_action as toasts (bottom-right, throttled). Timestamps = log order; pair with JSONL for forensics."
@@ -7849,7 +7943,7 @@ export default function App() {
           style={{
             position: "fixed",
             inset: 0,
-            /* Above .app-loading-screen (2000) and hero while loading (2500) so help stays visible during refresh. */
+            /* Above .app-loading-screen (2100) and sticky hero (.top 920) so help stays visible during refresh. */
             zIndex: infoPopup.variant === "optimizerReport" ? 2700 : 2600,
             display: "flex",
             alignItems: "center",
@@ -8053,7 +8147,13 @@ function ApiOfflineCallout({ message }: { message: string }) {
 }
 
 /** First dashboard fetch: minimal full-screen state until `/api/dashboard` returns. */
-function DashboardLoadingScreen({ onRetry }: { onRetry: () => void }) {
+function DashboardLoadingScreen({
+  onRetry,
+  onOpenSettings,
+}: {
+  onRetry: () => void;
+  onOpenSettings: () => void;
+}) {
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
@@ -8081,10 +8181,11 @@ function DashboardLoadingScreen({ onRetry }: { onRetry: () => void }) {
           {elapsedSec}s
         </p>
         <p className="app-loading-screen__retry-hint" role="note">
-          Stuck? <strong>Retry</strong> below, or <strong>Settings</strong> (⚙) → <strong>Refresh now</strong>. Open the
-          app at the Vite URL (this page:{" "}
-          <code>{typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"}</code>) so requests
-          to <code>/api</code> proxy to the Python server.
+          Stuck? <strong>Retry</strong> below — forced reload aborts any hung request. If the API is slow, this screen
+          also auto-retries once after ~{Math.ceil((DASHBOARD_REQUEST_TIMEOUT_MS + 12_000) / 1000)}s. Use{" "}
+          <strong>Settings</strong> for <strong>Refresh now</strong>. Open via the Vite URL (this page:{" "}
+          <code>{typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"}</code>) so{" "}
+          <code>/api</code> proxies to Python.
         </p>
         <div className="app-loading-screen__actions">
           <button
@@ -8094,6 +8195,14 @@ function DashboardLoadingScreen({ onRetry }: { onRetry: () => void }) {
             title="Force a new /api/dashboard request (same as Settings → Refresh now)."
           >
             Retry
+          </button>
+          <button
+            type="button"
+            className="app-loading-screen__retry-btn"
+            onClick={onOpenSettings}
+            title="Open Settings (Kalshi link, Refresh now, rules)."
+          >
+            Settings ⚙
           </button>
         </div>
       </div>

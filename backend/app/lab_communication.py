@@ -161,18 +161,18 @@ def refresh_engine_council_signal(
     bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
     div = council_diversity_pulse_active(full_cfg)
     tot = yes_h + no_h
-    strength = min(1.0, tot / 4.0) * (1.22 if div else 1.0)
-    if tot >= 2 and abs(bias) >= 0.34:
-        strength = max(strength, 0.58)
+    strength = min(1.0, tot / 4.0) * (1.32 if div else 1.0)
+    if tot >= 2 and abs(bias) >= 0.26:
+        strength = max(strength, 0.66)
     if div:
-        strength = max(strength, 0.58)
+        strength = max(strength, 0.78)
     if diversify_pulse:
-        strength = max(strength, 0.91)
-        strength = min(1.0, strength * 1.35)
+        strength = max(strength, 0.97)
+        strength = min(1.0, strength * 1.55)
     if tot == 0 and not div and not diversify_pulse:
         bus._engine_council_signal = None
         return
-    ttl = 420.0 if diversify_pulse else 120.0
+    ttl = 900.0 if diversify_pulse else 120.0
     bus._engine_council_signal = {
         "bias": float(bias),
         "yes_ct": int(yes_h),
@@ -493,7 +493,7 @@ def council_diversity_pulse_active(full_cfg: dict[str, Any] | None) -> bool:
     return datetime.now(timezone.utc) < t
 
 
-# During ``labs_council_diversity_until``, track adversarial pool usage on peer + strategic lines (~40–50% counters).
+# During ``labs_council_diversity_until``, track adversarial pool usage on peer + strategic lines (~60–70% counters).
 _DIVERSITY_ADV_RECENT: deque[int] = deque(maxlen=28)
 
 
@@ -511,22 +511,22 @@ def _diversity_counter_adversarial_rate() -> float:
 
 def _adversarial_fractions(full_cfg: dict[str, Any] | None) -> tuple[float, float]:
     if council_diversity_pulse_active(full_cfg):
-        return 0.50, 0.52
+        return 0.66, 0.70
     return _ADVERSARIAL_REPLY_FRACTION, _ADVERSARIAL_STRATEGIC_FRACTION
 
 
 def _quota_adjust_peer_frac(adv_reply_frac: float, full_cfg: dict[str, Any] | None) -> float:
-    """Bias peer-reply random draw so rolling counter stays ~40–50% adversarial during diversity."""
+    """Bias peer-reply random draw so rolling counter stays ~55–70% adversarial during diversity."""
     if not council_diversity_pulse_active(full_cfg):
         return adv_reply_frac
     n = len(_DIVERSITY_ADV_RECENT)
     rate = _diversity_counter_adversarial_rate()
     if n < 8:
-        return max(adv_reply_frac, 0.48)
-    if rate < 0.40:
-        return max(adv_reply_frac, 0.93)
-    if rate > 0.50:
-        return min(adv_reply_frac, 0.34)
+        return max(adv_reply_frac, 0.58)
+    if rate < 0.52:
+        return max(adv_reply_frac, 0.94)
+    if rate > 0.68:
+        return min(adv_reply_frac, 0.28)
     return adv_reply_frac
 
 
@@ -536,11 +536,11 @@ def _quota_adjust_strat_frac(adv_strat_frac: float, full_cfg: dict[str, Any] | N
     n = len(_DIVERSITY_ADV_RECENT)
     rate = _diversity_counter_adversarial_rate()
     if n < 8:
-        return max(adv_strat_frac, 0.50)
-    if rate < 0.40:
-        return max(adv_strat_frac, 0.90)
-    if rate > 0.50:
-        return min(adv_strat_frac, 0.36)
+        return max(adv_strat_frac, 0.62)
+    if rate < 0.52:
+        return max(adv_strat_frac, 0.92)
+    if rate > 0.68:
+        return min(adv_strat_frac, 0.30)
     return adv_strat_frac
 
 

@@ -25,7 +25,7 @@ const ACTION_DETAIL: Record<string, string> = {
   breeding_whisper: "Rare breeding-context nudge when GA breeding is enabled (still flavor only).",
   team_dialogue_sim: "Anchored reply after a peer line; triggered on sim fills, not ranked scans.",
   council_diversity_pulse:
-    "Self-correct council: Diversify Labs set a ~45m window; server steers ~40–50% of Think Tank lines to adversarial (counter) pool for B–E only.",
+    "Self-correct council: Diversify Labs set a 60m maximum-opposition window; server steers ~60–70% of Think Tank lines to adversarial (counter) pool for B–E only.",
 };
 
 type Props = {
@@ -44,7 +44,7 @@ function formatDiversityBanner(until: string): string | null {
   const ms = Date.parse(t);
   if (!Number.isFinite(ms)) return null;
   if (ms <= Date.now()) return null;
-  return `Council diversity window active until ${t.slice(0, 16).replace("T", " ")}Z — Think Tank favors dissent.`;
+  return `Maximum opposition (60m window) until ${t.slice(0, 16).replace("T", " ")}Z — breeders diverge; Think Tank favors dissent.`;
 }
 
 /** Dense live log — latest five lines, zero fixed height, minimal chrome. */

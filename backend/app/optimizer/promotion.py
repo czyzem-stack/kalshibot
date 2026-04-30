@@ -6,7 +6,7 @@ import datetime as dt
 import statistics
 from typing import TYPE_CHECKING, Any
 
-from ..branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D
+from ..branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E
 from .fitness import composite_fitness_score, is_statistically_better
 
 if TYPE_CHECKING:
@@ -60,11 +60,13 @@ async def lab_a_promotion_report(
     roll_b = await store.dashboard_branch_trade_rollups(BRANCH_LAB_B, "simulate")
     roll_c = await store.dashboard_branch_trade_rollups(BRANCH_LAB_C, "simulate")
     roll_d = await store.dashboard_branch_trade_rollups(BRANCH_LAB_D, "simulate")
+    roll_e = await store.dashboard_branch_trade_rollups(BRANCH_LAB_E, "simulate")
     pa = int(roll_a.get("total_pnl_cents") or 0)
     pb = int(roll_b.get("total_pnl_cents") or 0)
     pc = int(roll_c.get("total_pnl_cents") or 0)
     pd = int(roll_d.get("total_pnl_cents") or 0)
-    legacy_ok = bool(pa > pb and pa > pc and pa > pd)
+    pe = int(roll_e.get("total_pnl_cents") or 0)
+    legacy_ok = bool(pa > pb and pa > pc and pa > pd and pa > pe)
 
     tr_a = await store.query_table(
         "trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
@@ -164,7 +166,7 @@ async def lab_a_promotion_report(
     return {
         "window_start": start_iso,
         "window_end": end_iso,
-        "legacy_pnl_cents": {"lab_a": pa, "lab_b": pb, "lab_c": pc, "lab_d": pd},
+        "legacy_pnl_cents": {"lab_a": pa, "lab_b": pb, "lab_c": pc, "lab_d": pd, "lab_e": pe},
         "legacy_pnl_ok": legacy_ok,
         "composite_scores": {"lab_a": fit_a, "lab_b": fit_b, "lab_c": fit_c, "lab_d": fit_d},
         "score_median_controls": med_bcd,

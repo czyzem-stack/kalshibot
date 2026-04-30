@@ -76,61 +76,70 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
 def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
     if lab_key == "lab_b":
-        # Conservative: narrow YES windows + single disciplined NO fade — unlike wide C or NO-heavy D.
+        # Iceberg: **NO-first** book + one microscopic late YES — opposite pole from C’s open blaze and D’s early YES.
         return [
-            {"name": "B micro scalp YES", "min_prob": 0.54, "max_prob": 0.66, "min_minutes_left": 5.0, "max_minutes_left": 12.0},
-            {"name": "B tight mid YES", "min_prob": 0.60, "max_prob": 0.74, "min_minutes_left": 4.0, "max_minutes_left": 13.0},
-            {"name": "B narrow high YES", "min_prob": 0.74, "max_prob": 0.86, "min_minutes_left": 3.0, "max_minutes_left": 10.0},
-            {"name": "B late scalp YES", "min_prob": 0.42, "max_prob": 0.58, "min_minutes_left": 1.0, "max_minutes_left": 7.0},
+            {"name": "B glacier NO 14–19m", "side": "no", "min_prob": 0.52, "max_prob": 0.78, "min_minutes_left": 14.0, "max_minutes_left": 19.0},
+            {"name": "B bunker NO 17–23m", "side": "no", "min_prob": 0.44, "max_prob": 0.70, "min_minutes_left": 17.0, "max_minutes_left": 23.0},
             {
-                "name": "B counter-thesis: fade crowded YES",
+                "name": "B explicit counter-thesis NO: veto euphoria 12–18m",
                 "side": "no",
-                "min_prob": 0.56,
-                "max_prob": 0.80,
-                "min_minutes_left": 2.5,
-                "max_minutes_left": 15.0,
+                "min_prob": 0.58,
+                "max_prob": 0.86,
+                "min_minutes_left": 12.0,
+                "max_minutes_left": 18.0,
             },
+            {"name": "B vault NO 20–24m", "side": "no", "min_prob": 0.36, "max_prob": 0.60, "min_minutes_left": 20.0, "max_minutes_left": 24.0},
+            {"name": "B whisper YES 21.5–22.5m only", "min_prob": 0.64, "max_prob": 0.80, "min_minutes_left": 21.5, "max_minutes_left": 22.5},
         ]
     if lab_key == "lab_c":
-        # Aggressive: very wide YES + two independent NO lanes — unlike B tight bands or D NO-first.
+        # Plasma: **sub-minute** YES + 36m vacuum + NO only in first 4m — zero overlap with B’s 12m+ NO or D’s mid YES.
         return [
-            {"name": "C wide rip YES", "min_prob": 0.22, "max_prob": 0.88, "min_minutes_left": 0.5, "max_minutes_left": 24.0},
-            {"name": "C momentum YES", "min_prob": 0.44, "max_prob": 0.94, "min_minutes_left": 0.5, "max_minutes_left": 20.0},
-            {"name": "C rocket YES", "min_prob": 0.62, "max_prob": 0.97, "min_minutes_left": 1.0, "max_minutes_left": 14.0},
-            {"name": "C NO cannon", "side": "no", "min_prob": 0.50, "max_prob": 0.94, "min_minutes_left": 1.0, "max_minutes_left": 22.0},
+            {"name": "C spark YES 0.15–0.9m", "min_prob": 0.58, "max_prob": 0.995, "min_minutes_left": 0.15, "max_minutes_left": 0.9},
+            {"name": "C cyclone YES 0.15–36m", "min_prob": 0.10, "max_prob": 0.96, "min_minutes_left": 0.15, "max_minutes_left": 36.0},
+            {"name": "C afterburn YES 1.5–8m", "min_prob": 0.50, "max_prob": 0.99, "min_minutes_left": 1.5, "max_minutes_left": 8.0},
+            {"name": "C choke NO 0.15–2m", "side": "no", "min_prob": 0.48, "max_prob": 0.92, "min_minutes_left": 0.15, "max_minutes_left": 2.0},
             {
-                "name": "C deep NO: overheated YES",
+                "name": "C explicit counter-thesis NO: torch the open",
                 "side": "no",
-                "min_prob": 0.34,
-                "max_prob": 0.70,
-                "min_minutes_left": 0.5,
-                "max_minutes_left": 24.0,
+                "min_prob": 0.20,
+                "max_prob": 0.55,
+                "min_minutes_left": 0.2,
+                "max_minutes_left": 4.0,
             },
+            {"name": "C sweep NO 2.5–5m", "side": "no", "min_prob": 0.32, "max_prob": 0.78, "min_minutes_left": 2.5, "max_minutes_left": 5.0},
         ]
     if lab_key == "lab_d":
-        # Contrarian: NO-first book — only one exploratory YES tail vs E's balanced dual YES.
+        # Inversion: **early spike YES only** 2.5–4m + NO everywhere else — fights B (late NO), C (open rip), E (stagger).
         return [
-            {"name": "D veto YES pile-on", "side": "no", "min_prob": 0.32, "max_prob": 0.62, "min_minutes_left": 1.0, "max_minutes_left": 24.0},
-            {"name": "D fade consensus YES", "side": "no", "min_prob": 0.44, "max_prob": 0.76, "min_minutes_left": 1.5, "max_minutes_left": 20.0},
-            {"name": "D structured NO mid", "side": "no", "min_prob": 0.52, "max_prob": 0.82, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
-            {"name": "D lone wolf YES", "min_prob": 0.30, "max_prob": 0.52, "min_minutes_left": 2.5, "max_minutes_left": 14.0},
-            {"name": "D chaos YES tail", "min_prob": 0.64, "max_prob": 0.97, "min_minutes_left": 1.0, "max_minutes_left": 11.0},
+            {"name": "D needle YES 2.5–4m only", "min_prob": 0.40, "max_prob": 0.62, "min_minutes_left": 2.5, "max_minutes_left": 4.0},
+            {"name": "D void NO 0.5–8m", "side": "no", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 0.5, "max_minutes_left": 8.0},
+            {"name": "D trench NO 7–16m", "side": "no", "min_prob": 0.46, "max_prob": 0.76, "min_minutes_left": 7.0, "max_minutes_left": 16.0},
+            {
+                "name": "D explicit counter-thesis NO: bury the open rush",
+                "side": "no",
+                "min_prob": 0.28,
+                "max_prob": 0.54,
+                "min_minutes_left": 4.0,
+                "max_minutes_left": 14.0,
+            },
+            {"name": "D eclipse NO 12–28m", "side": "no", "min_prob": 0.50, "max_prob": 0.88, "min_minutes_left": 12.0, "max_minutes_left": 28.0},
         ]
     if lab_key == "lab_e":
-        # Adaptive: symmetric YES ladder + stacked fade NOs — distinct from D's NO-first skew.
+        # Zigzag: **alternating** YES/NO clocks that avoid B/C/D concentration windows.
         return [
-            {"name": "E balanced core YES", "min_prob": 0.42, "max_prob": 0.76, "min_minutes_left": 2.0, "max_minutes_left": 20.0},
-            {"name": "E tier2 YES", "min_prob": 0.54, "max_prob": 0.91, "min_minutes_left": 2.0, "max_minutes_left": 16.0},
-            {"name": "E sprint YES", "min_prob": 0.68, "max_prob": 0.96, "min_minutes_left": 1.2, "max_minutes_left": 12.0},
-            {"name": "E hedge NO mid", "side": "no", "min_prob": 0.48, "max_prob": 0.72, "min_minutes_left": 2.5, "max_minutes_left": 18.0},
+            {"name": "E pulse YES 0.5–2.5m", "min_prob": 0.54, "max_prob": 0.88, "min_minutes_left": 0.5, "max_minutes_left": 2.5},
+            {"name": "E gate NO 3–6m", "side": "no", "min_prob": 0.42, "max_prob": 0.72, "min_minutes_left": 3.0, "max_minutes_left": 6.0},
+            {"name": "E ramp YES 7–10m", "min_prob": 0.48, "max_prob": 0.84, "min_minutes_left": 7.0, "max_minutes_left": 10.0},
             {
-                "name": "E counter-thesis: adaptive fade wide",
+                "name": "E explicit counter-thesis NO: brake 9–13m",
                 "side": "no",
-                "min_prob": 0.40,
-                "max_prob": 0.88,
-                "min_minutes_left": 1.5,
-                "max_minutes_left": 22.0,
+                "min_prob": 0.50,
+                "max_prob": 0.82,
+                "min_minutes_left": 9.0,
+                "max_minutes_left": 13.0,
             },
+            {"name": "E zen YES 14–17m", "min_prob": 0.56, "max_prob": 0.90, "min_minutes_left": 14.0, "max_minutes_left": 17.0},
+            {"name": "E veil NO 15–20m", "side": "no", "min_prob": 0.38, "max_prob": 0.68, "min_minutes_left": 15.0, "max_minutes_left": 20.0},
         ]
     return _breeder_loose_rules_fallback()
 

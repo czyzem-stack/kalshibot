@@ -551,7 +551,7 @@ def _breeder_effective_prob_yes(
 ) -> tuple[float, bool]:
     """
     YES-mid tilt for **rule matching only**: Think Tank YES/NO lean, ``peek_engine_council_signal``,
-    diversity pulse amplitude, explicit opposing-thesis paths for D/E, and per-lab personality drift.
+    very strong council-on-probability, explicit D/E inversion vs council bias, and wide personality drift.
     ``council_influence_weight_pct`` on the merged lab cfg scales how much council signal moves probability.
     """
     bus = get_lab_communication_bus()
@@ -562,32 +562,33 @@ def _breeder_effective_prob_yes(
     pers = _breeder_personality_tag(breeder_cfg, branch)
 
     r = _breeder_rng(branch, engine._tick_count, ticker)
-    # Personality drift — intentionally wide so B/C/D/E paths decorrelate even with similar council lean.
-    scales = {BRANCH_LAB_B: 0.042, BRANCH_LAB_C: 0.056, BRANCH_LAB_D: 0.068, BRANCH_LAB_E: 0.048}
-    sc = scales.get(branch, 0.048)
+    # Personality drift — maximal spread: each lab wanders a different region of implied-prob space per tick.
+    scales = {BRANCH_LAB_B: 0.38, BRANCH_LAB_C: 0.48, BRANCH_LAB_D: 0.55, BRANCH_LAB_E: 0.44}
+    sc = scales.get(branch, 0.44)
     if pers == "conservative":
-        sc *= 1.22
+        sc *= 1.88
     elif pers == "aggressive":
-        sc *= 1.28
+        sc *= 1.95
     elif pers == "contrarian":
-        sc *= 1.35
+        sc *= 2.12
     elif pers == "adaptive":
-        sc *= 1.12
+        sc *= 1.78
 
     drift = r.uniform(-sc, sc)
     if branch == BRANCH_LAB_B or pers == "conservative":
-        drift -= r.uniform(0.010, 0.026)
+        drift -= r.uniform(0.08, 0.20)
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        drift += r.uniform(0.014, 0.032)
+        drift += r.uniform(0.10, 0.22)
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        if r.random() < 0.62:
-            drift *= -1.42
-        drift += r.uniform(-0.022, 0.022)
+        if r.random() < 0.92:
+            drift *= -(1.95 + 0.55 * r.random())
+        drift += r.uniform(-0.16, 0.16)
     elif pers == "adaptive":
-        drift += r.uniform(-0.014, 0.014)
+        drift += r.uniform(-0.15, 0.15)
 
     st_sig = float(sig.get("strength", 0.0)) if sig else 0.0
     sig_bias = float(sig.get("bias", 0.0)) if sig else 0.0
+    pulse_tag = bool(sig.get("diversify_pulse")) if sig else False
 
     w_msg = 0.52
     w_sig = 0.48 * min(1.0, st_sig + 0.12)
@@ -595,43 +596,52 @@ def _breeder_effective_prob_yes(
     combined = max(-1.0, min(1.0, combined))
 
     tot = yes_h + no_h
-    strong_msgs = tot >= 2 and abs(bias_msgs) >= 0.25
+    strong_msgs = tot >= 2 and abs(bias_msgs) >= 0.22
 
-    # Explicit opposing thesis: Labs D and E invert strong council consensus (anti-synchronized drawdowns).
-    if branch == BRANCH_LAB_D:
-        thr = 0.14 if div else 0.17
-        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.22):
-            if r.random() < (0.96 if div else 0.92):
-                flip = 0.94 + 0.06 * r.random()
-                combined = -combined * flip
-    elif branch == BRANCH_LAB_E:
-        thr = 0.12 if div else 0.14
+    # Labs D/E: full mirror-invert vs council bias (≥90% apply when |bias| is nontrivial).
+    if branch == BRANCH_LAB_D and abs(sig_bias) >= 0.35:
+        if r.random() < 0.90:
+            combined = max(-1.0, min(1.0, 1.0 - combined))
+    elif branch == BRANCH_LAB_E and abs(sig_bias) >= 0.35:
+        if r.random() < 0.90:
+            combined = max(-1.0, min(1.0, 1.0 - combined))
+
+    # Explicit opposing thesis: D/E invert when council bias is still weak but messages polarize.
+    if branch == BRANCH_LAB_D and abs(sig_bias) < 0.35:
+        thr = 0.07 if pulse_tag else (0.09 if div else 0.13)
         if abs(combined) >= thr and (strong_msgs or st_sig >= 0.18):
-            if r.random() < (0.90 if div else 0.82):
-                flip = 0.84 + 0.16 * r.random()
+            if r.random() < (0.985 if div or pulse_tag else 0.94):
+                flip = 0.92 + 0.08 * r.random()
+                combined = -combined * flip
+    elif branch == BRANCH_LAB_E and abs(sig_bias) < 0.35:
+        thr = 0.06 if pulse_tag else (0.08 if div else 0.11)
+        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.15):
+            if r.random() < (0.96 if div or pulse_tag else 0.88):
+                flip = 0.88 + 0.12 * r.random()
                 combined = -combined * flip
 
     # Lab B damps herd-following; Lab C amplifies directional tilt (anti-sync vs B).
     if branch == BRANCH_LAB_B or pers == "conservative":
-        combined *= 0.20
+        combined *= 0.07
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        combined *= 1.22
+        combined *= 1.78
 
-    # Council-on-probability: normal ~±25–35% at full weight; diversity mode ~±40–50%.
-    amp_mid = 0.452 if div else 0.302
-    amp_spread = 0.096 if div else 0.084
+    # NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS
+    # Full-weight council-on-probability: ~±100–140% normally; diversity ~±120–160% (stronger herd-breaker).
+    amp_mid = 1.40 if div else 1.20
+    amp_spread = 0.40 if div else 0.40
     amp = amp_mid + (r.random() - 0.5) * amp_spread
     amp *= cw
 
     council_push = combined * amp
-    council_active = abs(council_push) > 1e-6 or (sig is not None and st_sig >= 0.18)
+    council_active = abs(council_push) > 1e-6 or (sig is not None and st_sig >= 0.15)
 
     time_w = min(1.14, max(0.66, float(mins) / 15.0))
     council_push *= time_w
 
     out = prob + drift + council_push
     out = max(0.01, min(0.99, out))
-    if sig is not None and st_sig >= 0.18 and abs(sig_bias) > 0.03:
+    if sig is not None and st_sig >= 0.15 and abs(sig_bias) > 0.03:
         council_active = True
     return out, council_active
 
@@ -662,7 +672,7 @@ def _breeder_touch_ranked_edge(
     st = float(sig.get("strength", 0.0))
     side = rule_trade_side(matched_rule)
     raw_bonus = st * b * (0.028 if side == "yes" else -0.028) * cw
-    pers = {BRANCH_LAB_B: 0.72, BRANCH_LAB_C: 1.12, BRANCH_LAB_D: 0.95 + 0.2 * r.random(), BRANCH_LAB_E: 1.02}.get(branch, 1.0)
+    pers = {BRANCH_LAB_B: 0.62, BRANCH_LAB_C: 1.22, BRANCH_LAB_D: 0.88 + 0.26 * r.random(), BRANCH_LAB_E: 0.94 + 0.18 * r.random()}.get(branch, 1.0)
     return edge * (1.0 + raw_bonus * pers)
 
 
@@ -1093,7 +1103,9 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
     """
     When ``auto_reset_paper_on_tick_failure`` is on for a lab, wipe that branch's SQLite trading
     rows (once per bad streak) if the tick ended with ``last_error`` **or** derived paper equity
-    (seed + settled PnL − open commit) is ≤ 0, so the next tick starts from ``paper_balance_cents``.
+    (``lab_paper_equity_start_cents`` + settled PnL − open commit) is ≤ 0. Baseline must match the
+    dashboard / MTM (includes ``paper_lifetime_basis_cents`` when set), not ``paper_balance_cents``
+    alone — otherwise re-seeded labs can spuriously wipe overnight while tiles still show positive equity.
     """
     br_engine = engine.branch
     if not _is_lab_branch(br_engine):
@@ -1115,7 +1127,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         roll = await engine.store.dashboard_branch_trade_rollups(br_engine, "simulate")
         settled_pnl = int(roll.get("total_pnl_cents") or 0)
         open_committed = int(roll.get("open_committed_cents") or 0)
-        paper = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
+        paper = lab_paper_equity_start_cents(full_cfg, br_engine)
         equity_cents = paper + settled_pnl - open_committed
         bust = equity_cents <= 0
 
@@ -2755,6 +2767,8 @@ async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, 
             ex["settlement_exit_fee_cents"] = exit_fee_cents
             ex["settlement_net_payout_cents"] = net_payout_cents
             ex["paper_fee_model"] = fee_model
+            # ``pnl`` can be exactly 0 on a favorable outcome when entry debit ≈ $1/contract (YES or NO bought
+            # near par): settlement credits $1/contract and quadratic entry fee at p→1 is ~0 — not a stale toast.
             await engine.store.update_trade_settlement(tid, result, int(pnl), iso(now), extra_json=json.dumps(ex))
             settled_n += 1
         except Exception as e:

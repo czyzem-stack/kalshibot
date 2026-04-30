@@ -2,6 +2,25 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.060 - Breeder anti-sync: ±100–140% council + 90% D/E invert - 2026-04-29
+
+- **Backend (`engines/engine.py`):** ``_breeder_effective_prob_yes`` — council gain **~±100–140%** at full weight (normal), **~±120–160%** in diversity mode. Labs **D/E**: **``|sig_bias|≥0.35``** ⇒ **``combined = clamp(1.0 - combined)``** on **≥90%** of ticks. **B** herd damp **0.07**, **C** amplify **1.78**; personality **drift** widened again. **``# NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS``** retained on the council-gain block.
+- **Backend (`persistence.py`):** ``_breeder_fallback_rules_for`` — **B** NO-first + one **21.5–22.5m** YES whisper; **C** **0.15–0.9m** YES + **36m** wide YES + sub-5m NO stack; **D** **2.5–4m** lone YES + NO elsewhere; **E** zigzag YES/NO windows + explicit counter-NO lane.
+- **Frontend (`App.tsx`, `styles.css`):** Dashboard **Info** buttons aligned as the **rightmost** header control (**Apply Lab A to Live** left of **Info** on Branch performance); shared **``.dash-panel-btn--info``** styling; header flex so titles do not crowd actions.
+- **README.md:** **Dashboard & Settings map** documents header layout; **Equity curves** time-tab table matches **Live / Intraday / D–Y** dense rolling behavior, **4000**-row API window, and linear **tsMs** axis note.
+
+## v0.4.15.059 - Breeder council: nuclear opposition + divergent default rules - 2026-04-29
+
+- **Backend (`engines/engine.py`):** ``_breeder_effective_prob_yes`` — council amplitude **~±90–120%** at full weight (normal); diversity window slightly higher. Labs **D/E**: when **``|sig_bias|≥0.4``**, apply **``combined = clamp(1.0 - combined)``** on **≥82%** of ticks. **B** herd damp **0.10**, **C** amplify **1.62**; personality **drift** widened again. Comment **``# NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS``** marks the council-gain block.
+- **Backend (`persistence.py`):** ``_breeder_fallback_rules_for`` — **B** late-only YES (17–22m) + late NO; **C** sub-3m flash + 30m-wide YES + early NO stack; **D** NO wall + lone YES **10–13m** only; **E** early/mid YES wedges + offset NO hedges (explicit counter-thesis lanes).
+
+## v0.4.15.058 - Anti-sync drawdowns: nuclear diversify + stronger council opposition - 2026-04-29
+
+- **Backend (`engines/engine.py`):** Breeder effective YES tilt scales to roughly **±45–60%** (full council weight) normally and **±70–90%** during **`labs_council_diversity_until`**. Labs **D/E** **hard-flip** against the council when **`|bias|≥0.6`**, with tighter thresholds + higher invert rates otherwise; **B** damps herd more, **C** amplifies more; personality **drift ranges widened**; ranked-edge spread adjusted per lab.
+- **Backend (`persistence.py`):** **`_breeder_fallback_rules_for`** rebuilt so **B/C/D/E** use **non-overlapping time clocks**, extra explicit counter-NO lanes, and clearly divergent YES bands (conservative mid-close B vs wide-clock C vs NO-wall D vs staggered adaptive E).
+- **Backend (`lab_diversify.py`, `main.py`):** **`POST /labs/diversify`** extends the council window to **60 minutes**, publishes **two nuclear lines per breeder**, and keeps the strong engine council refresh.
+- **Backend (`lab_communication.py`):** Higher council **strength** floors during diversity + diversify pulse, longer pulse signal TTL, Think Tank adversarial pool targets **~60–70%** counters during the window.
+
 ## v0.4.15.057 - Settings breeders: council readout + remount on rule reset - 2026-04-29
 
 - **Frontend (`SettingsOverlay.tsx`):** Breeder B–E cards show a live **council influence weight** percentage next to the slider; card **remount keys** now include a short **rules signature** so **Reset to smart defaults** refreshes uncontrolled inputs (rules, sliders) reliably. **Force internal mutation** vs **Diversify council** copy clarifies Lab A-only mutation vs B–E diversity window and tilt scaling.

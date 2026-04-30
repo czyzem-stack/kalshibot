@@ -2014,7 +2014,7 @@ export default function SettingsOverlay({
                     opacity: 0.95,
                   }}
                   disabled={busy || optimizerSaving || forcingMutation || diversifyCouncilBusy || !onDiversifyLabsNow}
-                  title="POST /labs/diversify: 45m Breeding Council Think Tank diversity pulse (B–E only). Nuke option (Settings only). No Lab A internal mutation."
+                  title="POST /labs/diversify: 60m maximum-opposition window (B–E). Nuclear council pulse + Think Tank lines. No Lab A internal mutation."
                   onClick={() =>
                     void (async () => {
                       if (!onDiversifyLabsNow) return;
@@ -2032,8 +2032,9 @@ export default function SettingsOverlay({
               </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
                 <strong>Force</strong> runs one <strong>Lab A</strong> internal optimizer mutation plus replay fitness gate — it does <strong>not</strong> change breeder
-                council math. <strong>Diversify council</strong> targets <strong>B–E</strong> only: sets <code>labs_council_diversity_until</code> for 45m, queues a
-                strong Think Tank / council pulse, and widens effective YES-tilt bands (roughly ±40–50% at full council weight vs ~±25–35% when diversity is off).
+                council math. <strong>Diversify council</strong> targets <strong>B–E</strong> only: sets <code>labs_council_diversity_until</code> for{" "}
+                <strong>60 minutes</strong>, floods adversarial Think Tank lines, and widens effective YES-tilt bands (roughly{" "}
+                <strong>±70–90%</strong> at full council weight during the window vs <strong>~±45–60%</strong> when diversity is off).
               </p>
             </div>
             <div style={{ marginTop: 20 }}>
@@ -2234,6 +2235,13 @@ export default function SettingsOverlay({
             Example: <code>500000</code> = $5,000.00 per branch. Empty = do not change bankroll fields in{" "}
             <code>bot_config</code>. When set, per-lab <code>paper_lifetime_basis_cents</code> is cleared so Labs
             A–E and Live all use the same equity baseline (otherwise older labs could keep a higher lifetime basis).
+          </div>
+          <div className="sub" style={{ marginTop: 6, fontSize: 11, opacity: 0.88, lineHeight: 1.45 }}>
+            <strong>Hero strip vs $5k:</strong> each branch uses <strong>Paper balance (cents)</strong> in config — shipped defaults are{" "}
+            <code>500000</code> ($5k) unless you changed them. The dashboard also prefers{" "}
+            <code>paper_lifetime_basis_cents</code> when present; if that field disappears from a lab block after{" "}
+            <strong>Save / Mass apply</strong>, equity metrics fall back to <code>paper_balance_cents</code>, which can look like a sudden jump
+            upward even if you never used Data reset. Check each lab in Simulation labs or <code>GET /api/config</code>.
           </div>
         </div>
         <button

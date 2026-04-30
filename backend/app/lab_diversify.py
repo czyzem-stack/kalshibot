@@ -1,7 +1,7 @@
 """
 Council diversity pulse: ``POST /labs/diversify`` sets ``labs_council_diversity_until`` so the
-Think Tank runs hotter adversarial / rotation mix for ~45 minutes. No internal mutation and no
-gate bumps (distinct from ``force`` internal mutation).
+Think Tank runs hotter adversarial / rotation mix for **60 minutes** (maximum-opposition window).
+No internal mutation and no gate bumps (distinct from ``force`` internal mutation).
 
 Legacy ``emergency_diversify_*`` keys are still reverted by expiry for older configs.
 """
@@ -16,7 +16,7 @@ from .lab_communication import _voice_prefix, get_lab_communication_bus, refresh
 
 logger = logging.getLogger("kalshibot.api")
 
-_DIVERSIFY_MINUTES = 45
+_DIVERSIFY_MINUTES = 60
 _COUNCIL_DIVERSITY_KEY = "labs_council_diversity_until"
 
 def _parse_until_iso(raw: Any) -> dt.datetime | None:
@@ -96,7 +96,7 @@ async def maybe_revert_council_diversity_if_due(store: Any, cfg: dict[str, Any])
 
 async def apply_emergency_diversify(store: Any) -> dict[str, Any]:
     """
-    Council diversity pulse only: extends adversarial Think Tank mix for ~45m, posts DIVERSITY PULSE lines.
+    Council diversity pulse only: extends adversarial Think Tank mix for **60m**, posts nuclear diversify lines.
     Does **not** run internal mutation (use ``force`` for that) and does **not** change breeder gates.
     """
     cfg = await store.load_config()
@@ -119,18 +119,25 @@ async def apply_emergency_diversify(store: Any) -> dict[str, Any]:
     )
 
     bus = get_lab_communication_bus()
-    banners = [
-        "DIVERSITY PULSE 45m—split the pile",
-        "DIVERSITY PULSE—talk your book",
-        "DIVERSITY PULSE—no groupthink",
-        "DIVERSITY PULSE—oppose default",
+    banners_a = [
+        "NUCLEAR DIVERSIFY 60m—max opposition ON",
+        "NUCLEAR—take the other side vs pile-on",
+        "NUCLEAR—split positions now",
+        "NUCLEAR—breeders forced to diverge",
+    ]
+    banners_b = [
+        "Council pulse MAX—engine tilt widened",
+        "Hold dissent lane—no synchronized slide",
+        "Think Tank adversarial mix boosted",
+        "Oppose consensus—rules diverge hard",
     ]
     for i, br in enumerate(BRANCH_BREEDERS):
         vp = _voice_prefix(br)
-        line = f"{vp} {banners[i % len(banners)]}"
-        if len(line) > 69:
-            line = line[:69].rsplit(" ", 1)[0]
-        bus.publish(br, line, kind="say", action="council_diversity_pulse")
+        for phrase in (banners_a[i % len(banners_a)], banners_b[i % len(banners_b)]):
+            line = f"{vp} {phrase}"
+            if len(line) > 69:
+                line = line[:69].rsplit(" ", 1)[0]
+            bus.publish(br, line, kind="say", action="council_diversity_pulse")
 
     refresh_engine_council_signal(bus, cfg, diversify_pulse=True)
 

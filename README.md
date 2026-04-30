@@ -119,7 +119,7 @@ Breeding answers: **which simulated strategies deserve to move toward Live**, wi
 | **One lab (e.g. E) won’t stay on after refresh** | Same **`PUT /api/config/lab-branches`** path (avoid legacy toggle-only flows on old builds). |
 | **Copy sizing / patient stop across labs** | Mass apply: copy sizing from active tab; copy patient stop from a chosen source lab. |
 | **Restore distinct B–E templates** | **Settings → Simulation labs → Breeder labs (B–E)** → **Reset to smart defaults** per lab — pulls **`GET /api/config/breeder-smart-defaults/{lab_b…lab_e}`** (rules + sizing + council weight + personality + patient-stop defaults + optimizer floors). |
-| **Force mutation vs diversify council** | **Settings → Optimizer:** **Force internal mutation** runs one **Lab A** optimizer cycle + replay gate (does not retune B–E council math). **Diversify council** applies a **B–E** pulse and sets **`labs_council_diversity_until`** (~45m) for stronger council tilt on breeder effective YES. |
+| **Force mutation vs diversify council** | **Settings → Optimizer:** **Force internal mutation** runs one **Lab A** optimizer cycle + replay gate (does not retune B–E council math). **Diversify council** applies a **B–E** nuclear pulse and sets **`labs_council_diversity_until`** (**60m**) for maximum council tilt on breeder effective YES (~±70–90% vs ~±45–60% off-window). |
 | **Inspect config the API sees** | **`GET /api/config`** and **`GET /api/dashboard`**; writes use **`PUT /api/config`** or lab-branch merge routes. |
 | **Two browser tabs (5174 vs 5175)** | Default **:5174** = develop pill; **:5175** = **test** pill (see [`frontend/src/uiTrack.ts`](frontend/src/uiTrack.ts)). Same data if both proxy the same API — change **`frontend/.env`** `VITE_API_ORIGIN` for a second stack. |
 | **Quiet Think Tank structlog** | Leave **`LAB_THINK_TANK_LOG_INFO`** unset or `0`. |
@@ -286,6 +286,7 @@ Ports, Kalshi base URL, logging, timeouts, WebSocket, dashboard MTM caps, Think 
 | UI area | Purpose |
 |---------|---------|
 | **Hero / branch strip** | Live + Lab A–E; engine toggles; marquees. |
+| **Section headers** | Major cards (**Branch performance**, **Equity curves**, **Optimizer**, **Assets**, **Account**) keep **Info** as the **rightmost** header action; **Branch performance** puts **Apply Lab A to Live** immediately to its left. |
 | **Equity curves** | Six panels (Live + Labs A–E), **Compare** overlay, time tabs, **$ / %Δ** toggle — full behavior in [**Equity curves (deep dive)**](#equity-curves-deep-dive). |
 | **Account / performance** | Holdings, metrics, activity by branch. |
 | **Optimizer** | **Breeder** + **Tree**; **Lab Think Tank** strip (`/labs/chat`). |
@@ -304,14 +305,16 @@ All tabs apply to **all six** charts at once; they only change **how raw snapsho
 
 | Tab | What it plots |
 |-----|----------------|
-| **Intraday** | Snapshots whose timestamps fall in the **rolling last 24 hours** (your machine’s wall clock). The UI used to cap at “last 400 rows,” which could look like “only a few hours” when the engine writes very frequently — that cap is gone for time window (still bounded by how many rows the API returns). **Intraday** may append a **live tail** point on each `/api/dashboard` poll so the right edge tracks current metrics. |
-| **Hourly** | **One point per local clock hour**: the **latest** snapshot in each hour, across a **rolling 7 days**. Use this when raw intraday is too noisy but you still want intraday-ish resolution. |
-| **D / D** | **One point per local calendar day** (latest snapshot that day). You need **multiple days** of engine history to see more than one dot — one trading session often collapses to one daily bucket. Bucket boundaries use **local** midnight semantics so labels match how you read the calendar. |
-| **W / W** | One point per **UTC week** (week starts **Monday UTC**). Labels show “Week of …” in UTC so multi-day crypto schedules stay comparable across machines. |
-| **M / M** | One point per **UTC calendar month**. |
-| **Y / Y** | One point per **UTC calendar year**. |
+| **Live** | Rolling **6 hours** of **dense** SQLite ticks (wall clock), up to **2500** points; a **trailing** point from the latest dashboard metrics on each fast refresh tracks the same book/MTM as the hero strip and bottom marquee. |
+| **Intraday** | Rolling **24 hours** of dense ticks, up to **2500** points; same trailing refresh behavior where applicable. |
+| **D / D** | Rolling **~120 days** of dense ticks, **uniformly downsampled** to at most **280** points (not one dot per closed calendar day). |
+| **W / W** | Rolling **~18 months** of dense ticks, same **280** cap. |
+| **M / M** | Rolling **~4 years** of dense ticks, same cap. |
+| **Y / Y** | Rolling **~12 years** of dense ticks, same cap. |
 
-Backend **`GET /api/dashboard`** ships up to **2000** equity snapshot rows **per branch** (`equity_series(limit=2000)`). If you need longer archival history than that for forensic work, use exports / history routes — the dashboard chart is an **operator window**, not an immutable audit trail.
+The **X-axis** uses **epoch milliseconds** (linear time), not categorical spacing — gaps in wall-clock time appear as gaps on the axis.
+
+Backend **`GET /api/dashboard`** ships up to **4000** equity snapshot rows **per branch** (`equity_series(limit=4000)`). If you need longer archival history than that for forensic work, use exports / history routes — the dashboard chart is an **operator window**, not an immutable audit trail.
 
 ### Dollar scale vs percent change
 
@@ -319,7 +322,7 @@ The **$ / %Δ** control is a **single toggle** (not two tabs): **$** shows absol
 
 ### Compare (one graph)
 
-**Compare** sits next to **Info** in the card header. It opens a **single** chart that overlays **all visible branches** on one time axis (merged forward-filled union of timestamps). You choose:
+**Compare** sits to the **left** of **Info** in the card header (Info stays rightmost). It opens a **single** chart that overlays **all visible branches** on one time axis (merged forward-filled union of timestamps). You choose:
 
 - **Blended** — per branch, **(book + MTM) / 2** at each step (a simple combined read of both ledger lines).
 - **Potential** — **MTM − book** at each step (roughly “where marks sit versus cost basis” / open-risk shape).
