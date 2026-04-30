@@ -191,7 +191,7 @@ function dashboardSyncedClockLabel(rawAt: unknown): string | null {
   }
 }
 
-/** Paper trades on the Live branch — distinct label/swatches from real-money Live so “Sim purchase” is not paired with “Live”. */
+/** Paper / simulated trades: branch line in toasts (``Live paper`` vs real ``Live``; labs ``Lab A``…``Lab E``). */
 function branchLabelForTradeToast(branch: unknown, simulated?: boolean): string {
   const s = String(branch || "live").trim().toLowerCase();
   const sim = simulated === true;
@@ -200,6 +200,8 @@ function branchLabelForTradeToast(branch: unknown, simulated?: boolean): string 
   if (s === "lab_c") return "Lab C";
   if (s === "lab_d") return "Lab D";
   if (s === "lab_e") return "Lab E";
+  const childM = /^lab_child_(\d+)$/.exec(s);
+  if (childM) return `Lab child ${childM[1]}`;
   if (s === "live") return sim ? "Live paper" : "Live";
   return "Live";
 }
@@ -4144,11 +4146,64 @@ export default function App() {
   const dashboardInFlightStartedAtRef = useRef(0);
   /** False until the dashboard poll effect runs — avoids treating the tree as mounted before listeners are ready. */
   const dashboardPollMountedRef = useRef(false);
+  /** Merge multiple `/api/dashboard` + `/api/dashboard/equity` responses into one ``setDash`` (one paint for hero, charts, body ticker). */
+  const dashboardPollBatchRef = useRef<{ items: { payload: AnyObj; clearFetchError?: boolean }[]; scheduled: boolean }>({
+    items: [],
+    scheduled: false,
+  });
+  const applyDashboardPollBatchRef = useRef<() => void>(() => {});
   const dashboardFetchEpochRef = useRef(0);
   /** Toast trade bootstrap poll — abort + epoch mirror ``/api/dashboard`` so Strict Mode does not double-hit the API. */
   const tradesPollMountedRef = useRef(false);
   const tradesAbortRef = useRef<AbortController | null>(null);
   const tradesFetchEpochRef = useRef(0);
+  const enqueueDashboardPollPayload = useCallback((payload: AnyObj, opts?: { clearFetchError?: boolean }) => {
+    const b = dashboardPollBatchRef.current;
+    b.items.push({ payload, clearFetchError: opts?.clearFetchError });
+    if (b.scheduled) return;
+    b.scheduled = true;
+    queueMicrotask(() => {
+      applyDashboardPollBatchRef.current();
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    applyDashboardPollBatchRef.current = () => {
+      const b = dashboardPollBatchRef.current;
+      b.scheduled = false;
+      if (!dashboardPollMountedRef.current) {
+        b.items = [];
+        return;
+      }
+      const batch = b.items;
+      b.items = [];
+      if (!batch.length) return;
+      let clearFetchError = false;
+      for (const it of batch) {
+        if (it.clearFetchError) clearFetchError = true;
+      }
+      setDash((prev) => {
+        const sorted = [...batch].sort((x, y) => {
+          const xm = dashboardPayloadMs(x.payload.dashboard_payload_at);
+          const ym = dashboardPayloadMs(y.payload.dashboard_payload_at);
+          return (xm ?? 0) - (ym ?? 0);
+        });
+        let next: AnyObj | null = prev;
+        for (const it of sorted) {
+          const p = it.payload;
+          if (!next) {
+            next = p;
+            continue;
+          }
+          if (!shouldApplyDashboardPayload(next, p)) continue;
+          next = mergeDashboardFastPoll(next, p);
+        }
+        return next;
+      });
+      if (clearFetchError) setErr(null);
+    };
+  });
+
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
     if (force) {
@@ -4200,13 +4255,7 @@ export default function App() {
         })();
         if (!dashboardPollMountedRef.current) return null;
         if (epochAtStart !== dashboardFetchEpochRef.current) return null;
-        let appliedFreshDashboard = false;
-        setDash((prev) => {
-          if (!shouldApplyDashboardPayload(prev, d)) return prev;
-          appliedFreshDashboard = true;
-          return d;
-        });
-        if (appliedFreshDashboard) setErr(null);
+        enqueueDashboardPollPayload(d, { clearFetchError: true });
         payload = d;
       } catch (e: any) {
         if (!dashboardPollMountedRef.current) return null;
@@ -4252,7 +4301,7 @@ export default function App() {
         dashboardInFlightStartedAtRef.current = 0;
       }
     });
-  }, []);
+  }, [enqueueDashboardPollPayload]);
 
   /** Merge saved bot config into dashboard state without waiting on slow ``/api/dashboard`` (MTM, order books). */
   const applyDashboardConfig = useCallback((nextConfig: AnyObj) => {
@@ -4320,16 +4369,12 @@ export default function App() {
         if (!r.ok) return;
         const d = (await r.json()) as AnyObj;
         if (!d || typeof d !== "object" || Array.isArray(d)) return;
-        setDash((prev) => {
-          if (!prev) return prev;
-          if (!shouldApplyDashboardPayload(prev, d)) return prev;
-          return mergeDashboardFastPoll(prev, d);
-        });
+        enqueueDashboardPollPayload(d);
       } catch {
         /* ignore */
       }
     })();
-  }, []);
+  }, [enqueueDashboardPollPayload]);
 
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
@@ -4361,6 +4406,8 @@ export default function App() {
       dashboardInFlightRef.current = null;
       dashboardInFlightStartedAtRef.current = 0;
       dashboardFetchEpochRef.current += 1;
+      dashboardPollBatchRef.current.items = [];
+      dashboardPollBatchRef.current.scheduled = false;
     };
   }, []);
 
@@ -4738,7 +4785,7 @@ export default function App() {
         if (!dismissedTradeToastIdsRef.current.has(toastId)) {
           toAdd.push({
             id: toastId,
-            title: sim ? resMeta.title : resMeta.title.replace(/^Purchase /, "Trade "),
+            title: sim ? `${branch} · ${resMeta.title}` : resMeta.title.replace(/^Purchase /, "Trade "),
             body: "",
             tone: cardTone,
             branch_swatch: branchToastSwatch(t.branch, sim),
@@ -4763,7 +4810,7 @@ export default function App() {
         const cost = Number(t.amount_cents || 0) / 100.0;
         toAdd.push({
           id: toastId,
-          title: sim ? "Sim purchase" : "Purchase / order active",
+          title: sim ? `${branch} purchase` : "Purchase / order active",
           body: "",
           tone: sim ? "paper" : "green",
           branch_swatch: branchToastSwatch(t.branch, sim),

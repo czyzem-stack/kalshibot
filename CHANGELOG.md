@@ -2,6 +2,11 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.061 - Dashboard poll batch + trade toast branch labels - 2026-04-30
+
+- **Frontend (`App.tsx`):** Queue **`/api/dashboard`** and **`/api/dashboard/equity`** responses into one microtask flush so **hero header**, **equity charts**, and **bottom branch ticker** apply the same **`dash`** update in a single paint (avoids staggered frames when both polls complete close together). Successful full dashboard responses still clear fetch **`err`** after the batched apply.
+- **Frontend (`App.tsx`):** Trade open/settle toasts use **branch-specific** titles (**``${branch} purchase``**, **``${branch} · Purchase resolved``**) instead of generic **Sim purchase**; **`lab_child_*`** maps to **Lab child N** in toast copy.
+
 ## v0.4.15.060 - Breeder anti-sync: ±100–140% council + 90% D/E invert - 2026-04-29
 
 - **Backend (`engines/engine.py`):** ``_breeder_effective_prob_yes`` — council gain **~±100–140%** at full weight (normal), **~±120–160%** in diversity mode. Labs **D/E**: **``|sig_bias|≥0.35``** ⇒ **``combined = clamp(1.0 - combined)``** on **≥90%** of ticks. **B** herd damp **0.07**, **C** amplify **1.78**; personality **drift** widened again. **``# NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS``** retained on the council-gain block.
