@@ -2228,6 +2228,11 @@ input[type="number"] {
   border-color: rgba(72, 187, 120, 0.55);
 }
 
+/* Paper/sim fills — distinct from green “profit/success” borders used for real-money legible buys */
+.optimizer-toast--paper {
+  border-color: rgba(147, 197, 253, 0.65);
+}
+
 .optimizer-toast--red {
   border-color: rgba(229, 90, 90, 0.55);
 }

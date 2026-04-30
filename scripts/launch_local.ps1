@@ -7,13 +7,16 @@
 # Optional **main** worktree: sibling ..\Kalshibot-main (or `git worktree list` → [main]) with its own `.env`
 #   → API :8770 + UI http://localhost:5173
 #
-# Git flow (suggested): **develop** → **main** (PRs or local merges as you prefer).
+# Git: **main** and **develop** are independent branches — commit/push either side without the other.
+# ``update_all_worktrees.ps1`` runs ``git pull --ff-only`` in each checkout (each updates its **current** branch only).
 #
 # Usage (from develop repo root):
+#   .\scripts\reboot_everything.ps1    # stop listeners on configured ports, then same as launch_local (one command)
 #   .\scripts\launch_local.ps1
 #
 # Auto-wires a missing main sidecar **.env** by running **bootstrap-main-worktree.ps1** when that checkout
-# has **.git** but no **.env**.
+# has **.git** but no **.env**. Develop: run **.\scripts\bootstrap-develop-env.ps1** once so SQLITE_PATH=data/bot-develop.sqlite3
+# (separate file from the main worktree's bot-main.sqlite3).
 #
 #   .\scripts\launch_local.ps1 -SkipMainSidecar   # only develop: API in one new window, Vite in *this* terminal
 #   .\scripts\launch_local.ps1 -WorktreePath "D:\repos\Kalshibot-main"
@@ -145,26 +148,42 @@ if ($useMainSidecar) {
     }
 }
 
+function Resolve-SqliteAbsolute([string]$RepoRootDir, [string]$DotEnvPath) {
+    if (-not (Test-Path -LiteralPath $DotEnvPath)) { return $null }
+    $md = Select-String -LiteralPath $DotEnvPath -Pattern '^\s*SQLITE_PATH\s*=\s*(.+)\s*$' | Select-Object -First 1
+    $raw = $null
+    if ($null -ne $md -and $md.Matches.Count -gt 0) {
+        $raw = $md.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
+    }
+    # Match Python default when SQLITE_PATH omitted: always data/bot.sqlite3 (profile does NOT switch DB file).
+    if ($null -eq $raw -or [string]::IsNullOrWhiteSpace($raw)) {
+        return [System.IO.Path]::GetFullPath((Join-Path $RepoRootDir "data\bot.sqlite3"))
+    }
+    if ([System.IO.Path]::IsPathRooted($raw)) {
+        return [System.IO.Path]::GetFullPath($raw)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $RepoRootDir $raw))
+}
+
 $devEnvPath = Join-Path $RepoRoot ".env"
+
 $pathsForSql = @(
-    @{ Label = "develop"; Path = $devEnvPath }
+    @{ Label = "develop"; Repo = $RepoRoot; Path = $devEnvPath }
 )
 if ($useMainSidecar) {
-    $pathsForSql += @{ Label = "main"; Path = (Join-Path $WorktreePath ".env") }
+    $pathsForSql += @{ Label = "main"; Repo = $WorktreePath; Path = (Join-Path $WorktreePath ".env") }
 }
-$sqlByLabel = @{}
+$sqlAbsByLabel = @{}
 foreach ($entry in $pathsForSql) {
-    $p = $entry.Path
-    if (-not (Test-Path -LiteralPath $p)) { continue }
-    $md = Select-String -LiteralPath $p -Pattern '^\s*SQLITE_PATH\s*=\s*(.+)\s*$' | Select-Object -First 1
-    if ($null -ne $md -and $md.Matches.Count -gt 0) {
-        $sqlByLabel[$entry.Label] = $md.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
+    $abs = Resolve-SqliteAbsolute $entry.Repo $entry.Path
+    if ($null -ne $abs) {
+        $sqlAbsByLabel[$entry.Label] = $abs
     }
 }
-$sqlPaths = @($sqlByLabel.Values | Where-Object { $_ })
-if ($sqlPaths.Count -gt 0 -and (($sqlPaths | Select-Object -Unique).Count -lt $sqlPaths.Count)) {
-    $dup = ($sqlByLabel.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "; "
-    Write-Warning "Two or more stacks share the same SQLITE_PATH ($dup). Use separate checkouts or distinct paths."
+$absPaths = @($sqlAbsByLabel.Values | Where-Object { $_ })
+if ($absPaths.Count -gt 1 -and (($absPaths | Select-Object -Unique).Count -lt $absPaths.Count)) {
+    $dup = ($sqlAbsByLabel.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "; "
+    Write-Warning "Develop and main APIs resolve to the SAME SQLite file on disk ($dup). Fix .env paths or run bootstrap-develop-env.ps1 / bootstrap-main-worktree.ps1."
 }
 
 $runnerAt = Join-Path $RepoRoot "scripts\run_backend_at.ps1"

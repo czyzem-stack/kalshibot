@@ -35,6 +35,8 @@ from .branch_config import (
     BRANCH_LIVE,
     LAB_BRANCH_OVERLAY_KEYS,
     _coerce_engine_running_flag,
+    effective_live_engine_running,
+    effective_parent_lab_engine_running,
     build_optimizer_radar_payload,
     fleet_visible_paper_start_cents,
     lab_paper_equity_start_cents,
@@ -625,6 +627,35 @@ def _lab_thought_stream(
     }
 
 
+def _warn_if_legacy_sqlite_may_hold_history() -> None:
+    """Changing SQLITE_PATH points the API at another file; SQLite does not migrate rows (looks like a wipe)."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    active = Path(env.sqlite_path).resolve()
+    legacy = (repo / "data" / "bot.sqlite3").resolve()
+    if active == legacy:
+        return
+    try:
+        if not legacy.is_file():
+            return
+        lg = int(legacy.stat().st_size)
+        ag = int(active.stat().st_size) if active.is_file() else 0
+    except OSError:
+        return
+    if lg <= ag:
+        return
+    logger.warning(
+        "sqlite active %s (%s bytes) is smaller than legacy %s (%s bytes). "
+        "Changing SQLITE_PATH does not copy trading history; the larger file may still hold your data — "
+        "stop the API, align files or SQLITE_PATH, then restart.",
+        active,
+        ag,
+        legacy,
+        lg,
+    )
+
+
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     t0 = time.perf_counter()
@@ -638,6 +669,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             logger.info("kalshibot_startup phase=%s total_ms=%.1f", name, (time.perf_counter() - t0) * 1000.0)
 
     reset_uvicorn_loggers_to_root()
+    _warn_if_legacy_sqlite_may_hold_history()
     state.stop_event.clear()
     state.startup_complete.clear()
     state.kalshi_ws_task = None
@@ -1311,37 +1343,37 @@ async def engine_status() -> EngineStatusResponse:
     return {
         "live": _engine_status_block(
             state.engine_live,
-            engine_running=bool(cfg.get("engine_running")),
+            engine_running=effective_live_engine_running(cfg),
             simulate_orders=live_paper_trading_enabled(cfg),
             extra={"simulate": live_paper_trading_enabled(cfg)},
         ),
         "lab_a": _engine_status_block(
             state.engine_lab_a,
-            engine_running=bool(lab_a.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_a, BRANCH_LAB_A),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_a.get("auto_optimize")), "optimizer_note": lab_a.get("optimizer_note")},
         ),
         "lab_b": _engine_status_block(
             state.engine_lab_b,
-            engine_running=bool(lab_b.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_b, BRANCH_LAB_B),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_b.get("auto_optimize")), "optimizer_note": lab_b.get("optimizer_note")},
         ),
         "lab_c": _engine_status_block(
             state.engine_lab_c,
-            engine_running=bool(lab_c.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_c, BRANCH_LAB_C),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_c.get("auto_optimize")), "optimizer_note": lab_c.get("optimizer_note")},
         ),
         "lab_d": _engine_status_block(
             state.engine_lab_d,
-            engine_running=bool(lab_d.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_d, BRANCH_LAB_D),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_d.get("auto_optimize")), "optimizer_note": lab_d.get("optimizer_note")},
         ),
         "lab_e": _engine_status_block(
             state.engine_lab_e,
-            engine_running=bool(lab_e.get("engine_running")),
+            engine_running=effective_parent_lab_engine_running(lab_e, BRANCH_LAB_E),
             simulate_orders=True,
             extra={"auto_optimize": bool(lab_e.get("auto_optimize")), "optimizer_note": lab_e.get("optimizer_note")},
         ),
@@ -1644,22 +1676,12 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
     lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
     lab_e = cfg.get("lab_e") if isinstance(cfg.get("lab_e"), dict) else {}
-    live_engine_on = _coerce_engine_running_flag(cfg.get("engine_running"), default_if_missing=False)
-    lab_a_engine_on = (
-        _coerce_engine_running_flag(lab_a.get("engine_running"), default_if_missing=False) if isinstance(lab_a, dict) else False
-    )
-    lab_b_engine_on = (
-        _coerce_engine_running_flag(lab_b.get("engine_running"), default_if_missing=False) if isinstance(lab_b, dict) else False
-    )
-    lab_c_engine_on = (
-        _coerce_engine_running_flag(lab_c.get("engine_running"), default_if_missing=False) if isinstance(lab_c, dict) else False
-    )
-    lab_d_engine_on = (
-        _coerce_engine_running_flag(lab_d.get("engine_running"), default_if_missing=False) if isinstance(lab_d, dict) else False
-    )
-    lab_e_engine_on = (
-        _coerce_engine_running_flag(lab_e.get("engine_running"), default_if_missing=False) if isinstance(lab_e, dict) else False
-    )
+    live_engine_on = effective_live_engine_running(cfg)
+    lab_a_engine_on = effective_parent_lab_engine_running(lab_a if isinstance(lab_a, dict) else None, BRANCH_LAB_A)
+    lab_b_engine_on = effective_parent_lab_engine_running(lab_b if isinstance(lab_b, dict) else None, BRANCH_LAB_B)
+    lab_c_engine_on = effective_parent_lab_engine_running(lab_c if isinstance(lab_c, dict) else None, BRANCH_LAB_C)
+    lab_d_engine_on = effective_parent_lab_engine_running(lab_d if isinstance(lab_d, dict) else None, BRANCH_LAB_D)
+    lab_e_engine_on = effective_parent_lab_engine_running(lab_e if isinstance(lab_e, dict) else None, BRANCH_LAB_E)
     def _child_lab_polling_on(raw: Any) -> bool:
         slab = raw if isinstance(raw, dict) else {}
         return slab.get("engine_running") is not False

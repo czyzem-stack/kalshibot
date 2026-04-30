@@ -62,7 +62,8 @@ _load_dotenv(_REPO_ROOT / ".env")
 def _resolved_path_env(name: str, *, default: Path) -> str:
     """
     Resolve SQLITE_PATH / DATA_LOG_DIR: relative values are anchored at this checkout's repo root
-    (not the process cwd), so parallel develop + worktree APIs never accidentally share one file.
+    (not the process cwd). Each clone/worktree therefore gets its own default DB unless you set an
+    absolute SQLITE_PATH shared across instances — develop data and main data are independent folders by design.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -107,6 +108,10 @@ class EnvSettings:
     kalshi_private_key_path: str = _get("KALSHI_PRIVATE_KEY_PATH")
     kalshi_private_key_pem: str = _get("KALSHI_PRIVATE_KEY_PEM")
     kalshi_env: str = _get("KALSHI_ENV", "demo") or "demo"
+    # Optional label for parallel checkouts (develop vs main worktree). Used in /api/data/storage and scripts — does not change paths unless you set SQLITE_PATH yourself.
+    kalshibot_data_profile: str = _get("KALSHIBOT_DATA_PROFILE", "")
+    # Default DB only when SQLITE_PATH is unset: **never** infer from KALSHIBOT_DATA_PROFILE — changing DB filename
+    # without copying the file makes the UI look “wiped”. Use scripts/bootstrap-develop-env.ps1 / bootstrap-main-worktree.ps1.
     sqlite_path: str = _resolved_path_env(
         "SQLITE_PATH",
         default=_REPO_ROOT / "data" / "bot.sqlite3",

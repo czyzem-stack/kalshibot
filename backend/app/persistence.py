@@ -354,7 +354,7 @@ def default_bot_config() -> dict[str, Any]:
     return {
         "simulate": True,
         "live_paper_trading": True,  # canonical; mirrored to ``simulate`` (see ``sync_live_paper_trading_keys``)
-        "engine_running": False,
+        # Omit ``engine_running``: paper Live defaults on via ``effective_live_engine_running``; real-money defaults off.
         "poll_seconds": 8,
         "balance_fraction_per_window": 0.03,
         "window_minutes": 18,
@@ -384,8 +384,8 @@ def default_bot_config() -> dict[str, Any]:
         "paper_fee_bps": 0,
         "paper_balance_cents": 500_000,
         # Lab A: staging / blend before Live — internal auto-tune may adjust sizing from PnL.
+        # Omit ``engine_running``: staging branch defaults on (see ``effective_parent_lab_engine_running``).
         "lab_a": {
-            "engine_running": False,
             "auto_optimize": True,
             "auto_reset_paper_on_tick_failure": False,
             "enable_patient_stop_loss": True,
@@ -655,6 +655,38 @@ async def _migrate_trades_open_sim_unique(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+def _maybe_strip_legacy_breeder_stub_engine_false(cfg: dict[str, Any]) -> None:
+    """
+    Older ``_normalize_loaded_config`` stubs for lab_b–e embedded ``engine_running: false``. Because
+    ``expand_partial_lab_branch`` overlays the saved dict on defaults, that **false** overwrote breeder ``True``
+    and kept engines off. Drop ``engine_running`` when the block still matches the legacy stub fingerprint so the
+    next merge restores shipped defaults (operators who truly want off can set ``engine_running: false`` again).
+    """
+    sigs = {
+        "lab_b": (0.05, 15),
+        "lab_c": (0.08, 12),
+        "lab_d": (0.13, 10),
+        "lab_e": (0.095, 11),
+    }
+    for lk, (frac, wmin) in sigs.items():
+        block = cfg.get(lk)
+        if not isinstance(block, dict):
+            continue
+        if block.get("engine_running") is not False:
+            continue
+        if block.get("auto_optimize") is not False:
+            continue
+        try:
+            bf = float(block.get("balance_fraction_per_window"))
+            wi = int(float(block.get("window_minutes")))
+        except (TypeError, ValueError):
+            continue
+        if abs(bf - frac) > 1e-4 or wi != wmin:
+            continue
+        del block["engine_running"]
+        cfg[lk] = block
+
+
 def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Legacy default skipped every Kalshi demo row ("Target price: TBD") for *trading* while the
     # dashboard could still show prices — sim never fired. Clear exact lone "tbd"; use ",tbd" if you need it back.
@@ -695,9 +727,10 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
             "window_minutes": legacy.get("window_minutes", 15),
             "paper_balance_cents": legacy.get("paper_balance_cents", cfg.get("paper_balance_cents") or 500_000),
         }
+    # Omit ``engine_running`` on breeder stubs so ``expand_partial_lab_branch`` keeps ``default_bot_config`` True — an
+    # explicit False here overwrote defaults and left Lab B–E permanently off after migration.
     if "lab_b" not in cfg or not isinstance(cfg.get("lab_b"), dict):
         cfg["lab_b"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.05,
             "window_minutes": 15,
@@ -705,7 +738,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     if "lab_c" not in cfg or not isinstance(cfg.get("lab_c"), dict):
         cfg["lab_c"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.08,
             "window_minutes": 12,
@@ -713,7 +745,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     if "lab_d" not in cfg or not isinstance(cfg.get("lab_d"), dict):
         cfg["lab_d"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.13,
             "window_minutes": 10,
@@ -721,7 +752,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         }
     if "lab_e" not in cfg or not isinstance(cfg.get("lab_e"), dict):
         cfg["lab_e"] = {
-            "engine_running": False,
             "auto_optimize": False,
             "balance_fraction_per_window": 0.095,
             "window_minutes": 11,
@@ -759,6 +789,7 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Dev sim high-YES bypass: migrate legacy boolean to percent field
     if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(cfg.get("dev_sim_yes_implied_ge_70")):
         cfg["dev_sim_yes_implied_ge_pct"] = 70.0
+    _maybe_strip_legacy_breeder_stub_engine_false(cfg)
     for lk in ALL_CFG_LAB_KEYS:
         if isinstance(cfg.get(lk), dict):
             cfg[lk] = expand_partial_lab_branch(lk, dict(cfg[lk]))

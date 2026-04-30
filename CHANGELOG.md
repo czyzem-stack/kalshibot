@@ -2,6 +2,17 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.056 - Lab B–E never ticked: stub ``engine_running: false`` + missing-key defaults - 2026-04-29
+
+- **Backend (`persistence.py`):** Legacy ``_normalize_loaded_config`` stubs for **lab_b–lab_e** embedded ``engine_running: false``. ``expand_partial_lab_branch`` merges user dict over defaults, so **False overwrote** shipped breeder defaults (**True**) and kept those labs permanently off. **Fix:** stubs no longer set ``engine_running``; **``_maybe_strip_legacy_breeder_stub_engine_false``** removes the stale false flag when a lab block still matches the old stub fingerprint so the next merge restores defaults.
+- **Backend (`branch_config.py`):** ``effective_parent_lab_engine_running`` — when ``engine_running`` is **omitted** on any parent lab (**lab_a–lab_e**), default **on** (explicit ``false`` still pauses).
+- **Frontend (`App.tsx`):** Engine polling hint no longer claims outdated global defaults.
+
+## v0.4.15.055 - Paper Live + Lab A: engines on by default - 2026-04-29
+
+- **Backend (`branch_config.py`, `main.py`, `engines/dual_engine_loop.py`):** Introduced ``effective_live_engine_running`` and ``effective_parent_lab_engine_running``. When ``engine_running`` is **omitted**, **Live** ticks in **paper** mode by default (still **off** when ``live_paper_trading`` is false / real money until explicitly enabled). **Lab A** defaults **on** when the key is omitted (staging aligned with breeder labs). Dashboard ``engine_running`` flags and ``/api/engine/status`` use the same semantics so the UI matches the dual loop.
+- **Backend (`persistence.py`):** Fresh ``default_bot_config()`` no longer writes ``engine_running: false`` for Live or Lab A (omit keys so effective defaults apply).
+
 ## v0.4.15.046 - Reset: stop trade toast spam (SQLite id recycle) - 2026-04-29
 
 - **Frontend (`App.tsx`):** When ``dashboard.trading_data_revision`` advances after ``POST /api/data/reset``, clear trade toast bootstrap state and ``seen`` id sets, drop queued ``trade-initiated-*`` / ``trade-resolved-*`` cards, then re-bootstrap from the current trade lists only — so recycled low SQLite ids are not treated as brand-new fills across every branch.

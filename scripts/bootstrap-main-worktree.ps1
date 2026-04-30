@@ -1,5 +1,6 @@
 # One-shot: ensure a [main] git worktree exists next to develop (or at -WorktreePath), then write
 # worktree .env + frontend/.env so .\scripts\launch_local.ps1 can start dual UI (main 5173 + develop 5174).
+# Pairs with scripts/bootstrap-develop-env.ps1 (develop checkout: bot-develop + profile label).
 #
 # - Calls setup-main-worktree.ps1 when the folder is not yet a worktree (git worktree add).
 # - If the worktree has no .env: copies develop's .env (if present) else .env.example, then sets
@@ -103,9 +104,10 @@ function Write-EnvSidecarExamples([string]$WtRoot) {
 # REQUIRED: different API port than develop (default 8765):
 KALSHI_BOT_PORT=8770
 #
-# Recommended: keep these relative so this worktree never shares DB/JSONL with develop:
-SQLITE_PATH=data/bot.sqlite3
-DATA_LOG_DIR=data/logs
+# Recommended: distinct names vs develop (bootstrap sets bot-main / logs-main):
+SQLITE_PATH=data/bot-main.sqlite3
+DATA_LOG_DIR=data/logs-main
+KALSHIBOT_DATA_PROFILE=main
 #
 # If you use API bearer auth, use a different token OR the same token (both APIs must match frontend .env).
 # CORS: Vite 5173 (main) + 5174 (develop) when both stacks run locally.
@@ -114,6 +116,7 @@ DATA_LOG_DIR=data/logs
     $exampleFe = @"
 # Point this worktree's Vite dev server at the MAIN sidecar API port.
 VITE_API_ORIGIN=http://127.0.0.1:8770
+VITE_DEV_PORT=5173
 # Shown next to the app title so this window is not confused with develop (5174).
 VITE_UI_TRACK=main
 # VITE_API_BEARER_TOKEN=   # if you set KALSHI_API_BEARER_TOKEN in root .env for this worktree
@@ -188,8 +191,8 @@ if (-not (Test-Path -LiteralPath ($scPaths['FrontDir']))) {
 $cors = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
 $rootDotEnvPath = [string]($scPaths['RootDotEnv'])
 Assert-EnvFileIsSmallTextFile -LiteralPath $rootDotEnvPath -DisplayLabel "worktree .env"
-$sidecarKeys = @("KALSHI_BOT_PORT", "SQLITE_PATH", "DATA_LOG_DIR", "CORS_ORIGINS")
-$sidecarVals = @("8770", "data/bot.sqlite3", "data/logs", $cors)
+$sidecarKeys = @("KALSHI_BOT_PORT", "KALSHIBOT_DATA_PROFILE", "SQLITE_PATH", "DATA_LOG_DIR", "CORS_ORIGINS")
+$sidecarVals = @("8770", "main", "data/bot-main.sqlite3", "data/logs-main", $cors)
 $utf8ReadRoot = New-Object System.Text.UTF8Encoding $false
 $rootRows = [System.Collections.ArrayList]@([System.IO.File]::ReadAllLines($rootDotEnvPath, $utf8ReadRoot))
 for ($kidx = 0; $kidx -lt $sidecarKeys.Length; $kidx++) {
@@ -234,12 +237,13 @@ if (-not (Test-Path -LiteralPath ($scPaths['FrontDotEnv']))) {
         [System.IO.File]::WriteAllLines(($scPaths['FrontDotEnv']), @(""), $utf8)
     }
 } else {
-    Write-Host 'Worktree frontend/.env exists; updating VITE_API_ORIGIN + VITE_UI_TRACK ...' -ForegroundColor Gray
+    Write-Host 'Worktree frontend/.env exists; updating VITE_API_ORIGIN + VITE_UI_TRACK + VITE_DEV_PORT ...' -ForegroundColor Gray
 }
 
 $frontDotEnvPath = [string]($scPaths['FrontDotEnv'])
 Set-EnvKeyInFile -TargetEnvFile $frontDotEnvPath -Key "VITE_API_ORIGIN" -Value "http://127.0.0.1:8770"
 Set-EnvKeyInFile -TargetEnvFile $frontDotEnvPath -Key "VITE_UI_TRACK" -Value "main"
+Set-EnvKeyInFile -TargetEnvFile $frontDotEnvPath -Key "VITE_DEV_PORT" -Value "5173"
 
 Write-Host ""
 Write-Host "Done. Main worktree is ready for dual launch." -ForegroundColor Green

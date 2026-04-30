@@ -35,6 +35,7 @@ class HealthDeepResponse(TypedDict, total=False):
     started_at: str | None
     sqlite_path: str
     sqlite_bytes: int | None
+    data_profile: str
     dual_engine_loop_running: bool
     optimizer_loop_running: bool
     engine_last_errors: dict[str, str]
@@ -43,6 +44,7 @@ class HealthDeepResponse(TypedDict, total=False):
 
 class DataStorageResponse(TypedDict, total=False):
     sqlite_path: str
+    data_profile: str
     data_log_dir: str
     data_logging_enabled: bool
     data_log_equity: bool

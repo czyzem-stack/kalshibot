@@ -642,6 +642,7 @@ def _breeder_touch_ranked_edge(
     mins: float,
     branch: str,
     *,
+    cfg: dict[str, Any],
     full_cfg: dict[str, Any] | None,
     engine: TradingEngine,
     ticker: str,
@@ -655,7 +656,8 @@ def _breeder_touch_ranked_edge(
     sig = peek_engine_council_signal(get_lab_communication_bus())
     if not sig:
         return edge
-    cw = _breeder_council_weight_pct(cfg)
+    bc = cfg if isinstance(cfg, dict) else {}
+    cw = _breeder_council_weight_pct(bc)
     b = float(sig.get("bias", 0.0))
     st = float(sig.get("strength", 0.0))
     side = rule_trade_side(matched_rule)
@@ -767,6 +769,7 @@ def _market_sim_trade_rank(
             float(prob),
             float(mins),
             breeder_branch,
+            cfg=cfg,
             full_cfg=full_cfg,
             engine=engine,
             ticker=ticker,

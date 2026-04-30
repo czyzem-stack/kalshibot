@@ -48,9 +48,10 @@ $exampleMain = @"
 # REQUIRED: different API port than develop (default 8765):
 KALSHI_BOT_PORT=8770
 #
-# Recommended: keep these relative so this worktree never shares DB/JSONL with develop:
-SQLITE_PATH=data/bot.sqlite3
-DATA_LOG_DIR=data/logs
+# Recommended: distinct names vs develop (bootstrap sets bot-main / logs-main):
+SQLITE_PATH=data/bot-main.sqlite3
+DATA_LOG_DIR=data/logs-main
+KALSHIBOT_DATA_PROFILE=main
 #
 # If you use API bearer auth, use a different token OR the same token (both APIs must match frontend .env).
 # CORS: include 5173 (main) + 5174 (develop) when both stacks run locally (see bootstrap scripts).
@@ -60,6 +61,7 @@ DATA_LOG_DIR=data/logs
 $exampleFe = @"
 # Point this worktree's Vite dev server at the MAIN sidecar API port.
 VITE_API_ORIGIN=http://127.0.0.1:8770
+VITE_DEV_PORT=5173
 VITE_UI_TRACK=main
 # VITE_API_BEARER_TOKEN=   # if you set KALSHI_API_BEARER_TOKEN in root .env for this worktree
 "@

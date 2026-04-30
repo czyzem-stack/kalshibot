@@ -2151,6 +2151,15 @@ export default function SettingsOverlay({
           <code style={{ wordBreak: "break-all" }} title="Primary SQLite database for signals, trades, equity, and config.">
             {String(dash?.storage?.sqlite_path ?? "—")}
           </code>
+          {dash?.storage?.data_profile ? (
+            <>
+              <br />
+              <strong className="sub">Data profile</strong>{" "}
+              <code title="KALSHIBOT_DATA_PROFILE from backend .env — develop vs main worktree label.">
+                {String(dash.storage.data_profile)}
+              </code>
+            </>
+          ) : null}
           <br />
           <strong>JSONL logs</strong>:{" "}
           <code style={{ wordBreak: "break-all" }} title="Daily JSONL streams (signals, trades, system, etc.).">

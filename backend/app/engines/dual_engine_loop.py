@@ -19,6 +19,8 @@ from ..branch_config import (
     BRANCH_LABS,
     BRANCH_LIVE,
     _coerce_engine_running_flag,
+    effective_live_engine_running,
+    effective_parent_lab_engine_running,
     live_paper_trading_enabled,
 )
 from ..kalshi_client import KalshiClient
@@ -51,7 +53,7 @@ def _lab_branch_tick_enabled(br: str, lc: dict[str, Any]) -> bool:
         return _coerce_engine_running_flag(lc.get("engine_running"), default_if_missing=True)
     if not isinstance(lc, dict):
         return False
-    return _coerce_engine_running_flag(lc.get("engine_running"), default_if_missing=False)
+    return effective_parent_lab_engine_running(lc, br)
 
 
 async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asyncio.Event) -> None:
@@ -100,7 +102,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             # ``return_exceptions=True`` — per-branch errors already set ``eng.state.last_error`` in ``_branch_settle_cycle``.
             await asyncio.gather(*[_branch_settle_cycle(br) for br in branch_order], return_exceptions=True)
 
-            if _coerce_engine_running_flag(cfg.get("engine_running"), default_if_missing=False):
+            if effective_live_engine_running(cfg):
                 el = engines[BRANCH_LIVE]
                 try:
                     await tick_once(el, full_cfg=full_cfg)
@@ -177,9 +179,7 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                         },
                     )
                     eng_live.state.last_error = err[:500]
-            elif snap_period and _coerce_engine_running_flag(
-                cfg.get("engine_running"), default_if_missing=False
-            ):
+            elif snap_period and effective_live_engine_running(cfg):
                 try:
                     await snapshot_equity(eng_live, full_cfg=full_cfg)
                 except Exception as e:
@@ -222,6 +222,30 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                         eng_snap = engines.get(br)
                         if eng_snap:
                             eng_snap.state.last_error = err[:500]
+            # Parent labs (A–E) with engine **off**: still append equity snapshots each loop — same policy as Live paper
+            # above (``simulate_live`` snapshots without requiring ``tick_once``). Previously Lab A skipped SQLite rows
+            # entirely when toggled off, so equity curves looked empty vs Live or vs trade toasts for other branches.
+            for br in BRANCH_LABS:
+                lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
+                if _lab_branch_tick_enabled(br, lc):
+                    continue
+                eng_off = engines.get(br)
+                if not eng_off:
+                    continue
+                try:
+                    await snapshot_equity(eng_off, full_cfg=full_cfg)
+                except Exception as e:
+                    err = str(e)
+                    _data_log(
+                        "system",
+                        {
+                            "event": "dual_engine_snapshot_error",
+                            "branch": br,
+                            "error": err[:800],
+                            "at": iso(utc_now()),
+                        },
+                    )
+                    eng_off.state.last_error = err[:500]
             try:
                 await post_branch_error_alerts(engines, prev_errors=prev_engine_alert)
             except Exception:

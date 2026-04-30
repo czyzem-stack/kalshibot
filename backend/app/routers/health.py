@@ -62,11 +62,13 @@ async def health_deep() -> HealthDeepResponse:
     for br, engn in state.ENGINES.items():
         errs[br] = getattr(getattr(engn, "state", None), "last_error", None)
     # PHASE FINAL.1: TypedDict contract only; payload shape unchanged.
+    prof = str(getattr(env, "kalshibot_data_profile", "") or "").strip()
     return HealthDeepResponse(
         status="ok",
         started_at=state.app_started_at_iso,
         sqlite_path=str(sp.resolve()),
         sqlite_bytes=sqlite_bytes,
+        data_profile=prof,
         dual_engine_loop_running=eng,
         optimizer_loop_running=opt,
         engine_last_errors={k: v for k, v in errs.items() if v},

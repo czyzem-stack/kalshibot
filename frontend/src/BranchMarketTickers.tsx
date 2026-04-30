@@ -477,11 +477,20 @@ function mtmArrowSegments(r: number): TickerSeg[] {
   return [seg(`${arrow} `, t), seg(dir, t), seg(`${sign}${r.toFixed(1)}%`, t)];
 }
 
+/** Open exposure tag: not the "Live" engine branch name — book = Kalshi, paper = sim on Live, sim = paper labs. */
+function exposureMetaLabel(branch: BranchKey, livePaper: boolean): string {
+  if (branch === "live") {
+    return livePaper ? "paper" : "book";
+  }
+  return "sim";
+}
+
 function compactPositionVerdict(
   branch: BranchKey,
   metrics: AnyObj,
   positionByAsset: AnyObj | undefined,
   kalshiPrivateOk: boolean,
+  livePaper: boolean,
 ): TickerSeg[] {
   const posSecs = positionSegmentsForBranch(positionByAsset, branch, kalshiPrivateOk);
   const hasBook = posSecs.length > 0;
@@ -491,6 +500,7 @@ function compactPositionVerdict(
     rawMtm != null && Number.isFinite(Number(rawMtm)) ? Number(rawMtm) : Number(metrics?.return_vs_start_pct);
   const retOk = Number.isFinite(r);
   const exposed = hasBook || openN > 0;
+  const expTag = exposureMetaLabel(branch, livePaper);
 
   if (!exposed) {
     if (retOk) {
@@ -499,13 +509,13 @@ function compactPositionVerdict(
     return [seg("P/L ", "muted"), seg("bench — no MTM", "muted")];
   }
   if (!retOk) {
-    const bits = [openN ? `${openN} sim` : null, hasBook ? "live" : null].filter(Boolean) as string[];
+    const bits = [openN ? `${openN} sim` : null, hasBook ? expTag : null].filter(Boolean) as string[];
     const head = bits.length ? `${bits.join(" · ")} · ` : "";
     return [seg("P/L ", "muted"), seg(head, "muted"), seg("open · ", "warn"), seg("— MTM?", "warn")];
   }
   const meta: string[] = [];
   if (openN > 0) meta.push(`${openN} sim`);
-  if (hasBook) meta.push("live");
+  if (hasBook) meta.push(expTag);
   const pre = meta.length ? `${meta.join(" · ")} · ` : "";
   return [seg("P/L ", "muted"), seg(pre, "muted"), seg("open ", "muted"), ...mtmArrowSegments(r)];
 }
@@ -520,6 +530,7 @@ function buildHeroCompactSegments(args: {
   kalshiPrivateOk: boolean;
 }): TickerSeg[] {
   const { branch, cfg, metrics, snaps, engineBlock, positionByAsset, kalshiPrivateOk } = args;
+  const livePaper = Boolean(cfg.simulate);
   const flat: TickerSeg[] = [];
   const mon = compactBtcEthSegments(cfg, snaps);
   if (mon.length) {
@@ -527,7 +538,7 @@ function buildHeroCompactSegments(args: {
   } else {
     flat.push(seg("BTC/ETH —", "muted"));
   }
-  flat.push(dot(), ...compactPositionVerdict(branch, metrics, positionByAsset, kalshiPrivateOk));
+  flat.push(dot(), ...compactPositionVerdict(branch, metrics, positionByAsset, kalshiPrivateOk, livePaper));
   const err = engineBlock?.last_error ? String(engineBlock.last_error) : "";
   if (err && !isCredentialOrEnvMarqueeNoise(err)) {
     flat.push(dot(), seg(err.slice(0, 52), "warn"));

@@ -55,8 +55,9 @@ const DASHBOARD_STALE_INFLIGHT_MS = 2 * DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
 const EMPTY_LAB: AnyObj = Object.freeze({});
 
 /**
- * SQLite equity series for charts. Skips non-arrays (e.g. ``{}``). With multiple candidates (Lab A + legacy ``sim_lab``),
- * prefer the first **non-empty** array so ``[]`` does not hide data in the other field.
+ * SQLite equity series for charts. Skips non-arrays (e.g. ``{}``).
+ * With multiple candidates, prefer the first **non-empty** array so ``[]`` does not hide data in the other field.
+ * The API never sends legacy ``equity_snapshots_sim_lab`` (Lab A series is ``equity_snapshots_lab_a`` only).
  */
 function equitySnapshotsArray(...candidates: unknown[]): AnyObj[] {
   const arrays: AnyObj[][] = [];
@@ -75,7 +76,6 @@ const FAST_POLL_EQ_KEYS = [
   "equity_snapshots_lab_c",
   "equity_snapshots_lab_d",
   "equity_snapshots_lab_e",
-  "equity_snapshots_sim_lab",
 ] as const;
 
 const FAST_POLL_LIST_KEYS = ["recent_trades", "recent_signals", "not_traded_signals"] as const;
@@ -95,6 +95,8 @@ const FAST_POLL_METRIC_KEYS = [
  *   (otherwise post-reset empty arrays were overwritten by this merge and charts kept stale history).
  * - Shallow-merge metrics blobs so a partial key set cannot drop ``current_mtm_dollars``.
  * Do **not** strip arbitrary keys from the payload (that froze live tiles / MTM).
+ * Always drop ``equity_snapshots_sim_lab`` — it is not returned by the server; retaining it from ``prev`` made Lab A
+ * charts fall back to stale ghost history whenever ``equity_snapshots_lab_a`` was ``[]`` after a reset.
  */
 function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
   const prevRev = Number((prev as AnyObj).trading_data_revision ?? 0);
@@ -127,6 +129,7 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
       const inc = incoming[k];
       next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
     }
+    delete next.equity_snapshots_sim_lab;
     return next;
   }
 
@@ -149,6 +152,7 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
     }
   }
 
+  delete next.equity_snapshots_sim_lab;
   return next;
 }
 
@@ -184,13 +188,16 @@ function dashboardSyncedClockLabel(rawAt: unknown): string | null {
   }
 }
 
-function branchLabelForTradeToast(branch: unknown): string {
+/** Paper trades on the Live branch — distinct label/swatches from real-money Live so “Sim purchase” is not paired with “Live”. */
+function branchLabelForTradeToast(branch: unknown, simulated?: boolean): string {
   const s = String(branch || "live").trim().toLowerCase();
+  const sim = simulated === true;
   if (s === "lab_a" || s === "sim_lab") return "Lab A";
   if (s === "lab_b") return "Lab B";
   if (s === "lab_c") return "Lab C";
   if (s === "lab_d") return "Lab D";
   if (s === "lab_e") return "Lab E";
+  if (s === "live") return sim ? "Live paper" : "Live";
   return "Live";
 }
 
@@ -527,6 +534,17 @@ function fmtMoney(n: number) {
   const sign = n < 0 ? "-" : "";
   const v = Math.abs(n);
   return `${sign}$${v.toFixed(2)}`;
+}
+
+const EQUITY_CHART_OPEN_HINT =
+  "Settled = finalized contracts with PnL in SQLite. Open = paper positions still held (premium committed); book can move with 0 settled until markets resolve.";
+
+function equityChartSubtitlePtsBookSettledOpen(snapCount: number, m: AnyObj | undefined | null): string {
+  const mm = m && typeof m === "object" ? (m as AnyObj) : {};
+  const book = fmtMoney(Number(mm.current_equity_dollars ?? 0));
+  const settled = Number(mm.settled_trades ?? 0) || 0;
+  const open = Number(mm.open_sim_trades ?? 0) || 0;
+  return `${snapCount} pts · book ${book} · ${settled} settled · ${open} open`;
 }
 
 const HERO_MARQUEE_SPEED_KEY = "kalshibot_hero_marquee_speed_mult_v1";
@@ -1577,10 +1595,7 @@ function buildOptimizerStatus(dash: AnyObj | null, cfg: AnyObj) {
   const total = trace.length;
   const acceptanceRatePct = total > 0 ? (accepted * 100) / total : Number(oc.acceptance_rate_pct || 0);
   const bestFitnessWeek = Number(oc.best_fitness_score_7d || 0);
-  const eqRows = equitySnapshotsArray(
-    dash ? (dash as AnyObj).equity_snapshots_lab_a : undefined,
-    dash ? (dash as AnyObj).equity_snapshots_sim_lab : undefined,
-  );
+  const eqRows = equitySnapshotsArray(dash ? (dash as AnyObj).equity_snapshots_lab_a : undefined);
   const chart = eqRows
     .slice(-20)
     .map((r, i) => ({
@@ -2227,7 +2242,7 @@ function recentSettledResolutionLinesWithLens(rows: AnyObj[], max = 10): string 
   if (!slice.length) return "";
   return slice
     .map((t) => {
-      const br = branchLabelForTradeToast(t.branch);
+      const br = branchLabelForTradeToast(t.branch, Boolean(Number(t.simulated)));
       const tick = String(t.ticker || "").slice(0, 40);
       const side = String(t.side || "").toUpperCase() || "—";
       const rawP = t.pnl_cents;
@@ -2687,7 +2702,7 @@ function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null 
           <>
             <ul className="optimizer-report-settle-list">
               {settledSlice.map((t) => {
-                const br = branchLabelForTradeToast(t.branch);
+                const br = branchLabelForTradeToast(t.branch, Boolean(Number(t.simulated)));
                 const tick = String(t.ticker || "").slice(0, 44) || "—";
                 const side = String(t.side || "").toUpperCase() || "—";
                 const rawP = t.pnl_cents;
@@ -2703,10 +2718,11 @@ function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null 
                 }
                 const res = t.result ? String(t.result) : "";
                 const rid = Number(t.id);
+                const nb = normalizeSignalTradeBranch(t.branch);
                 const roleTag =
-                  br === "Lab A" ? (
+                  nb === "lab_a" ? (
                     <span className="optimizer-report-settle-row__tag">Feeds adaptive + bet pulse</span>
-                  ) : br === "Live" ? (
+                  ) : nb === "live" ? (
                     <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Not in optimizer lookback</span>
                   ) : (
                     <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Reference context</span>
@@ -3121,8 +3137,13 @@ const BRANCH_SWATCH: Record<ActivityBranchKey, string> = {
   lab_e: "#5eead4",
 };
 
-function branchToastSwatch(branchRaw: unknown): string {
-  return BRANCH_SWATCH[normalizeSignalTradeBranch(branchRaw)];
+/** Live branch + simulated row: softer sky (real Kalshi Live book uses ``BRANCH_SWATCH.live`` cyan). */
+const LIVE_PAPER_SWATCH = "#93c5fd";
+
+function branchToastSwatch(branchRaw: unknown, simulated?: boolean): string {
+  const key = normalizeSignalTradeBranch(branchRaw);
+  if (key === "live" && simulated === true) return LIVE_PAPER_SWATCH;
+  return BRANCH_SWATCH[key];
 }
 
 /** Open / resting sim rows plus common Kalshi in-flight order states (see engine ``insert_trade``). */
@@ -4609,10 +4630,10 @@ export default function App() {
       if (!idStr) continue;
       const st = String(t.status || "").toLowerCase();
       const resolved = tradeRowLooksResolved(t);
-      const branch = branchLabelForTradeToast(t.branch);
+      const sim = Boolean(Number(t.simulated));
+      const branch = branchLabelForTradeToast(t.branch, sim);
       const tick = String(t.ticker || "").slice(0, 48);
       const side = String(t.side || "").toUpperCase() || "—";
-      const sim = Boolean(Number(t.simulated));
       if (resolved) {
         if (seenTradeSettleRef.current.has(idStr)) continue;
         seenTradeSettleRef.current.add(idStr);
@@ -4643,7 +4664,7 @@ export default function App() {
             title: sim ? resMeta.title : resMeta.title.replace(/^Purchase /, "Trade "),
             body: "",
             tone: cardTone,
-            branch_swatch: branchToastSwatch(t.branch),
+            branch_swatch: branchToastSwatch(t.branch, sim),
             branch_tip: branch,
             segments: [
               { tier: "neutral", text: `${branch} · ${tick} ${side}` },
@@ -4666,12 +4687,12 @@ export default function App() {
           id: toastId,
           title: sim ? "Sim purchase" : "Purchase / order active",
           body: "",
-          tone: "green",
-          branch_swatch: branchToastSwatch(t.branch),
+          tone: sim ? "paper" : "green",
+          branch_swatch: branchToastSwatch(t.branch, sim),
           branch_tip: branch,
           segments: [
             { tier: "neutral", text: `${branch} · ${tick} ${side}` },
-            { tier: "green", text: `≈ $${cost.toFixed(2)} debit · ${st}` },
+            { tier: sim ? "neutral" : "green", text: `≈ $${cost.toFixed(2)} debit · ${st}` },
             { tier: "neutral", text: "Awaiting resolution (settle or early exit)" },
           ],
           created_at: new Date().toISOString(),
@@ -5051,7 +5072,7 @@ export default function App() {
   };
 
   const snaps = equitySnapshotsArray(dash?.equity_snapshots);
-  const equitySnapsLabA = equitySnapshotsArray(dash?.equity_snapshots_lab_a, dash?.equity_snapshots_sim_lab);
+  const equitySnapsLabA = equitySnapshotsArray(dash?.equity_snapshots_lab_a);
   const equitySnapsLabB = equitySnapshotsArray(dash?.equity_snapshots_lab_b);
   const equitySnapsLabC = equitySnapshotsArray(dash?.equity_snapshots_lab_c);
   const equitySnapsLabD = equitySnapshotsArray(dash?.equity_snapshots_lab_d);
@@ -5746,7 +5767,12 @@ export default function App() {
         <div className="optimizer-toast-stack" aria-live="polite" aria-label="Trade and optimizer notifications">
           {visibleOptimizerNotifs.map((n) => {
             const tier =
-              String(n.tone || "") === "red" || String(n.tone) === "yellow" || String(n.tone) === "green" ? String(n.tone) : "";
+              String(n.tone || "") === "red" ||
+              String(n.tone) === "yellow" ||
+              String(n.tone) === "green" ||
+              String(n.tone) === "paper"
+                ? String(n.tone)
+                : "";
             const cardTone = tier ? ` optimizer-toast--${tier}` : "";
             const segs = Array.isArray(n.segments) ? (n.segments as { tier?: string; text?: string }[]) : null;
             const swatch = typeof n.branch_swatch === "string" ? String(n.branch_swatch) : "";
@@ -5938,6 +5964,7 @@ export default function App() {
                       <p>
                         <strong>MTM (est.) and open / mark P&amp;L (est.) on paper / lab branches.</strong> MTM is a mark-to-market
                         or blended snapshot total for that branch, derived from the last engine tick and stored metrics.
+                        The subtitle under MTM shows configured paper <strong>basis</strong> (same seed as % math), not a second headline tile.
                         <strong> Open / mark P&amp;L</strong> is the unrealized component: how much the open book is up or down
                         versus bankroll and realized PnL combined. Reconcile mentally as: MTM (est.) &asymp; bankroll + settled +
                         mark on opens; the exact numbers follow backend helpers that may coalesce with cost-basis when marks are
@@ -6033,25 +6060,21 @@ export default function App() {
               />
             </>
           ) : (
-            <>
-              <MetricTile
-                label={`${perfBranchMeta.label} bankroll (start)`}
-                value={fmtMoney(Number(perfBranchMeta.metrics.paper_start_dollars ?? 0))}
-                title="Starting/cumulative paper basis used for return percentages."
-              />
-              <MetricTile
-                label={`${perfBranchMeta.label} MTM (est.)`}
-                value={fmtMoney(dashboardMtmDollars(perfBranchMeta.metrics))}
-                title="Mark-to-market from latest snapshot; falls back to cost-basis equity when needed."
-                sub={`Return vs start ${fmtPct(dashboardMtmReturnPct(perfBranchMeta.metrics))} · chart last ${
-                  dashboardChartLastMtmOrEq(perfBranchMeta.metrics) != null
-                    ? fmtMoney(Number(dashboardChartLastMtmOrEq(perfBranchMeta.metrics)))
-                    : "—"
-                }`}
-                valueTone={metricEquityVsBankroll(dashboardMtmDollars(perfBranchMeta.metrics), perfBranchMeta.metrics.paper_start_dollars)}
-                subTone={metricSignedTone(dashboardMtmReturnPct(perfBranchMeta.metrics))}
-              />
-            </>
+            <MetricTile
+              label={`${perfBranchMeta.label} MTM (est.)`}
+              value={fmtMoney(dashboardMtmDollars(perfBranchMeta.metrics))}
+              title={
+                "Mark-to-market from latest snapshot; falls back to cost-basis equity when needed. " +
+                "Return % is vs configured paper basis (Settings → Lab branches); basis is repeated in the subtitle so it is not a separate headline tile."
+              }
+              sub={`Basis ${fmtMoney(Number(perfBranchMeta.metrics.paper_start_dollars ?? 0))} · return vs basis ${fmtPct(dashboardMtmReturnPct(perfBranchMeta.metrics))} · chart last ${
+                dashboardChartLastMtmOrEq(perfBranchMeta.metrics) != null
+                  ? fmtMoney(Number(dashboardChartLastMtmOrEq(perfBranchMeta.metrics)))
+                  : "—"
+              }`}
+              valueTone={metricEquityVsBankroll(dashboardMtmDollars(perfBranchMeta.metrics), perfBranchMeta.metrics.paper_start_dollars)}
+              subTone={metricSignedTone(dashboardMtmReturnPct(perfBranchMeta.metrics))}
+            />
           )}
           {(!cfg.simulate && perfBranchMeta.isLive) ? null : (() => {
             const u = paperUnrealizedPnlDollars(perfBranchMeta.metrics);
@@ -6114,6 +6137,15 @@ export default function App() {
           />
         </div>
         <div className="branch-performance-bottom">
+          <p
+            className="sub branch-performance-bottom__scope-hint"
+            style={{ margin: "0 0 8px", fontSize: 12, opacity: 0.92 }}
+            title={
+              "The Equity curves panel shows Live + Lab A–E all at once (one chart per branch). This marquee lists open sim trades only for the branch tab you selected here — not every branch at once."
+            }
+          >
+            Open sim ticker scope: <strong>{perfBranchMeta.label}</strong> — equity charts use separate ledgers per branch.
+          </p>
           <BranchPerfActiveTradesMarquee branchLabel={perfBranchMeta.label} activeRows={activeTradesForPerfBranch} />
           <button
             type="button"
@@ -6831,8 +6863,15 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("live")}: book value (solid) vs current worth / MTM (dashed).`}>
                 {activityBranchTabLabel("live")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Per-branch SQLite equity_snapshots + rollups; same shape with different $ is normal when labs share rules and the same market tape.">
-                {snaps.length} pts · book {fmtMoney(Number(metrics.current_equity_dollars ?? 0))} · {Number(metrics.settled_trades ?? 0)} settled
+              <p
+                className="sub dash-equity-chart-fp"
+                title={
+                  "Live paper: SQLite equity_snapshots append each poll even when the Live engine is off (flat/cost basis until trades exist). " +
+                  "Trade toasts use row.branch — Live vs labs are separate ledgers. " +
+                  EQUITY_CHART_OPEN_HINT
+                }
+              >
+                {equityChartSubtitlePtsBookSettledOpen(snaps.length, metrics)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -6859,8 +6898,15 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_a")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_a")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_a (legacy sim_lab merged here).">
-                {equitySnapsLabA.length} pts · book {fmtMoney(Number(metricsLabA.current_equity_dollars ?? 0))} · {Number(metricsLabA.settled_trades ?? 0)} settled
+              <p
+                className="sub dash-equity-chart-fp"
+                title={
+                  "Lab A series from equity_snapshots_lab_a (SQLite canonical branch includes legacy sim_lab rows). " +
+                  "Trade toasts still label legacy sim_lab as Lab A. " +
+                  EQUITY_CHART_OPEN_HINT
+                }
+              >
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabA.length, metricsLabA)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -6887,8 +6933,8 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_b")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_b")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_b.">
-                {equitySnapsLabB.length} pts · book {fmtMoney(Number(metricsLabB.current_equity_dollars ?? 0))} · {Number(metricsLabB.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_b. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabB.length, metricsLabB)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -6915,8 +6961,8 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_c")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_c")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_c.">
-                {equitySnapsLabC.length} pts · book {fmtMoney(Number(metricsLabC.current_equity_dollars ?? 0))} · {Number(metricsLabC.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_c. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabC.length, metricsLabC)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -6943,8 +6989,8 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_d")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_d")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_d.">
-                {equitySnapsLabD.length} pts · book {fmtMoney(Number(metricsLabD.current_equity_dollars ?? 0))} · {Number(metricsLabD.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_d. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabD.length, metricsLabD)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -6971,8 +7017,8 @@ export default function App() {
               <h3 className="dash-equity-branch-head section-tip" title={`${activityBranchTabLabel("lab_e")}: book value (solid) vs current worth (dashed).`}>
                 {activityBranchTabLabel("lab_e")}
               </h3>
-              <p className="sub dash-equity-chart-fp" title="Series from equity_snapshots_lab_e.">
-                {equitySnapsLabE.length} pts · book {fmtMoney(Number(metricsLabE.current_equity_dollars ?? 0))} · {Number(metricsLabE.settled_trades ?? 0)} settled
+              <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_e. " + EQUITY_CHART_OPEN_HINT}>
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabE.length, metricsLabE)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -8104,14 +8150,27 @@ function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj })
       text: `Cannot reach Kalshi (${String(k.api_base || "")}, env=${String(k.env || "")}). ${k.public_error ? String(k.public_error) : ""}`,
     });
   }
-  /* Public-only / missing keys: full copy lives on Settings → Kalshi & connection orb 4 (red ☐) — avoid duplicating here. */
+  const creds = k.credentials && typeof k.credentials === "object" ? (k.credentials as AnyObj) : {};
+  const keyConfigured = Boolean(creds.api_key_id_configured);
+  const pemConfigured = Boolean(creds.private_key_configured);
+  const signingReady = keyConfigured && pemConfigured;
+  /** Backend sends ``simulate_live`` — false means Live real-money mode (needs keys to pull balance / place orders). */
+  const livePaperMode = Boolean(k.simulate_live ?? cfg?.simulate ?? true);
+  if (k.public_ok && !signingReady && !livePaperMode) {
+    blocks.push({
+      tone: "warn",
+      text:
+        "Live is configured for real orders but Kalshi signing keys are missing — set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH (or PEM) in repo-root .env and restart the API.",
+      detail: "Unsigned mode cannot fetch portfolio balance or POST orders.",
+    });
+  }
   const polling = Boolean(k.polling_enabled);
   if (!polling && k.public_ok) {
     blocks.push({
       tone: "info",
-      text: "No engine polling yet — turn Live and/or Lab A / Lab B on in the toolbar for ticks.",
+      text: "No engine polling yet — turn Live and/or Lab A–E on under Settings → Engines & branches (each branch has its own toggle).",
       detail:
-        "At least one branch engine must be running so the dual loop scans markets and writes signals. Labs use the same Kalshi feed as Live but keep separate paper ledgers.",
+        "Paper branches only need public Kalshi reachability + engines on; API keys are optional unless you need portfolio link or real fills.",
     });
   }
 
