@@ -127,70 +127,71 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
 def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
     if lab_key == "lab_b":
-        # Iceberg: **NO-first** book + one microscopic late YES — opposite pole from C’s open blaze and D’s early YES.
+        # Iceberg: NO stacks in mid/late clock — avoids C’s microburst YES and D’s 2m spike; lone YES only terminal.
         return [
-            {"name": "B glacier NO 14–19m", "side": "no", "min_prob": 0.52, "max_prob": 0.78, "min_minutes_left": 14.0, "max_minutes_left": 19.0},
-            {"name": "B bunker NO 17–23m", "side": "no", "min_prob": 0.44, "max_prob": 0.70, "min_minutes_left": 17.0, "max_minutes_left": 23.0},
+            {"name": "B frost NO 8–11m", "side": "no", "min_prob": 0.48, "max_prob": 0.74, "min_minutes_left": 8.0, "max_minutes_left": 11.0},
+            {"name": "B glacier NO 15–20m", "side": "no", "min_prob": 0.54, "max_prob": 0.80, "min_minutes_left": 15.0, "max_minutes_left": 20.0},
+            {"name": "B bunker NO 18–24m", "side": "no", "min_prob": 0.42, "max_prob": 0.68, "min_minutes_left": 18.0, "max_minutes_left": 24.0},
             {
-                "name": "B explicit counter-thesis NO: veto euphoria 12–18m",
+                "name": "B veto NO 11–16m",
                 "side": "no",
-                "min_prob": 0.58,
-                "max_prob": 0.86,
-                "min_minutes_left": 12.0,
-                "max_minutes_left": 18.0,
+                "min_prob": 0.60,
+                "max_prob": 0.88,
+                "min_minutes_left": 11.0,
+                "max_minutes_left": 16.0,
             },
-            {"name": "B vault NO 20–24m", "side": "no", "min_prob": 0.36, "max_prob": 0.60, "min_minutes_left": 20.0, "max_minutes_left": 24.0},
-            {"name": "B whisper YES 21.5–22.5m only", "min_prob": 0.64, "max_prob": 0.80, "min_minutes_left": 21.5, "max_minutes_left": 22.5},
+            {"name": "B vault NO 21–24m", "side": "no", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 21.0, "max_minutes_left": 24.0},
+            {"name": "B whisper YES 22.0–23.0m only", "min_prob": 0.62, "max_prob": 0.78, "min_minutes_left": 22.0, "max_minutes_left": 23.0},
         ]
     if lab_key == "lab_c":
-        # Plasma: **sub-minute** YES + 36m vacuum + NO only in first 4m — zero overlap with B’s 12m+ NO or D’s mid YES.
+        # Plasma: micro YES + long vacuum; NO confined to open — clocks disjoint from B’s 8m+ NO wall and D needle.
         return [
-            {"name": "C spark YES 0.15–0.9m", "min_prob": 0.58, "max_prob": 0.995, "min_minutes_left": 0.15, "max_minutes_left": 0.9},
-            {"name": "C cyclone YES 0.15–36m", "min_prob": 0.10, "max_prob": 0.96, "min_minutes_left": 0.15, "max_minutes_left": 36.0},
-            {"name": "C afterburn YES 1.5–8m", "min_prob": 0.50, "max_prob": 0.99, "min_minutes_left": 1.5, "max_minutes_left": 8.0},
-            {"name": "C choke NO 0.15–2m", "side": "no", "min_prob": 0.48, "max_prob": 0.92, "min_minutes_left": 0.15, "max_minutes_left": 2.0},
+            {"name": "C spark YES 0.12–0.72m", "min_prob": 0.58, "max_prob": 0.995, "min_minutes_left": 0.12, "max_minutes_left": 0.72},
+            {"name": "C cyclone YES 0.12–38m", "min_prob": 0.09, "max_prob": 0.96, "min_minutes_left": 0.12, "max_minutes_left": 38.0},
+            {"name": "C afterburn YES 1.2–7m", "min_prob": 0.48, "max_prob": 0.99, "min_minutes_left": 1.2, "max_minutes_left": 7.0},
+            {"name": "C choke NO 0.12–1.8m", "side": "no", "min_prob": 0.46, "max_prob": 0.90, "min_minutes_left": 0.12, "max_minutes_left": 1.8},
             {
-                "name": "C explicit counter-thesis NO: torch the open",
+                "name": "C torch NO 0.25–3.5m",
                 "side": "no",
-                "min_prob": 0.20,
-                "max_prob": 0.55,
-                "min_minutes_left": 0.2,
-                "max_minutes_left": 4.0,
+                "min_prob": 0.22,
+                "max_prob": 0.52,
+                "min_minutes_left": 0.25,
+                "max_minutes_left": 3.5,
             },
-            {"name": "C sweep NO 2.5–5m", "side": "no", "min_prob": 0.32, "max_prob": 0.78, "min_minutes_left": 2.5, "max_minutes_left": 5.0},
+            {"name": "C sweep NO 3.8–6m", "side": "no", "min_prob": 0.30, "max_prob": 0.76, "min_minutes_left": 3.8, "max_minutes_left": 6.0},
         ]
     if lab_key == "lab_d":
-        # Inversion: **early spike YES only** 2.5–4m + NO everywhere else — fights B (late NO), C (open rip), E (stagger).
+        # Inversion: narrow early YES spike + NO elsewhere — minimal overlap with B frost or C torch windows.
         return [
-            {"name": "D needle YES 2.5–4m only", "min_prob": 0.40, "max_prob": 0.62, "min_minutes_left": 2.5, "max_minutes_left": 4.0},
-            {"name": "D void NO 0.5–8m", "side": "no", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 0.5, "max_minutes_left": 8.0},
-            {"name": "D trench NO 7–16m", "side": "no", "min_prob": 0.46, "max_prob": 0.76, "min_minutes_left": 7.0, "max_minutes_left": 16.0},
+            {"name": "D needle YES 1.85–3.35m only", "min_prob": 0.38, "max_prob": 0.60, "min_minutes_left": 1.85, "max_minutes_left": 3.35},
+            {"name": "D void NO 0.35–7m", "side": "no", "min_prob": 0.32, "max_prob": 0.56, "min_minutes_left": 0.35, "max_minutes_left": 7.0},
+            {"name": "D trench NO 6.5–15m", "side": "no", "min_prob": 0.44, "max_prob": 0.74, "min_minutes_left": 6.5, "max_minutes_left": 15.0},
             {
-                "name": "D explicit counter-thesis NO: bury the open rush",
+                "name": "D bury NO 4–13m",
                 "side": "no",
-                "min_prob": 0.28,
-                "max_prob": 0.54,
+                "min_prob": 0.26,
+                "max_prob": 0.52,
                 "min_minutes_left": 4.0,
-                "max_minutes_left": 14.0,
-            },
-            {"name": "D eclipse NO 12–28m", "side": "no", "min_prob": 0.50, "max_prob": 0.88, "min_minutes_left": 12.0, "max_minutes_left": 28.0},
-        ]
-    if lab_key == "lab_e":
-        # Zigzag: **alternating** YES/NO clocks that avoid B/C/D concentration windows.
-        return [
-            {"name": "E pulse YES 0.5–2.5m", "min_prob": 0.54, "max_prob": 0.88, "min_minutes_left": 0.5, "max_minutes_left": 2.5},
-            {"name": "E gate NO 3–6m", "side": "no", "min_prob": 0.42, "max_prob": 0.72, "min_minutes_left": 3.0, "max_minutes_left": 6.0},
-            {"name": "E ramp YES 7–10m", "min_prob": 0.48, "max_prob": 0.84, "min_minutes_left": 7.0, "max_minutes_left": 10.0},
-            {
-                "name": "E explicit counter-thesis NO: brake 9–13m",
-                "side": "no",
-                "min_prob": 0.50,
-                "max_prob": 0.82,
-                "min_minutes_left": 9.0,
                 "max_minutes_left": 13.0,
             },
-            {"name": "E zen YES 14–17m", "min_prob": 0.56, "max_prob": 0.90, "min_minutes_left": 14.0, "max_minutes_left": 17.0},
-            {"name": "E veil NO 15–20m", "side": "no", "min_prob": 0.38, "max_prob": 0.68, "min_minutes_left": 15.0, "max_minutes_left": 20.0},
+            {"name": "D eclipse NO 13–29m", "side": "no", "min_prob": 0.48, "max_prob": 0.86, "min_minutes_left": 13.0, "max_minutes_left": 29.0},
+        ]
+    if lab_key == "lab_e":
+        # Zigzag: offset ladders vs B/C/D — pulse → gate → ramp → brake → zen → veil on shifted minutes.
+        return [
+            {"name": "E pulse YES 0.35–1.9m", "min_prob": 0.52, "max_prob": 0.86, "min_minutes_left": 0.35, "max_minutes_left": 1.9},
+            {"name": "E gate NO 2.6–5.8m", "side": "no", "min_prob": 0.40, "max_prob": 0.70, "min_minutes_left": 2.6, "max_minutes_left": 5.8},
+            {"name": "E ramp YES 6.8–9.5m", "min_prob": 0.46, "max_prob": 0.82, "min_minutes_left": 6.8, "max_minutes_left": 9.5},
+            {
+                "name": "E brake NO 10–14m",
+                "side": "no",
+                "min_prob": 0.48,
+                "max_prob": 0.80,
+                "min_minutes_left": 10.0,
+                "max_minutes_left": 14.0,
+            },
+            {"name": "E zen YES 15–18m", "min_prob": 0.54, "max_prob": 0.88, "min_minutes_left": 15.0, "max_minutes_left": 18.0},
+            {"name": "E veil NO 16.5–21m", "side": "no", "min_prob": 0.36, "max_prob": 0.66, "min_minutes_left": 16.5, "max_minutes_left": 21.0},
         ]
     return _breeder_loose_rules_fallback()
 

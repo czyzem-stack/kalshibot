@@ -109,11 +109,15 @@ def get_lab_communication_bus() -> LabCommunicationBus:
     return LabCommunicationBus.instance()
 
 
-def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = 3) -> tuple[float, int, int]:
-    """
-    Scan the last ``n`` breeder bus lines (most recent first scan, chronological return).
+# How many recent breeder lines feed council / message bias (longer = smoother; weighted toward newest).
+THINK_TANK_COUNCIL_LINE_CAP = 6
 
-    Returns ``(bias, yes_hits, no_hits)`` where bias is in [-1, 1] from word-boundary YES vs NO counts.
+
+def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = THINK_TANK_COUNCIL_LINE_CAP) -> tuple[float, int, int]:
+    """
+    Last ``n`` breeder lines: total YES/NO word counts plus a **newer-weighted** bias in [-1, 1].
+
+    Weighting damps a single stale line and makes the engine read a steadier lean than a raw total ratio.
     """
     texts: list[str] = []
     for row in reversed(list(bus._dq)):
@@ -125,11 +129,26 @@ def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = 3) -> tuple
     texts = list(reversed(texts))
     yes_h = 0
     no_h = 0
-    for t in texts:
-        yes_h += len(re.findall(r"\bYES\b", t, re.I))
-        no_h += len(re.findall(r"\bNO\b", t, re.I))
+    w_num = 0.0
+    w_den = 0.0
+    for i, t in enumerate(texts):
+        yi = len(re.findall(r"\bYES\b", t, re.I))
+        ni = len(re.findall(r"\bNO\b", t, re.I))
+        yes_h += yi
+        no_h += ni
+        line_tot = yi + ni
+        if line_tot:
+            lb = (yi - ni) / line_tot
+            w = float(i + 1) ** 1.65
+            w_num += lb * w
+            w_den += w
     tot = yes_h + no_h
-    bias = (yes_h - no_h) / tot if tot else 0.0
+    if w_den > 0:
+        bias = max(-1.0, min(1.0, w_num / w_den))
+    elif tot:
+        bias = (yes_h - no_h) / tot
+    else:
+        bias = 0.0
     return bias, yes_h, no_h
 
 
@@ -157,16 +176,21 @@ def refresh_engine_council_signal(
     Strength is tuned so engines read a decisive bias whenever the bus has YES/NO text.
     """
     _ = full_cfg
-    bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
+    bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus)
     tot = yes_h + no_h
     if tot == 0:
         bus._engine_council_signal = None
         return
-    strength = min(1.0, tot / 4.0) * 1.48
-    if tot >= 2 and abs(bias) >= 0.14:
-        strength = max(strength, 0.78)
-    strength = max(strength, 0.92)
-    strength = min(1.0, strength * 1.28)
+    strength = min(1.0, tot / 5.0) * 1.52
+    if tot >= 4 and abs(bias) >= 0.12:
+        strength = max(strength, 0.88)
+    elif tot >= 3:
+        strength = max(strength, 0.82)
+    elif tot >= 2:
+        strength = max(strength, 0.74)
+    else:
+        strength = max(strength, 0.62)
+    strength = min(1.0, strength * 1.22)
     ttl = 300.0
     bus._engine_council_signal = {
         "bias": float(bias),

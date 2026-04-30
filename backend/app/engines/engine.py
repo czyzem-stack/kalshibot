@@ -529,10 +529,10 @@ def _breeder_council_weight_pct(breeder_cfg: dict[str, Any]) -> float:
 
 # Fixed YES-mid skew so B–E diverge on the same ticker even before ticker-local RNG (scaled by council weight in ``handle_market``).
 _BREEDER_STRUCT_PROB_SKEW: dict[str, float] = {
-    BRANCH_LAB_B: -0.060,
-    BRANCH_LAB_C: 0.078,
-    BRANCH_LAB_D: 0.048,
-    BRANCH_LAB_E: -0.040,
+    BRANCH_LAB_B: -0.068,
+    BRANCH_LAB_C: 0.088,
+    BRANCH_LAB_D: 0.054,
+    BRANCH_LAB_E: -0.046,
 }
 
 
@@ -572,96 +572,96 @@ def _breeder_effective_prob_yes(
 
     r = _breeder_rng(branch, engine._tick_count, ticker)
     # Personality drift — wide scales per branch + tag so B/C/D/E rarely share the same implied mid.
-    scales = {BRANCH_LAB_B: 0.56, BRANCH_LAB_C: 0.68, BRANCH_LAB_D: 0.80, BRANCH_LAB_E: 0.66}
-    sc = scales.get(branch, 0.66)
+    scales = {BRANCH_LAB_B: 0.62, BRANCH_LAB_C: 0.74, BRANCH_LAB_D: 0.88, BRANCH_LAB_E: 0.72}
+    sc = scales.get(branch, 0.72)
     if pers == "conservative":
-        sc *= 2.38
+        sc *= 2.52
     elif pers == "aggressive":
-        sc *= 2.48
+        sc *= 2.62
     elif pers == "contrarian":
-        sc *= 2.68
+        sc *= 2.82
     elif pers == "adaptive":
-        sc *= 2.12
+        sc *= 2.22
 
     drift = r.uniform(-sc, sc)
     if branch == BRANCH_LAB_B or pers == "conservative":
-        drift -= r.uniform(0.18, 0.40)
+        drift -= r.uniform(0.22, 0.46)
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        drift += r.uniform(0.22, 0.44)
+        drift += r.uniform(0.26, 0.50)
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        if r.random() < 0.975:
-            drift *= -(2.38 + 0.78 * r.random())
-        drift += r.uniform(-0.30, 0.30)
+        if r.random() < 0.982:
+            drift *= -(2.52 + 0.85 * r.random())
+        drift += r.uniform(-0.34, 0.34)
     elif pers == "adaptive":
-        drift += r.uniform(-0.36, 0.36)
+        drift += r.uniform(-0.42, 0.42)
 
     st_sig = float(sig.get("strength", 0.0)) if sig else 0.0
     sig_bias = float(sig.get("bias", 0.0)) if sig else 0.0
 
     # B follows chatter; C follows instrumented council signal — opposite lean from the same snapshot.
     if branch == BRANCH_LAB_B or pers == "conservative":
-        w_msg, w_sig_base = 0.66, 0.34
+        w_msg, w_sig_base = 0.70, 0.30
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        w_msg, w_sig_base = 0.38, 0.62
+        w_msg, w_sig_base = 0.34, 0.66
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        w_msg, w_sig_base = 0.46, 0.54
+        w_msg, w_sig_base = 0.44, 0.56
     else:
-        w_msg, w_sig_base = 0.50, 0.50
-    w_sig = w_sig_base * min(1.0, st_sig + 0.28)
+        w_msg, w_sig_base = 0.48, 0.52
+    w_sig = w_sig_base * min(1.0, st_sig + 0.32)
     combined = bias_msgs * w_msg + sig_bias * w_sig
     combined = max(-1.0, min(1.0, combined))
 
-    # D/E: mirror-invert vs council bias from a low |bias| threshold; high apply rate.
-    _de_hi = 0.09
+    # D/E: mirror-invert vs council bias — low threshold, near-certain apply.
+    _de_hi = 0.055
     if branch == BRANCH_LAB_D and abs(sig_bias) >= _de_hi:
-        if r.random() < 0.991:
+        if r.random() < 0.996:
             combined = max(-1.0, min(1.0, 1.0 - combined))
     elif branch == BRANCH_LAB_E and abs(sig_bias) >= _de_hi:
-        if r.random() < 0.986:
+        if r.random() < 0.993:
             combined = max(-1.0, min(1.0, 1.0 - combined))
 
-    # Weak |sig_bias|: still flip when messages or strength carry direction.
+    # Weak |sig_bias|: invert whenever chatter/strength implies direction.
     if branch == BRANCH_LAB_D and abs(sig_bias) < _de_hi:
-        thr = 0.018
-        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.05):
-            if r.random() < 0.998:
-                flip = 0.78 + 0.22 * r.random()
+        thr = 0.012
+        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.038):
+            if r.random() < 0.999:
+                flip = 0.72 + 0.28 * r.random()
                 combined = -combined * flip
     elif branch == BRANCH_LAB_E and abs(sig_bias) < _de_hi:
-        thr = 0.016
-        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.045):
-            if r.random() < 0.994:
-                flip = 0.74 + 0.26 * r.random()
+        thr = 0.010
+        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.032):
+            if r.random() < 0.997:
+                flip = 0.68 + 0.32 * r.random()
                 combined = -combined * flip
 
-    # Decorrelator: frequent contra slam on D/E.
-    if branch in (BRANCH_LAB_D, BRANCH_LAB_E) and abs(combined) >= 0.018:
-        if r.random() < (0.40 if branch == BRANCH_LAB_D else 0.36):
-            combined = -combined * (0.58 + 0.42 * r.random())
+    # Decorrelator: contra slam on D/E even on tiny |combined|.
+    if branch in (BRANCH_LAB_D, BRANCH_LAB_E) and abs(combined) >= 0.008:
+        if r.random() < (0.46 if branch == BRANCH_LAB_D else 0.42):
+            combined = -combined * (0.52 + 0.48 * r.random())
             combined = max(-1.0, min(1.0, combined))
 
     if branch == BRANCH_LAB_B or pers == "conservative":
-        combined *= 0.026
+        combined *= 0.020
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        combined *= 2.32
+        combined *= 2.48
 
-    # Council-on-probability + raw consensus lane (~±150–238% blended at full weight).
-    amp_mid = 2.02
-    amp_spread = 0.72
+    # Council-on-probability + raw consensus lane (very strong at full weight).
+    amp_mid = 2.18
+    amp_spread = 0.78
     amp = amp_mid + (r.random() - 0.5) * amp_spread
     amp *= cw
 
     council_push = combined * amp
-    st_eff = min(1.0, max(0.0, st_sig) + 0.08)
-    raw_lane = sig_bias * st_eff * cw * 0.72
+    st_eff = min(1.0, max(0.0, st_sig) + 0.10)
+    raw_lane = sig_bias * st_eff * cw * 0.80
     if branch == BRANCH_LAB_B or pers == "conservative":
-        raw_lane *= 0.10
+        raw_lane *= 0.085
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        raw_lane *= 1.34
+        raw_lane *= 1.42
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        raw_lane *= -0.68
+        raw_lane *= -0.74
     else:
-        raw_lane *= -0.32 + 0.40 * r.random()
+        raw_lane *= -0.36 + 0.44 * r.random()
     council_push += raw_lane
 
     council_active = abs(council_push) > 1e-6 or (sig is not None and st_sig >= 0.10)
@@ -701,12 +701,12 @@ def _breeder_touch_ranked_edge(
     b = float(sig.get("bias", 0.0))
     st = float(sig.get("strength", 0.0))
     side = rule_trade_side(matched_rule)
-    raw_bonus = st * b * (0.036 if side == "yes" else -0.036) * cw
+    raw_bonus = st * b * (0.040 if side == "yes" else -0.040) * cw
     pers = {
-        BRANCH_LAB_B: 0.36,
-        BRANCH_LAB_C: 1.62,
-        BRANCH_LAB_D: 0.62 + 0.48 * r.random(),
-        BRANCH_LAB_E: 0.72 + 0.34 * r.random(),
+        BRANCH_LAB_B: 0.30,
+        BRANCH_LAB_C: 1.72,
+        BRANCH_LAB_D: 0.55 + 0.52 * r.random(),
+        BRANCH_LAB_E: 0.66 + 0.38 * r.random(),
     }.get(branch, 1.0)
     return edge * (1.0 + raw_bonus * pers)
 
@@ -933,11 +933,11 @@ def _breeder_shared_council_inputs(
     if engine._breeder_shared_prefetch_at_count == tc and engine._breeder_shared_prefetch is not None:
         return engine._breeder_shared_prefetch
     bus = get_lab_communication_bus()
-    bias_msgs, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
+    bias_msgs, yes_h, no_h = think_tank_yes_no_bias_last_n(bus)
     sig = peek_engine_council_signal(bus)
     sig_copy: dict[str, Any] | None = dict(sig) if isinstance(sig, dict) else None
     tot = yes_h + no_h
-    strong_msgs = tot >= 2 and abs(bias_msgs) >= 0.12
+    strong_msgs = tot >= 2 and abs(bias_msgs) >= 0.10
     tup = (bias_msgs, yes_h, no_h, sig_copy, strong_msgs)
     engine._breeder_shared_prefetch = tup
     engine._breeder_shared_prefetch_at_count = tc

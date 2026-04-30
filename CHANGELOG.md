@@ -2,6 +2,13 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.065 - Anti-sync drawdowns: smoother council bias + extreme breeder split - 2026-04-29
+
+- **Backend (`lab_communication.py`):** **`think_tank_yes_no_bias_last_n`** now scans **6** breeder lines (``THINK_TANK_COUNCIL_LINE_CAP``) with **newer-weighted** YES/NO bias (less jitter from one old line). **`refresh_engine_council_signal`** uses **count-tiered** strength floors so a single YES/NO mention no longer pins strength at the global ceiling.
+- **Backend (`engines/engine.py`):** **D/E** mirror threshold **``|sig_bias|≥0.055``** at **~99.6% / 99.3%**; weaker-path + decorrelator widened; **B** herd damp **~0.020**, **C** amplify **~2.48**; **B/C** message-vs-signal **0.70/0.30** vs **0.34/0.66**; higher council amplitude + **raw_lane** (**0.80** base); wider `_BREEDER_STRUCT_PROB_SKEW` and **handle_market** jitter; ranked-edge spread adjusted. Prefetch still **one** bias+council snapshot per tick (now uses default line cap).
+- **Backend (`persistence.py`):** **`_breeder_fallback_rules_for`** — reshuffled minute windows and bands for **B/C/D/E** so default templates overlap less (conservative mid NO wall vs plasma open vs needle YES vs zigzag offsets).
+- **Unchanged (per project rules):** ``lab_breeding.py``, Live engine paths, Lab A optimizer mutation, equity curves.
+
 ## v0.4.15.064 - Breeder council v4: tighter D/E invert + UI copy - 2026-04-29
 
 - **Backend (`engines/engine.py`):** **D/E** hard mirror-invert from **``|sig_bias|≥0.09``** at **~99.1% / 98.6%** of ticks; weaker-bias path lowers gates and raises flip probability; decorrelator fires more often from **``|combined|≥0.018``**. **B/C** message-vs-signal weights pushed further apart (**B** 0.66/0.34, **C** 0.38/0.62); herd damp **~0.026**, C amplify **~2.32**; blended council gain **~±150–238%** + stronger **raw_lane** (**0.72** base, wider personality multipliers). **``_BREEDER_STRUCT_PROB_SKEW``** and **``handle_market``** jitter widened. Ranked-edge council coupling tweaked (**B** softer, **C** harder). Per-tick **`_breeder_shared_council_inputs`** unchanged (still one deque walk per tick). Comment cleanup on breeder Think Tank field + prefetch docstring.
