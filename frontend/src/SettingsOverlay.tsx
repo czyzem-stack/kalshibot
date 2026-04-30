@@ -36,6 +36,17 @@ function labBranchToApiKey(k: LabBranchKey): "lab_a" | "lab_b" | "lab_c" | "lab_
   return k === "a" ? "lab_a" : k === "b" ? "lab_b" : k === "c" ? "lab_c" : k === "d" ? "lab_d" : "lab_e";
 }
 
+/** Remount breeder cards when rules reset (count + head rule names change). */
+function breederRulesKeyFragment(lab: AnyObj | undefined): string {
+  const rules = Array.isArray(lab?.rules) ? lab.rules : [];
+  const n = rules.length;
+  const sig = rules
+    .slice(0, 4)
+    .map((r: AnyObj) => String(r?.name ?? "").slice(0, 36))
+    .join("|");
+  return `${n}:${sig}`;
+}
+
 function patientStopDefaultsForLab(k: LabBranchKey): { trigger: number; hold: number } {
   if (k === "a") return { trigger: -6, hold: 20 };
   if (k === "b") return { trigger: -8, hold: 30 };
@@ -126,6 +137,12 @@ function BreederLabCard({
 
   const defaultPersonality = String(lab?.breeder_personality || "").trim() || defPers;
 
+  const councilInit = Math.round(Number(lab?.council_influence_weight_pct ?? 100));
+  const [councilPct, setCouncilPct] = useState(councilInit);
+  useEffect(() => {
+    setCouncilPct(Math.round(Number(lab?.council_influence_weight_pct ?? 100)));
+  }, [lab?.council_influence_weight_pct]);
+
   return (
     <div
       className="panel settings-nested-panel breeder-lab-card"
@@ -155,7 +172,14 @@ function BreederLabCard({
       </div>
 
       <div className="field" style={{ marginTop: 10 }} title="Scales Think Tank + council signal impact on breeder rule matching (0 = ignore council tilt).">
-        <label htmlFor={`${p}_council_weight`}>Council influence weight (0–100%)</label>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <label htmlFor={`${p}_council_weight`} style={{ margin: 0 }}>
+            Council influence weight (0–100%)
+          </label>
+          <span className="sub" style={{ fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+            {councilPct}%
+          </span>
+        </div>
         <input
           id={`${p}_council_weight`}
           type="range"
@@ -166,6 +190,7 @@ function BreederLabCard({
           defaultValue={String(Math.round(Number(lab?.council_influence_weight_pct ?? 100)))}
           onChange={(e) => {
             const v = Number(e.target.value);
+            setCouncilPct(Math.round(v));
             scheduleLabPatch({ council_influence_weight_pct: v });
           }}
         />
@@ -1137,7 +1162,7 @@ export default function SettingsOverlay({
                   }}
                 >
                   <BreederLabCard
-                    key={`bl-b-${String(labB?.council_influence_weight_pct ?? "")}-${String(labB?.breeder_personality ?? "")}-${String(labB?.paper_balance_cents ?? "")}`}
+                    key={`bl-b-${String(labB?.council_influence_weight_pct ?? "")}-${String(labB?.breeder_personality ?? "")}-${String(labB?.paper_balance_cents ?? "")}-${breederRulesKeyFragment(labB)}`}
                     which="b"
                     title="Lab B — conservative"
                     blurb="Tight risk, lower council coupling, explicit fade-vs-crowd NO lane."
@@ -1159,7 +1184,7 @@ export default function SettingsOverlay({
                     }
                   />
                   <BreederLabCard
-                    key={`bl-c-${String(labC?.council_influence_weight_pct ?? "")}-${String(labC?.breeder_personality ?? "")}-${String(labC?.paper_balance_cents ?? "")}`}
+                    key={`bl-c-${String(labC?.council_influence_weight_pct ?? "")}-${String(labC?.breeder_personality ?? "")}-${String(labC?.paper_balance_cents ?? "")}-${breederRulesKeyFragment(labC)}`}
                     which="c"
                     title="Lab C — aggressive"
                     blurb="Large fractions, short window, wide YES bands + slam-NO when overheated."
@@ -1181,7 +1206,7 @@ export default function SettingsOverlay({
                     }
                   />
                   <BreederLabCard
-                    key={`bl-d-${String(labD?.council_influence_weight_pct ?? "")}-${String(labD?.breeder_personality ?? "")}-${String(labD?.paper_balance_cents ?? "")}`}
+                    key={`bl-d-${String(labD?.council_influence_weight_pct ?? "")}-${String(labD?.breeder_personality ?? "")}-${String(labD?.paper_balance_cents ?? "")}-${breederRulesKeyFragment(labD)}`}
                     which="d"
                     title="Lab D — contrarian"
                     blurb="NO-first lanes; engine actively fades crowded council consensus."
@@ -1203,7 +1228,7 @@ export default function SettingsOverlay({
                     }
                   />
                   <BreederLabCard
-                    key={`bl-e-${String(labE?.council_influence_weight_pct ?? "")}-${String(labE?.breeder_personality ?? "")}-${String(labE?.paper_balance_cents ?? "")}`}
+                    key={`bl-e-${String(labE?.council_influence_weight_pct ?? "")}-${String(labE?.breeder_personality ?? "")}-${String(labE?.paper_balance_cents ?? "")}-${breederRulesKeyFragment(labE)}`}
                     which="e"
                     title="Lab E — adaptive"
                     blurb="Balanced sizing with strong adaptive fade (dual NO lanes)."
@@ -2006,8 +2031,9 @@ export default function SettingsOverlay({
                 </button>
               </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
-                <strong>Force</strong> runs one Lab A internal mutation + replay gate. <strong>Diversify council</strong> sets{" "}
-                <code>labs_council_diversity_until</code> for 45m and applies a strong council signal pulse (Think Tank lines + engine council strength).
+                <strong>Force</strong> runs one <strong>Lab A</strong> internal optimizer mutation plus replay fitness gate — it does <strong>not</strong> change breeder
+                council math. <strong>Diversify council</strong> targets <strong>B–E</strong> only: sets <code>labs_council_diversity_until</code> for 45m, queues a
+                strong Think Tank / council pulse, and widens effective YES-tilt bands (roughly ±40–50% at full council weight vs ~±25–35% when diversity is off).
               </p>
             </div>
             <div style={{ marginTop: 20 }}>

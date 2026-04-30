@@ -161,11 +161,11 @@ def refresh_engine_council_signal(
     bias, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
     div = council_diversity_pulse_active(full_cfg)
     tot = yes_h + no_h
-    strength = min(1.0, tot / 4.0) * (1.18 if div else 1.0)
+    strength = min(1.0, tot / 4.0) * (1.22 if div else 1.0)
     if tot >= 2 and abs(bias) >= 0.34:
-        strength = max(strength, 0.55)
+        strength = max(strength, 0.58)
     if div:
-        strength = max(strength, 0.48)
+        strength = max(strength, 0.58)
     if diversify_pulse:
         strength = max(strength, 0.91)
         strength = min(1.0, strength * 1.35)

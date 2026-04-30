@@ -2,6 +2,10 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.057 - Settings breeders: council readout + remount on rule reset - 2026-04-29
+
+- **Frontend (`SettingsOverlay.tsx`):** Breeder B–E cards show a live **council influence weight** percentage next to the slider; card **remount keys** now include a short **rules signature** so **Reset to smart defaults** refreshes uncontrolled inputs (rules, sliders) reliably. **Force internal mutation** vs **Diversify council** copy clarifies Lab A-only mutation vs B–E diversity window and tilt scaling.
+
 ## v0.4.15.056 - Lab B–E never ticked: stub ``engine_running: false`` + missing-key defaults - 2026-04-29
 
 - **Backend (`persistence.py`):** Legacy ``_normalize_loaded_config`` stubs for **lab_b–lab_e** embedded ``engine_running: false``. ``expand_partial_lab_branch`` merges user dict over defaults, so **False overwrote** shipped breeder defaults (**True**) and kept those labs permanently off. **Fix:** stubs no longer set ``engine_running``; **``_maybe_strip_legacy_breeder_stub_engine_false``** removes the stale false flag when a lab block still matches the old stub fingerprint so the next merge restores defaults.

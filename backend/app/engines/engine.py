@@ -562,29 +562,29 @@ def _breeder_effective_prob_yes(
     pers = _breeder_personality_tag(breeder_cfg, branch)
 
     r = _breeder_rng(branch, engine._tick_count, ticker)
-    # Stronger personality drift (B conservative pulls down, C up, D erratic, E moderate).
-    scales = {BRANCH_LAB_B: 0.028, BRANCH_LAB_C: 0.038, BRANCH_LAB_D: 0.045, BRANCH_LAB_E: 0.032}
-    sc = scales.get(branch, 0.032)
+    # Personality drift — intentionally wide so B/C/D/E paths decorrelate even with similar council lean.
+    scales = {BRANCH_LAB_B: 0.042, BRANCH_LAB_C: 0.056, BRANCH_LAB_D: 0.068, BRANCH_LAB_E: 0.048}
+    sc = scales.get(branch, 0.048)
     if pers == "conservative":
-        sc *= 1.15
-    elif pers == "aggressive":
         sc *= 1.22
-    elif pers == "contrarian":
+    elif pers == "aggressive":
         sc *= 1.28
+    elif pers == "contrarian":
+        sc *= 1.35
     elif pers == "adaptive":
-        sc *= 1.08
+        sc *= 1.12
 
     drift = r.uniform(-sc, sc)
     if branch == BRANCH_LAB_B or pers == "conservative":
-        drift -= r.uniform(0.006, 0.018)
+        drift -= r.uniform(0.010, 0.026)
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        drift += r.uniform(0.008, 0.022)
+        drift += r.uniform(0.014, 0.032)
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        if r.random() < 0.55:
-            drift *= -1.25
-        drift += r.uniform(-0.012, 0.012)
+        if r.random() < 0.62:
+            drift *= -1.42
+        drift += r.uniform(-0.022, 0.022)
     elif pers == "adaptive":
-        drift += r.uniform(-0.006, 0.006)
+        drift += r.uniform(-0.014, 0.014)
 
     st_sig = float(sig.get("strength", 0.0)) if sig else 0.0
     sig_bias = float(sig.get("bias", 0.0)) if sig else 0.0
@@ -597,29 +597,29 @@ def _breeder_effective_prob_yes(
     tot = yes_h + no_h
     strong_msgs = tot >= 2 and abs(bias_msgs) >= 0.25
 
-    # Explicit opposing thesis: Labs D and E often invert strong council consensus (fade YES → NO lanes).
+    # Explicit opposing thesis: Labs D and E invert strong council consensus (anti-synchronized drawdowns).
     if branch == BRANCH_LAB_D:
-        thr = 0.20 if div else 0.22
-        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.28):
-            if r.random() < (0.92 if div else 0.88):
-                flip = 0.88 + 0.12 * r.random()
+        thr = 0.14 if div else 0.17
+        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.22):
+            if r.random() < (0.96 if div else 0.92):
+                flip = 0.94 + 0.06 * r.random()
                 combined = -combined * flip
     elif branch == BRANCH_LAB_E:
-        thr = 0.16 if div else 0.18
-        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.22):
-            if r.random() < (0.82 if div else 0.72):
-                flip = 0.72 + 0.26 * r.random()
+        thr = 0.12 if div else 0.14
+        if abs(combined) >= thr and (strong_msgs or st_sig >= 0.18):
+            if r.random() < (0.90 if div else 0.82):
+                flip = 0.84 + 0.16 * r.random()
                 combined = -combined * flip
 
-    # Lab B damps herd-following; Lab C amplifies directional tilt slightly.
+    # Lab B damps herd-following; Lab C amplifies directional tilt (anti-sync vs B).
     if branch == BRANCH_LAB_B or pers == "conservative":
-        combined *= 0.26
+        combined *= 0.20
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        combined *= 1.14
+        combined *= 1.22
 
-    # Normal ~±25–35% max shift on probability scale at full weight; diversity ~±40–50%.
-    amp_mid = 0.295 if div else 0.252
-    amp_spread = 0.09 if div else 0.078
+    # Council-on-probability: normal ~±25–35% at full weight; diversity mode ~±40–50%.
+    amp_mid = 0.452 if div else 0.302
+    amp_spread = 0.096 if div else 0.084
     amp = amp_mid + (r.random() - 0.5) * amp_spread
     amp *= cw
 

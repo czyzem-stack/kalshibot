@@ -118,6 +118,8 @@ Breeding answers: **which simulated strategies deserve to move toward Live**, wi
 | **Turn several lab engines on at once** | **Settings → Simulation labs → Mass apply** — engines ON for selected labs; persists via **`PUT /api/config/lab-branches`**. |
 | **One lab (e.g. E) won’t stay on after refresh** | Same **`PUT /api/config/lab-branches`** path (avoid legacy toggle-only flows on old builds). |
 | **Copy sizing / patient stop across labs** | Mass apply: copy sizing from active tab; copy patient stop from a chosen source lab. |
+| **Restore distinct B–E templates** | **Settings → Simulation labs → Breeder labs (B–E)** → **Reset to smart defaults** per lab — pulls **`GET /api/config/breeder-smart-defaults/{lab_b…lab_e}`** (rules + sizing + council weight + personality + patient-stop defaults + optimizer floors). |
+| **Force mutation vs diversify council** | **Settings → Optimizer:** **Force internal mutation** runs one **Lab A** optimizer cycle + replay gate (does not retune B–E council math). **Diversify council** applies a **B–E** pulse and sets **`labs_council_diversity_until`** (~45m) for stronger council tilt on breeder effective YES. |
 | **Inspect config the API sees** | **`GET /api/config`** and **`GET /api/dashboard`**; writes use **`PUT /api/config`** or lab-branch merge routes. |
 | **Two browser tabs (5174 vs 5175)** | Default **:5174** = develop pill; **:5175** = **test** pill (see [`frontend/src/uiTrack.ts`](frontend/src/uiTrack.ts)). Same data if both proxy the same API — change **`frontend/.env`** `VITE_API_ORIGIN` for a second stack. |
 | **Quiet Think Tank structlog** | Leave **`LAB_THINK_TANK_LOG_INFO`** unset or `0`. |
@@ -288,6 +290,7 @@ Ports, Kalshi base URL, logging, timeouts, WebSocket, dashboard MTM caps, Think 
 | **Account / performance** | Holdings, metrics, activity by branch. |
 | **Optimizer** | **Breeder** + **Tree**; **Lab Think Tank** strip (`/labs/chat`). |
 | **Settings → Simulation labs** | Per-lab tabs, **Save all labs**, **Mass apply** (`PUT /api/config/lab-branches`: engines, paper, sizing, patient stop, auto-reset). |
+| **Settings → Breeder labs (B–E)** | Four cards: engine toggle, **council influence weight**, optimizer YES floor, sizing, **personality**, patient stop, rule bands, **Reset to smart defaults** — aligned with distinct backend rule packs and council-driven effective YES (normal vs diversity window). |
 | **Settings → Data** | Scoped resets, backups. |
 ---
 

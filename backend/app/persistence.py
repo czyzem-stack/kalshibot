@@ -76,63 +76,60 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
 def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
     if lab_key == "lab_b":
-        # Ultra-tight risk + explicit counter-thesis NO lane (fade crowded YES).
+        # Conservative: narrow YES windows + single disciplined NO fade — unlike wide C or NO-heavy D.
         return [
-            {"name": "B tight mid YES", "min_prob": 0.58, "max_prob": 0.74, "min_minutes_left": 4.0, "max_minutes_left": 14.0},
-            {"name": "B narrow high YES", "min_prob": 0.72, "max_prob": 0.88, "min_minutes_left": 3.0, "max_minutes_left": 11.0},
-            {"name": "B late scalp YES", "min_prob": 0.44, "max_prob": 0.62, "min_minutes_left": 1.0, "max_minutes_left": 8.0},
+            {"name": "B micro scalp YES", "min_prob": 0.54, "max_prob": 0.66, "min_minutes_left": 5.0, "max_minutes_left": 12.0},
+            {"name": "B tight mid YES", "min_prob": 0.60, "max_prob": 0.74, "min_minutes_left": 4.0, "max_minutes_left": 13.0},
+            {"name": "B narrow high YES", "min_prob": 0.74, "max_prob": 0.86, "min_minutes_left": 3.0, "max_minutes_left": 10.0},
+            {"name": "B late scalp YES", "min_prob": 0.42, "max_prob": 0.58, "min_minutes_left": 1.0, "max_minutes_left": 7.0},
             {
                 "name": "B counter-thesis: fade crowded YES",
                 "side": "no",
-                "min_prob": 0.55,
-                "max_prob": 0.82,
-                "min_minutes_left": 2.0,
-                "max_minutes_left": 16.0,
+                "min_prob": 0.56,
+                "max_prob": 0.80,
+                "min_minutes_left": 2.5,
+                "max_minutes_left": 15.0,
             },
         ]
     if lab_key == "lab_c":
-        # Aggressive sizing tolerance — wide bands + slam-NO when YES overheated.
+        # Aggressive: very wide YES + two independent NO lanes — unlike B tight bands or D NO-first.
         return [
-            {"name": "C wide rip YES", "min_prob": 0.28, "max_prob": 0.84, "min_minutes_left": 0.5, "max_minutes_left": 24.0},
-            {"name": "C momentum YES", "min_prob": 0.48, "max_prob": 0.92, "min_minutes_left": 1.0, "max_minutes_left": 18.0},
-            {"name": "C NO cannon", "side": "no", "min_prob": 0.52, "max_prob": 0.94, "min_minutes_left": 1.0, "max_minutes_left": 20.0},
+            {"name": "C wide rip YES", "min_prob": 0.22, "max_prob": 0.88, "min_minutes_left": 0.5, "max_minutes_left": 24.0},
+            {"name": "C momentum YES", "min_prob": 0.44, "max_prob": 0.94, "min_minutes_left": 0.5, "max_minutes_left": 20.0},
+            {"name": "C rocket YES", "min_prob": 0.62, "max_prob": 0.97, "min_minutes_left": 1.0, "max_minutes_left": 14.0},
+            {"name": "C NO cannon", "side": "no", "min_prob": 0.50, "max_prob": 0.94, "min_minutes_left": 1.0, "max_minutes_left": 22.0},
             {
-                "name": "C counter-thesis: slam NO on overheated YES",
+                "name": "C deep NO: overheated YES",
                 "side": "no",
-                "min_prob": 0.38,
-                "max_prob": 0.72,
+                "min_prob": 0.34,
+                "max_prob": 0.70,
                 "min_minutes_left": 0.5,
-                "max_minutes_left": 22.0,
+                "max_minutes_left": 24.0,
             },
         ]
     if lab_key == "lab_d":
-        # Contrarian — bias to opposing YES consensus via NO-first lanes.
+        # Contrarian: NO-first book — only one exploratory YES tail vs E's balanced dual YES.
         return [
-            {
-                "name": "D counter-thesis: oppose consensus YES",
-                "side": "no",
-                "min_prob": 0.36,
-                "max_prob": 0.68,
-                "min_minutes_left": 1.0,
-                "max_minutes_left": 22.0,
-            },
-            {"name": "D fade YES band", "side": "no", "min_prob": 0.48, "max_prob": 0.78, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
-            {"name": "D lone wolf YES", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 2.0, "max_minutes_left": 14.0},
-            {"name": "D chaos YES tail", "min_prob": 0.62, "max_prob": 0.96, "min_minutes_left": 1.5, "max_minutes_left": 12.0},
+            {"name": "D veto YES pile-on", "side": "no", "min_prob": 0.32, "max_prob": 0.62, "min_minutes_left": 1.0, "max_minutes_left": 24.0},
+            {"name": "D fade consensus YES", "side": "no", "min_prob": 0.44, "max_prob": 0.76, "min_minutes_left": 1.5, "max_minutes_left": 20.0},
+            {"name": "D structured NO mid", "side": "no", "min_prob": 0.52, "max_prob": 0.82, "min_minutes_left": 2.0, "max_minutes_left": 18.0},
+            {"name": "D lone wolf YES", "min_prob": 0.30, "max_prob": 0.52, "min_minutes_left": 2.5, "max_minutes_left": 14.0},
+            {"name": "D chaos YES tail", "min_prob": 0.64, "max_prob": 0.97, "min_minutes_left": 1.0, "max_minutes_left": 11.0},
         ]
     if lab_key == "lab_e":
-        # Blend + strong adaptive fade (dual NO lanes).
+        # Adaptive: symmetric YES ladder + stacked fade NOs — distinct from D's NO-first skew.
         return [
-            {"name": "E balanced core YES", "min_prob": 0.46, "max_prob": 0.78, "min_minutes_left": 2.0, "max_minutes_left": 19.0},
-            {"name": "E tier2 YES", "min_prob": 0.58, "max_prob": 0.90, "min_minutes_left": 2.5, "max_minutes_left": 15.0},
-            {"name": "E hedge NO", "side": "no", "min_prob": 0.50, "max_prob": 0.74, "min_minutes_left": 3.0, "max_minutes_left": 17.0},
+            {"name": "E balanced core YES", "min_prob": 0.42, "max_prob": 0.76, "min_minutes_left": 2.0, "max_minutes_left": 20.0},
+            {"name": "E tier2 YES", "min_prob": 0.54, "max_prob": 0.91, "min_minutes_left": 2.0, "max_minutes_left": 16.0},
+            {"name": "E sprint YES", "min_prob": 0.68, "max_prob": 0.96, "min_minutes_left": 1.2, "max_minutes_left": 12.0},
+            {"name": "E hedge NO mid", "side": "no", "min_prob": 0.48, "max_prob": 0.72, "min_minutes_left": 2.5, "max_minutes_left": 18.0},
             {
-                "name": "E counter-thesis: adaptive fade",
+                "name": "E counter-thesis: adaptive fade wide",
                 "side": "no",
-                "min_prob": 0.44,
-                "max_prob": 0.86,
+                "min_prob": 0.40,
+                "max_prob": 0.88,
                 "min_minutes_left": 1.5,
-                "max_minutes_left": 21.0,
+                "max_minutes_left": 22.0,
             },
         ]
     return _breeder_loose_rules_fallback()
@@ -160,6 +157,9 @@ def breeder_smart_defaults_snapshot(lab_key: str) -> dict[str, Any]:
         "no_bet_when_yes_below_pct": lab_base.get("no_bet_when_yes_below_pct"),
         "council_influence_weight_pct": lab_base.get("council_influence_weight_pct"),
         "breeder_personality": lab_base.get("breeder_personality"),
+        "enable_patient_stop_loss": lab_base.get("enable_patient_stop_loss"),
+        "stop_loss_trigger_pct": lab_base.get("stop_loss_trigger_pct"),
+        "min_hold_minutes_before_stop": lab_base.get("min_hold_minutes_before_stop"),
     }
     optimizer_patch: dict[str, Any] = {}
     if floor_k in oc:
