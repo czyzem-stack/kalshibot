@@ -2,6 +2,12 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.062 - Remove manual diversify council API/UI - 2026-04-29
+
+- **Removed:** **`POST /labs/diversify`**, **`lab_diversify.py`**, **`labs_council_diversity_until`** / diversity-window gating in Think Tank and engine. Breeder **B–E** opposition (council signal, D/E inversion, personality drift, strong **`_breeder_effective_prob_yes`** amplitude) is **always on**.
+- **Frontend:** No **Diversify Labs** control; **`LabThinkTank`** no longer shows a diversity banner.
+- **Persistence:** Still strips stale **`labs_council_diversity_until`** from loaded optimizer config and keeps legacy **`emergency_diversify_*`** auto-revert for old DB rows.
+
 ## v0.4.15.061 - Dashboard poll batch + trade toast branch labels - 2026-04-30
 
 - **Frontend (`App.tsx`):** Queue **`/api/dashboard`** and **`/api/dashboard/equity`** responses into one microtask flush so **hero header**, **equity charts**, and **bottom branch ticker** apply the same **`dash`** update in a single paint (avoids staggered frames when both polls complete close together). Successful full dashboard responses still clear fetch **`err`** after the batched apply.

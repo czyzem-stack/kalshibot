@@ -159,12 +159,30 @@ def _breeding_minutes_ago(iso_s: str) -> float | None:
 def _labs_breeding_child_status_row(c: dict) -> dict:
     """Trim child payloads for ``GET /api/optimizer/status`` (full genomes stay in persisted config)."""
     lab = c.get("lab") if isinstance(c.get("lab"), dict) else {}
+    raw_origin = c.get("origin") if isinstance(c.get("origin"), dict) else {}
+    origin_out: dict[str, Any] = {}
+    if raw_origin:
+        for k in (
+            "parent_ids",
+            "breeder_reason_short",
+            "breeder_reason",
+            "breeder_reason_full",
+            "fitness_delta_vs_parents",
+            "mutated_traits",
+            "synergy_score",
+            "inherited_rules_count",
+            "parent_fitness",
+        ):
+            if k in raw_origin:
+                origin_out[k] = raw_origin[k]
     return {
         "id": c.get("id"),
         "parent": c.get("parent"),
         "born_at": c.get("born_at"),
         "replay_fitness": c.get("replay_fitness"),
+        "engine_branch": c.get("engine_branch"),
         "traits": c.get("traits") if isinstance(c.get("traits"), dict) else {},
+        "origin": origin_out,
         "rules_n": len(lab.get("rules") or []) if isinstance(lab.get("rules"), list) else 0,
         "balance_fraction_per_window": lab.get("balance_fraction_per_window"),
         "window_minutes": lab.get("window_minutes"),
@@ -223,7 +241,6 @@ async def optimizer_status() -> OptimizerStatusResponse:
         "breeding_last_run_at": str(oc.get("breeding_last_run_at") or ""),
         "breeding_last_summary": str(oc.get("breeding_last_summary") or ""),
         "breeding_last_run_minutes_ago": _breeding_minutes_ago(_bla),
-        "labs_council_diversity_until": str(oc.get("labs_council_diversity_until") or ""),
         "council_influence_active": council_influence_active,
         "model": str(oc.get("model") or "internal"),
         "optimizer_cycle_count": int(oc.get("optimizer_cycle_count") or 0),
@@ -239,7 +256,7 @@ async def optimizer_status() -> OptimizerStatusResponse:
             _labs_breeding_child_status_row(x) for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)
         ][:10],
         "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
-        "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:10],
+        "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:40],
         "labs_breeding_tree_snapshot": tree_snap,
         "labs_breeding_version": LABS_BREEDING_VERSION,
         # LABS BREEDING — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).

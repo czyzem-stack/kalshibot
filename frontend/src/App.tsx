@@ -77,6 +77,7 @@ const FAST_POLL_EQ_KEYS = [
   "equity_snapshots_lab_c",
   "equity_snapshots_lab_d",
   "equity_snapshots_lab_e",
+  "equity_snapshots_lab_children",
 ] as const;
 
 const FAST_POLL_LIST_KEYS = ["recent_trades", "recent_signals", "not_traded_signals"] as const;
@@ -88,6 +89,7 @@ const FAST_POLL_METRIC_KEYS = [
   "metrics_lab_c",
   "metrics_lab_d",
   "metrics_lab_e",
+  "metrics_lab_children",
 ] as const;
 
 /**
@@ -117,6 +119,16 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
       next[mk] = { ...(old as AnyObj), ...(inc as AnyObj) };
     }
   }
+  for (const sk of ["metrics_lab_child_slots", "engine_lab_children"] as const) {
+    const inc = incoming[sk];
+    const old = prev[sk];
+    if (inc && typeof inc === "object" && !Array.isArray(inc)) {
+      next[sk] =
+        old && typeof old === "object" && !Array.isArray(old)
+          ? { ...(old as AnyObj), ...(inc as AnyObj) }
+          : { ...(inc as AnyObj) };
+    }
+  }
 
   if (revisionAdvanced) {
     // Replace each series entirely — if ``incoming`` omits a key (partial payload / strip), treat as ``[]``.
@@ -129,6 +141,22 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
     for (const k of FAST_POLL_LIST_KEYS) {
       const inc = incoming[k];
       next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
+    }
+    // Shallow metric merge above retains keys absent from ``incoming`` (e.g. ``current_equity_dollars``). After a data
+    // reset, snapshots can be ``[]`` while those leftovers still drive ``appendEquityLiveTailFromMetrics`` → a synthetic
+    // tail at pre-reset dollars (especially visible on merged child-slot metrics). Replace tiles wholesale when revision advances.
+    for (const mk of FAST_POLL_METRIC_KEYS) {
+      const inc = incoming[mk];
+      next[mk] = inc && typeof inc === "object" && !Array.isArray(inc) ? { ...(inc as AnyObj) } : {};
+    }
+    for (const sk of ["metrics_lab_child_slots", "engine_lab_children"] as const) {
+      const inc = incoming[sk];
+      next[sk] = inc && typeof inc === "object" && !Array.isArray(inc) ? { ...(inc as AnyObj) } : {};
+    }
+    {
+      const inc = incoming.equity_snapshots_lab_child_slots;
+      next.equity_snapshots_lab_child_slots =
+        inc && typeof inc === "object" && !Array.isArray(inc) ? { ...(inc as AnyObj) } : {};
     }
     delete next.equity_snapshots_sim_lab;
     return next;
@@ -166,9 +194,26 @@ function dashboardPayloadMs(raw: unknown): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
+/** Monotonic server id when present — orders batched merges when timestamps skew between slow full GET and fast /equity. */
+function dashboardPayloadSeq(p: AnyObj | null | undefined): number | null {
+  if (!p || typeof p !== "object") return null;
+  const n = Number((p as AnyObj).dashboard_payload_seq ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
 /** Hero strip + equity charts share ``dash`` — reject older payloads when full vs fast dashboard GETs finish out of order on the wire. */
 function shouldApplyDashboardPayload(prev: AnyObj | null, incoming: AnyObj): boolean {
   if (!prev) return true;
+  const incRev = Number((incoming as AnyObj).trading_data_revision ?? 0);
+  const prevRev = Number((prev as AnyObj).trading_data_revision ?? 0);
+  if (Number.isFinite(incRev) && Number.isFinite(prevRev)) {
+    if (incRev > prevRev) return true;
+    if (incRev < prevRev) return false;
+  }
+  const is = dashboardPayloadSeq(incoming as AnyObj);
+  const ps = dashboardPayloadSeq(prev as AnyObj);
+  if (is != null && ps != null) return is >= ps;
   const incMs = dashboardPayloadMs(incoming.dashboard_payload_at);
   if (incMs == null) return true;
   const prevMs = dashboardPayloadMs(prev.dashboard_payload_at);
@@ -204,6 +249,15 @@ function branchLabelForTradeToast(branch: unknown, simulated?: boolean): string 
   if (childM) return `Lab child ${childM[1]}`;
   if (s === "live") return sim ? "Live paper" : "Live";
   return "Live";
+}
+
+/** Extra toast line so GA fills show ``lab_child_N`` explicitly (distinct from breeder Lab C / ``lab_c``). */
+function tradeToastSqliteBranchNote(branchRaw: unknown): string | null {
+  const s = String(branchRaw ?? "").trim();
+  if (!s) return null;
+  const low = s.toLowerCase();
+  if (/^lab_child_\d+$/.test(low)) return `SQLite branch: ${low}`;
+  return null;
 }
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -579,12 +633,44 @@ function fmtMoney(n: number) {
 const EQUITY_CHART_OPEN_HINT =
   "Settled = finalized contracts with PnL in SQLite. Open = paper positions still held (premium committed); book can move with 0 settled until markets resolve.";
 
-function equityChartSubtitlePtsBookSettledOpen(snapCount: number, m: AnyObj | undefined | null): string {
+function equityChartSubtitlePtsBookSettledOpen(
+  dbSnapCount: number,
+  m: AnyObj | undefined | null,
+  plottedPointCount?: number,
+): string {
   const mm = m && typeof m === "object" ? (m as AnyObj) : {};
   const book = fmtMoney(Number(mm.current_equity_dollars ?? 0));
   const settled = Number(mm.settled_trades ?? 0) || 0;
   const open = Number(mm.open_sim_trades ?? 0) || 0;
-  return `${snapCount} pts · book ${book} · ${settled} settled · ${open} open`;
+  const pp =
+    plottedPointCount != null && Number.isFinite(plottedPointCount)
+      ? Math.max(0, Math.floor(Number(plottedPointCount)))
+      : null;
+  let ptsPart: string;
+  if (pp != null && dbSnapCount === 0 && pp > 0) {
+    ptsPart = `0 SQLite rows · ${pp} chart pts (synthetic tail)`;
+  } else if (pp != null && dbSnapCount > 0) {
+    ptsPart = `${dbSnapCount} SQLite rows · ${pp} chart pts`;
+  } else {
+    ptsPart = `${dbSnapCount} pts`;
+  }
+  return `${ptsPart} · book ${book} · ${settled} settled · ${open} open`;
+}
+
+/** Short context for ``engine.*.last_error`` so Kalshi outages do not read as unexplained “flat” labs. */
+function annotateEngineLastErrorForUi(raw: string): { text: string; title: string } {
+  const t = String(raw || "").trim();
+  if (!t) return { text: "", title: "" };
+  const low = t.toLowerCase();
+  let hint = "";
+  if (/\b429\b|rate\s*limit|too many requests/i.test(t)) {
+    hint =
+      " Kalshi HTTP 429 — the client backs off automatically. If this repeats, raise poll_seconds or turn off unused lab engines to cut parallel /markets traffic.";
+  } else if (/temporarily.*disabl|temporarily disabled|service unavailable|under maintenance/i.test(low)) {
+    hint =
+      " Vendor-side restriction or maintenance — paper ticks may skip until the exchange clears it; flat charts at the paper bankroll usually mean no new snapshots yet.";
+  }
+  return { text: t.slice(0, 520), title: hint ? `${t}${hint}` : t };
 }
 
 const HERO_MARQUEE_SPEED_KEY = "kalshibot_hero_marquee_speed_mult_v1";
@@ -852,6 +938,25 @@ function BreederPersonalityRadarChart({
   series: AnyObj[];
   height: number;
 }) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return (
+      <div
+        className="sub"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: Math.max(120, height > 0 ? height : 200),
+          padding: 16,
+          textAlign: "center",
+          lineHeight: 1.45,
+          color: "var(--muted)",
+        }}
+      >
+        Breeder radar data not ready yet — try again after the API loads config, or check Settings → Optimizer if this persists.
+      </div>
+    );
+  }
   const hh = height > 0 ? height : 200;
   /** Match OptimizerMultiBranchRadar: dashboard uses h≥360 as “expanded”; overlay uses tall h. */
   const big = hh >= 360;
@@ -2764,6 +2869,8 @@ function optimizerReportOverlayBody(dash: AnyObj, fallbackConfig: AnyObj | null 
                     <span className="optimizer-report-settle-row__tag">Feeds adaptive + bet pulse</span>
                   ) : nb === "live" ? (
                     <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Not in optimizer lookback</span>
+                  ) : nb === "lab_children" ? (
+                    <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Child slot</span>
                   ) : (
                     <span className="optimizer-report-settle-row__tag optimizer-report-settle-row__tag--muted">Reference context</span>
                   );
@@ -2842,8 +2949,8 @@ function optimizerBriefInfoBody(): ReactNode {
       <p>
         <strong>Optimizer card actions.</strong> The dashboard card only has <strong>report</strong> and <strong>Info</strong>; scheduled work runs without manual clicks.{" "}
         <strong>Nuke / manual</strong> lives in <strong>Settings → Optimizer</strong>: <strong>Force Internal Mutation Now</strong> (
-        <code>POST /api/optimizer/force-internal-mutation</code>) and <strong>Diversify council (Think Tank)</strong> (
-        <code>POST /labs/diversify</code>) — B–E <strong>60m maximum-opposition</strong> window (engine tilt + Think Tank adversarial mix).{" "}
+        <code>POST /api/optimizer/force-internal-mutation</code>) — one Lab A mutation cycle; breeder <strong>B–E</strong> council opposition stays{" "}
+        <strong>always on</strong> in the engine (no separate diversify control).{" "}
         <strong>report</strong> opens the full
         overlay, which also includes the <strong>run metrics</strong> grid. This <strong>Info</strong> button is the long-form explainer.{" "}
         <strong>Optimizer / Breeder / Tree</strong> is a segmented control at the <strong>bottom-right of this card</strong>.{" "}
@@ -3005,7 +3112,7 @@ function dedupeAssetWatchOpenRowsByTicker(rows: AnyObj[]): AnyObj[] {
 }
 
 /** Open rows for the Assets-to-watch branch tab only (avoids Lab exposure highlighting on Live tab, etc.). */
-function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c" | "d" | "e"): AnyObj[] {
+function assetWatchOpenRowsForTab(row: unknown, tab: DashboardLabLetterTab): AnyObj[] {
   if (!row || typeof row !== "object") return [];
   const o = row as AnyObj;
   const out: AnyObj[] = [];
@@ -3033,17 +3140,19 @@ function assetWatchOpenRowsForTab(row: unknown, tab: "live" | "a" | "b" | "c" | 
     push(o.bot_sim_open_lab_c, "Sim · Lab C");
   } else if (tab === "d") {
     push(o.bot_sim_open_lab_d, "Sim · Lab D");
-  } else {
+  } else if (tab === "e") {
     push(o.bot_sim_open_lab_e, "Sim · Lab E");
+  } else {
+    push(o.bot_sim_open_lab_children, "Sim · Child slots");
   }
   return out;
 }
 
-function positionTabHasOpenExposure(row: unknown, tab: "live" | "a" | "b" | "c" | "d" | "e"): boolean {
+function positionTabHasOpenExposure(row: unknown, tab: DashboardLabLetterTab): boolean {
   return assetWatchOpenRowsForTab(row, tab).length > 0;
 }
 
-function exposureLabelsForAssetWatchTab(row: unknown, tab: "live" | "a" | "b" | "c" | "d" | "e"): string[] {
+function exposureLabelsForAssetWatchTab(row: unknown, tab: DashboardLabLetterTab): string[] {
   const rows = assetWatchOpenRowsForTab(row, tab);
   const uniq: string[] = [];
   for (const r of rows) {
@@ -3156,8 +3265,39 @@ function OpenExposureLinesForWatch({
 }
 
 /** Normalize SQLite `branch` onto dashboard tabs (legacy sim_lab → Lab A). */
-type ActivityBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e";
-type PerfBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e";
+type ActivityBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e" | "lab_children";
+type PerfBranchKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e" | "lab_children";
+
+/** Dashboard holdings / assets-watch letter tabs (+ consolidated lab_child_* slots). */
+type DashboardLabLetterTab = "live" | "a" | "b" | "c" | "d" | "e" | "children";
+
+const LAB_CHILD_CFG_KEYS = ["lab_child_1", "lab_child_2", "lab_child_3", "lab_child_4", "lab_child_5", "lab_child_6"] as const;
+
+type EquityCompareChildSlotKey = "c1" | "c2" | "c3" | "c4" | "c5" | "c6" | "merged";
+
+/** Compare-overlay toggles: six tournament engines + merged sum (same order as ``metrics_lab_child_slots``). */
+const EQUITY_COMPARE_CHILD_SLOT_DEFS: readonly {
+  key: EquityCompareChildSlotKey;
+  labKey: string | null;
+  label: string;
+  color: string;
+}[] = [
+  { key: "c1", labKey: "lab_child_1", label: "Slot 1", color: "#4ade80" },
+  { key: "c2", labKey: "lab_child_2", label: "Slot 2", color: "#22d3ee" },
+  { key: "c3", labKey: "lab_child_3", label: "Slot 3", color: "#c084fc" },
+  { key: "c4", labKey: "lab_child_4", label: "Slot 4", color: "#fbbf24" },
+  { key: "c5", labKey: "lab_child_5", label: "Slot 5", color: "#fb7185" },
+  { key: "c6", labKey: "lab_child_6", label: "Slot 6", color: "#94a3b8" },
+  { key: "merged", labKey: null, label: "All slots (merged)", color: "#f8fafc" },
+];
+
+function cfgLabChildSlotAnyEngineOn(cfg: AnyObj): boolean {
+  for (const k of LAB_CHILD_CFG_KEYS) {
+    const o = cfg[k];
+    if (o && typeof o === "object" && Boolean((o as AnyObj).engine_running)) return true;
+  }
+  return false;
+}
 
 function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   const s = String(b ?? "live").trim().toLowerCase();
@@ -3166,6 +3306,8 @@ function normalizeSignalTradeBranch(b: unknown): ActivityBranchKey {
   if (s === "lab_c") return "lab_c";
   if (s === "lab_d") return "lab_d";
   if (s === "lab_e") return "lab_e";
+  if (s === "lab_children") return "lab_children";
+  if (/^lab_child_\d+$/.test(s)) return "lab_children";
   return "live";
 }
 
@@ -3176,6 +3318,7 @@ const BRANCH_SWATCH: Record<ActivityBranchKey, string> = {
   lab_c: "#f9a8d4",
   lab_d: "#fca5a5",
   lab_e: "#5eead4",
+  lab_children: "#86efac",
 };
 
 /** Live branch + simulated row: softer sky (real Kalshi Live book uses ``BRANCH_SWATCH.live`` cyan). */
@@ -3439,17 +3582,25 @@ function activityBranchTabLabel(b: ActivityBranchKey): string {
   if (b === "lab_b") return "Lab B";
   if (b === "lab_c") return "Lab C";
   if (b === "lab_d") return "Lab D";
-  return "Lab E";
+  if (b === "lab_e") return "Lab E";
+  return "Child slots";
 }
 
 /** Live + single-letter lab tabs (holdings, assets to watch). */
-function dashboardLabLetterTabLabel(tab: "live" | "a" | "b" | "c" | "d" | "e"): string {
+function dashboardLabLetterTabLabel(tab: DashboardLabLetterTab): string {
   if (tab === "live") return "Live";
   if (tab === "a") return "Lab A";
   if (tab === "b") return "Lab B";
   if (tab === "c") return "Lab C";
   if (tab === "d") return "Lab D";
-  return "Lab E";
+  if (tab === "e") return "Lab E";
+  return "Child slots";
+}
+
+function fmtGaOverlayDollars(n: unknown): string {
+  if (n == null || n === "") return "—";
+  const x = Number(n);
+  return Number.isFinite(x) ? `$${x.toFixed(2)}` : "—";
 }
 
 /** BTC first, ETH second, then remaining asset ids A–Z. */
@@ -3487,6 +3638,13 @@ const EQUITY_GRANULARITY_TAB_DEFS = [
   ["yy", "Y / Y", "Rolling long window: dense ticks, not one point per closed year."],
 ] as const;
 
+/** When SQLite history is empty, anchor synthetic compare/dashboard curves to the same rolling span as the active tab (not ~60s). */
+function syntheticEquityAnchorSpanMs(mode: EquityGranularity): number {
+  if (mode === "intraday") return EQUITY_INTRADAY_WINDOW_MS;
+  if (mode === "hourly") return EQUITY_HOURLY_WINDOW_MS;
+  return EQUITY_GRANULAR_ROLLING_WINDOW_MS[mode];
+}
+
 function fmtEquityCompareXTick(v: unknown): string {
   if (typeof v === "number" && Number.isFinite(v)) {
     const d = new Date(v);
@@ -3502,6 +3660,526 @@ function fmtEquityCompareXTick(v: unknown): string {
 }
 
 type EquityChartRow = { t: string; tsMs: number; equity: number; mtm: number | null; synthetic?: boolean };
+
+function equityRowsToBlendedPlot(rows: EquityChartRow[]): { tsMs: number; blend: number }[] {
+  return rows.map((r) => {
+    const mtm = r.mtm != null && Number.isFinite(Number(r.mtm)) ? Number(r.mtm) : r.equity;
+    return { tsMs: r.tsMs, blend: (r.equity + mtm) / 2 };
+  });
+}
+
+function ChildSlotBlendedSpark({
+  rows,
+  stroke,
+  height,
+}: {
+  rows: EquityChartRow[];
+  stroke: string;
+  height: number;
+}) {
+  const data = useMemo(() => equityRowsToBlendedPlot(rows), [rows]);
+  if (data.length === 0) {
+    return (
+      <p style={{ margin: 0, fontSize: 11, color: "var(--muted)" }} title="No SQLite equity snapshots for this branch yet.">
+        No chart points yet — snapshots empty or API missing equity_snapshots_lab_child_slots.
+      </p>
+    );
+  }
+  return (
+    <div style={{ width: "100%", height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ left: 4, right: 8, top: 4, bottom: 2 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#223056" strokeOpacity={0.55} />
+          <XAxis type="number" dataKey="tsMs" domain={["dataMin", "dataMax"]} hide />
+          <YAxis
+            stroke="#7f8ab5"
+            tick={{ fontSize: 9 }}
+            width={36}
+            domain={["auto", "auto"]}
+            tickFormatter={(v: number) => `$${Number(v).toFixed(0)}`}
+          />
+          <Tooltip
+            contentStyle={{ background: "#0b1228", border: "1px solid #243055", fontSize: 11 }}
+            labelFormatter={(ms: number) =>
+              Number.isFinite(ms) ? new Date(ms).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : ""
+            }
+            formatter={(v: number) => [`$${Number(v).toFixed(2)}`, "Blended"]}
+          />
+          <Line type="stepAfter" dataKey="blend" stroke={stroke} strokeWidth={2} dot={false} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+const BREEDER_GENOME_TRAIT_KEYS = ["aggressiveness", "risk_tolerance", "adaptivity", "exploration", "resilience"] as const;
+
+const BREEDER_GENOME_TRAIT_LABELS: Record<string, string> = {
+  aggressiveness: "Aggression",
+  risk_tolerance: "Risk tol.",
+  adaptivity: "Adaptivity",
+  exploration: "Exploration",
+  resilience: "Resilience",
+};
+
+function poolGenomeRowForSlot(pool: AnyObj[], slotKey: string): AnyObj | undefined {
+  const sk = slotKey.toLowerCase();
+  return pool.find((c) => String((c as AnyObj).engine_branch || "").toLowerCase() === sk) as AnyObj | undefined;
+}
+
+function radarMoodsForLabKey(radar: AnyObj | undefined, labKey: string): Record<string, number> | null {
+  const series = Array.isArray(radar?.series) ? (radar.series as AnyObj[]) : [];
+  const hit = series.find((s) => String(s.key || s.branch || "").toLowerCase() === labKey.toLowerCase());
+  const moods = hit?.moods;
+  return moods && typeof moods === "object" ? (moods as Record<string, number>) : null;
+}
+
+function lineageEventsForSlot(lineage: AnyObj[], slotKey: string, childId: string | undefined, limit: number): AnyObj[] {
+  const sk = slotKey.toLowerCase();
+  const out: AnyObj[] = [];
+  for (const row of lineage) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as AnyObj;
+    const eb = String(r.engine_branch || "").toLowerCase();
+    const cid = String(r.child_id || "").trim();
+    const rid = String(r.id || "").trim();
+    if (eb === sk || (childId && (cid === childId || rid === childId))) out.push(r);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function readBreederTraits(labBlock: AnyObj | undefined, poolRow: AnyObj | undefined): Record<string, number> {
+  const rawLab = labBlock?._labs_breeding_traits;
+  const rawPool = poolRow?.traits;
+  const t =
+    rawLab && typeof rawLab === "object"
+      ? (rawLab as AnyObj)
+      : rawPool && typeof rawPool === "object"
+        ? (rawPool as AnyObj)
+        : {};
+  const out: Record<string, number> = {};
+  for (const k of BREEDER_GENOME_TRAIT_KEYS) {
+    const n = Number(t[k]);
+    if (Number.isFinite(n)) out[k] = n;
+  }
+  return out;
+}
+
+function formatBreederLineageRow(row: AnyObj): string {
+  const kind = String(row.kind || "").toLowerCase();
+  const at = String(row.at || "").slice(0, 19) || "—";
+  const fit = Number(row.replay_fitness);
+  const fitS = Number.isFinite(fit) ? fit.toFixed(3) : "—";
+  if (kind === "birth") {
+    const d = Number(row.fitness_delta_vs_parents);
+    const dS = Number.isFinite(d) ? (d >= 0 ? `+${d.toFixed(3)}` : d.toFixed(3)) : "—";
+    return `${at} · Birth · replay ${fitS} · Δ vs parents ${dS}`;
+  }
+  if (kind === "child_death") return `${at} · Culled (${String(row.reason || "—")}) · replay ${fitS}`;
+  if (kind === "adoption") return `${at} · Adopted → Lab A · replay ${fitS}`;
+  return `${at} · ${kind || "event"} · replay ${fitS}`;
+}
+
+function BreederTraitMeterBar({ traitKey, value01 }: { traitKey: string; value01: number }) {
+  const pct = Math.round(Math.min(100, Math.max(0, value01 * 100)));
+  const label = BREEDER_GENOME_TRAIT_LABELS[traitKey] || traitKey;
+  return (
+    <div style={{ marginBottom: 5 }} title={`${label}: persisted breeder trait (≈0–100%).`}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)" }}>
+        <span>{label}</span>
+        <span>{pct}%</span>
+      </div>
+      <div style={{ height: 5, background: "rgba(30,41,59,0.88)", borderRadius: 3 }}>
+        <div
+          style={{
+            width: `${pct}%`,
+            height: "100%",
+            background: "linear-gradient(90deg,#6366f1,#c084fc)",
+            borderRadius: 3,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function BreederMoodMeterBars({ moods }: { moods: Record<string, number> }) {
+  const pairs = Object.entries(moods)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div className="sub" style={{ fontSize: 10, marginBottom: 6 }}>
+        Mood axes (0–100) · same payload as Optimizer → Breeder radar
+      </div>
+      {pairs.map(([k, v]) => (
+        <div key={k} style={{ marginBottom: 4 }} title={breederPersonalityAxisTooltip(k, k)}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10 }}>
+            <span style={{ textTransform: "capitalize" }}>{k}</span>
+            <span>{Number(v).toFixed(0)}</span>
+          </div>
+          <div style={{ height: 3, background: "#1e293b", borderRadius: 2 }}>
+            <div
+              style={{
+                width: `${Math.min(100, Math.max(0, Number(v)))}%`,
+                height: "100%",
+                background: "#38bdf8",
+                borderRadius: 2,
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Breeder children tab: genome / traits / moods / evolution from ``GET /api/optimizer/status`` + config lab blocks.
+ * Ledger tiles stay under collapsible “Paper performance” so this tab is not a duplicate of the dashboard strip.
+ */
+function paperChildSlotsOverlayBody(
+  dash: AnyObj,
+  cfg: AnyObj,
+  breederStatus: AnyObj | null,
+  slotChartRows: Record<string, EquityChartRow[]>,
+  mergedChartRows?: EquityChartRow[],
+): ReactNode {
+  const slots = (dash.metrics_lab_child_slots || {}) as Record<string, AnyObj>;
+  const engines = (dash.engine_lab_children || {}) as Record<string, AnyObj>;
+  const slotStroke = (sk: string) =>
+    EQUITY_COMPARE_CHILD_SLOT_DEFS.find((d) => d.labKey === sk)?.color ?? "#94a3b8";
+  const mergedPlot = mergedChartRows?.length ? equityRowsToBlendedPlot(mergedChartRows) : [];
+
+  const pool = Array.isArray(breederStatus?.labs_breeding_children)
+    ? (breederStatus!.labs_breeding_children as AnyObj[])
+    : [];
+  const lineage = Array.isArray(breederStatus?.labs_breeding_lineage_history)
+    ? (breederStatus!.labs_breeding_lineage_history as AnyObj[])
+    : [];
+  const radar = breederStatus?.labs_breeding_personality_radar as AnyObj | undefined;
+  const genIdx = Number(
+    breederStatus?.labs_breeding_generation_index ??
+      (breederStatus?.labs_breeding_tree_snapshot as AnyObj | undefined)?.generation_index ??
+      0,
+  );
+  const lastGenIso = String(breederStatus?.labs_breeding_last_generation_iso || "").trim();
+  const breedingSummary = String(breederStatus?.breeding_last_summary || "").trim();
+
+  return (
+    <div className="dash-section__legend ga-child-agents-overlay" style={{ fontSize: 13, lineHeight: 1.5 }}>
+      {!breederStatus ? (
+        <p style={{ marginTop: 0, color: "#fbbf24", fontSize: 12 }}>
+          Breeder status not loaded yet — open Optimizer → Breeder once or wait for poll. Showing config + paper metrics only below.
+        </p>
+      ) : null}
+      <p style={{ marginTop: 0, color: "var(--muted)" }}>
+        <strong>Genomes first.</strong> Each slot may host one tournament child from Labs B–E parents (pool row + persisted traits). Mood axes summarize trading style; lineage rows are birth/cull/adoption events.
+        {Number.isFinite(genIdx) && genIdx > 0 ? (
+          <>
+            {" "}
+            Generation counter ≈ <strong>{genIdx}</strong>
+            {lastGenIso ? (
+              <>
+                {" "}
+                · last breeder tick <code style={{ fontSize: 11 }}>{lastGenIso.slice(0, 19)}</code>
+              </>
+            ) : null}
+            .
+          </>
+        ) : null}{" "}
+        Switch <strong>Parent labs</strong> for Live + A–E equity sparks only.
+      </p>
+      {breedingSummary ? (
+        <p className="sub" style={{ marginTop: 6, fontSize: 11 }}>
+          Last breeder summary: {breedingSummary.slice(0, 280)}
+          {breedingSummary.length > 280 ? "…" : ""}
+        </p>
+      ) : null}
+
+      {mergedPlot.length > 0 ? (
+        <details open style={{ marginBottom: 12 }} className="breeder-overlay-merged-details">
+          <summary style={{ cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+            Combined paper P&amp;L (all slots merged · blended $)
+          </summary>
+          <p className="sub" style={{ fontSize: 11, margin: "6px 0 8px" }}>
+            Sum of child ledgers — useful for fleet drift; per-slot genome lives in each card below.
+          </p>
+          <ChildSlotBlendedSpark rows={mergedChartRows!} stroke="#f8fafc" height={120} />
+        </details>
+      ) : null}
+
+      <div style={{ display: "grid", gap: 12 }}>
+        {LAB_CHILD_CFG_KEYS.map((slotKey) => {
+          const m = slots[slotKey] || {};
+          const eng = engines[slotKey] || {};
+          const on = Boolean(eng.engine_running);
+          const n = slotKey.replace("lab_child_", "");
+          const traces = Array.isArray(eng.last_tick_trace_tail) ? (eng.last_tick_trace_tail as string[]) : [];
+          const err = eng.last_error != null && String(eng.last_error).trim() !== "" ? String(eng.last_error) : null;
+          const curve = slotChartRows[slotKey] ?? [];
+
+          const labCfg =
+            cfg[slotKey] && typeof cfg[slotKey] === "object" ? (cfg[slotKey] as AnyObj) : {};
+          const genomeRow = poolGenomeRowForSlot(pool, slotKey);
+          const childId = genomeRow ? String(genomeRow.id || "").trim() : "";
+          const origin =
+            genomeRow?.origin && typeof genomeRow.origin === "object"
+              ? (genomeRow.origin as AnyObj)
+              : labCfg._labs_breeding_origin && typeof labCfg._labs_breeding_origin === "object"
+                ? (labCfg._labs_breeding_origin as AnyObj)
+                : {};
+          const traits = readBreederTraits(labCfg, genomeRow);
+          const moods = radarMoodsForLabKey(radar, slotKey);
+          const evRows = lineageEventsForSlot(lineage, slotKey, childId || undefined, 5);
+          const replayFit = Number(genomeRow?.replay_fitness);
+          const fitDelta = Number(origin.fitness_delta_vs_parents ?? genomeRow?.fitness_delta_vs_parents);
+          const parentsRaw = origin.parent_ids;
+          const parentsStr =
+            Array.isArray(parentsRaw) && parentsRaw.length
+              ? parentsRaw.map((p: unknown) => String(p)).join(" × ")
+              : String(genomeRow?.parent || "").trim() || "—";
+          const reasonShort = String(origin.breeder_reason_short || origin.breeder_reason || "").trim();
+          const mutated = Array.isArray(origin.mutated_traits) ? (origin.mutated_traits as string[]) : [];
+          const personalityTag = String(labCfg.breeder_personality || "").trim();
+
+          return (
+            <div
+              key={slotKey}
+              className="panel"
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(148, 163, 184, 0.25)",
+              }}
+            >
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
+                <strong style={{ fontSize: 14 }}>Child slot {n}</strong>
+                <code style={{ fontSize: 11, opacity: 0.85 }}>{slotKey}</code>
+                <span
+                  className={`dashboard-grid-panel__badge${on ? " dashboard-grid-panel__badge--ok" : ""}`}
+                  title={on ? "engine_running is not false — dual-loop ticks." : "Paused in config."}
+                >
+                  {on ? "Polling on" : "Polling off"}
+                </span>
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div className="sub" style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                  Lineage &amp; fitness
+                </div>
+                {genomeRow ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--muted)" }}>
+                    <li>
+                      Pool genome <code style={{ fontSize: 10 }}>{childId.slice(0, 12)}…</code>
+                      {genomeRow.born_at ? <> · born {String(genomeRow.born_at).slice(0, 19)}</> : null}
+                    </li>
+                    <li>
+                      Parents <code style={{ fontSize: 10 }}>{parentsStr}</code>
+                    </li>
+                    <li>
+                      Replay fitness{" "}
+                      <strong style={{ color: "var(--text)" }}>{Number.isFinite(replayFit) ? replayFit.toFixed(4) : "—"}</strong>
+                      {Number.isFinite(fitDelta) ? (
+                        <>
+                          {" "}
+                          · Δ vs parents{" "}
+                          <strong style={{ color: "var(--text)" }}>
+                            {fitDelta >= 0 ? "+" : ""}
+                            {fitDelta.toFixed(4)}
+                          </strong>
+                        </>
+                      ) : null}
+                    </li>
+                    {reasonShort ? (
+                      <li title={String(origin.breeder_reason_full || reasonShort)}>
+                        Selection: {reasonShort.length > 160 ? `${reasonShort.slice(0, 160)}…` : reasonShort}
+                      </li>
+                    ) : null}
+                    {mutated.length ? (
+                      <li>
+                        Mutations:{" "}
+                        {mutated.slice(0, 8).map((t) => (
+                          <span key={t} className="dashboard-grid-panel__badge" style={{ marginRight: 4, fontSize: 10 }}>
+                            {t}
+                          </span>
+                        ))}
+                      </li>
+                    ) : null}
+                  </ul>
+                ) : (
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                    No genome is assigned to this slot in <code>labs_breeding_children</code> — the engine may be idle defaults or a reset slot waiting for the next breeder cycle.
+                  </p>
+                )}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 12 }}>
+                <div>
+                  <div className="sub" style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                    Genome traits
+                  </div>
+                  {Object.keys(traits).length ? (
+                    BREEDER_GENOME_TRAIT_KEYS.filter((k) => traits[k] != null).map((k) => (
+                      <BreederTraitMeterBar key={k} traitKey={k} value01={traits[k]!} />
+                    ))
+                  ) : (
+                    <p style={{ margin: 0, fontSize: 11, color: "var(--muted)" }}>No persisted traits on config/pool row.</p>
+                  )}
+                  {personalityTag ? (
+                    <p style={{ margin: "8px 0 0", fontSize: 11 }}>
+                      Personality tag: <code>{personalityTag}</code>
+                    </p>
+                  ) : null}
+                </div>
+                <div>
+                  <div className="sub" style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                    Mood profile
+                  </div>
+                  {moods && Object.keys(moods).length ? (
+                    <BreederMoodMeterBars moods={moods} />
+                  ) : (
+                    <p style={{ margin: 0, fontSize: 11, color: "var(--muted)" }}>
+                      No radar slice for this key — breeder radar missing or slot omitted from series.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 10 }}>
+                <div className="sub" style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                  Evolution (recent lineage)
+                </div>
+                {evRows.length ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: "var(--muted)" }}>
+                    {evRows.map((row, i) => (
+                      <li key={`${String(row.at)}-${i}`}>{formatBreederLineageRow(row)}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p style={{ margin: 0, fontSize: 11, color: "var(--muted)" }}>No lineage rows matched this slot yet.</p>
+                )}
+              </div>
+
+              <details style={{ marginTop: 10 }}>
+                <summary className="sub" style={{ cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
+                  Paper performance · ledger &amp; blended curve
+                </summary>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 6, fontSize: 11, marginTop: 8 }}>
+                  <span>Book {fmtGaOverlayDollars(m.current_equity_dollars)}</span>
+                  <span>MTM {fmtGaOverlayDollars(m.current_mtm_dollars)}</span>
+                  <span>{Number(m.settled_trades ?? 0)} settled</span>
+                  <span>{Number(m.open_sim_trades ?? 0)} open sim</span>
+                  <span>PnL {fmtGaOverlayDollars(m.total_pnl_dollars)}</span>
+                  <span style={{ color: "var(--muted)" }}>
+                    tick {eng.last_tick_at != null ? String(eng.last_tick_at).slice(11, 19) : "—"} · {eng.markets_scanned ?? "—"}{" "}
+                    scanned
+                  </span>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <ChildSlotBlendedSpark rows={curve} stroke={slotStroke(slotKey)} height={112} />
+                </div>
+              </details>
+
+              {err ? (
+                <p style={{ margin: "8px 0 0", color: "#fbbf24", fontSize: 12, wordBreak: "break-word" }} title="Last engine error">
+                  {err.length > 420 ? `${err.slice(0, 420)}…` : err}
+                </p>
+              ) : null}
+              {traces.length ? (
+                <details style={{ marginTop: 8 }}>
+                  <summary className="sub" style={{ cursor: "pointer", fontSize: 11 }}>
+                    Engine tick trace ({traces.length})
+                  </summary>
+                  <pre
+                    style={{
+                      margin: "6px 0 0",
+                      padding: 8,
+                      fontSize: 10,
+                      lineHeight: 1.35,
+                      overflow: "auto",
+                      maxHeight: 96,
+                      background: "rgba(15, 23, 42, 0.5)",
+                      borderRadius: 6,
+                    }}
+                  >
+                    {traces.join("\n")}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+type ParentLabSparkKey = "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e";
+
+const PARENT_LAB_SPARK_DEFS: readonly { key: ParentLabSparkKey; label: string; color: string }[] = [
+  { key: "live", label: "Live", color: "#38bdf8" },
+  { key: "lab_a", label: "Lab A", color: "#a78bfa" },
+  { key: "lab_b", label: "Lab B", color: "#f59e0b" },
+  { key: "lab_c", label: "Lab C", color: "#f472b6" },
+  { key: "lab_d", label: "Lab D", color: "#fca5a5" },
+  { key: "lab_e", label: "Lab E", color: "#14b8a6" },
+];
+
+function metricsBlobForParentLab(dash: AnyObj, key: ParentLabSparkKey): AnyObj {
+  if (key === "live") return (dash.metrics || {}) as AnyObj;
+  if (key === "lab_a") return ((dash.metrics_lab_a || dash.metrics_sim_lab) || {}) as AnyObj;
+  if (key === "lab_b") return (dash.metrics_lab_b || {}) as AnyObj;
+  if (key === "lab_c") return (dash.metrics_lab_c || {}) as AnyObj;
+  if (key === "lab_d") return (dash.metrics_lab_d || {}) as AnyObj;
+  return (dash.metrics_lab_e || {}) as AnyObj;
+}
+
+/** Parent-branch sparks for the same overlay — Live + Labs A–E (Compare “Labs” semantics). */
+function paperParentLabsSparkOverlayBody(
+  dash: AnyObj,
+  chartRowsByKey: Record<ParentLabSparkKey, EquityChartRow[]>,
+): ReactNode {
+  return (
+    <div className="dash-section__legend ga-child-agents-overlay" style={{ fontSize: 13, lineHeight: 1.5 }}>
+      <p style={{ marginTop: 0, color: "var(--muted)" }}>
+        <strong>Parent labs</strong> — the branches on your main Equity curves. The breeder assigns tournament genomes <em>from</em> these pools (especially B–E) <em>into</em> child slots; balances stay on separate ledgers.
+      </p>
+      <div style={{ display: "grid", gap: 12 }}>
+        {PARENT_LAB_SPARK_DEFS.map(({ key, label, color }) => {
+          const m = metricsBlobForParentLab(dash, key);
+          const curve = chartRowsByKey[key] ?? [];
+          const branchCode = key === "live" ? "live" : key;
+          return (
+            <div
+              key={key}
+              className="panel"
+              style={{
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: "1px solid rgba(148, 163, 184, 0.25)",
+              }}
+            >
+              <div style={{ marginBottom: 8 }}>
+                <strong style={{ fontSize: 14 }}>{label}</strong>
+                <code style={{ marginLeft: 8, fontSize: 11, opacity: 0.85 }}>{branchCode}</code>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8, fontSize: 12 }}>
+                <span title="Book from rollups + snapshots">Book {fmtGaOverlayDollars(m.current_equity_dollars)}</span>
+                <span title="Mark-to-market">MTM {fmtGaOverlayDollars(m.current_mtm_dollars)}</span>
+                <span>{Number(m.settled_trades ?? 0)} settled</span>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <ChildSlotBlendedSpark rows={curve} stroke={color} height={132} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 /** ``pct_change_window`` — each series is % change from the first *usable* point in that branch’s plotted window (book and MTM use their own first-row bases). */
 type EquityValueScale = "dollars" | "pct_change_window";
@@ -3551,9 +4229,18 @@ function buildEquityChartSeries(
         const n = Number(raw);
         if (Number.isFinite(n)) mtm = n / 100.0;
       }
+      let eqCents = Number(s.equity_cents || 0);
+      const br = String(s.branch || "").toLowerCase();
+      // Server-merged ``lab_children`` rows sometimes had book ``equity_cents`` = 0 while ``mtm_equity_cents`` was filled — solid line sat at $0
+      // and the dashboard synthetic tail jumped to real metrics → vertical spike in Compare. Match backend merge fallback (main.py).
+      const childSlotBranch = /^lab_child_\d+$/.test(br);
+      if ((br === "lab_children" || childSlotBranch) && eqCents === 0 && raw != null && raw !== "") {
+        const mc = Number(raw);
+        if (Number.isFinite(mc)) eqCents = mc;
+      }
       return {
         at: String(s.created_at || ""),
-        eq: Number(s.equity_cents || 0) / 100.0,
+        eq: eqCents / 100.0,
         mtm,
         ts: new Date(String(s.created_at || "")).getTime(),
       };
@@ -3606,6 +4293,7 @@ function appendEquityLiveTailFromMetrics(
   snaps: AnyObj[],
   metrics: AnyObj,
   fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
+  granularity?: EquityGranularity,
 ): EquityChartRow[] {
   const ce = metrics?.current_equity_dollars;
   let equity: number | null = ce != null && Number.isFinite(Number(ce)) ? Number(ce) : null;
@@ -3632,8 +4320,10 @@ function appendEquityLiveTailFromMetrics(
 
   const tailT = fmtIsoLocalFn(new Date().toISOString(), true);
   if (base.length === 0) {
-    // New labs can start with no snapshot history; add an anchor point so a 2-point flat line is visible.
-    const anchorIso = new Date(Date.now() - 60_000).toISOString();
+    // New labs can start with no snapshot history; anchor span matches the active equity tab window (not ~1 minute).
+    const anchorMsAgo =
+      granularity != null ? syntheticEquityAnchorSpanMs(granularity) : 60_000;
+    const anchorIso = new Date(Date.now() - anchorMsAgo).toISOString();
     const anchorT = fmtIsoLocalFn(anchorIso, true);
     const anchorMs = new Date(anchorIso).getTime();
     const tailMs = Date.now();
@@ -3646,45 +4336,110 @@ function appendEquityLiveTailFromMetrics(
   return [...base, { t: tailT, tsMs: tailMs, equity, mtm, synthetic: true }];
 }
 
+/** Blended book/MTM at each chart row (same convention as Compare sparks). */
+function blendedBookMtmRow(r: EquityChartRow): number {
+  const m = r.mtm != null && Number.isFinite(Number(r.mtm)) ? Number(r.mtm) : r.equity;
+  return (r.equity + m) / 2;
+}
+
+/**
+ * SQLite child-slot snapshots sometimes stayed at ledger ``0`` while tiles already reflected rollups; plotted series looked flat then jumped at the synthetic tail.
+ * When live metrics show real dollars but every snapshot point blends to ~0, discard shell history and let ``appendEquityLiveTailFromMetrics`` anchor from metrics alone.
+ */
+function dropMisleadingAllZeroSnapshotHistory(base: EquityChartRow[], metrics: AnyObj): EquityChartRow[] {
+  if (base.length === 0) return base;
+  const ce = Number(metrics?.current_equity_dollars);
+  const cm = Number(metrics?.current_mtm_dollars);
+  const metricsShowsMoney =
+    (Number.isFinite(ce) && Math.abs(ce) > 1e-5) || (Number.isFinite(cm) && Math.abs(cm) > 1e-5);
+  if (!metricsShowsMoney) return base;
+  const allFlatZero = base.every((r) => Math.abs(blendedBookMtmRow(r)) < 1e-5);
+  return allFlatZero ? [] : base;
+}
+
 /** Every granularity: trailing point from latest dashboard metrics so curves move on each fast equity poll (not only intraday/hourly — D/D and coarser tabs were frozen after a reset until new snapshot buckets appeared). */
 function equitySeriesWithLiveTail(
   snaps: AnyObj[],
   mode: EquityGranularity,
   metrics: AnyObj,
   fmtIsoLocalFn: (iso: string, withSeconds: boolean) => string,
+  opts?: { dropFlatZeroHistory?: boolean },
 ): EquityChartRow[] {
-  const base = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
-  return appendEquityLiveTailFromMetrics(base, snaps, metrics, fmtIsoLocalFn);
+  const baseRaw = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
+  const base =
+    opts?.dropFlatZeroHistory === true ? dropMisleadingAllZeroSnapshotHistory(baseRaw, metrics) : baseRaw;
+  return appendEquityLiveTailFromMetrics(base, snaps, metrics, fmtIsoLocalFn, mode);
 }
 
 type OverlayBranchKey = "live" | "a" | "b" | "c" | "d" | "e";
 
 /** Chronological union of branch snapshots with forward-filled values so overlay lines share one true time axis. */
-function mergeEquityOverlayRows(
-  live: EquityChartRow[],
-  labA: EquityChartRow[],
-  labB: EquityChartRow[],
-  labC: EquityChartRow[],
-  labD: EquityChartRow[],
-  labE: EquityChartRow[],
-): AnyObj[] {
-  type Pt = { tsMs: number; t: string; branch: OverlayBranchKey; equity: number; mtm: number };
+function mergeEquityOverlayRowsDynamic(branches: { id: string; rows: EquityChartRow[] }[]): AnyObj[] {
+  type Pt = { tsMs: number; t: string; id: string; equity: number; mtm: number };
   const pts: Pt[] = [];
-  const push = (rows: EquityChartRow[], branch: OverlayBranchKey) => {
+  for (const { id, rows } of branches) {
     for (const row of rows) {
       if (!Number.isFinite(row.tsMs)) continue;
       const mtm = row.mtm != null && Number.isFinite(Number(row.mtm)) ? Number(row.mtm) : row.equity;
-      pts.push({ tsMs: row.tsMs, t: row.t, branch, equity: row.equity, mtm });
+      pts.push({ tsMs: row.tsMs, t: row.t, id, equity: row.equity, mtm });
     }
-  };
-  push(live, "live");
-  push(labA, "a");
-  push(labB, "b");
-  push(labC, "c");
-  push(labD, "d");
-  push(labE, "e");
+  }
   if (!pts.length) return [];
   pts.sort((x, y) => x.tsMs - y.tsMs);
+
+  const branchIds = [...new Set(branches.map((b) => b.id))];
+  const byTs = new Map<number, Pt[]>();
+  for (const p of pts) {
+    const g = byTs.get(p.tsMs);
+    if (g) g.push(p);
+    else byTs.set(p.tsMs, [p]);
+  }
+  const uniqTs = [...byTs.keys()].sort((a, b) => a - b);
+
+  const last: Record<string, { eq: number; mtm: number } | null> = Object.fromEntries(branchIds.map((id) => [id, null]));
+  const out: AnyObj[] = [];
+
+  for (const tsMs of uniqTs) {
+    const hits = byTs.get(tsMs)!;
+    let tLabel = "";
+    for (const h of hits) {
+      last[h.id] = { eq: h.equity, mtm: h.mtm };
+      if (h.id === "live") tLabel = h.t;
+    }
+    if (!tLabel) tLabel = hits[0].t;
+
+    const row: AnyObj = { tsMs, t: tLabel };
+    for (const bid of branchIds) {
+      const L = last[bid];
+      if (!L) continue;
+      row[`${bid}Blend`] = (L.eq + L.mtm) / 2;
+      row[`${bid}Pot`] = L.mtm - L.eq;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+/**
+ * Build “All slots (merged)” from the six ``lab_child_*`` overlay series (forward-filled, then summed).
+ * Using ``equity_snapshots_lab_children`` alone can diverge from per-slot snapshots/metrics, so tooltip totals disagreed with Σ slots.
+ */
+function sumChildSlotEquityRowsForMergedOverlay(slotRowsInOrder: EquityChartRow[][]): EquityChartRow[] {
+  const nSlots = slotRowsInOrder.length;
+  if (nSlots === 0) return [];
+
+  type Pt = { tsMs: number; t: string; slotIdx: number; equity: number; mtm: number };
+  const pts: Pt[] = [];
+  for (let slotIdx = 0; slotIdx < nSlots; slotIdx++) {
+    for (const row of slotRowsInOrder[slotIdx]) {
+      if (!Number.isFinite(row.tsMs)) continue;
+      const mtm = row.mtm != null && Number.isFinite(Number(row.mtm)) ? Number(row.mtm) : row.equity;
+      pts.push({ tsMs: row.tsMs, t: row.t, slotIdx, equity: row.equity, mtm });
+    }
+  }
+  if (!pts.length) return [];
+
+  pts.sort((a, b) => a.tsMs - b.tsMs || a.slotIdx - b.slotIdx);
 
   const byTs = new Map<number, Pt[]>();
   for (const p of pts) {
@@ -3694,36 +4449,24 @@ function mergeEquityOverlayRows(
   }
   const uniqTs = [...byTs.keys()].sort((a, b) => a - b);
 
-  const last: Record<OverlayBranchKey, { eq: number; mtm: number } | null> = {
-    live: null,
-    a: null,
-    b: null,
-    c: null,
-    d: null,
-    e: null,
-  };
-  const branches: OverlayBranchKey[] = ["live", "a", "b", "c", "d", "e"];
-  const out: AnyObj[] = [];
+  const lastEq = new Array(nSlots).fill(0);
+  const lastMtm = new Array(nSlots).fill(0);
+  const out: EquityChartRow[] = [];
 
   for (const tsMs of uniqTs) {
     const hits = byTs.get(tsMs)!;
-    let tLabel = "";
+    let tLabel = hits[0].t;
     for (const h of hits) {
-      last[h.branch] = { eq: h.equity, mtm: h.mtm };
-      if (h.branch === "live") tLabel = h.t;
+      lastEq[h.slotIdx] = h.equity;
+      lastMtm[h.slotIdx] = h.mtm;
     }
-    if (!tLabel) tLabel = hits[0].t;
-
-    const row: AnyObj = { tsMs, t: tLabel };
-    for (const br of branches) {
-      const L = last[br];
-      if (!L) continue;
-      row[`${br}Eq`] = L.eq;
-      row[`${br}Mtm`] = L.mtm;
-      row[`${br}Blend`] = (L.eq + L.mtm) / 2;
-      row[`${br}Pot`] = L.mtm - L.eq;
+    let sumEq = 0;
+    let sumMtm = 0;
+    for (let i = 0; i < nSlots; i++) {
+      sumEq += lastEq[i];
+      sumMtm += lastMtm[i];
     }
-    out.push(row);
+    out.push({ tsMs, t: tLabel, equity: sumEq, mtm: sumMtm });
   }
   return out;
 }
@@ -4112,13 +4855,13 @@ export default function App() {
   /** ``toast_id`` values from ``labs_breeding_log`` already shown (or present at first dashboard load). */
   const labsBreedingToastSeenRef = useRef<Set<string>>(new Set());
   const labsBreedingToastBootstrappedRef = useRef(false);
-  const [assetWatchLab, setAssetWatchLab] = useState<"live" | "a" | "b" | "c" | "d" | "e">("live");
-  const [holdingsBranchTab, setHoldingsBranchTab] = useState<"live" | "a" | "b" | "c" | "d" | "e">("live");
+  const [assetWatchLab, setAssetWatchLab] = useState<DashboardLabLetterTab>("live");
+  const [holdingsBranchTab, setHoldingsBranchTab] = useState<DashboardLabLetterTab>("live");
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("hourly");
   const [equityValueScale, setEquityValueScale] = useState<EquityValueScale>("dollars");
-  const [equityVisible, setEquityVisible] = useState<Record<"live" | "a" | "b" | "c" | "d" | "e", boolean>>({
+  const [equityVisible, setEquityVisible] = useState<Record<OverlayBranchKey, boolean>>({
     live: true,
     a: true,
     b: true,
@@ -4126,7 +4869,20 @@ export default function App() {
     d: true,
     e: true,
   });
+  const [equityCompareFamily, setEquityCompareFamily] = useState<"labs" | "children">("children");
+  const [equityCompareChildVisible, setEquityCompareChildVisible] = useState<Record<EquityCompareChildSlotKey, boolean>>({
+    c1: true,
+    c2: true,
+    c3: true,
+    c4: true,
+    c5: true,
+    c6: true,
+    merged: true,
+  });
   const [equityCompareOpen, setEquityCompareOpen] = useState(false);
+  /** Dedicated modal so charts always use live ``chartDataLabChildSlotsRawByBranch`` (info-popup body froze at open time). */
+  const [paperChildSlotsOpen, setPaperChildSlotsOpen] = useState(false);
+  const [paperBreederOverlayTab, setPaperBreederOverlayTab] = useState<"children" | "labs">("children");
   const [equityCompareMode, setEquityCompareMode] = useState<"blended" | "potential">("blended");
   const [infoPopup, setInfoPopup] = useState<{ title: string; body: ReactNode; variant?: "optimizerReport" } | null>(null);
   /** Last loaded dashboard JSON — used for optimizer report overlay if current ``dash`` is briefly null. */
@@ -4184,6 +4940,9 @@ export default function App() {
       }
       setDash((prev) => {
         const sorted = [...batch].sort((x, y) => {
+          const xs = dashboardPayloadSeq(x.payload as AnyObj);
+          const ys = dashboardPayloadSeq(y.payload as AnyObj);
+          if (xs != null && ys != null && xs !== ys) return xs - ys;
           const xm = dashboardPayloadMs(x.payload.dashboard_payload_at);
           const ym = dashboardPayloadMs(y.payload.dashboard_payload_at);
           return (xm ?? 0) - (ym ?? 0);
@@ -4239,7 +4998,7 @@ export default function App() {
       let payload: AnyObj | null = null;
       try {
         if (force) setErr(null);
-        const r = await fetch("/api/dashboard", withApiAuth({ signal: ac.signal }));
+        const r = await fetch("/api/dashboard", withApiAuth({ signal: ac.signal, cache: "no-store" }));
         if (!dashboardPollMountedRef.current) return null;
         if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         if (!r.ok) throw new Error(`/api/dashboard ${r.status}`);
@@ -4319,6 +5078,7 @@ export default function App() {
       const labCOn = Boolean(lc.engine_running);
       const labDOn = Boolean(ld.engine_running);
       const labEOn = Boolean(le.engine_running);
+      const labChildrenSlotsOn = cfgLabChildSlotAnyEngineOn(nextConfig as AnyObj);
 
       const engine = { ...((prev.engine || {}) as AnyObj) };
       const live = { ...((engine.live || {}) as AnyObj) };
@@ -4352,7 +5112,7 @@ export default function App() {
 
       const kalshi = { ...((prev.kalshi || {}) as AnyObj) };
       kalshi.simulate_live = sim;
-      kalshi.polling_enabled = liveOn || labAOn || labBOn || labCOn || labDOn || labEOn;
+      kalshi.polling_enabled = liveOn || labAOn || labBOn || labCOn || labDOn || labEOn || labChildrenSlotsOn;
       if ("private_ok" in kalshi) {
         kalshi.order_writes_live = Boolean(kalshi.private_ok) && !sim;
       }
@@ -4365,7 +5125,7 @@ export default function App() {
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
     void (async () => {
       try {
-        const r = await fetch("/api/dashboard/equity", withApiAuth());
+        const r = await fetch("/api/dashboard/equity", withApiAuth({ cache: "no-store" }));
         if (!r.ok) return;
         const d = (await r.json()) as AnyObj;
         if (!d || typeof d !== "object" || Array.isArray(d)) return;
@@ -4755,6 +5515,7 @@ export default function App() {
       const resolved = tradeRowLooksResolved(t);
       const sim = Boolean(Number(t.simulated));
       const branch = branchLabelForTradeToast(t.branch, sim);
+      const branchSqlNote = tradeToastSqliteBranchNote(t.branch);
       const tick = String(t.ticker || "").slice(0, 48);
       const side = String(t.side || "").toUpperCase() || "—";
       if (resolved) {
@@ -4792,6 +5553,7 @@ export default function App() {
             branch_tip: branch,
             segments: [
               { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+              ...(branchSqlNote ? [{ tier: "neutral" as const, text: branchSqlNote }] : []),
               { tier: lineTier, text: pnlText },
               ...(breakevenNote ? [{ tier: "neutral" as const, text: breakevenNote }] : []),
               { tier: resMeta.resolutionTier, text: resMeta.lines[0] ?? "" },
@@ -4817,6 +5579,7 @@ export default function App() {
           branch_tip: branch,
           segments: [
             { tier: "neutral", text: `${branch} · ${tick} ${side}` },
+            ...(branchSqlNote ? [{ tier: "neutral" as const, text: branchSqlNote }] : []),
             { tier: sim ? "neutral" : "green", text: `≈ $${cost.toFixed(2)} debit · ${st}` },
             { tier: "neutral", text: "Awaiting resolution (settle or early exit)" },
           ],
@@ -4942,6 +5705,8 @@ export default function App() {
   const metricsLabC = (dash?.metrics_lab_c || {}) as AnyObj;
   const metricsLabD = (dash?.metrics_lab_d || {}) as AnyObj;
   const metricsLabE = (dash?.metrics_lab_e || {}) as AnyObj;
+  const metricsLabChildren = (dash?.metrics_lab_children || {}) as AnyObj;
+  const metricsLabChildSlots = (dash?.metrics_lab_child_slots || {}) as Record<string, AnyObj>;
   const optimizerStatus = useMemo(() => buildOptimizerStatus((dash as AnyObj | null) || null, cfg as AnyObj), [cfg?.optimizer, dash]);
 
   const breederRadarRows = useMemo(() => {
@@ -5226,6 +5991,7 @@ export default function App() {
   const equitySnapsLabC = equitySnapshotsArray(dash?.equity_snapshots_lab_c);
   const equitySnapsLabD = equitySnapshotsArray(dash?.equity_snapshots_lab_d);
   const equitySnapsLabE = equitySnapshotsArray(dash?.equity_snapshots_lab_e);
+  const equitySnapsLabChildren = equitySnapshotsArray(dash?.equity_snapshots_lab_children);
 
   const optimizerThinkingRadarBundle = useMemo(() => {
     const m0 = (metrics as AnyObj) || {};
@@ -5307,9 +6073,17 @@ export default function App() {
       lab_c: { label: "Lab C", shortLabel: "C", metrics: metricsLabC, bankNoun: "lab bankroll", reconcileLabel: "Lab C", isLive: false },
       lab_d: { label: "Lab D", shortLabel: "D", metrics: metricsLabD, bankNoun: "lab bankroll", reconcileLabel: "Lab D", isLive: false },
       lab_e: { label: "Lab E", shortLabel: "E", metrics: metricsLabE, bankNoun: "lab bankroll", reconcileLabel: "Lab E", isLive: false },
+      lab_children: {
+        label: "Child slots",
+        shortLabel: "Slots",
+        metrics: metricsLabChildren,
+        bankNoun: "combined child-slot bankrolls",
+        reconcileLabel: "Child slots",
+        isLive: false,
+      },
     };
     return map[perfBranch];
-  }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC, metricsLabD, metricsLabE]);
+  }, [perfBranch, metrics, metricsLabA, metricsLabB, metricsLabC, metricsLabD, metricsLabE, metricsLabChildren]);
 
   const perfCommittedDisplay = useMemo(() => {
     const m = perfBranchMeta.metrics as AnyObj;
@@ -5367,6 +6141,53 @@ export default function App() {
     [equitySnapsLabE, equityGranularity, metricsLabE, fmtIsoLocal],
   );
 
+  const chartRowsParentLabsOverlay = useMemo(
+    (): Record<ParentLabSparkKey, EquityChartRow[]> => ({
+      live: chartDataLiveRaw,
+      lab_a: chartDataLabARaw,
+      lab_b: chartDataLabBRaw,
+      lab_c: chartDataLabCRaw,
+      lab_d: chartDataLabDRaw,
+      lab_e: chartDataLabERaw,
+    }),
+    [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw, chartDataLabERaw],
+  );
+
+  const chartDataLabChildrenRaw = useMemo(
+    () =>
+      equitySeriesWithLiveTail(equitySnapsLabChildren, equityGranularity, metricsLabChildren, fmtIsoLocal, {
+        dropFlatZeroHistory: true,
+      }),
+    [equitySnapsLabChildren, equityGranularity, metricsLabChildren, fmtIsoLocal],
+  );
+
+  const chartDataLabChildSlotsRawByBranch = useMemo(() => {
+    const rawSlots = dash?.equity_snapshots_lab_child_slots;
+    const slotMap =
+      rawSlots != null && typeof rawSlots === "object" && !Array.isArray(rawSlots)
+        ? (rawSlots as Record<string, AnyObj[]>)
+        : {};
+    const out: Record<string, EquityChartRow[]> = {};
+    for (const def of EQUITY_COMPARE_CHILD_SLOT_DEFS) {
+      if (!def.labKey) continue;
+      const snaps = Array.isArray(slotMap[def.labKey]) ? slotMap[def.labKey] : [];
+      const m = (metricsLabChildSlots[def.labKey] || {}) as AnyObj;
+      out[def.labKey] = equitySeriesWithLiveTail(snaps, equityGranularity, m, fmtIsoLocal, {
+        dropFlatZeroHistory: true,
+      });
+    }
+    return out;
+  }, [dash?.equity_snapshots_lab_child_slots, metricsLabChildSlots, equityGranularity, fmtIsoLocal]);
+
+  /** Σ per-slot curves (aligned timestamps); avoids ``equity_snapshots_lab_children`` disagreeing with slot snapshots. */
+  const chartDataLabChildrenMergedFromSlotsRaw = useMemo(() => {
+    const ordered = EQUITY_COMPARE_CHILD_SLOT_DEFS.filter((d) => d.labKey).map(
+      (d) => chartDataLabChildSlotsRawByBranch[d.labKey!] ?? [],
+    );
+    const summed = sumChildSlotEquityRowsForMergedOverlay(ordered);
+    return summed.length ? summed : chartDataLabChildrenRaw;
+  }, [chartDataLabChildSlotsRawByBranch, chartDataLabChildrenRaw]);
+
   const chartData = useMemo(
     () => applyEquityValueScale(chartDataLiveRaw, equityValueScale),
     [chartDataLiveRaw, equityValueScale],
@@ -5391,19 +6212,30 @@ export default function App() {
     () => applyEquityValueScale(chartDataLabERaw, equityValueScale),
     [chartDataLabERaw, equityValueScale],
   );
-  /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the six small charts for per-branch % view. */
-  const equityOverlayData = useMemo(
+  /** Compare overlay stays in **dollars** — blended/potential semantics are dollar-based; use %Δ on the six branch charts for per-branch % view. */
+  const equityOverlayLabsData = useMemo(
     () =>
-      mergeEquityOverlayRows(
-        chartDataLiveRaw,
-        chartDataLabARaw,
-        chartDataLabBRaw,
-        chartDataLabCRaw,
-        chartDataLabDRaw,
-        chartDataLabERaw,
-      ),
+      mergeEquityOverlayRowsDynamic([
+        { id: "live", rows: chartDataLiveRaw },
+        { id: "a", rows: chartDataLabARaw },
+        { id: "b", rows: chartDataLabBRaw },
+        { id: "c", rows: chartDataLabCRaw },
+        { id: "d", rows: chartDataLabDRaw },
+        { id: "e", rows: chartDataLabERaw },
+      ]),
     [chartDataLiveRaw, chartDataLabARaw, chartDataLabBRaw, chartDataLabCRaw, chartDataLabDRaw, chartDataLabERaw],
   );
+
+  const equityOverlayChildrenData = useMemo(() => {
+    const branches: { id: string; rows: EquityChartRow[] }[] = [];
+    for (const def of EQUITY_COMPARE_CHILD_SLOT_DEFS) {
+      if (def.labKey) branches.push({ id: def.key, rows: chartDataLabChildSlotsRawByBranch[def.labKey] ?? [] });
+      else branches.push({ id: def.key, rows: chartDataLabChildrenMergedFromSlotsRaw });
+    }
+    return mergeEquityOverlayRowsDynamic(branches);
+  }, [chartDataLabChildSlotsRawByBranch, chartDataLabChildrenMergedFromSlotsRaw]);
+
+  const equityOverlayActiveData = equityCompareFamily === "labs" ? equityOverlayLabsData : equityOverlayChildrenData;
 
   const equityDenseRollingSurfaceHint = equityTabUsesDenseRollingHistory(equityGranularity)
     ? "Rolling history — dense ticks"
@@ -5433,15 +6265,17 @@ export default function App() {
   const accountActivityBranch: ActivityBranchKey =
     holdingsBranchTab === "live"
       ? "live"
-      : holdingsBranchTab === "a"
-        ? "lab_a"
-        : holdingsBranchTab === "b"
-          ? "lab_b"
-          : holdingsBranchTab === "c"
-            ? "lab_c"
-            : holdingsBranchTab === "d"
-              ? "lab_d"
-              : "lab_e";
+      : holdingsBranchTab === "children"
+        ? "lab_children"
+        : holdingsBranchTab === "a"
+          ? "lab_a"
+          : holdingsBranchTab === "b"
+            ? "lab_b"
+            : holdingsBranchTab === "c"
+              ? "lab_c"
+              : holdingsBranchTab === "d"
+                ? "lab_d"
+                : "lab_e";
 
   const recentSignalsFiltered = useMemo(() => {
     const rs = (dash?.recent_signals || []) as AnyObj[];
@@ -5800,17 +6634,6 @@ export default function App() {
       setErr(String(e?.message || e));
     } finally {
       setOptimizerSaving(false);
-    }
-  }, [loadOptimizer, refresh]);
-
-  const emergencyDiversifyNow = useCallback(async () => {
-    try {
-      await apiPostJson("/labs/diversify", {});
-      await loadOptimizer();
-      await refresh({ force: true });
-      setBreederRefetchNonce((n) => n + 1);
-    } catch (e: any) {
-      setErr(String(e?.message || e));
     }
   }, [loadOptimizer, refresh]);
 
@@ -6183,6 +7006,7 @@ export default function App() {
             { id: "lab_c", label: "Lab C" },
             { id: "lab_d", label: "Lab D" },
             { id: "lab_e", label: "Lab E" },
+            { id: "lab_children", label: "Child slots" },
           ].map((t) => (
             <button
               key={t.id}
@@ -6486,16 +7310,7 @@ export default function App() {
               }}
               councilInfluenceActive={Boolean((breederStatusPayload as AnyObj | null)?.council_influence_active)}
             />
-            <LabThinkTank
-              messages={labHiveMessages}
-              enabled={labChatEnabled}
-              dashReady={Boolean(dash)}
-              councilDiversityUntil={String(
-                (breedingStripStatus as AnyObj | null)?.labs_council_diversity_until ||
-                  (cfg?.optimizer as AnyObj)?.labs_council_diversity_until ||
-                  "",
-              )}
-            />
+            <LabThinkTank messages={labHiveMessages} enabled={labChatEnabled} dashReady={Boolean(dash)} />
           {/* LABS BREEDING — Optimizer / Breeder / Tree toggle (same horizontal rail as pulse strip). */}
           <div className="dash-optimizer-panel__mode-footer">
             <div className="dash-optimizer-mode-toggle" role="tablist" aria-label="Optimizer, Breeder, or Tree view">
@@ -6677,6 +7492,16 @@ export default function App() {
                 onClick={() => setAssetWatchLab("e")}
               >
                 Lab E
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={assetWatchLab === "children"}
+                className={`chart-tab ${assetWatchLab === "children" ? "chart-tab--active" : ""}`}
+                title="Open sim exposure summed across lab_child_1…6 for this asset."
+                onClick={() => setAssetWatchLab("children")}
+              >
+                Child slots
               </button>
             </div>
           </div>
@@ -6877,12 +7702,22 @@ export default function App() {
               </button>
               <button
                 type="button"
+                className="primary dash-panel-btn dash-equity-panel__child-slots-btn"
+                title="Breeder children vs parent labs: tournament slots (lab_child_1…6) and Live + A–E sparks. Children are separate ledgers fed from parent pools (especially Labs B–E)."
+                onClick={() => {
+                  setPaperBreederOverlayTab("children");
+                  setPaperChildSlotsOpen(true);
+                }}
+              >
+                Child slots
+              </button>
+              <button
+                type="button"
                 className="primary dash-panel-btn dash-panel-btn--info"
                 title={
-                  "Equity: six small-multiple charts (Live + Lab A–E), each with solid = book (cost-ledger) and dashed = mark-to-market. " +
+                  "Equity: six small-multiple charts (Live + Labs A–E). Compare opens one-graph overlays: Child slots (lab_child_1…6 + merged) or Labs (Live + A–E) — separate tabs. Solid = book (cost-ledger); dashed = mark-to-market. " +
                   "Book steps only on ledger events; dashed updates every tick with market mids so it can wiggle while solid is flat. " +
                   "Time-scale tabs: Live = rolling 6h dense ticks plus a trailing metrics point each fast refresh; Intraday = last 24h dense; D/W/M/Y = longer rolling dense windows (downsampled). " +
-                  "Use Compare to overlay branches in one frame. " +
                   "A jump in dashed without solid moving usually means marks moved, not a fill; a step in solid is a fill, exit, or settlement."
                 }
                 onClick={() =>
@@ -6891,7 +7726,7 @@ export default function App() {
                     body: (
                       <div className="dash-section__legend dash-equity-panel__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
-                          <strong>What each chart shows.</strong> You get <strong>six</strong> independent panels (Live + Labs A–E), one per branch. Each
+                          <strong>What each chart shows.</strong> You get <strong>six</strong> independent panels (Live + Labs A–E only). Each
                           panel has two series over time: a <strong>solid</strong> line (book or cost-basis / cash-ledger path) and a{" "}
                           <strong>dashed</strong> line (mark-to-market “total worth” that includes the fair value of open positions on top
                           of the same ledger). All branches use the <em>same</em> time-scale control so you can line up “what the market
@@ -6920,10 +7755,14 @@ export default function App() {
                           <strong>D / D</strong> through <strong>Y / Y</strong> use longer rolling windows of the same dense tick stream (capped / downsampled for speed). Kalshi runs 24/7 — windows are wall-clock, not equity “sessions”.
                         </p>
                         <p>
-                          <strong>Compare</strong> (next to Info above). That overlay puts multiple branch curves in one frame with toggles so you
-                          can eyeball <em>shape</em> and divergence, not to sum dollars (each bankroll differs). Use it when Optimizer
-                          “Experiments” and these equity charts disagree on <em>direction</em>—one might be an indexed or shorter window, the
-                          other raw dollars over long history.
+                          <strong>Compare</strong> (next to Info above). Two scopes in one popup: <strong>Child slots</strong> draws{" "}
+                          <code>lab_child_1</code>…<code>lab_child_6</code> as separate blended/potential lines plus an optional{" "}
+                          <strong>All slots (merged)</strong> trace — breeder tournament engines only. Switch to <strong>Labs (Live + A–E)</strong> for parent-branch overlays matching this equity strip (no children mixed in). Use Compare when you care about shape and divergence across curves at once.
+                        </p>
+                        <p>
+                          <strong>Child slots</strong> (button next to Compare) opens <strong>Breeder children & parent labs</strong> — tabs for child-slot sparks plus{" "}
+                          <strong>Parent labs (Live + A–E)</strong>. Children are tournament engines assigned genomes <em>from</em> parent labs (especially B–E), not nested balances inside Lab A–E.
+                          Use <strong>Compare → Child slots</strong> for one graph with every slot overlaid.
                         </p>
                         <p>
                           <strong>Failure modes to read correctly.</strong> (1) Flatlines everywhere: no snapshots yet, engines off, or
@@ -6932,7 +7771,7 @@ export default function App() {
                           broken quotes. (4) Mismatch with Branch performance: performance tiles are one instant; these charts are
                           time-series—always compare the same branch tab and the same time window mentally. (5) Lab curves that{" "}
                           <em>look</em> like clones but sit at different dollar levels: each chart uses its own snapshot series and book
-                          rollups—check the line under each title (pts / book / settled). Use the <strong>$</strong>/<strong>%Δ</strong> toggle to re-scale every
+                          rollups—check the line under each title (SQLite row count vs plotted chart points, book, settled). Use the <strong>$</strong>/<strong>%Δ</strong> toggle to re-scale every
                           chart as <em>% change from its first plotted point</em> so Lab B/C/D divergence is obvious when bankrolls differ.
                           Shared rules + the same market tape often produce very similar <em>dollar</em> shapes at different levels.
                         </p>
@@ -7012,7 +7851,7 @@ export default function App() {
                   EQUITY_CHART_OPEN_HINT
                 }
               >
-                {equityChartSubtitlePtsBookSettledOpen(snaps.length, metrics)}
+                {equityChartSubtitlePtsBookSettledOpen(snaps.length, metrics, chartDataLiveRaw.length)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -7047,7 +7886,7 @@ export default function App() {
                   EQUITY_CHART_OPEN_HINT
                 }
               >
-                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabA.length, metricsLabA)}
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabA.length, metricsLabA, chartDataLabARaw.length)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -7075,7 +7914,7 @@ export default function App() {
                 {activityBranchTabLabel("lab_b")}
               </h3>
               <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_b. " + EQUITY_CHART_OPEN_HINT}>
-                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabB.length, metricsLabB)}
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabB.length, metricsLabB, chartDataLabBRaw.length)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -7103,7 +7942,7 @@ export default function App() {
                 {activityBranchTabLabel("lab_c")}
               </h3>
               <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_c. " + EQUITY_CHART_OPEN_HINT}>
-                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabC.length, metricsLabC)}
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabC.length, metricsLabC, chartDataLabCRaw.length)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -7131,7 +7970,7 @@ export default function App() {
                 {activityBranchTabLabel("lab_d")}
               </h3>
               <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_d. " + EQUITY_CHART_OPEN_HINT}>
-                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabD.length, metricsLabD)}
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabD.length, metricsLabD, chartDataLabDRaw.length)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -7159,7 +7998,7 @@ export default function App() {
                 {activityBranchTabLabel("lab_e")}
               </h3>
               <p className="sub dash-equity-chart-fp" title={"Series from equity_snapshots_lab_e. " + EQUITY_CHART_OPEN_HINT}>
-                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabE.length, metricsLabE)}
+                {equityChartSubtitlePtsBookSettledOpen(equitySnapsLabE.length, metricsLabE, chartDataLabERaw.length)}
               </p>
               <div className="chart chart--equity-stack" aria-label="Double-click chart to expand.">
                 <ChartDblClickExpand
@@ -7292,6 +8131,7 @@ export default function App() {
               { id: "c", label: "Lab C" },
               { id: "d", label: "Lab D" },
               { id: "e", label: "Lab E" },
+              { id: "children", label: "Child slots" },
             ].map((t) => (
               <button
                 key={t.id}
@@ -7299,7 +8139,7 @@ export default function App() {
                 role="tab"
                 aria-selected={holdingsBranchTab === t.id}
                 className={`chart-tab ${holdingsBranchTab === t.id ? "chart-tab--active" : ""}`}
-                onClick={() => setHoldingsBranchTab(t.id as "live" | "a" | "b" | "c" | "d" | "e")}
+                onClick={() => setHoldingsBranchTab(t.id as DashboardLabLetterTab)}
               >
                 {t.label}
               </button>
@@ -7361,7 +8201,9 @@ export default function App() {
                         title={
                           holdingsBranchTab === "live"
                             ? "Live-branch open sim rows in SQLite. Cell text: market lines = distinct tickers with exposure; contracts = Kalshi YES/NO size (summed when merged)."
-                            : `Lab ${holdingsBranchTab.toUpperCase()} open sim rows. Market lines = distinct tickers; contracts = position size (Kalshi units), not how many markets.`
+                            : holdingsBranchTab === "children"
+                              ? "Consolidated open sim rows across lab_child_1…6 for this asset (same union as dashboard metrics_lab_children)."
+                              : `Lab ${holdingsBranchTab.toUpperCase()} open sim rows. Market lines = distinct tickers; contracts = position size (Kalshi units), not how many markets.`
                         }
                       >
                         {dashboardLabLetterTabLabel(holdingsBranchTab)}
@@ -7374,17 +8216,19 @@ export default function App() {
                       const simByTab =
                         holdingsBranchTab === "live"
                           ? summarizePositionRows(row.bot_sim_open_live)
-                          : holdingsBranchTab === "a"
-                            ? summarizePositionRows(
-                                Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
-                              )
-                            : holdingsBranchTab === "b"
-                              ? summarizePositionRows(row.bot_sim_open_lab_b)
-                              : holdingsBranchTab === "c"
-                                ? summarizePositionRows(row.bot_sim_open_lab_c)
-                                : holdingsBranchTab === "d"
-                                  ? summarizePositionRows(row.bot_sim_open_lab_d)
-                                  : summarizePositionRows(row.bot_sim_open_lab_e);
+                          : holdingsBranchTab === "children"
+                            ? summarizePositionRows(row.bot_sim_open_lab_children)
+                            : holdingsBranchTab === "a"
+                              ? summarizePositionRows(
+                                  Array.isArray(row.bot_sim_open_lab_a) ? row.bot_sim_open_lab_a : row.bot_sim_open_lab,
+                                )
+                              : holdingsBranchTab === "b"
+                                ? summarizePositionRows(row.bot_sim_open_lab_b)
+                                : holdingsBranchTab === "c"
+                                  ? summarizePositionRows(row.bot_sim_open_lab_c)
+                                  : holdingsBranchTab === "d"
+                                    ? summarizePositionRows(row.bot_sim_open_lab_d)
+                                    : summarizePositionRows(row.bot_sim_open_lab_e);
                       return (
                       <tr key={aid} title={`Configured asset ${aid}`}>
                         <td title="Label from config.">{String(row.label || aid)}</td>
@@ -7633,6 +8477,17 @@ export default function App() {
               {(() => {
                 const selectedIsLive = holdingsBranchTab === "live";
                 const label = dashboardLabLetterTabLabel(holdingsBranchTab);
+                if (holdingsBranchTab === "children") {
+                  const on = cfgLabChildSlotAnyEngineOn(cfg as AnyObj);
+                  return (
+                    <>
+                      <div title="Child slots use Settings → lab_child_1…6 engines (breeder assigns genomes).">
+                        <strong>{label}</strong> — child slots {on ? "≥1 engine on" : "all off"} · trades log as{" "}
+                        <code>lab_child_N</code>; Activity filter <strong>Child slots</strong> groups them. Tick traces are per slot (not merged here).
+                      </div>
+                    </>
+                  );
+                }
                 const engineObj =
                   holdingsBranchTab === "live"
                     ? (dash?.engine?.live as AnyObj | undefined)
@@ -7659,7 +8514,8 @@ export default function App() {
                             : labEBranchEngineOn;
                 const lastTick = engineObj?.last_tick_at;
                 const scanned = engineObj?.markets_scanned;
-                const errMsg = String(engineObj?.last_error || "");
+                const errRaw = String(engineObj?.last_error || "");
+                const errAnn = annotateEngineLastErrorForUi(errRaw);
                 return (
                   <>
                     <div title={`${label} branch engine status from /api/dashboard.`}>
@@ -7669,9 +8525,13 @@ export default function App() {
                         : "always simulated"}{" "}
                       · last tick: {lastTick ? fmtIsoLocal(String(lastTick)) : "—"} · scanned {String(scanned ?? "—")}
                     </div>
-                    {errMsg ? (
-                      <div className="error" style={{ marginTop: 6 }} title={`Last ${label} engine error string.`}>
-                        {label}: {errMsg}
+                    {errAnn.text ? (
+                      <div
+                        className="error"
+                        style={{ marginTop: 6 }}
+                        title={errAnn.title || `Last ${label} engine error string.`}
+                      >
+                        {label}: {errAnn.text}
                       </div>
                     ) : null}
                   </>
@@ -7680,17 +8540,19 @@ export default function App() {
               <EngineTickTrace
                 title={`${dashboardLabLetterTabLabel(holdingsBranchTab)} — last tick log`}
                 lines={
-                  holdingsBranchTab === "live"
-                    ? dash?.engine?.live?.last_tick_trace
-                    : holdingsBranchTab === "a"
-                      ? engineLabA?.last_tick_trace
-                      : holdingsBranchTab === "b"
-                        ? engineLabB?.last_tick_trace
-                        : holdingsBranchTab === "c"
-                          ? engineLabC?.last_tick_trace
-                          : holdingsBranchTab === "d"
-                            ? engineLabD?.last_tick_trace
-                            : engineLabE?.last_tick_trace
+                  holdingsBranchTab === "children"
+                    ? undefined
+                    : holdingsBranchTab === "live"
+                      ? dash?.engine?.live?.last_tick_trace
+                      : holdingsBranchTab === "a"
+                        ? engineLabA?.last_tick_trace
+                        : holdingsBranchTab === "b"
+                          ? engineLabB?.last_tick_trace
+                          : holdingsBranchTab === "c"
+                            ? engineLabC?.last_tick_trace
+                            : holdingsBranchTab === "d"
+                              ? engineLabD?.last_tick_trace
+                              : engineLabE?.last_tick_trace
                 }
               />
             </div>
@@ -7737,7 +8599,6 @@ export default function App() {
         optimizerSaving={optimizerSaving}
         onRunOptimizerNow={runOptimizerNow}
         onForceInternalMutationNow={forceInternalMutationNow}
-        onDiversifyLabsNow={emergencyDiversifyNow}
         onResetTradingData={resetTradingData}
         onApplyLabBranches={applyLabBranchesBulk}
         onFetchBreederSmartDefaults={fetchBreederSmartDefaults}
@@ -7781,6 +8642,33 @@ export default function App() {
                 Close
               </button>
             </div>
+            <div
+              className="chart-tabs dash-split-panel__tabs"
+              role="tablist"
+              aria-label="Compare chart scope"
+              style={{ marginBottom: 8 }}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={equityCompareFamily === "children"}
+                className={`chart-tab ${equityCompareFamily === "children" ? "chart-tab--active" : ""}`}
+                title="Six tournament engines (lab_child_1…6) plus merged total — separate from parent labs."
+                onClick={() => setEquityCompareFamily("children")}
+              >
+                Child slots
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={equityCompareFamily === "labs"}
+                className={`chart-tab ${equityCompareFamily === "labs" ? "chart-tab--active" : ""}`}
+                title="Live paper plus Labs A–E — same branches as the equity strip above (not breeding children)."
+                onClick={() => setEquityCompareFamily("labs")}
+              >
+                Labs (Live + A–E)
+              </button>
+            </div>
             <div className="dash-equity-compare-toolbar">
               <div
                 className="dash-equity-compare-toolbar__granularity chart-tabs dash-split-panel__tabs"
@@ -7820,25 +8708,53 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div className="dash-equity-overlay-controls dash-equity-overlay-controls--compare" role="group" aria-label="Toggle branch overlays">
-              {([
-                { key: "live", label: "Live", color: "#38bdf8" },
-                { key: "a", label: "Lab A", color: "#a78bfa" },
-                { key: "b", label: "Lab B", color: "#f59e0b" },
-                { key: "c", label: "Lab C", color: "#f472b6" },
-                { key: "d", label: "Lab D", color: "#fca5a5" },
-                { key: "e", label: "Lab E", color: "#14b8a6" },
-              ] as const).map((opt) => (
-                <label key={opt.key} className="dash-equity-overlay-toggle" title={`Show or hide ${opt.label} on the combined chart.`}>
-                  <input
-                    type="checkbox"
-                    checked={equityVisible[opt.key]}
-                    onChange={(e) => setEquityVisible((prev) => ({ ...prev, [opt.key]: e.target.checked }))}
-                  />
-                  <span className="dash-equity-overlay-dot" style={{ background: opt.color }} />
-                  <span>{opt.label}</span>
-                </label>
-              ))}
+            <div
+              className="dash-equity-overlay-controls dash-equity-overlay-controls--compare"
+              role="group"
+              aria-label={equityCompareFamily === "labs" ? "Toggle lab overlays" : "Toggle child-slot overlays"}
+            >
+              {equityCompareFamily === "labs"
+                ? (
+                    [
+                      { key: "live" as const, label: "Live", color: "#38bdf8" },
+                      { key: "a" as const, label: "Lab A", color: "#a78bfa" },
+                      { key: "b" as const, label: "Lab B", color: "#f59e0b" },
+                      { key: "c" as const, label: "Lab C", color: "#f472b6" },
+                      { key: "d" as const, label: "Lab D", color: "#fca5a5" },
+                      { key: "e" as const, label: "Lab E", color: "#14b8a6" },
+                    ] as const
+                  ).map((opt) => (
+                    <label key={opt.key} className="dash-equity-overlay-toggle" title={`Show or hide ${opt.label} on the combined chart.`}>
+                      <input
+                        type="checkbox"
+                        checked={equityVisible[opt.key]}
+                        onChange={(e) => setEquityVisible((prev) => ({ ...prev, [opt.key]: e.target.checked }))}
+                      />
+                      <span className="dash-equity-overlay-dot" style={{ background: opt.color }} />
+                      <span>{opt.label}</span>
+                    </label>
+                  ))
+                : EQUITY_COMPARE_CHILD_SLOT_DEFS.map((def) => (
+                    <label
+                      key={def.key}
+                      className="dash-equity-overlay-toggle"
+                      title={
+                        def.labKey
+                          ? `Show or hide ${def.label} (${def.labKey}) on the combined chart.`
+                          : "Merged curve: sum of the six slot lines above (aligned timestamps). Falls back to consolidated lab_children snapshots only if every slot series is empty."
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={equityCompareChildVisible[def.key]}
+                        onChange={(e) =>
+                          setEquityCompareChildVisible((prev) => ({ ...prev, [def.key]: e.target.checked }))
+                        }
+                      />
+                      <span className="dash-equity-overlay-dot" style={{ background: def.color }} />
+                      <span>{def.label}</span>
+                    </label>
+                  ))}
             </div>
             <div
               className="chart chart--equity-overlay"
@@ -7846,7 +8762,7 @@ export default function App() {
             >
               <ChartDblClickExpand
                 title={
-                  `Compare: ${equityCompareMode === "blended" ? "blended" : "potential spread"} — ${String(equityGranularity).toUpperCase()}`
+                  `${equityCompareFamily === "children" ? "Child slots" : "Labs"} · ${equityCompareMode === "blended" ? "blended" : "potential spread"} — ${String(equityGranularity).toUpperCase()}`
                 }
                 defaultHeight={460}
                 expandedHeight={560}
@@ -7856,13 +8772,34 @@ export default function App() {
                     Mode <strong>{equityCompareMode === "blended" ? "Blended" : "Potential"}</strong>: {equityCompareMode === "blended"
                       ? "one line per branch, average of book and MTM at each time step."
                       : "MTM minus book (open-risk mark) at each time step."}{" "}
-                    Use the checkboxes below to show or hide branches (same toggles as the dashboard). Pick <strong>Live</strong>, <strong>Intraday</strong>, <strong>D/D</strong>, etc. in this popup — they mirror the main Equity curves tabs. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
+                    <strong>Child slots</strong> compares the six <code>lab_child_*</code> paper engines plus a merged line that sums those slot curves (not a separate SQLite aggregate unless slots have no points);{" "}
+                    <strong>Labs (Live + A–E)</strong> compares parent branches only — same idea as the equity strip, not the breeder children.
+                    Time tabs mirror the main Equity curves. This overlay is always <strong>dollars</strong>; use <strong>$</strong>/<strong>%Δ</strong> on the small charts for indexed view.
                   </p>
                 }
                 render={({ h }) => (
                   <div style={{ width: "100%", height: h }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={equityOverlayData} margin={{ left: 10, right: 28, top: 10, bottom: 18 }}>
+                    {equityOverlayActiveData.length === 0 ? (
+                      <div
+                        style={{
+                          height: h,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: 20,
+                          textAlign: "center",
+                          color: "var(--muted)",
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        No points to plot for this scope. Ensure the API serves equity snapshots (for children:
+                        <code style={{ margin: "0 4px" }}>equity_snapshots_lab_child_slots</code>
+                        after a backend restart). With empty SQLite history you should still see short tails from live metrics once polls succeed.
+                      </div>
+                    ) : (
+                    <ResponsiveContainer width="100%" height="100%" key={`compare-chart-${equityCompareFamily}-${equityCompareMode}`}>
+                      <LineChart data={equityOverlayActiveData} margin={{ left: 10, right: 28, top: 10, bottom: 18 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#223056" strokeOpacity={0.85} />
                         <XAxis
                           type="number"
@@ -7899,80 +8836,107 @@ export default function App() {
                           }}
                           formatter={(value: number, name: string) => [`$${Number(value).toFixed(2)}`, name]}
                         />
-                        {equityVisible.live ? (
-                          <Line
-                            type="stepAfter"
-                            dataKey={equityCompareMode === "blended" ? "liveBlend" : "livePot"}
-                            name={equityCompareMode === "blended" ? "Live blended" : "Live potential"}
-                            stroke="#38bdf8"
-                            strokeWidth={2}
-                            strokeOpacity={0.95}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        ) : null}
-                        {equityVisible.a ? (
-                          <Line
-                            type="stepAfter"
-                            dataKey={equityCompareMode === "blended" ? "aBlend" : "aPot"}
-                            name={equityCompareMode === "blended" ? "Lab A blended" : "Lab A potential"}
-                            stroke="#a78bfa"
-                            strokeWidth={2}
-                            strokeOpacity={0.95}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        ) : null}
-                        {equityVisible.b ? (
-                          <Line
-                            type="stepAfter"
-                            dataKey={equityCompareMode === "blended" ? "bBlend" : "bPot"}
-                            name={equityCompareMode === "blended" ? "Lab B blended" : "Lab B potential"}
-                            stroke="#f59e0b"
-                            strokeWidth={2}
-                            strokeOpacity={0.95}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        ) : null}
-                        {equityVisible.c ? (
-                          <Line
-                            type="stepAfter"
-                            dataKey={equityCompareMode === "blended" ? "cBlend" : "cPot"}
-                            name={equityCompareMode === "blended" ? "Lab C blended" : "Lab C potential"}
-                            stroke="#f472b6"
-                            strokeWidth={2}
-                            strokeOpacity={0.95}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        ) : null}
-                        {equityVisible.d ? (
-                          <Line
-                            type="stepAfter"
-                            dataKey={equityCompareMode === "blended" ? "dBlend" : "dPot"}
-                            name={equityCompareMode === "blended" ? "Lab D blended" : "Lab D potential"}
-                            stroke="#fca5a5"
-                            strokeWidth={2}
-                            strokeOpacity={0.95}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        ) : null}
-                        {equityVisible.e ? (
-                          <Line
-                            type="stepAfter"
-                            dataKey={equityCompareMode === "blended" ? "eBlend" : "ePot"}
-                            name={equityCompareMode === "blended" ? "Lab E blended" : "Lab E potential"}
-                            stroke="#14b8a6"
-                            strokeWidth={2}
-                            strokeOpacity={0.95}
-                            dot={false}
-                            isAnimationActive={false}
-                          />
-                        ) : null}
+                        {equityCompareFamily === "labs" ? (
+                          <>
+                            {equityVisible.live ? (
+                              <Line
+                                type="stepAfter"
+                                dataKey={equityCompareMode === "blended" ? "liveBlend" : "livePot"}
+                                name={equityCompareMode === "blended" ? "Live blended" : "Live potential"}
+                                stroke="#38bdf8"
+                                strokeWidth={2}
+                                strokeOpacity={0.95}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null}
+                            {equityVisible.a ? (
+                              <Line
+                                type="stepAfter"
+                                dataKey={equityCompareMode === "blended" ? "aBlend" : "aPot"}
+                                name={equityCompareMode === "blended" ? "Lab A blended" : "Lab A potential"}
+                                stroke="#a78bfa"
+                                strokeWidth={2}
+                                strokeOpacity={0.95}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null}
+                            {equityVisible.b ? (
+                              <Line
+                                type="stepAfter"
+                                dataKey={equityCompareMode === "blended" ? "bBlend" : "bPot"}
+                                name={equityCompareMode === "blended" ? "Lab B blended" : "Lab B potential"}
+                                stroke="#f59e0b"
+                                strokeWidth={2}
+                                strokeOpacity={0.95}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null}
+                            {equityVisible.c ? (
+                              <Line
+                                type="stepAfter"
+                                dataKey={equityCompareMode === "blended" ? "cBlend" : "cPot"}
+                                name={equityCompareMode === "blended" ? "Lab C blended" : "Lab C potential"}
+                                stroke="#f472b6"
+                                strokeWidth={2}
+                                strokeOpacity={0.95}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null}
+                            {equityVisible.d ? (
+                              <Line
+                                type="stepAfter"
+                                dataKey={equityCompareMode === "blended" ? "dBlend" : "dPot"}
+                                name={equityCompareMode === "blended" ? "Lab D blended" : "Lab D potential"}
+                                stroke="#fca5a5"
+                                strokeWidth={2}
+                                strokeOpacity={0.95}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null}
+                            {equityVisible.e ? (
+                              <Line
+                                type="stepAfter"
+                                dataKey={equityCompareMode === "blended" ? "eBlend" : "ePot"}
+                                name={equityCompareMode === "blended" ? "Lab E blended" : "Lab E potential"}
+                                stroke="#14b8a6"
+                                strokeWidth={2}
+                                strokeOpacity={0.95}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null}
+                          </>
+                        ) : (
+                          EQUITY_COMPARE_CHILD_SLOT_DEFS.map((def) =>
+                            equityCompareChildVisible[def.key] ? (
+                              <Line
+                                key={def.key}
+                                type="stepAfter"
+                                dataKey={
+                                  equityCompareMode === "blended" ? `${def.key}Blend` : `${def.key}Pot`
+                                }
+                                name={
+                                  equityCompareMode === "blended"
+                                    ? `${def.label} blended`
+                                    : `${def.label} potential`
+                                }
+                                stroke={def.color}
+                                strokeWidth={def.key === "merged" ? 2.85 : 2}
+                                strokeOpacity={def.key === "merged" ? 1 : 0.92}
+                                dot={false}
+                                isAnimationActive={false}
+                              />
+                            ) : null,
+                          )
+                        )}
                       </LineChart>
                     </ResponsiveContainer>
+                    )}
                   </div>
                 )}
               />
@@ -7981,6 +8945,77 @@ export default function App() {
         </div>
       ) : null}
         </>
+      ) : null}
+      {paperChildSlotsOpen && dash ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Breeder children and parent labs"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1210,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            background: "rgba(3, 8, 24, 0.72)",
+          }}
+          onClick={() => setPaperChildSlotsOpen(false)}
+        >
+          <div
+            className="panel"
+            style={{ width: "min(920px, 96vw)", maxHeight: "92vh", overflow: "auto", padding: "14px 16px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 18 }}>Breeder children & parent labs</h2>
+                <p className="sub" style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.45 }}>
+                  Child slots (<code>lab_child_1…6</code>) are separate paper ledgers populated from parent pools (especially Labs B–E). Charts use the same time window as{" "}
+                  <strong>Equity curves</strong> above ({String(equityGranularity)}).
+                </p>
+              </div>
+              <button type="button" className="primary dash-panel-btn" onClick={() => setPaperChildSlotsOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div
+              className="chart-tabs dash-split-panel__tabs"
+              role="tablist"
+              aria-label="Breeder overlay scope"
+              style={{ marginBottom: 12 }}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paperBreederOverlayTab === "children"}
+                className={`chart-tab ${paperBreederOverlayTab === "children" ? "chart-tab--active" : ""}`}
+                onClick={() => setPaperBreederOverlayTab("children")}
+              >
+                Breeder children
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={paperBreederOverlayTab === "labs"}
+                className={`chart-tab ${paperBreederOverlayTab === "labs" ? "chart-tab--active" : ""}`}
+                onClick={() => setPaperBreederOverlayTab("labs")}
+              >
+                Parent labs (Live + A–E)
+              </button>
+            </div>
+            {paperBreederOverlayTab === "children"
+              ? paperChildSlotsOverlayBody(
+                  ((dash || dashSnapshotRef.current) ?? {}) as AnyObj,
+                  (cfg && typeof cfg === "object" ? cfg : dashboardConfigFallbackRef.current || {}) as AnyObj,
+                  breederStatusPayload,
+                  chartDataLabChildSlotsRawByBranch,
+                  chartDataLabChildrenMergedFromSlotsRaw,
+                )
+              : paperParentLabsSparkOverlayBody(((dash || dashSnapshotRef.current) ?? {}) as AnyObj, chartRowsParentLabsOverlay)}
+          </div>
+        </div>
       ) : null}
       {infoPopup ? (
         <div
@@ -8095,15 +9130,22 @@ function ActivityHints({
     const needC = activityBranch === "lab_c";
     const needD = activityBranch === "lab_d";
     const needE = activityBranch === "lab_e";
+    const needChildren = activityBranch === "lab_children";
+    const labChildrenSlotsOn = cfgLabChildSlotAnyEngineOn(cfg);
     if (
       (needLive && !liveOn) ||
       (needA && !labAOn) ||
       (needB && !labBOn) ||
       (needC && !labCOn) ||
       (needD && !labDOn) ||
-      (needE && !labEOn)
+      (needE && !labEOn) ||
+      (needChildren && !labChildrenSlotsOn)
     ) {
-      lines.push(`Turn the ${branchName} engine on in the toolbar — otherwise this branch’s ticks (and rows) stay idle.`);
+      lines.push(
+        needChildren
+          ? `Turn on at least one child slot engine (Settings → lab_child_1…6) — otherwise those rows stay idle.`
+          : `Turn the ${branchName} engine on in the toolbar — otherwise this branch’s ticks (and rows) stay idle.`,
+      );
     } else {
       if (needLive && liveOn) {
         lines.push(
@@ -8133,6 +9175,11 @@ function ActivityHints({
       if (needE && labEOn) {
         lines.push(
           `Lab E last tick: ${labETick ? fmtIsoLocal(String(labETick)) : "—"} · markets scanned: ${scannedLabE ?? "—"}.`,
+        );
+      }
+      if (needChildren && labChildrenSlotsOn) {
+        lines.push(
+          "Child slots: each engine is lab_child_N — Optimizer → Breeder / Tree for pool status; Equity → Compare can overlay merged child-slot curves.",
         );
       }
       lines.push(

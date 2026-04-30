@@ -24,6 +24,57 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _logger = logging.getLogger("kalshibot.store")
 
 
+def _parse_emergency_diversify_until_iso(raw: Any) -> datetime | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    try:
+        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t
+    except (TypeError, ValueError):
+        return None
+
+
+def _restore_legacy_emergency_diversify_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
+    """Legacy pre–council diversify gate bumps — restore optimizer yes-floors / lab thresholds from snapshot."""
+    oc = cfg.setdefault("optimizer", {})
+    if not isinstance(oc, dict):
+        return
+    for k in ("lab_b_yes_floor_pct", "lab_c_yes_floor_pct", "lab_d_yes_floor_pct", "lab_e_yes_floor_pct"):
+        if k in base and base[k] is not None:
+            oc[k] = base[k]
+    labs = base.get("labs") if isinstance(base.get("labs"), dict) else {}
+    for lk, patch in labs.items():
+        if lk not in cfg or not isinstance(cfg.get(lk), dict):
+            continue
+        if isinstance(patch, dict) and patch.get("no_bet_when_yes_below_pct") is not None:
+            cfg[lk]["no_bet_when_yes_below_pct"] = patch["no_bet_when_yes_below_pct"]
+    oc.pop("emergency_diversify_revert_at", None)
+    oc.pop("emergency_diversify_baseline", None)
+
+
+async def _maybe_revert_emergency_diversify_if_due(store: Any, cfg: dict[str, Any]) -> bool:
+    oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    until = _parse_emergency_diversify_until_iso(oc.get("emergency_diversify_revert_at"))
+    base = oc.get("emergency_diversify_baseline")
+    if until is None or not isinstance(base, dict):
+        return False
+    now = datetime.now(timezone.utc)
+    if now <= until:
+        return False
+    _restore_legacy_emergency_diversify_baseline(cfg, base)
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="system",
+        history_reason="emergency_diversify_expired",
+    )
+    _logger.info("legacy emergency_diversify gates reverted after window")
+    return True
+
+
 def _data_log(stream: str, payload: dict[str, Any]) -> None:
     try:
         from .data_log import append_event
@@ -180,13 +231,17 @@ def breeder_smart_defaults_snapshot(lab_key: str) -> dict[str, Any]:
 
 def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
     """
-    Breeding Council labs must never run with ``rules: []`` (no signals). Copy global rules or inject a loose pack.
+    Lab A and breeder labs B–E must never run with ``rules: []`` (engine would scan markets but never match).
+
+    * If the lab block has no / empty ``rules`` and top-level ``rules`` exist, copy globals (Lab A staging mirrors Live).
+    * If globals are empty too, Lab A gets the shipped default YES/NO pack; B–E get their breeder fallback packs.
     """
     glob = cfg.get("rules")
     global_rules: list[dict[str, Any]] = []
     if isinstance(glob, list) and glob:
         global_rules = [dict(r) for r in glob if isinstance(r, dict)]
-    for lk in _BREEDER_PARENT_LABS:
+    default_pack = _copy_trading_rules_default()
+    for lk in ("lab_a", *_BREEDER_PARENT_LABS):
         block = cfg.get(lk)
         if not isinstance(block, dict):
             continue
@@ -194,6 +249,8 @@ def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
         if not isinstance(rules, list) or len(rules) == 0:
             if global_rules:
                 block["rules"] = [dict(r) for r in global_rules]
+            elif lk == "lab_a":
+                block["rules"] = [dict(r) for r in default_pack]
             else:
                 block["rules"] = _breeder_fallback_rules_for(lk)
             cfg[lk] = block
@@ -664,6 +721,31 @@ async def _migrate_trades_open_sim_unique(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+def _maybe_strip_legacy_lab_a_stub_engine_false(cfg: dict[str, Any]) -> None:
+    """
+    Legacy ``_normalize_loaded_config`` backfill used ``lab_a.engine_running: false`` whenever ``lab_a`` was missing.
+    That overwrote shipped defaults after ``expand_partial_lab_branch`` and looked like "Lab A turned itself off."
+    Strip only when the block still matches that old fingerprint (operators who want off can set false again after
+    nudging fraction or window by a hair).
+    """
+    block = cfg.get("lab_a")
+    if not isinstance(block, dict):
+        return
+    if block.get("engine_running") is not False:
+        return
+    if block.get("auto_optimize") is not False:
+        return
+    try:
+        bf = float(block.get("balance_fraction_per_window"))
+        wi = int(float(block.get("window_minutes")))
+    except (TypeError, ValueError):
+        return
+    if abs(bf - 0.05) > 1e-4 or wi != 15:
+        return
+    del block["engine_running"]
+    cfg["lab_a"] = block
+
+
 def _maybe_strip_legacy_breeder_stub_engine_false(cfg: dict[str, Any]) -> None:
     """
     Older ``_normalize_loaded_config`` stubs for lab_b–e embedded ``engine_running: false``. Because
@@ -727,15 +809,18 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 r["name"] = "Mid 55–85%, 0–20m (fills demo / typical mids)"
 
     if "lab_a" not in cfg or not isinstance(cfg.get("lab_a"), dict):
-        # Backfill from legacy sim_lab when present.
+        # Backfill from legacy sim_lab when present. Omit ``engine_running`` here so ``expand_partial_lab_branch``
+        # + ``effective_parent_lab_engine_running`` default staging Lab A **on** (same as lab_b–e stubs).
         legacy = cfg.get("sim_lab") if isinstance(cfg.get("sim_lab"), dict) else {}
-        cfg["lab_a"] = {
-            "engine_running": False,
+        lab_a_stub: dict[str, Any] = {
             "auto_optimize": False,
             "balance_fraction_per_window": legacy.get("balance_fraction_per_window", 0.05),
             "window_minutes": legacy.get("window_minutes", 15),
             "paper_balance_cents": legacy.get("paper_balance_cents", cfg.get("paper_balance_cents") or 500_000),
         }
+        if "engine_running" in legacy:
+            lab_a_stub["engine_running"] = legacy["engine_running"]
+        cfg["lab_a"] = lab_a_stub
     # Omit ``engine_running`` on breeder stubs so ``expand_partial_lab_branch`` keeps ``default_bot_config`` True — an
     # explicit False here overwrote defaults and left Lab B–E permanently off after migration.
     if "lab_b" not in cfg or not isinstance(cfg.get("lab_b"), dict):
@@ -798,6 +883,7 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Dev sim high-YES bypass: migrate legacy boolean to percent field
     if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(cfg.get("dev_sim_yes_implied_ge_70")):
         cfg["dev_sim_yes_implied_ge_pct"] = 70.0
+    _maybe_strip_legacy_lab_a_stub_engine_false(cfg)
     _maybe_strip_legacy_breeder_stub_engine_false(cfg)
     for lk in ALL_CFG_LAB_KEYS:
         if isinstance(cfg.get(lk), dict):
@@ -889,12 +975,12 @@ class Store:
                     else:
                         out = _normalize_loaded_config(parsed)
         try:
-            from .lab_diversify import maybe_revert_council_diversity_if_due, maybe_revert_emergency_diversify_if_due
-
-            await maybe_revert_emergency_diversify_if_due(self, out)
-            await maybe_revert_council_diversity_if_due(self, out)
+            await _maybe_revert_emergency_diversify_if_due(self, out)
         except Exception as exc:
-            _logger.warning("diversity / emergency_diversify revert check failed: %s", exc)
+            _logger.warning("emergency_diversify revert check failed: %s", exc)
+        _opt = out.get("optimizer")
+        if isinstance(_opt, dict):
+            _opt.pop("labs_council_diversity_until", None)
         return out
 
     async def save_config(

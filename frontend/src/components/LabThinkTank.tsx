@@ -24,39 +24,24 @@ const ACTION_DETAIL: Record<string, string> = {
   council_intro: "Boot line when this engine first joined the in-memory bus.",
   breeding_whisper: "Rare breeding-context nudge when GA breeding is enabled (still flavor only).",
   team_dialogue_sim: "Anchored reply after a peer line; triggered on sim fills, not ranked scans.",
-  council_diversity_pulse:
-    "Self-correct council: Diversify Labs set a 60m maximum-opposition window; server steers ~60–70% of Think Tank lines to adversarial (counter) pool for B–E only.",
 };
 
 type Props = {
   messages: LabHiveRow[];
   enabled: boolean;
   dashReady: boolean;
-  /** ISO UTC from config / status; when set and in the future, council diversity window is active. */
-  councilDiversityUntil?: string;
 };
 
 const SHOW_MAX = 5;
 
-function formatDiversityBanner(until: string): string | null {
-  const t = String(until || "").trim();
-  if (!t) return null;
-  const ms = Date.parse(t);
-  if (!Number.isFinite(ms)) return null;
-  if (ms <= Date.now()) return null;
-  return `Maximum opposition (60m window) until ${t.slice(0, 16).replace("T", " ")}Z — breeders diverge; Think Tank favors dissent.`;
-}
-
 /** Dense live log — latest five lines, zero fixed height, minimal chrome. */
-export default function LabThinkTank({ messages, enabled, dashReady, councilDiversityUntil }: Props) {
+export default function LabThinkTank({ messages, enabled, dashReady }: Props) {
   const [expanded, setExpanded] = useState(true);
   const [openDetailId, setOpenDetailId] = useState<string | null>(null);
 
   const lines = useMemo(() => {
     return [...messages].slice(-SHOW_MAX).filter((r) => String(r.message || "").trim().length > 0);
   }, [messages]);
-
-  const diversityBanner = useMemo(() => formatDiversityBanner(councilDiversityUntil || ""), [councilDiversityUntil]);
 
   const parentSnippet = (id: string | undefined) => {
     if (!id) return "";
@@ -82,7 +67,6 @@ export default function LabThinkTank({ messages, enabled, dashReady, councilDive
         <p className="sub lab-think-tank__hint">Enable Agent Collaboration under Settings → Global.</p>
       ) : (
         <div className="lab-think-tank__viewport" role="log" aria-live="polite">
-          {diversityBanner ? <p className="sub lab-think-tank__diversity-banner">{diversityBanner}</p> : null}
           {lines.length === 0 ? (
             <p className="sub lab-think-tank__empty">
               No lines yet — turn on Labs B, C, D, E engines (paper). Lines appear within a tick or two.

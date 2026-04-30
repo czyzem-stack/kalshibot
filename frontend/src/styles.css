@@ -1473,10 +1473,10 @@ input[type="number"] {
   margin: 0 0 10px 0;
 }
 
-/* One horizontal strip: time tabs wrap *inside* the left cluster; $/%Δ stays on the same row (no orphan wrap). */
+/* Time-scale tabs wrap inside the left cluster; $/%Δ toggle stays on the right (row wraps on narrow rails). */
 .dash-equity-controls-row {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: flex-start;
   gap: 10px;
@@ -1495,6 +1495,13 @@ input[type="number"] {
 .dash-equity-controls-row .dash-equity-panel__tabs--scale-wrap {
   flex: 0 0 auto;
   align-self: flex-start;
+}
+
+.dash-equity-panel__child-slots-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 /* Fixed width so $ ↔ %Δ toggle does not jump layout */
@@ -4408,19 +4415,6 @@ button[title].section-tip {
   display: flex;
   flex-direction: column;
   gap: 0;
-}
-.lab-think-tank__diversity-banner {
-  margin: 4px 2px 6px;
-  padding: 6px 8px;
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1.35;
-  letter-spacing: 0.02em;
-  color: rgba(253, 230, 138, 0.98);
-  border-radius: 4px;
-  border: 1px solid rgba(251, 191, 36, 0.45);
-  background: linear-gradient(135deg, rgba(69, 26, 3, 0.55) 0%, rgba(30, 27, 75, 0.65) 100%);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
 .lab-think-tank__line {
   display: flex;

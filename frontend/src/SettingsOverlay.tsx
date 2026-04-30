@@ -228,7 +228,12 @@ function BreederLabCard({
         />
       </div>
       <div className="field">
-        <label htmlFor={`${p}_frac`}>Balance fraction per window</label>
+        <label
+          htmlFor={`${p}_frac`}
+          title="Rolling stake budget: max fraction of this lab’s paper bankroll it may commit per window_id (spent_in_window). Not a “trade every N minutes” timer."
+        >
+          Balance fraction per window
+        </label>
         <input
           id={`${p}_frac`}
           type="text"
@@ -242,7 +247,12 @@ function BreederLabCard({
         />
       </div>
       <div className="field">
-        <label htmlFor={`${p}_win`}>Window (minutes)</label>
+        <label
+          htmlFor={`${p}_win`}
+          title="Wall-clock length of each stake budget window (window_id). Same clock as “fraction per window” — it does not force fills on a schedule; trades still need rule + book match each poll."
+        >
+          Window (minutes)
+        </label>
         <input
           id={`${p}_win`}
           type="number"
@@ -257,7 +267,12 @@ function BreederLabCard({
       </div>
 
       <div className="field">
-        <label htmlFor={`${p}_no_bet`}>Skip YES bets when implied YES below (%)</label>
+        <label
+          htmlFor={`${p}_no_bet`}
+          title="Below this implied YES %, the engine only considers NO-side rules. If the market row has no usable NO ask, that tick skips — very low values (e.g. Lab C defaults) can look quiet vs other labs."
+        >
+          Skip YES bets when implied YES below (%)
+        </label>
         <input
           id={`${p}_no_bet`}
           type="number"
@@ -361,11 +376,21 @@ function LabSizingInputs({ which, lab, cfg, busy }: { which: LabBranchKey; lab: 
         />
       </div>
       <div className="field">
-        <label htmlFor={`${p}_frac`}>Balance fraction per window</label>
+        <label
+          htmlFor={`${p}_frac`}
+          title="Rolling stake budget per window_id — not minutes-between-trades."
+        >
+          Balance fraction per window
+        </label>
         <input id={`${p}_frac`} type="text" defaultValue={String(lab.balance_fraction_per_window ?? defFrac)} disabled={busy} />
       </div>
       <div className="field">
-        <label htmlFor={`${p}_win`}>Window (minutes)</label>
+        <label
+          htmlFor={`${p}_win`}
+          title="Wall-clock window for budget + dedupe keys — does not schedule periodic trades."
+        >
+          Window (minutes)
+        </label>
         <input id={`${p}_win`} type="number" defaultValue={String(lab.window_minutes ?? defWin)} disabled={busy} />
       </div>
     </div>
@@ -518,8 +543,6 @@ export type SettingsOverlayProps = {
   onRunOptimizerNow?: () => void | Promise<void>;
   /** POST /api/optimizer/force-internal-mutation (force one internal mutant cycle). */
   onForceInternalMutationNow?: () => void | Promise<void>;
-  /** POST /labs/diversify — council Think Tank diversity pulse (nuke / manual only; dashboard has no button). */
-  onDiversifyLabsNow?: () => void | Promise<void>;
   onResetTradingData: (
     branch: "all" | "all_labs" | "live" | "lab_a" | "lab_b" | "lab_c" | "lab_d" | "lab_e",
     backup: boolean,
@@ -592,7 +615,6 @@ export default function SettingsOverlay({
   optimizerSaving = false,
   onRunOptimizerNow,
   onForceInternalMutationNow,
-  onDiversifyLabsNow,
   onResetTradingData,
   onApplyLabBranches,
   onFetchBreederSmartDefaults,
@@ -623,7 +645,6 @@ export default function SettingsOverlay({
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("global");
   const [activeLab, setActiveLab] = useState<LabBranchKey>("a");
   const [forcingMutation, setForcingMutation] = useState(false);
-  const [diversifyCouncilBusy, setDiversifyCouncilBusy] = useState(false);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1978,14 +1999,14 @@ export default function SettingsOverlay({
                 Manual / nuke (optional)
               </h3>
               <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 11, lineHeight: 1.45 }}>
-                Scheduled optimizer + breeding run automatically. Use these only when you need an immediate corrective push. Same endpoints you can call with{" "}
-                <code>curl</code> (<code>POST /api/optimizer/force-internal-mutation</code>, <code>POST /labs/diversify</code>).
+                Scheduled optimizer + breeding run automatically. Use this only when you need an immediate corrective push. Same endpoint you can call with{" "}
+                <code>curl</code> (<code>POST /api/optimizer/force-internal-mutation</code>).
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
                 <button
                   type="button"
                   className="primary"
-                  disabled={busy || optimizerSaving || forcingMutation || diversifyCouncilBusy || !onForceInternalMutationNow}
+                  disabled={busy || optimizerSaving || forcingMutation || !onForceInternalMutationNow}
                   title="POST /api/optimizer/force-internal-mutation: one internal mutant cycle with replay + fitness gate; bypasses the scheduler. Nuke option (Settings only). Does not place exchange orders."
                   onClick={() =>
                     void (async () => {
@@ -2001,40 +2022,10 @@ export default function SettingsOverlay({
                 >
                   {forcingMutation ? "Forcing Internal Mutation..." : "Force Internal Mutation Now"}
                 </button>
-                <button
-                  type="button"
-                  className="dash-panel-btn"
-                  style={{
-                    fontSize: 11,
-                    padding: "4px 10px",
-                    fontWeight: 500,
-                    border: "1px solid rgba(100, 120, 180, 0.55)",
-                    background: "rgba(16, 22, 42, 0.72)",
-                    color: "var(--text)",
-                    opacity: 0.95,
-                  }}
-                  disabled={busy || optimizerSaving || forcingMutation || diversifyCouncilBusy || !onDiversifyLabsNow}
-                  title="POST /labs/diversify: 60m maximum-opposition window (B–E). Nuclear council pulse + Think Tank lines. No Lab A internal mutation."
-                  onClick={() =>
-                    void (async () => {
-                      if (!onDiversifyLabsNow) return;
-                      setDiversifyCouncilBusy(true);
-                      try {
-                        await onDiversifyLabsNow();
-                      } finally {
-                        setDiversifyCouncilBusy(false);
-                      }
-                    })()
-                  }
-                >
-                  {diversifyCouncilBusy ? "Diversifying…" : "Diversify council"}
-                </button>
               </div>
               <p className="sub" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
                 <strong>Force</strong> runs one <strong>Lab A</strong> internal optimizer mutation plus replay fitness gate — it does <strong>not</strong> change breeder
-                council math. <strong>Diversify council</strong> targets <strong>B–E</strong> only: sets <code>labs_council_diversity_until</code> for{" "}
-                <strong>60 minutes</strong>, floods adversarial Think Tank lines, and widens effective YES-tilt bands (roughly{" "}
-                <strong>±70–90%</strong> at full council weight during the window vs <strong>~±45–60%</strong> when diversity is off).
+                B–E council math. Strong council opposition between breeders stays <strong>always on</strong> in the engine and Think Tank (no manual diversity toggle).
               </p>
             </div>
             <div style={{ marginTop: 20 }}>

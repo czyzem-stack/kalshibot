@@ -114,6 +114,7 @@ class DashboardOrderbooksResponse(TypedDict, total=False):
     metrics_lab_c: dict[str, Any]
     metrics_lab_d: dict[str, Any]
     metrics_lab_e: dict[str, Any]
+    metrics_lab_children: dict[str, Any]
     order_writes_live: bool
 
 
@@ -130,12 +131,17 @@ class DashboardResponse(TypedDict, total=False):
     metrics_lab_c: dict[str, Any]
     metrics_lab_d: dict[str, Any]
     metrics_lab_e: dict[str, Any]
+    metrics_lab_children: dict[str, Any]
+    metrics_lab_child_slots: dict[str, Any]
+    engine_lab_children: dict[str, Any]
     equity_snapshots: list[dict[str, Any]]
     equity_snapshots_lab_a: list[dict[str, Any]]
     equity_snapshots_lab_b: list[dict[str, Any]]
     equity_snapshots_lab_c: list[dict[str, Any]]
     equity_snapshots_lab_d: list[dict[str, Any]]
     equity_snapshots_lab_e: list[dict[str, Any]]
+    equity_snapshots_lab_children: list[dict[str, Any]]
+    equity_snapshots_lab_child_slots: dict[str, list[dict[str, Any]]]
     recent_signals: list[dict[str, Any]]
     not_traded_signals: list[dict[str, Any]]
     recent_trades: list[dict[str, Any]]
@@ -151,6 +157,8 @@ class DashboardResponse(TypedDict, total=False):
     optimizer_activity: dict[str, Any]
     # ISO UTC — lets the UI reject overlapping responses delivered out of order (charts vs hero stay one generation).
     dashboard_payload_at: str
+    # Monotonic counter assigned when the response body is finalized — orders merges when ``dashboard_payload_at`` ties or skews vs fast /equity polls.
+    dashboard_payload_seq: int
     # Monotonic counter bumped on each ``reset_trading_data`` — fast equity merge treats empty arrays as authoritative when this advances.
     trading_data_revision: int
 
@@ -184,8 +192,6 @@ class OptimizerStatusResponse(TypedDict, total=False):
     breeding_last_run_at: str
     breeding_last_summary: str
     breeding_last_run_minutes_ago: float | None
-    # ISO UTC: Think Tank adversarial mix boosted until this instant (``POST /labs/diversify``).
-    labs_council_diversity_until: str
     # True when breeder engines are applying Think Tank / council_signal tilt (or a live signal is queued).
     council_influence_active: bool
     internal_optimizer_trace: list[dict[str, Any]]

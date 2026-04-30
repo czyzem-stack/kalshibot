@@ -28,6 +28,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         resp = await call_next(request)
+        path = request.url.path
+        if path.startswith("/api/dashboard"):
+            resp.headers["Cache-Control"] = "no-store"
         # Do not set CSP (would break /docs and arbitrary dashboard hosts); HSTS belongs on reverse proxy.
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         resp.headers.setdefault("X-Frame-Options", "DENY")

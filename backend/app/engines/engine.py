@@ -26,6 +26,7 @@ from ..branch_config import (
     lab_paper_equity_start_cents,
     effective_paper_fee_bps,
     effective_swing_exit_implied_drop_pct,
+    effective_trading_cfg_for_fees,
     kalshi_fee_multiplier_from_cfg,
     live_paper_trading_enabled,
     merge_branch_config,
@@ -40,7 +41,6 @@ from ..kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kals
 from ..kalshi_client import KalshiClient
 from ..lab_communication import (
     LAB_CHATTER_BRANCHES,
-    council_diversity_pulse_active,
     finalize_think_tank_tick,
     get_lab_communication_bus,
     peek_engine_council_signal,
@@ -557,7 +557,6 @@ def _breeder_effective_prob_yes(
     bus = get_lab_communication_bus()
     bias_msgs, yes_h, no_h = think_tank_yes_no_bias_last_n(bus, 3)
     sig = peek_engine_council_signal(bus)
-    div = council_diversity_pulse_active(full_cfg)
     cw = _breeder_council_weight_pct(breeder_cfg)
     pers = _breeder_personality_tag(breeder_cfg, branch)
 
@@ -588,7 +587,6 @@ def _breeder_effective_prob_yes(
 
     st_sig = float(sig.get("strength", 0.0)) if sig else 0.0
     sig_bias = float(sig.get("bias", 0.0)) if sig else 0.0
-    pulse_tag = bool(sig.get("diversify_pulse")) if sig else False
 
     w_msg = 0.52
     w_sig = 0.48 * min(1.0, st_sig + 0.12)
@@ -608,15 +606,15 @@ def _breeder_effective_prob_yes(
 
     # Explicit opposing thesis: D/E invert when council bias is still weak but messages polarize.
     if branch == BRANCH_LAB_D and abs(sig_bias) < 0.35:
-        thr = 0.07 if pulse_tag else (0.09 if div else 0.13)
+        thr = 0.07
         if abs(combined) >= thr and (strong_msgs or st_sig >= 0.18):
-            if r.random() < (0.985 if div or pulse_tag else 0.94):
+            if r.random() < 0.985:
                 flip = 0.92 + 0.08 * r.random()
                 combined = -combined * flip
     elif branch == BRANCH_LAB_E and abs(sig_bias) < 0.35:
-        thr = 0.06 if pulse_tag else (0.08 if div else 0.11)
+        thr = 0.06
         if abs(combined) >= thr and (strong_msgs or st_sig >= 0.15):
-            if r.random() < (0.96 if div or pulse_tag else 0.88):
+            if r.random() < 0.96:
                 flip = 0.88 + 0.12 * r.random()
                 combined = -combined * flip
 
@@ -627,9 +625,9 @@ def _breeder_effective_prob_yes(
         combined *= 1.78
 
     # NUCLEAR OPPOSITION — PREVENT SYNCHRONIZED DRAWDOWNS
-    # Full-weight council-on-probability: ~±100–140% normally; diversity ~±120–160% (stronger herd-breaker).
-    amp_mid = 1.40 if div else 1.20
-    amp_spread = 0.40 if div else 0.40
+    # Full-weight council-on-probability (~±100–140% at full council weight, wider spread).
+    amp_mid = 1.40
+    amp_spread = 0.40
     amp = amp_mid + (r.random() - 0.5) * amp_spread
     amp *= cw
 
@@ -745,6 +743,15 @@ def _market_sim_trade_rank(
         has_no_book=has_no_book,
         cfg=cfg,
     )
+    if not matched_rule and breeder_branch and breeder_branch in BRANCH_BREEDERS and prob is not None:
+        matched_rule = pick_trade_rule(
+            float(prob),
+            mins,
+            rules,
+            has_yes_rules=has_yes_rules,
+            has_no_book=has_no_book,
+            cfg=cfg,
+        )
     if not matched_rule:
         if dev_floor is not None and simulate_orders and has_yes_rules and prob is not None:
             dev_rule = _dev_sim_high_yes_rule(dev_floor)
@@ -949,7 +956,6 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
             balance_cents = 0
 
     assets = cfg.get("assets") or {}
-    rules = build_effective_rules(cfg)
     subtitle_filter = (cfg.get("only_yes_subtitle_contains") or "").lower().strip()
     exclude_substrings = exclude_subtitle_parts_from_cfg(cfg)
 
@@ -958,6 +964,17 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
         f"tick {iso(now)} | branch={branch} | trade_mode={trade_mode} | "
         f"balance_cents={balance_cents} | window={wid} | simulate_orders={bool(cfg.get('_simulate_orders'))}"
     )
+
+    rules = build_effective_rules(cfg)
+    if not rules:
+        trace.append(
+            "effective_rules=0 — add rules under Settings (lab or global Rules & bands). Skipping market fetch this tick."
+        )
+        engine.state.markets_scanned = 0
+        engine.state.asset_snapshots = {}
+        engine.state.last_tick_trace = trace[-150:]
+        engine._tick_count += 1
+        return
 
     snapshots: dict[str, dict[str, Any]] = {}
     scanned = 0
@@ -1135,6 +1152,14 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
     if should_wipe:
         rb = br_engine
         await engine.store.reset_trading_data(backup=False, branch=rb)
+        logger.warning(
+            "auto_reset_lab_paper wiped branch=%s trading_data_revision=%s — "
+            "lab.%s.auto_reset_paper_on_tick_failure is true and tick had error or book equity <= 0. "
+            "Disable that flag in Settings if wipes should never happen automatically.",
+            rb,
+            engine.store.trading_data_revision,
+            lab_key,
+        )
         await engine.store.bump_lab_paper_lifetime_basis(rb)
         try:
             await snapshot_equity(engine, full_cfg=full_cfg)
@@ -1500,6 +1525,20 @@ async def handle_market(
         has_no_book=has_no_book,
         cfg=cfg,
     )
+    if not matched_rule and branch in BRANCH_BREEDERS and prob is not None:
+        matched_rule = pick_trade_rule(
+            float(prob),
+            mins,
+            rules,
+            has_yes_rules=has_yes_rules,
+            has_no_book=has_no_book,
+            cfg=cfg,
+        )
+        if matched_rule:
+            _trace_append(
+                trace,
+                f"  {asset_id} {ticker[:40]}… rule_match_via_raw_implied_yes (breeder-adjusted prob missed all bands)",
+            )
     if not matched_rule:
         dev_floor = dev_sim_yes_bypass_threshold(cfg)
         if dev_floor is not None and bool(cfg.get("_simulate_orders")):
@@ -2503,7 +2542,7 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
     Set ``auto_close_open_sim_minutes`` to <=0 to disable for a branch.
     """
     branch = engine.branch
-    cfg = merge_branch_config(full_cfg, branch)
+    cfg = effective_trading_cfg_for_fees(full_cfg, branch)
     try:
         timeout_min = float(cfg.get("auto_close_open_sim_minutes") or full_cfg.get("auto_close_open_sim_minutes") or env.default_auto_close_open_sim_minutes)
     except (TypeError, ValueError):

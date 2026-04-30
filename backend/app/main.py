@@ -25,6 +25,7 @@ from .core.logging import (
     reset_uvicorn_loggers_to_root,
 )
 from .branch_config import (
+    ALL_CFG_LAB_KEYS,
     BRANCH_CHILD_LABS,
     BRANCH_LAB_A,
     BRANCH_LAB_B,
@@ -90,6 +91,16 @@ configure_logging()
 _optimizer_all_idle_logged: bool = False
 
 logger = logging.getLogger("kalshibot.api")
+
+# Bumped when each dashboard JSON is finalized so the UI can merge out-of-order full vs /equity polls safely.
+_dashboard_payload_seq = 0
+
+
+def _next_dashboard_payload_seq() -> int:
+    global _dashboard_payload_seq
+    _dashboard_payload_seq += 1
+    return _dashboard_payload_seq
+
 
 # Must match ``default_bot_config`` / snapshot_equity Live paper fallback so tiles and chart tail
 # never disagree when ``paper_balance_cents`` is unset.
@@ -181,6 +192,110 @@ async def _optimizer_loop(stop: asyncio.Event) -> None:
 
 def _cors_origins() -> list[str]:
     return [o.strip() for o in env.cors_origins.split(",") if o.strip()]
+
+
+def _aggregate_lab_children_trade_rollups(rolls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum breeder GA children rollups into one pseudo-branch dict for dashboard tiles."""
+    agg: dict[str, Any] = {
+        "total_pnl_cents": 0,
+        "total_fee_cents": 0,
+        "settled_n": 0,
+        "wins": 0,
+        "losses": 0,
+        "scratches": 0,
+        "open_n": 0,
+        "open_committed_cents": 0,
+        "first_settled_ca": None,
+        "last_settled_ca": None,
+    }
+    first_candidates: list[str] = []
+    last_candidates: list[str] = []
+    for r in rolls:
+        if not isinstance(r, dict):
+            continue
+        agg["total_pnl_cents"] += int(r.get("total_pnl_cents") or 0)
+        agg["total_fee_cents"] += int(r.get("total_fee_cents") or 0)
+        agg["settled_n"] += int(r.get("settled_n") or 0)
+        agg["wins"] += int(r.get("wins") or 0)
+        agg["losses"] += int(r.get("losses") or 0)
+        agg["scratches"] += int(r.get("scratches") or 0)
+        agg["open_n"] += int(r.get("open_n") or 0)
+        agg["open_committed_cents"] += int(r.get("open_committed_cents") or 0)
+        fs = r.get("first_settled_ca")
+        ls = r.get("last_settled_ca")
+        if fs:
+            first_candidates.append(str(fs))
+        if ls:
+            last_candidates.append(str(ls))
+    if first_candidates:
+        agg["first_settled_ca"] = min(first_candidates)
+    if last_candidates:
+        agg["last_settled_ca"] = max(last_candidates)
+    return agg
+
+
+def _merge_lab_children_equity_snapshots(series_lists: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    """Combine GA ``lab_child_*`` snapshots into **one** equity curve (sum book + MTM per wall-clock second).
+
+    Concatenating rows sorted by global ``id`` connects unrelated child ledgers — charts flatten toward zeros while
+    tiles still used summed rollups (misleading). Bucketing aligns combined points with dashboard metrics.
+    """
+    merged_agg: dict[str, dict[str, Any]] = {}
+
+    def bucket_key(row: dict[str, Any]) -> str | None:
+        ca = str(row.get("created_at") or "").strip()
+        if not ca:
+            return None
+        try:
+            t = dt.datetime.fromisoformat(ca.replace("Z", "+00:00"))
+            return t.replace(microsecond=0).isoformat()
+        except Exception:
+            return ca[:19] if len(ca) >= 19 else ca
+
+    for lst in series_lists:
+        for row in lst:
+            if not isinstance(row, dict):
+                continue
+            bk = bucket_key(row)
+            if not bk:
+                continue
+            ec = int(row.get("equity_cents") or 0)
+            raw_m = row.get("mtm_equity_cents")
+            mc = int(raw_m) if raw_m is not None and raw_m != "" else None
+            # GA child rows sometimes carry MTM while ``equity_cents`` stayed 0 (legacy ingest / partial writes). Summing raw ``ec``
+            # made the merged dashboard series a flat $0 line while tiles + synthetic tail still showed real dollars.
+            book_part = ec if ec != 0 else (mc if mc is not None else 0)
+            mtm_part = mc if mc is not None else book_part
+            rid = int(row.get("id") or 0)
+            cur = merged_agg.get(bk)
+            if cur is None:
+                merged_agg[bk] = {
+                    "id": rid,
+                    "created_at": row.get("created_at"),
+                    "equity_cents": book_part,
+                    "mtm_equity_cents": mtm_part,
+                    "mode": row.get("mode"),
+                    "branch": "lab_children",
+                    "note": row.get("note"),
+                }
+                continue
+            cur["equity_cents"] = int(cur.get("equity_cents") or 0) + book_part
+            prev_m = cur.get("mtm_equity_cents")
+            cur["mtm_equity_cents"] = mtm_part + (int(prev_m) if prev_m is not None else 0)
+            cur["id"] = max(int(cur.get("id") or 0), rid)
+
+    def sort_key(r: dict[str, Any]) -> tuple[float, int]:
+        ca = str(r.get("created_at") or "").strip()
+        try:
+            ts = dt.datetime.fromisoformat(ca.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            ts = 0.0
+        return (ts, int(r.get("id") or 0))
+
+    ordered = sorted(merged_agg.values(), key=sort_key)
+    if len(ordered) <= limit:
+        return ordered
+    return ordered[-limit:]
 
 
 def _metrics_from_trade_rollup(roll: dict[str, Any], branch: str) -> dict[str, Any]:
@@ -787,17 +902,6 @@ def labs_chat() -> dict[str, Any]:
     return {"messages": get_lab_communication_bus().recent()}
 
 
-@app.post("/labs/diversify")
-async def labs_diversify() -> dict[str, Any]:
-    """
-    Council diversity pulse (**60m**): sets ``labs_council_diversity_until`` so Think Tank runs a hotter
-    adversarial mix and engines use maximum council tilt; posts nuclear diversify lines. Does **not** run internal mutation (use ``force`` for that).
-    """
-    from .lab_diversify import apply_emergency_diversify
-
-    return await apply_emergency_diversify(store)
-
-
 @app.post("/api/config/validate-rules")
 async def validate_rules_endpoint(body: dict[str, Any]) -> dict[str, Any]:
     """Validate a proposed ``rules`` array with the same ``RuleCfg`` checks as persisted lab/live saves."""
@@ -817,7 +921,8 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
     """
     s = str(scope or "all").strip().lower()
     if s == "all":
-        order = (BRANCH_LIVE, *BRANCH_LABS)
+        # Match ``all_labs`` seed coverage: full wipes clear ``lab_child_*`` rows too (see ``reset_trading_data``).
+        order = (BRANCH_LIVE, *BRANCH_LABS, *BRANCH_CHILD_LABS)
     elif s == "all_labs":
         # Bulk "all labs" reset also clears **Live** trading history (same action in Settings).
         order = (BRANCH_LIVE, *BRANCH_LABS, *BRANCH_CHILD_LABS)
@@ -908,7 +1013,7 @@ async def data_reset(
     backup: bool = Query(True, description="Copy sqlite + JSONL table dumps before delete"),
     branch: str = Query(
         "all",
-        description="all | all_labs (Live + labs A–E + lab_child slots) | live | lab_a … lab_e — scope of DELETE on signals/trades/equity_snapshots",
+        description="all | all_labs | live | lab_a … lab_e | lab_child_1 … lab_child_6 — scope of DELETE on signals/trades/equity_snapshots",
     ),
     uniform_paper_balance_cents: int | None = Query(
         None,
@@ -920,6 +1025,8 @@ async def data_reset(
     Optional env ``DATA_RESET_TOKEN``: then require header ``X-Reset-Token`` matching it.
 
     ``branch`` = **all_labs**: deletes trading rows for **Live**, **lab_a–lab_e**, and **lab_child_*** slots.
+
+    ``branch`` = **lab_child_N**: deletes that GA slot only (same as ``Store.reset_trading_data``) — use instead of ad-hoc DB/git resets.
     When
     ``uniform_paper_balance_cents`` is set, Live paper and each lab's ``paper_balance_cents`` are updated to that
     value after the wipe, using a single locked read-modify-write so ``optimizer`` and the rest of ``bot_config``
@@ -934,10 +1041,11 @@ async def data_reset(
     if tok and request.headers.get("x-reset-token") != tok:
         raise HTTPException(status_code=403, detail="Set header X-Reset-Token to match DATA_RESET_TOKEN in .env.")
     br = str(branch or "all").strip().lower()
-    if br not in ("all", "live", "lab_a", "lab_b", "lab_c", "lab_d", "lab_e", "all_labs"):
+    _reset_branches = frozenset(("all", "all_labs", "live", *ALL_CFG_LAB_KEYS))
+    if br not in _reset_branches:
         raise HTTPException(
             status_code=400,
-            detail="branch must be all, all_labs, live, lab_a, lab_b, lab_c, lab_d, or lab_e",
+            detail=f"branch must be one of: all, all_labs, live, lab_a–lab_e, {', '.join(BRANCH_CHILD_LABS)}",
         )
     if uniform_paper_balance_cents is not None and br not in ("all", "all_labs"):
         raise HTTPException(
@@ -1576,6 +1684,8 @@ def _position_by_asset(
     sim_open_lab_c: list[dict[str, Any]],
     sim_open_lab_d: list[dict[str, Any]],
     sim_open_lab_e: list[dict[str, Any]],
+    *,
+    sim_open_lab_children_flat: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     kalshi_positions = [p for p in kalshi_positions_raw if isinstance(p, dict)]
     out: dict[str, Any] = {}
@@ -1590,6 +1700,7 @@ def _position_by_asset(
         lab_c_rows = _open_sim_rows_for_series(st, sim_open_lab_c)
         lab_d_rows = _open_sim_rows_for_series(st, sim_open_lab_d)
         lab_e_rows = _open_sim_rows_for_series(st, sim_open_lab_e)
+        lab_child_rows = _open_sim_rows_for_series(st, sim_open_lab_children_flat or [])
         out[str(aid)] = {
             "label": str(acfg.get("label") or aid),
             "series_ticker": acfg.get("series_ticker"),
@@ -1602,6 +1713,7 @@ def _position_by_asset(
             "bot_sim_open_lab_c": lab_c_rows,
             "bot_sim_open_lab_d": lab_d_rows,
             "bot_sim_open_lab_e": lab_e_rows,
+            "bot_sim_open_lab_children": lab_child_rows,
         }
     return out
 
@@ -1637,6 +1749,8 @@ def _sim_open_holdings_asset_count(position_by_asset: dict[str, Any], branch: st
             arr = row.get("bot_sim_open_lab_d")
         elif b == BRANCH_LAB_E:
             arr = row.get("bot_sim_open_lab_e")
+        elif b == "lab_children":
+            arr = row.get("bot_sim_open_lab_children")
         else:
             continue
         if isinstance(arr, list) and len(arr) > 0:
@@ -1686,6 +1800,14 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         store.dashboard_branch_trade_rollups(BRANCH_LAB_D, "simulate"),
         store.dashboard_branch_trade_rollups(BRANCH_LAB_E, "simulate"),
     )
+    child_equities, child_rolls = await asyncio.gather(
+        asyncio.gather(*[store.equity_series(limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=b) for b in BRANCH_CHILD_LABS]),
+        asyncio.gather(*[store.dashboard_branch_trade_rollups(b, "simulate") for b in BRANCH_CHILD_LABS]),
+    )
+    snaps_lab_children = _merge_lab_children_equity_snapshots(list(child_equities), DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT)
+    agg_roll_lab_children = _aggregate_lab_children_trade_rollups(list(child_rolls))
+    metrics_lab_children = _metrics_from_trade_rollup(agg_roll_lab_children, "lab_children")
+
     metrics_live = _metrics_from_trade_rollup(roll_live, BRANCH_LIVE)
     metrics_lab_a = _metrics_from_trade_rollup(roll_lab_a, BRANCH_LAB_A)
     metrics_lab_b = _metrics_from_trade_rollup(roll_lab_b, BRANCH_LAB_B)
@@ -1817,6 +1939,63 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     )
     _inject_last_snap_mtm_minus_equity(metrics_lab_e, snaps_lab_e)
 
+    # Consolidated GA row matches single-lab semantics ($5k via ``DEFAULT_PAPER_BALANCE_CENTS`` / env), not 6× summed seeds.
+    lab_children_basis = max(0, int(env.default_paper_balance_cents))
+    _enrich_strategy_metrics(
+        metrics_lab_children,
+        paper_mode=True,
+        paper_start_cents=lab_children_basis,
+        bal_json=None,
+        latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_lab_children),
+        latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_lab_children),
+        fleet_paper_start_cents=fleet_for_committed,
+    )
+    _inject_last_snap_mtm_minus_equity(metrics_lab_children, snaps_lab_children)
+
+    # Per-slot GA metrics + engine rows — consolidated chart merges curves; UI overlay lists each agent.
+    metrics_lab_child_slots: dict[str, Any] = {}
+    for br, roll_ch, snaps_ch in zip(BRANCH_CHILD_LABS, child_rolls, child_equities, strict=True):
+        mslot = _metrics_from_trade_rollup(roll_ch, br)
+        basis_ch = lab_paper_equity_start_cents(cfg, br)
+        _enrich_strategy_metrics(
+            mslot,
+            paper_mode=True,
+            paper_start_cents=basis_ch,
+            bal_json=None,
+            latest_equity_snap_dollars=_latest_equity_snapshot_dollars(snaps_ch),
+            latest_mtm_snap_dollars=_latest_mtm_snapshot_dollars(snaps_ch),
+            fleet_paper_start_cents=fleet_for_committed,
+        )
+        _inject_last_snap_mtm_minus_equity(mslot, snaps_ch)
+        metrics_lab_child_slots[br] = mslot
+
+    engine_lab_children: dict[str, Any] = {}
+    for br in BRANCH_CHILD_LABS:
+        eng_ch = state.ENGINES.get(br)
+        raw_ch = cfg.get(br)
+        slab_ch = raw_ch if isinstance(raw_ch, dict) else {}
+        polling_on = slab_ch.get("engine_running") is not False
+        if eng_ch is not None:
+            trace_tail = eng_ch.state.last_tick_trace or []
+            tail_rows = trace_tail[-5:] if isinstance(trace_tail, list) else []
+            engine_lab_children[br] = {
+                "engine_running": polling_on,
+                "simulate_orders": True,
+                "last_tick_at": eng_ch.state.last_tick_at,
+                "last_error": eng_ch.state.last_error,
+                "markets_scanned": eng_ch.state.markets_scanned,
+                "last_tick_trace_tail": tail_rows,
+            }
+        else:
+            engine_lab_children[br] = {
+                "engine_running": polling_on,
+                "simulate_orders": True,
+                "last_tick_at": None,
+                "last_error": "engine not initialized",
+                "markets_scanned": 0,
+                "last_tick_trace_tail": [],
+            }
+
     # Paper MTM on tiles + chart tail: recompute from Kalshi mids. Full dashboard can wait 50s;
     # the fast ``/api/dashboard/equity`` poll (``with_marks=False``) uses a short cap so the UI
     # can refresh chart tails more often than the 12s full round-trip without stalling the client.
@@ -1911,6 +2090,10 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         store.open_sim_trades_for_branch(BRANCH_LAB_D),
         store.open_sim_trades_for_branch(BRANCH_LAB_E),
     )
+    sim_open_child_chunks = await asyncio.gather(*[store.open_sim_trades_for_branch(b) for b in BRANCH_CHILD_LABS])
+    sim_open_lab_children_flat = []
+    for chunk in sim_open_child_chunks:
+        sim_open_lab_children_flat.extend(chunk)
     assets_cfg = cfg.get("assets") if isinstance(cfg.get("assets"), dict) else {}
     position_by_asset = _position_by_asset(
         assets_cfg,
@@ -1921,6 +2104,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         sim_open_lab_c,
         sim_open_lab_d,
         sim_open_lab_e,
+        sim_open_lab_children_flat=sim_open_lab_children_flat,
     )
 
     # Rollups count every SQLite open sim on the branch. Override so ``open_sim_trades`` matches the Holdings
@@ -1931,6 +2115,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     metrics_lab_c["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LAB_C)
     metrics_lab_d["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LAB_D)
     metrics_lab_e["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, BRANCH_LAB_E)
+    metrics_lab_children["open_sim_trades"] = _sim_open_holdings_asset_count(position_by_asset, "lab_children")
 
     opt_blk = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
     ch_raw = opt_blk.get("change_history")
@@ -1984,6 +2169,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             "metrics_lab_c": metrics_lab_c,
             "metrics_lab_d": metrics_lab_d,
             "metrics_lab_e": metrics_lab_e,
+            "metrics_lab_children": metrics_lab_children,
         }
 
     return {
@@ -2086,12 +2272,19 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         "metrics_lab_c": metrics_lab_c,
         "metrics_lab_d": metrics_lab_d,
         "metrics_lab_e": metrics_lab_e,
+        "metrics_lab_children": metrics_lab_children,
+        "metrics_lab_child_slots": metrics_lab_child_slots,
+        "engine_lab_children": engine_lab_children,
         "equity_snapshots": snaps_live,
         "equity_snapshots_lab_a": snaps_lab_a,
         "equity_snapshots_lab_b": snaps_lab_b,
         "equity_snapshots_lab_c": snaps_lab_c,
         "equity_snapshots_lab_d": snaps_lab_d,
         "equity_snapshots_lab_e": snaps_lab_e,
+        "equity_snapshots_lab_children": snaps_lab_children,
+        "equity_snapshots_lab_child_slots": {
+            br: eq for br, eq in zip(BRANCH_CHILD_LABS, child_equities, strict=True)
+        },
         "recent_signals": signals[:500],
         "not_traded_signals": not_traded[:200],
         "recent_trades": trades[:500],
@@ -2142,6 +2335,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             ][:14],
         },
         "dashboard_payload_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "dashboard_payload_seq": _next_dashboard_payload_seq(),
         "trading_data_revision": store.trading_data_revision,
     }
 
@@ -2191,6 +2385,10 @@ async def dashboard_open_positions() -> DashboardOpenPositionsResponse:
         store.open_sim_trades_for_branch(BRANCH_LAB_D),
         store.open_sim_trades_for_branch(BRANCH_LAB_E),
     )
+    sim_open_child_chunks = await asyncio.gather(*[store.open_sim_trades_for_branch(b) for b in BRANCH_CHILD_LABS])
+    sim_open_lab_children_flat: list[dict[str, Any]] = []
+    for chunk in sim_open_child_chunks:
+        sim_open_lab_children_flat.extend(chunk)
     assets_cfg = cfg.get("assets") if isinstance(cfg.get("assets"), dict) else {}
     position_by_asset = _position_by_asset(
         assets_cfg,
@@ -2201,6 +2399,7 @@ async def dashboard_open_positions() -> DashboardOpenPositionsResponse:
         sim_open_lab_c,
         sim_open_lab_d,
         sim_open_lab_e,
+        sim_open_lab_children_flat=sim_open_lab_children_flat,
     )
     return {
         "account_snapshot": {

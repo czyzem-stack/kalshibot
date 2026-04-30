@@ -266,7 +266,16 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
                 lab.get("engine_running"), default_if_missing=True
             ):
                 return None
-        elif not isinstance(lab, dict) or not effective_parent_lab_engine_running(lab, lab_key):
+        elif lab_key in BRANCH_LABS:
+            # Missing or non-dict parent block: treat like an empty overlay so merge matches
+            # ``effective_parent_lab_engine_running`` / dual-loop tick gating (otherwise ``merge_branch_config``
+            # returned None while the branch still looked "on", breaking ``tick_once`` and helpers that did
+            # ``cfg.get`` on the merge result).
+            if not isinstance(lab, dict):
+                lab = {}
+            if not effective_parent_lab_engine_running(lab, lab_key):
+                return None
+        else:
             return None
         out = dict(full_cfg)
         for k in LAB_BRANCH_OVERLAY_KEYS:
