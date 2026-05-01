@@ -2,6 +2,12 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.073 - Labs breeding: parent engines stay on after GA refill - 2026-04-30
+
+- **Backend (`lab_breeding.py`):** **`_expand_parent_lab_after_replacement`** — when breeding **refills** a visible parent slot (**hard death**, **soft cull**, **child promotion**, or **Lab A adoption**), merged config now **forces `engine_running: true`** on **`lab_a`–`lab_e`**. Crossover fallback previously deep-copied **`parent_a`**, which could persist **`engine_running: false`** overnight; cleared **`lab_child_*`** genomes could also leak **`false`** onto a parent. Pausing a lab remains an explicit **Settings** / **`POST /api/engine/toggle`** action only.
+- **Tests (`backend/tests/test_lab_breeding_engine_persist.py`):** Assert parent-lab expansion forces engine on; child-slot keys are unchanged by that helper.
+- **Docs (`README.md`):** New paragraph under **Labs Breeding** describing parent engines after auto-replacement.
+
 ## v0.4.15.072 - CI + quality gates (parallel jobs, frontend TS, Ruff format) - 2026-04-30
 
 - **GitHub Actions (``.github/workflows/ci.yml``):** Parallel **backend** + **frontend** jobs; **concurrency** cancel stale runs; **workflow_dispatch**; explicit **Ruff** lint + **format --check**, ``compileall``, **pytest** with shorter tracebacks; pinned **ruff==0.9.10**. Frontend: **Node 20**, ``npm ci``, ``npm run typecheck``, ``npm run build``.
