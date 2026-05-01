@@ -90,7 +90,9 @@ class BranchResetTest(unittest.IsolatedAsyncioTestCase):
                 "branch": "sim_lab",
             }
         )
-        rows = await self.store.query_table("trades", branch="lab_a", limit=20, offset=0)
+        rows = await self.store.query_table(
+            "trades", branch="lab_a", limit=20, offset=0
+        )
         tickers = {str(r.get("ticker")) for r in rows}
         self.assertIn("KX-OLD", tickers)
 
@@ -114,7 +116,11 @@ class BranchResetTest(unittest.IsolatedAsyncioTestCase):
         cfg["optimizer"] = oc
         cfg["paper_balance_cents"] = 50_000
         for lk in ("lab_a", "lab_b", "lab_c", "lab_d"):
-            cfg[lk] = {**(cfg.get(lk) or {}), "paper_balance_cents": 50_000, "paper_lifetime_basis_cents": 80_000}
+            cfg[lk] = {
+                **(cfg.get(lk) or {}),
+                "paper_balance_cents": 50_000,
+                "paper_lifetime_basis_cents": 80_000,
+            }
         await self.store.save_config(cfg)
 
         out = await self.store.apply_uniform_paper_balance_after_scope_reset(

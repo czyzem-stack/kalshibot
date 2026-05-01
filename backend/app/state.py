@@ -4,6 +4,7 @@ Process-wide singletons for the API (Store, engine instances, background tasks, 
 ``TradingEngine`` instances and the shared ``httpx`` pool are **not** created at import time;
 :func:`init_runtime_engines` runs from FastAPI lifespan so startup stays fast and uses one client.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -85,9 +86,24 @@ def init_runtime_engines(kalshi: KalshiClient | None = None) -> None:
     ec = TradingEngine(store, BRANCH_LAB_C, client=kc)
     ed = TradingEngine(store, BRANCH_LAB_D, client=kc)
     ee = TradingEngine(store, BRANCH_LAB_E, client=kc)
-    child_engines: dict[str, TradingEngine] = {br: TradingEngine(store, br, client=kc) for br in BRANCH_CHILD_LABS}
-    global engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d, engine_lab_e
-    engine_live, engine_lab_a, engine_lab_b, engine_lab_c, engine_lab_d, engine_lab_e = (el, ea, eb, ec, ed, ee)
+    child_engines: dict[str, TradingEngine] = {
+        br: TradingEngine(store, br, client=kc) for br in BRANCH_CHILD_LABS
+    }
+    global \
+        engine_live, \
+        engine_lab_a, \
+        engine_lab_b, \
+        engine_lab_c, \
+        engine_lab_d, \
+        engine_lab_e
+    (
+        engine_live,
+        engine_lab_a,
+        engine_lab_b,
+        engine_lab_c,
+        engine_lab_d,
+        engine_lab_e,
+    ) = (el, ea, eb, ec, ed, ee)
     # Update in place so importers that bound early to ``ENGINES`` still see engines (if any).
     ENGINES.clear()
     ENGINES.update(

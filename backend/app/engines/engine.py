@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import datetime as dt
@@ -37,7 +37,11 @@ from ..branch_config import (
     resolve_paper_fee_model,
     stop_loss_trigger_pct_from_cfg,
 )
-from ..kalshi_fees import kalshi_buy_debit_cents, kalshi_sell_credit_cents, kalshi_settlement_credit_cents
+from ..kalshi_fees import (
+    kalshi_buy_debit_cents,
+    kalshi_sell_credit_cents,
+    kalshi_settlement_credit_cents,
+)
 from ..kalshi_client import KalshiClient
 from ..lab_communication import (
     LAB_CHATTER_BRANCHES,
@@ -84,7 +88,9 @@ STUDY_TRADE_WINDOW_MINUTES = int(env.engine_study_trade_window_minutes)
 # ─── HELPERS: time, prices, and rule geometry ─────────────────────────────────────────
 
 
-def _study_cap_key(*, asset_id: str, ticker: str, close_time_iso: str, study_wall_wid: str) -> str:
+def _study_cap_key(
+    *, asset_id: str, ticker: str, close_time_iso: str, study_wall_wid: str
+) -> str:
     """In-memory dedupe: one new entry per (asset, contract ticker) per 15m close bucket within a process lifetime."""
     aid = str(asset_id).strip()
     tick = str(ticker or "").strip()
@@ -113,7 +119,9 @@ def dollars_to_float(v: Any) -> float | None:
         return None
 
 
-def implied_yes_probability(yes_bid: float | None, yes_ask: float | None) -> float | None:
+def implied_yes_probability(
+    yes_bid: float | None, yes_ask: float | None
+) -> float | None:
     if yes_bid is not None and yes_ask is not None:
         return max(0.0, min(1.0, (yes_bid + yes_ask) / 2.0))
     if yes_ask is not None:
@@ -184,7 +192,9 @@ def has_tradable_yes_ask(ya: float | None) -> bool:
     return ya is not None and 0 < ya < 1
 
 
-def has_yes_book_for_rules(yb: float | None, ya: float | None, prob: float | None) -> bool:
+def has_yes_book_for_rules(
+    yb: float | None, ya: float | None, prob: float | None
+) -> bool:
     """
     Enough YES-side pricing to evaluate YES rules.
 
@@ -302,7 +312,9 @@ async def enrich_markets_with_orderbooks(
     return sum(1 for r in results if r)
 
 
-def consecutive_stake_cents(balance_cents: int, spent_cents: int, fraction: float) -> int:
+def consecutive_stake_cents(
+    balance_cents: int, spent_cents: int, fraction: float
+) -> int:
     """
     Per-trade stake: ceil(available_dollars * fraction) in whole dollars, capped by available cash.
     available = balance_cents - spent_cents (typically spent this budget window).
@@ -416,7 +428,9 @@ def rule_trade_side(rule: dict[str, Any]) -> str:
     return "no" if s == "no" else "yes"
 
 
-def implied_no_probability(yes_bid: float | None, yes_ask: float | None) -> float | None:
+def implied_no_probability(
+    yes_bid: float | None, yes_ask: float | None
+) -> float | None:
     py = implied_yes_probability(yes_bid, yes_ask)
     if py is None:
         return None
@@ -576,7 +590,12 @@ def _breeder_effective_prob_yes(
     edge_mag = max(0.0, min(1.0, abs(float(prob) - 0.5) * 2.0))
 
     # Drift — each lab wanders a different hunt pattern on the same ticker.
-    scales = {BRANCH_LAB_B: 0.52, BRANCH_LAB_C: 0.90, BRANCH_LAB_D: 0.88, BRANCH_LAB_E: 0.72}
+    scales = {
+        BRANCH_LAB_B: 0.52,
+        BRANCH_LAB_C: 0.90,
+        BRANCH_LAB_D: 0.88,
+        BRANCH_LAB_E: 0.72,
+    }
     sc = scales.get(branch, 0.72)
     if pers == "conservative":
         sc *= 2.45
@@ -610,7 +629,9 @@ def _breeder_effective_prob_yes(
         else:
             w_msg, w_sig_b = 0.84, 0.16
             sig_boost = 0.14
-        combined = bias_msgs * w_msg + sig_bias * (w_sig_b * min(1.0, st_sig + sig_boost))
+        combined = bias_msgs * w_msg + sig_bias * (
+            w_sig_b * min(1.0, st_sig + sig_boost)
+        )
     elif branch == BRANCH_LAB_C or pers == "aggressive":
         # Stalker: chase instrumented signal hard; tape confirms.
         combined = bias_msgs * 0.20 + sig_bias * (0.80 * min(1.0, st_sig + 0.48))
@@ -625,7 +646,9 @@ def _breeder_effective_prob_yes(
         urgency = min(1.0, 12.0 / max(1.0, float(mins)) * 0.45 + edge_mag * 0.55)
         wm = 0.38 + 0.22 * (1.0 - urgency)
         ws = 1.0 - wm
-        combined = bias_msgs * wm + sig_bias * (ws * min(1.0, st_sig + 0.22 + 0.28 * urgency))
+        combined = bias_msgs * wm + sig_bias * (
+            ws * min(1.0, st_sig + 0.22 + 0.28 * urgency)
+        )
         if abs(sig_bias) >= 0.05 and r.random() < 0.45 + 0.38 * urgency:
             combined = max(-1.0, min(1.0, 1.0 - combined))
 
@@ -636,7 +659,12 @@ def _breeder_effective_prob_yes(
         combined = max(-1.0, min(1.0, 1.0 - combined))
 
     # D: rip sparse bias when chatter exists but signal is flat — pick off stragglers.
-    if branch == BRANCH_LAB_D and abs(sig_bias) < 0.04 and yn >= 1 and r.random() < 0.82:
+    if (
+        branch == BRANCH_LAB_D
+        and abs(sig_bias) < 0.04
+        and yn >= 1
+        and r.random() < 0.82
+    ):
         combined = max(-1.0, min(1.0, -combined * (0.5 + 0.5 * r.random())))
 
     # Scale coupling to herd direction after persona-specific inversions.
@@ -648,7 +676,9 @@ def _breeder_effective_prob_yes(
     elif branch == BRANCH_LAB_D or pers == "contrarian":
         combined *= 1.05 + 0.55 * abs(sig_bias)
     else:
-        combined *= 1.15 + 0.95 * edge_mag * (1.0 + 0.35 * min(1.0, 10.0 / max(1.0, float(mins))))
+        combined *= 1.15 + 0.95 * edge_mag * (
+            1.0 + 0.35 * min(1.0, 10.0 / max(1.0, float(mins)))
+        )
 
     # Opportunistic council torque — edge and time sharpen strikes.
     prey_mult = 1.0 + 0.62 * edge_mag
@@ -717,7 +747,12 @@ def _breeder_touch_ranked_edge(
     time_scale = 0.84 + 0.26 * min(1.0, max(0.0, float(mins)) / 20.0)
     edge = edge * time_scale
     em = max(0.0, min(1.0, abs(float(prob) - 0.5) * 2.0))
-    em_k = {BRANCH_LAB_B: 0.10, BRANCH_LAB_C: 0.42, BRANCH_LAB_D: 0.28, BRANCH_LAB_E: 0.24}.get(branch, 0.2)
+    em_k = {
+        BRANCH_LAB_B: 0.10,
+        BRANCH_LAB_C: 0.42,
+        BRANCH_LAB_D: 0.28,
+        BRANCH_LAB_E: 0.24,
+    }.get(branch, 0.2)
     edge *= 1.0 + em_k * em
     sig = _breeder_shared_council_inputs(engine)[3]
     if not sig:
@@ -806,7 +841,12 @@ def _market_sim_trade_rank(
         has_no_book=has_no_book,
         cfg=cfg,
     )
-    if not matched_rule and breeder_branch and breeder_branch in BRANCH_BREEDERS and prob is not None:
+    if (
+        not matched_rule
+        and breeder_branch
+        and breeder_branch in BRANCH_BREEDERS
+        and prob is not None
+    ):
         matched_rule = pick_trade_rule(
             float(prob),
             mins,
@@ -816,7 +856,12 @@ def _market_sim_trade_rank(
             cfg=cfg,
         )
     if not matched_rule:
-        if dev_floor is not None and simulate_orders and has_yes_rules and prob is not None:
+        if (
+            dev_floor is not None
+            and simulate_orders
+            and has_yes_rules
+            and prob is not None
+        ):
             dev_rule = _dev_sim_high_yes_rule(dev_floor)
             if rule_matches(prob, mins, dev_rule):
                 matched_rule = dict(dev_rule)
@@ -858,7 +903,9 @@ def _market_sim_trade_rank(
     return (1, edge, float(mins))
 
 
-def rule_match_miss_hint(prob_yes: float, mins: float, rules: list[Any], *, cfg: dict[str, Any] | None = None) -> str:
+def rule_match_miss_hint(
+    prob_yes: float, mins: float, rules: list[Any], *, cfg: dict[str, Any] | None = None
+) -> str:
     """
     Human hint when the headline row has a book but ``rules_matched`` is empty — same prob/time geometry as
     ``rule_matches`` (order-book side checks are applied separately when actually trading).
@@ -889,7 +936,11 @@ def rule_match_miss_hint(prob_yes: float, mins: float, rules: list[Any], *, cfg:
         in_p = float(r["min_prob"]) <= p <= float(r["max_prob"])
         in_t = float(r["min_minutes_left"]) <= mins <= float(r["max_minutes_left"])
         if in_t and not in_p:
-            axis = "implied NO (1 − YES mid)" if rule_trade_side(r) == "no" else "implied YES mid"
+            axis = (
+                "implied NO (1 − YES mid)"
+                if rule_trade_side(r) == "no"
+                else "implied YES mid"
+            )
             return (
                 f"“{r.get('name')}”: time {mins:.1f}m is OK but {axis} = {p:.2f} is outside "
                 f"[{float(r['min_prob']):.2f},{float(r['max_prob']):.2f}] on that axis — no trade."
@@ -914,11 +965,20 @@ class EngineState:
 # ─── HELPERS: engine state + tick orchestration ───────────────────────────────────────
 class TradingEngine:
     # PHASE 4: keep ``client`` optional for backward safety; prefer shared injection from ``state.require_kalshi()``.
-    def __init__(self, store: Store, branch: str = BRANCH_LIVE, *, client: KalshiClient | None = None) -> None:
+    def __init__(
+        self,
+        store: Store,
+        branch: str = BRANCH_LIVE,
+        *,
+        client: KalshiClient | None = None,
+    ) -> None:
         self.store = store
         self.branch = branch
         if client is None:
-            logger.warning("PHASE 4: TradingEngine(%s) created without injected shared KalshiClient; falling back to new client", branch)
+            logger.warning(
+                "PHASE 4: TradingEngine(%s) created without injected shared KalshiClient; falling back to new client",
+                branch,
+            )
             self.client = KalshiClient()
         else:
             self.client = client
@@ -948,7 +1008,9 @@ class TradingEngine:
         self._breeder_council_influence_active: bool = False
         # One Think Tank bias + council signal snapshot per tick (shared by rank + handle_market per market).
         self._breeder_shared_prefetch_at_count: int = -1
-        self._breeder_shared_prefetch: tuple[float, int, int, dict[str, Any] | None, bool] | None = None
+        self._breeder_shared_prefetch: (
+            tuple[float, int, int, dict[str, Any] | None, bool] | None
+        ) = None
 
 
 def _breeder_shared_council_inputs(
@@ -956,7 +1018,10 @@ def _breeder_shared_council_inputs(
 ) -> tuple[float, int, int, dict[str, Any] | None, bool]:
     """One Think Tank bias + council signal snapshot per ``engine._tick_count`` (shared by rank + ``handle_market``)."""
     tc = engine._tick_count
-    if engine._breeder_shared_prefetch_at_count == tc and engine._breeder_shared_prefetch is not None:
+    if (
+        engine._breeder_shared_prefetch_at_count == tc
+        and engine._breeder_shared_prefetch is not None
+    ):
         return engine._breeder_shared_prefetch
     bus = get_lab_communication_bus()
     bias_msgs, yes_h, no_h = think_tank_yes_no_bias_last_n(bus)
@@ -971,10 +1036,18 @@ def _breeder_shared_council_inputs(
 
 
 def _is_lab_branch(branch: str) -> bool:
-    return branch in (BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E)
+    return branch in (
+        BRANCH_LAB_A,
+        BRANCH_LAB_B,
+        BRANCH_LAB_C,
+        BRANCH_LAB_D,
+        BRANCH_LAB_E,
+    )
 
 
-async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> None:
+async def tick_once(
+    engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None
+) -> None:
     now = utc_now()
     engine.state.last_tick_at = iso(now)
     engine.state.last_error = None
@@ -996,7 +1069,11 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
 
     first_branch_tick = engine._tick_count == 0
     # PHASE 3: env-backed caps preserve defaults while making tuning explicit.
-    ob_enrich_cap = int(env.engine_orderbook_enrich_first_tick_cap) if (KalshiClient.prewarm_complete and first_branch_tick) else int(env.engine_orderbook_enrich_steady_cap)
+    ob_enrich_cap = (
+        int(env.engine_orderbook_enrich_first_tick_cap)
+        if (KalshiClient.prewarm_complete and first_branch_tick)
+        else int(env.engine_orderbook_enrich_steady_cap)
+    )
 
     # PHASE 4: default comes from typed settings while preserving behavior (still overridable in cfg).
     # PHASE FINAL: typed env-backed default, preserving prior fallback value (15).
@@ -1026,10 +1103,18 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
         lab_key = _lab_key_for_branch(branch) or "lab_a"
         lab = full_cfg.get(lab_key) or {}
         # PHASE FINAL: typed default from settings_env (same fallback as before).
-        balance_cents = int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
+        balance_cents = int(
+            lab.get("paper_balance_cents")
+            or full_cfg.get("paper_balance_cents")
+            or env.default_paper_balance_cents
+        )
     elif trade_mode == "simulate" or bool(cfg.get("_simulate_orders")):
         # Live branch paper sim: stake against configured bankroll only (not exchange balance).
-        balance_cents = int(cfg.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
+        balance_cents = int(
+            cfg.get("paper_balance_cents")
+            or full_cfg.get("paper_balance_cents")
+            or env.default_paper_balance_cents
+        )
     else:
         try:
             bal = await engine.client.get_private("/portfolio/balance")
@@ -1067,28 +1152,46 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
         aid = str(asset_id)
         if not asset_cfg_enabled(acfg):
             trace.append(f"asset {asset_id}: disabled, skip")
-            snapshots[aid] = {"ok": False, "reason": "disabled", "note": "Asset toggle is off."}
+            snapshots[aid] = {
+                "ok": False,
+                "reason": "disabled",
+                "note": "Asset toggle is off.",
+            }
             continue
         series = str(acfg.get("series_ticker") or "").strip()
         if not series:
             trace.append(f"asset {asset_id}: no series_ticker, skip")
-            snapshots[aid] = {"ok": False, "reason": "no_series", "note": "Set series_ticker in config."}
+            snapshots[aid] = {
+                "ok": False,
+                "reason": "no_series",
+                "note": "Set series_ticker in config.",
+            }
             continue
         try:
             data = await engine.client.get_open_markets_cached(series, limit=100)
         except Exception as e:
             engine.state.last_error = f"markets {series}: {e}"
             trace.append(f"asset {asset_id} series={series}: FETCH ERROR {e}")
-            snapshots[aid] = {"ok": False, "reason": "fetch_error", "note": str(e)[:240]}
+            snapshots[aid] = {
+                "ok": False,
+                "reason": "fetch_error",
+                "note": str(e)[:240],
+            }
             continue
         if not isinstance(data, dict):
             data = {}
         markets = list(data.get("markets") or [])
         scanned += len(markets)
-        trace.append(f"asset {asset_id} series={series}: fetched {len(markets)} open markets")
-        ob_n = await enrich_markets_with_orderbooks(engine.client, markets, now, max_fetches=ob_enrich_cap)
+        trace.append(
+            f"asset {asset_id} series={series}: fetched {len(markets)} open markets"
+        )
+        ob_n = await enrich_markets_with_orderbooks(
+            engine.client, markets, now, max_fetches=ob_enrich_cap
+        )
         if ob_n:
-            trace.append(f"asset {asset_id} series={series}: orderbook backfill improved {ob_n} row(s)")
+            trace.append(
+                f"asset {asset_id} series={series}: orderbook backfill improved {ob_n} row(s)"
+            )
         dev_floor = dev_sim_yes_bypass_threshold(cfg)
         sim_orders = bool(cfg.get("_simulate_orders"))
         pre_snap = pick_asset_snapshot(
@@ -1132,7 +1235,9 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
             ),
             reverse=True,
         )
-        hive_bus = get_lab_communication_bus() if branch in LAB_CHATTER_BRANCHES else None
+        hive_bus = (
+            get_lab_communication_bus() if branch in LAB_CHATTER_BRANCHES else None
+        )
         for idx, m in enumerate(ranked_markets):
             prob_rank: float | None = None
             if hive_bus is not None and isinstance(m, dict):
@@ -1169,7 +1274,9 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
             if kind == "no_rule":
                 no_rule += 1
         if no_rule:
-            trace.append(f"asset {asset_id}: {no_rule} market(s) had book+time but no rule matched")
+            trace.append(
+                f"asset {asset_id}: {no_rule} market(s) had book+time but no rule matched"
+            )
         snapshots[aid] = pick_asset_snapshot(
             markets,
             rules,
@@ -1186,11 +1293,18 @@ async def tick_once(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = 
     engine.state.last_tick_trace = trace[-150:]
 
     try:
-        n_psl = await _handle_patient_stop_loss_exits(engine, full_cfg=full_cfg, cfg=cfg, now=now, trace=trace)
+        n_psl = await _handle_patient_stop_loss_exits(
+            engine, full_cfg=full_cfg, cfg=cfg, now=now, trace=trace
+        )
         if n_psl:
-            _trace_append(trace, f"patient_stop_loss {branch}: closed {n_psl} position(s) this tick")
+            _trace_append(
+                trace,
+                f"patient_stop_loss {branch}: closed {n_psl} position(s) this tick",
+            )
     except Exception as e:
-        _trace_append(trace, f"patient_stop_loss {branch}: handler error {str(e)[:200]}")
+        _trace_append(
+            trace, f"patient_stop_loss {branch}: handler error {str(e)[:200]}"
+        )
         engine.state.last_error = f"patient_stop_loss: {e}"
 
     await _maybe_auto_reset_lab_paper_on_tick_failure(engine, full_cfg)
@@ -1294,7 +1408,11 @@ async def spent_in_window(
             continue
         tm = str(t.get("mode") or "")
         if tm != trade_mode:
-            if not (trade_mode == "simulate" and tm == "" and int(t.get("simulated") or 0) == 1):
+            if not (
+                trade_mode == "simulate"
+                and tm == ""
+                and int(t.get("simulated") or 0) == 1
+            ):
                 continue
         created = str(t.get("created_at") or "")
         if not created:
@@ -1370,7 +1488,9 @@ def pick_asset_snapshot(
     “TBD” and exclude_yes_subtitle_contains skips tbd), fall back to ignoring exclude list for display only.
     """
 
-    def collect(*, apply_exclude: bool, require_orderbook: bool) -> list[tuple[tuple[int, float, int], dict[str, Any]]]:
+    def collect(
+        *, apply_exclude: bool, require_orderbook: bool
+    ) -> list[tuple[tuple[int, float, int], dict[str, Any]]]:
         out: list[tuple[tuple[int, float, int], dict[str, Any]]] = []
         for m in markets:
             if not isinstance(m, dict):
@@ -1429,7 +1549,9 @@ def pick_asset_snapshot(
                     and prob >= dev_sim_yes_floor
                     and has_yes_rules
                 ):
-                    matched_names.append(str(_dev_sim_high_yes_rule(dev_sim_yes_floor)["name"]))
+                    matched_names.append(
+                        str(_dev_sim_high_yes_rule(dev_sim_yes_floor)["name"])
+                    )
             # Prefer headline rows with a book, then more rule matches, then more time left (near-expiry rows
             # usually fall outside minute windows and show "Rules matched: NONE" misleadingly).
             sort_key = (
@@ -1447,7 +1569,9 @@ def pick_asset_snapshot(
                 "yes_ask": ya,
                 "no_ask": na,
                 "implied_prob": prob,
-                "implied_no_prob": implied_no_probability(yb, ya) if has_yes_rules or has_no_book else None,
+                "implied_no_prob": implied_no_probability(yb, ya)
+                if has_yes_rules or has_no_book
+                else None,
                 "has_orderbook": has_priced_book,
                 "rules_matched": matched_names,
                 "rule_match_hint": (
@@ -1540,7 +1664,9 @@ async def maybe_backfill_headline_orderbook(
         m0["yes_bid_dollars"] = str(ob_yb)
     if ob_ya is not None:
         m0["yes_ask_dollars"] = str(ob_ya)
-    trace.append(f"asset {asset_id} series={series}: headline orderbook backfill for {ticker}")
+    trace.append(
+        f"asset {asset_id} series={series}: headline orderbook backfill for {ticker}"
+    )
     return True
 
 
@@ -1618,7 +1744,9 @@ async def handle_market(
         else:
             base *= 0.48 + 1.12 * edge_mag
         r_h = _breeder_rng(branch, engine._tick_count, f"{ticker}|hm_skew")
-        prob_for_rules = max(0.01, min(0.99, prob_for_rules + base + r_h.uniform(-0.042, 0.042)))
+        prob_for_rules = max(
+            0.01, min(0.99, prob_for_rules + base + r_h.uniform(-0.042, 0.042))
+        )
     matched_rule = pick_trade_rule(
         prob_for_rules,
         mins,
@@ -1656,7 +1784,11 @@ async def handle_market(
 
     trade_side = rule_trade_side(matched_rule)
     # YES ask capped at $1 is common on Kalshi; paper/sim may still record a fill. Real-money: skip (no edge at ask=1).
-    if trade_side == "yes" and not has_tradable_yes_ask(ya) and not bool(cfg.get("_simulate_orders")):
+    if (
+        trade_side == "yes"
+        and not has_tradable_yes_ask(ya)
+        and not bool(cfg.get("_simulate_orders"))
+    ):
         await log_signal(
             engine,
             window_id=window_id,
@@ -1689,7 +1821,12 @@ async def handle_market(
         )
         return None
 
-    cap_key = _study_cap_key(asset_id=asset_id, ticker=ticker, close_time_iso=close_time, study_wall_wid=study_wall_wid)
+    cap_key = _study_cap_key(
+        asset_id=asset_id,
+        ticker=ticker,
+        close_time_iso=close_time,
+        study_wall_wid=study_wall_wid,
+    )
     if cap_key and cap_key in engine._study_asset_fired:
         if cap_key not in engine._study_cap_logged:
             engine._study_cap_logged.add(cap_key)
@@ -1704,7 +1841,11 @@ async def handle_market(
     if simulate:
         open_blocker_tk: str | None = None
         if series_up:
-            open_blocker_tk = await engine.store.first_open_sim_ticker_for_series_prefix(branch, series_up)
+            open_blocker_tk = (
+                await engine.store.first_open_sim_ticker_for_series_prefix(
+                    branch, series_up
+                )
+            )
         if open_blocker_tk:
             bt = str(open_blocker_tk)[:100]
             skip_lbl = f"series_has_open_sim — already open: {bt}"
@@ -1772,7 +1913,9 @@ async def handle_market(
                 f"  {asset_id} {ticker[:40]}… skip: this asset already took a sim slot this budget window ({branch})",
             )
             return None
-        if ticker.strip() and await engine.store.has_open_sim_for_ticker(branch, trade_mode, ticker):
+        if ticker.strip() and await engine.store.has_open_sim_for_ticker(
+            branch, trade_mode, ticker
+        ):
             _skip_log_k = f"{window_id}:{dedupe_key}:ticker_open"
             if _skip_log_k not in engine._sim_transient_skip_logged:
                 engine._sim_transient_skip_logged.add(_skip_log_k)
@@ -1801,10 +1944,17 @@ async def handle_market(
             return None
 
     window_minutes = int(cfg.get("window_minutes") or env.default_window_minutes)
-    spent = await spent_in_window(engine.store, window_id, trade_mode, window_minutes, branch)
-    fraction = float(cfg.get("balance_fraction_per_window") or env.default_balance_fraction_per_window)
+    spent = await spent_in_window(
+        engine.store, window_id, trade_mode, window_minutes, branch
+    )
+    fraction = float(
+        cfg.get("balance_fraction_per_window")
+        or env.default_balance_fraction_per_window
+    )
     stake_cents = consecutive_stake_cents(balance_cents, spent, fraction)
-    open_committed_cents = await engine.store.open_committed_cents_for_branch_mode(branch, trade_mode)
+    open_committed_cents = await engine.store.open_committed_cents_for_branch_mode(
+        branch, trade_mode
+    )
     free_cash_cents = max(0, int(balance_cents) - int(open_committed_cents))
     stake_cents = min(stake_cents, free_cash_cents)
 
@@ -2072,7 +2222,11 @@ async def handle_market(
                 "pnl_cents": None,
                 "settled_at": None,
                 "extra_json": json.dumps(
-                    {"raw_status": status, "limit_side": trade_side, "entry_implied_yes": prob}
+                    {
+                        "raw_status": status,
+                        "limit_side": trade_side,
+                        "entry_implied_yes": prob,
+                    }
                 ),
                 "branch": branch,
             }
@@ -2192,7 +2346,11 @@ def _normalize_settled_outcome_yes_no(m: dict[str, Any]) -> str | None:
 
 
 def _fair_value_open_sim_position_cents(
-    m: dict[str, Any], *, side: str, contracts: float, entry_implied_yes: float | None = None
+    m: dict[str, Any],
+    *,
+    side: str,
+    contracts: float,
+    entry_implied_yes: float | None = None,
 ) -> int:
     """
     Mark value in cents: position notional × P(your side wins) at current public quotes.
@@ -2203,7 +2361,11 @@ def _fair_value_open_sim_position_cents(
     if contracts <= 0 or not math.isfinite(contracts):
         return 0
     py = implied_yes_for_open_sim_marks(m)
-    if py is None and entry_implied_yes is not None and math.isfinite(float(entry_implied_yes)):
+    if (
+        py is None
+        and entry_implied_yes is not None
+        and math.isfinite(float(entry_implied_yes))
+    ):
         py = max(0.0, min(1.0, float(entry_implied_yes)))
     if py is None or not math.isfinite(py):
         return 0
@@ -2213,7 +2375,9 @@ def _fair_value_open_sim_position_cents(
     return int(round(contracts * 100.0 * py))
 
 
-async def compute_open_sim_mark_value_sum_cents(engine: TradingEngine, open_rows: list[dict[str, Any]]) -> int:
+async def compute_open_sim_mark_value_sum_cents(
+    engine: TradingEngine, open_rows: list[dict[str, Any]]
+) -> int:
     """Sum mark-to-market cents for open simulated rows (one public market fetch per distinct ticker)."""
     if not open_rows:
         return 0
@@ -2393,24 +2557,39 @@ async def _handle_patient_stop_loss_exits(
             created_dt = dateparser.isoparse(created_raw)
             if created_dt.tzinfo is None:
                 created_dt = created_dt.replace(tzinfo=dt.timezone.utc)
-            minutes_held = (now - created_dt.astimezone(dt.timezone.utc)).total_seconds() / 60.0
+            minutes_held = (
+                now - created_dt.astimezone(dt.timezone.utc)
+            ).total_seconds() / 60.0
             if minutes_held < float(min_hold):
                 continue
             try:
                 data = await engine.client.get_public(_public_market_path(ticker))
             except Exception as e:
-                _trace_append(trace, f"patient_stop_loss {branch} {ticker[:28]}… fetch err {str(e)[:80]}")
+                _trace_append(
+                    trace,
+                    f"patient_stop_loss {branch} {ticker[:28]}… fetch err {str(e)[:80]}",
+                )
                 continue
             m = market_dict_from_public_response(data)
             st = str(m.get("status") or "").strip().lower()
-            if st in ("finalized", "closed", "determined", "settled", "settlement", "complete", "inactive"):
+            if st in (
+                "finalized",
+                "closed",
+                "determined",
+                "settled",
+                "settlement",
+                "complete",
+                "inactive",
+            ):
                 continue
             yb = dollars_to_float(m.get("yes_bid_dollars"))
             ya = dollars_to_float(m.get("yes_ask_dollars"))
             prob = implied_yes_probability(yb, ya)
             if prob is None:
                 continue
-            net_pct = _calculate_net_unrealized_pct_after_fees(t, prob, full_cfg=full_cfg, branch=branch)
+            net_pct = _calculate_net_unrealized_pct_after_fees(
+                t, prob, full_cfg=full_cfg, branch=branch
+            )
             if net_pct > thr:
                 continue
             contracts = _parse_contracts_fp(t.get("contracts_fp"))
@@ -2419,7 +2598,10 @@ async def _handle_patient_stop_loss_exits(
             cost = int(t.get("amount_cents") or 0)
             exit_px = exit_bid_for_side_close(m, side, yb, ya)
             if exit_px is None or exit_px <= 0:
-                _trace_append(trace, f"patient_stop_loss {branch} {ticker[:28]}… skip (no exit bid)")
+                _trace_append(
+                    trace,
+                    f"patient_stop_loss {branch} {ticker[:28]}… skip (no exit bid)",
+                )
                 continue
             try:
                 raw_ex = json.loads(str(t.get("extra_json") or "{}"))
@@ -2454,7 +2636,9 @@ async def _handle_patient_stop_loss_exits(
                 {
                     "patient_stop_loss": True,
                     "patient_stop_loss_mark_implied_yes": prob,
-                    "patient_stop_loss_net_unrealized_pct_after_fees": round(net_pct, 4),
+                    "patient_stop_loss_net_unrealized_pct_after_fees": round(
+                        net_pct, 4
+                    ),
                     "patient_stop_loss_minutes_held": round(minutes_held, 2),
                     "patient_stop_loss_exit_bid": exit_px,
                     "paper_fee_model": fee_model,
@@ -2472,9 +2656,7 @@ async def _handle_patient_stop_loss_exits(
                 extra_json=json.dumps(extra),
             )
             closed_n += 1
-            msg = (
-                f"Patient stop-loss triggered for {ticker} at {net_pct:.1f}% (after fees) after {int(round(minutes_held))} min"
-            )
+            msg = f"Patient stop-loss triggered for {ticker} at {net_pct:.1f}% (after fees) after {int(round(minutes_held))} min"
             _trace_append(trace, f"patient_stop_loss {branch}: {msg}")
             _data_log(
                 "trading",
@@ -2503,7 +2685,9 @@ async def _handle_patient_stop_loss_exits(
     return closed_n
 
 
-async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict[str, Any]) -> int:
+async def maybe_swing_exit_open_sim_trades(
+    engine: TradingEngine, full_cfg: dict[str, Any]
+) -> int:
     """
     Paper sim only: close open rows when implied YES has moved against the entry by at least
     ``swing_exit_implied_drop_pct`` percentage points (e.g. 50 ⇒ 0.50 drop for a YES long).
@@ -2549,12 +2733,22 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
         try:
             data = await engine.client.get_public(_public_market_path(ticker))
         except Exception as e:
-            _engine_trace_note(engine, f"swing {branch}: {ticker[:28]}… fetch err {str(e)[:80]}")
+            _engine_trace_note(
+                engine, f"swing {branch}: {ticker[:28]}… fetch err {str(e)[:80]}"
+            )
             continue
 
         m = market_dict_from_public_response(data)
         st = str(m.get("status") or "").strip().lower()
-        if st in ("finalized", "closed", "determined", "settled", "settlement", "complete", "inactive"):
+        if st in (
+            "finalized",
+            "closed",
+            "determined",
+            "settled",
+            "settlement",
+            "complete",
+            "inactive",
+        ):
             continue
 
         yb = dollars_to_float(m.get("yes_bid_dollars"))
@@ -2571,12 +2765,16 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
 
         exit_px = exit_bid_for_side_close(m, side, yb, ya)
         if exit_px is None or exit_px <= 0:
-            _engine_trace_note(engine, f"swing {branch}: {ticker[:28]}… skip exit (no bid)")
+            _engine_trace_note(
+                engine, f"swing {branch}: {ticker[:28]}… skip exit (no bid)"
+            )
             continue
 
         contracts = _parse_contracts_fp(t.get("contracts_fp"))
         if contracts <= 0:
-            _engine_trace_note(engine, f"swing {branch}: {ticker[:28]}… skip (contracts_fp unresolved)")
+            _engine_trace_note(
+                engine, f"swing {branch}: {ticker[:28]}… skip (contracts_fp unresolved)"
+            )
             continue
         cost = int(t.get("amount_cents") or 0)
         proceeds_cents = int(round(contracts * exit_px * 100.0))
@@ -2634,7 +2832,9 @@ async def maybe_swing_exit_open_sim_trades(engine: TradingEngine, full_cfg: dict
     return closed_n
 
 
-async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: dict[str, Any]) -> int:
+async def maybe_timeout_close_open_sim_trades(
+    engine: TradingEngine, full_cfg: dict[str, Any]
+) -> int:
     """
     Auto-close stale simulated open rows so one-open-per-series guards cannot stall trading indefinitely.
 
@@ -2646,7 +2846,11 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
     branch = engine.branch
     cfg = effective_trading_cfg_for_fees(full_cfg, branch)
     try:
-        timeout_min = float(cfg.get("auto_close_open_sim_minutes") or full_cfg.get("auto_close_open_sim_minutes") or env.default_auto_close_open_sim_minutes)
+        timeout_min = float(
+            cfg.get("auto_close_open_sim_minutes")
+            or full_cfg.get("auto_close_open_sim_minutes")
+            or env.default_auto_close_open_sim_minutes
+        )
     except (TypeError, ValueError):
         timeout_min = 75.0
     if timeout_min <= 0:
@@ -2677,7 +2881,9 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
             created_dt = dateparser.isoparse(created_raw)
             if created_dt.tzinfo is None:
                 created_dt = created_dt.replace(tzinfo=dt.timezone.utc)
-            age_min = (now - created_dt.astimezone(dt.timezone.utc)).total_seconds() / 60.0
+            age_min = (
+                now - created_dt.astimezone(dt.timezone.utc)
+            ).total_seconds() / 60.0
             stale_by_age = age_min >= timeout_min
             ticker = str(t.get("ticker") or "").strip()
             m_cached: dict[str, Any] | None = None
@@ -2796,12 +3002,16 @@ async def maybe_timeout_close_open_sim_trades(engine: TradingEngine, full_cfg: d
                     f"exit≈{exit_px:.3f} pnl¢={pnl}",
                 )
         except Exception as e:
-            _engine_trace_note(engine, f"timeout-close {branch}: row err {str(e)[:120]}")
+            _engine_trace_note(
+                engine, f"timeout-close {branch}: row err {str(e)[:120]}"
+            )
             continue
     return closed_n
 
 
-async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> int:
+async def settle_simulated_trades(
+    engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None
+) -> int:
     """Mark simulated open rows settled when Kalshi market is finalized. Returns count updated this pass."""
     open_trades = await engine.store.open_sim_trades_for_branch(engine.branch)
     if not open_trades:
@@ -2853,17 +3063,27 @@ async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, 
                 continue
             side = str(t.get("side") or "yes").strip().lower()
             if side not in ("yes", "no"):
-                _engine_trace_note(engine, f"settle {engine.branch}: id={tid} skip (side={side!r})")
+                _engine_trace_note(
+                    engine, f"settle {engine.branch}: id={tid} skip (side={side!r})"
+                )
                 continue
             contracts = _parse_contracts_fp(t.get("contracts_fp"))
             if contracts <= 0:
-                _engine_trace_note(engine, f"settle {engine.branch}: {ticker[:32]}… id={tid} skip (contracts_fp)")
+                _engine_trace_note(
+                    engine,
+                    f"settle {engine.branch}: {ticker[:32]}… id={tid} skip (contracts_fp)",
+                )
                 continue
             try:
                 amount = int(t.get("amount_cents") or 0)
             except (TypeError, ValueError):
                 amount = 0
-            payout_per = 1.0 if (side == "yes" and result == "yes") or (side == "no" and result == "no") else 0.0
+            payout_per = (
+                1.0
+                if (side == "yes" and result == "yes")
+                or (side == "no" and result == "no")
+                else 0.0
+            )
             try:
                 raw_ex = json.loads(str(t.get("extra_json") or "{}"))
                 ex = dict(raw_ex) if isinstance(raw_ex, dict) else {}
@@ -2884,9 +3104,13 @@ async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, 
                     net_payout_cents = 0
                     exit_fee_cents = 0
                 else:
-                    net_payout_cents, sd = kalshi_settlement_credit_cents(contracts, payout_per)
+                    net_payout_cents, sd = kalshi_settlement_credit_cents(
+                        contracts, payout_per
+                    )
                     ex["kalshi_settlement"] = sd
-                    exit_fee_cents = max(0, int(round(contracts * payout_per * 100.0)) - net_payout_cents)
+                    exit_fee_cents = max(
+                        0, int(round(contracts * payout_per * 100.0)) - net_payout_cents
+                    )
                 fee_bps_used = float(ex.get("paper_fee_bps", 0.0))
                 pnl = net_payout_cents - amount
             elif fee_model == "none":
@@ -2910,22 +3134,30 @@ async def settle_simulated_trades(engine: TradingEngine, *, full_cfg: dict[str, 
             ex["paper_fee_model"] = fee_model
             # ``pnl`` can be exactly 0 on a favorable outcome when entry debit ≈ $1/contract (YES or NO bought
             # near par): settlement credits $1/contract and quadratic entry fee at p→1 is ~0 — not a stale toast.
-            await engine.store.update_trade_settlement(tid, result, int(pnl), iso(now), extra_json=json.dumps(ex))
+            await engine.store.update_trade_settlement(
+                tid, result, int(pnl), iso(now), extra_json=json.dumps(ex)
+            )
             settled_n += 1
         except Exception as e:
             tk = str(t.get("ticker") or "")[:32]
-            _engine_trace_note(engine, f"settle {engine.branch}: {tk}… row err {str(e)[:120]}")
+            _engine_trace_note(
+                engine, f"settle {engine.branch}: {tk}… row err {str(e)[:120]}"
+            )
             continue
     return settled_n
 
 
-async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None) -> None:
+async def snapshot_equity(
+    engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None
+) -> None:
     if full_cfg is None:
         full_cfg = await engine.store.load_config()
     branch = engine.branch
 
     if branch == BRANCH_LIVE:
-        trade_mode_filter = "simulate" if live_paper_trading_enabled(full_cfg) else "live"
+        trade_mode_filter = (
+            "simulate" if live_paper_trading_enabled(full_cfg) else "live"
+        )
     else:
         trade_mode_filter = "simulate"
 
@@ -2934,11 +3166,15 @@ async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | N
     open_committed = int(roll.get("open_committed_cents") or 0)
 
     mtm_equity: int
-    if _is_lab_branch(branch) or (branch == BRANCH_LIVE and live_paper_trading_enabled(full_cfg)):
+    if _is_lab_branch(branch) or (
+        branch == BRANCH_LIVE and live_paper_trading_enabled(full_cfg)
+    ):
         if _is_lab_branch(branch):
             paper = lab_paper_equity_start_cents(full_cfg, branch)
         else:
-            paper = int(full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents)
+            paper = int(
+                full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents
+            )
         equity = paper + settled_pnl - open_committed
         mode = "simulate"
         open_rows = await engine.store.open_sim_trades_for_branch(branch)
@@ -2964,5 +3200,3 @@ async def snapshot_equity(engine: TradingEngine, *, full_cfg: dict[str, Any] | N
     await engine.store.insert_equity_snapshot(
         iso(utc_now()), mode, equity, "auto", branch=branch, mtm_equity_cents=mtm_equity
     )
-
-

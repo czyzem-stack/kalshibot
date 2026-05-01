@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from app.branch_config import BRANCH_LAB_A, BRANCH_LIVE, live_paper_trading_enabled, merge_branch_config
+from app.branch_config import (
+    BRANCH_LAB_A,
+    BRANCH_LIVE,
+    live_paper_trading_enabled,
+    merge_branch_config,
+)
 from app.engine import (
     _calculate_net_unrealized_pct_after_fees,
     _handle_patient_stop_loss_exits,
@@ -37,7 +42,9 @@ class ConsecutiveStakeNonNegativeTest(unittest.TestCase):
             for spent in (-5, 0, bal // 2, bal, bal + 100):
                 for frac in (0, 0.0001, 0.03, 0.5, 1.0, 1.5):
                     s = consecutive_stake_cents(bal, max(0, spent), frac)
-                    self.assertGreaterEqual(s, 0, msg=f"bal={bal} spent={spent} frac={frac} -> {s}")
+                    self.assertGreaterEqual(
+                        s, 0, msg=f"bal={bal} spent={spent} frac={frac} -> {s}"
+                    )
 
 
 class RuleMatchTest(unittest.TestCase):
@@ -92,7 +99,9 @@ class PatientStopLossGatingTest(unittest.IsolatedAsyncioTestCase):
             "extra_json": '{"paper_fee_model": "none"}',
         }
         full_cfg: dict = {"paper_fee_bps": 0, "paper_balance_cents": 500_000}
-        pct = _calculate_net_unrealized_pct_after_fees(t, 0.5, full_cfg=full_cfg, branch=BRANCH_LAB_A)
+        pct = _calculate_net_unrealized_pct_after_fees(
+            t, 0.5, full_cfg=full_cfg, branch=BRANCH_LAB_A
+        )
         self.assertIsInstance(pct, float)
 
     async def test_handler_returns_zero_when_feature_disabled(self) -> None:
@@ -123,8 +132,15 @@ class PatientStopLossGatingTest(unittest.IsolatedAsyncioTestCase):
         m = merge_branch_config(full_cfg, BRANCH_LAB_A)
         self.assertIsNotNone(m)
         assert m is not None
-        eng = SimpleNamespace(store=_S(), client=MagicMock(), branch=BRANCH_LAB_A, state=SimpleNamespace(last_error=""))
-        n = await _handle_patient_stop_loss_exits(eng, full_cfg=full_cfg, cfg=m, now=now, trace=[])
+        eng = SimpleNamespace(
+            store=_S(),
+            client=MagicMock(),
+            branch=BRANCH_LAB_A,
+            state=SimpleNamespace(last_error=""),
+        )
+        n = await _handle_patient_stop_loss_exits(
+            eng, full_cfg=full_cfg, cfg=m, now=now, trace=[]
+        )
         self.assertEqual(n, 0)
 
     async def test_losing_hold_threshold_and_fees(self) -> None:
@@ -146,7 +162,9 @@ class PatientStopLossGatingTest(unittest.IsolatedAsyncioTestCase):
             async def update_trade_sim_early_close(self, *_a, **_k) -> None:  # noqa: D401, ANN001, ARG002
                 raise AssertionError("should not close: hold time not met")
 
-        now = dt.datetime(2026, 1, 1, 0, 10, 0, tzinfo=dt.timezone.utc)  # 10 min; min_hold=45
+        now = dt.datetime(
+            2026, 1, 1, 0, 10, 0, tzinfo=dt.timezone.utc
+        )  # 10 min; min_hold=45
         full_cfg: dict = {
             "engine_running": False,
             "lab_a": {"engine_running": True},
@@ -157,8 +175,15 @@ class PatientStopLossGatingTest(unittest.IsolatedAsyncioTestCase):
         m = merge_branch_config(full_cfg, BRANCH_LAB_A)
         self.assertIsNotNone(m)
         assert m is not None
-        eng = SimpleNamespace(store=_S(), client=MagicMock(), branch=BRANCH_LAB_A, state=SimpleNamespace(last_error=""))
-        n = await _handle_patient_stop_loss_exits(eng, full_cfg=full_cfg, cfg=m, now=now, trace=[])
+        eng = SimpleNamespace(
+            store=_S(),
+            client=MagicMock(),
+            branch=BRANCH_LAB_A,
+            state=SimpleNamespace(last_error=""),
+        )
+        n = await _handle_patient_stop_loss_exits(
+            eng, full_cfg=full_cfg, cfg=m, now=now, trace=[]
+        )
         self.assertEqual(n, 0)  # hold gate before fee/net comparison
 
     async def test_not_run_on_non_paper_live(self) -> None:
@@ -166,12 +191,22 @@ class PatientStopLossGatingTest(unittest.IsolatedAsyncioTestCase):
             async def open_sim_trades_for_branch(self, _b: str) -> list:  # noqa: D401
                 raise AssertionError("should not query opens on real live")
 
-        full_cfg = {"simulate": False, "live_paper_trading": False, "engine_running": True, "enable_patient_stop_loss": True}
+        full_cfg = {
+            "simulate": False,
+            "live_paper_trading": False,
+            "engine_running": True,
+            "enable_patient_stop_loss": True,
+        }
         m = merge_branch_config(full_cfg, BRANCH_LIVE)
         self.assertIsNotNone(m)
         assert m is not None
         self.assertFalse(live_paper_trading_enabled(full_cfg))
-        eng = SimpleNamespace(store=_S(), client=MagicMock(), branch=BRANCH_LIVE, state=SimpleNamespace(last_error=""))
+        eng = SimpleNamespace(
+            store=_S(),
+            client=MagicMock(),
+            branch=BRANCH_LIVE,
+            state=SimpleNamespace(last_error=""),
+        )
         n = await _handle_patient_stop_loss_exits(
             eng,
             full_cfg=full_cfg,
@@ -190,7 +225,11 @@ class PromotionFitnessGatesTest(unittest.TestCase):
         fit_c: dict = {"score_dollars": 2.0}
         fit_d: dict = {"score_dollars": 3.0}
         score_a = float(fit_a["score_dollars"])
-        scores_bcd = [float(fit_b["score_dollars"]), float(fit_c["score_dollars"]), float(fit_d["score_dollars"])]
+        scores_bcd = [
+            float(fit_b["score_dollars"]),
+            float(fit_c["score_dollars"]),
+            float(fit_d["score_dollars"]),
+        ]
         med_bcd = float(statistics.median(scores_bcd))
         self.assertTrue(bool(score_a > med_bcd))
 
@@ -206,7 +245,12 @@ class PromotionFitnessGatesTest(unittest.TestCase):
         a = [0.1, 0.2, 0.3, 0.15, 0.1]
         b = [-0.1, 0.0, 0.05, -0.02, 0.01, 0.0, 0.0]
         ok, detail = is_statistically_better(
-            a, b, lab_a_score=5.0, control_scores=(1.0, 1.0, 2.0), alpha=0.5, score_margin_pct=0.0
+            a,
+            b,
+            lab_a_score=5.0,
+            control_scores=(1.0, 1.0, 2.0),
+            alpha=0.5,
+            score_margin_pct=0.0,
         )
         self.assertIsInstance(ok, bool)
         self.assertIn("median_control_scores", detail)
@@ -309,8 +353,13 @@ class OptimizerReplayStopLossTest(unittest.TestCase):
             }
         ]
 
-    @patch("app.optimizer_claude._calculate_net_unrealized_pct_after_fees", return_value=-8.0)
-    def test_replay_simulates_patient_stop_on_open_positions(self, _mock_net: object) -> None:
+    @patch(
+        "app.optimizer_claude._calculate_net_unrealized_pct_after_fees",
+        return_value=-8.0,
+    )
+    def test_replay_simulates_patient_stop_on_open_positions(
+        self, _mock_net: object
+    ) -> None:
         from app import optimizer_claude as opt_mod
         from app.branch_config import BRANCH_LAB_A
 
@@ -435,7 +484,10 @@ class OptimizerReplayStopLossTest(unittest.TestCase):
         self.assertEqual(float(d.get("stop_loss_trigger_rate") or 0.0), 50.0)
         self.assertEqual(int(d.get("stop_loss_exits_n") or 0), 1)
 
-    @patch("app.optimizer_claude._calculate_net_unrealized_pct_after_fees", return_value=-10.0)
+    @patch(
+        "app.optimizer_claude._calculate_net_unrealized_pct_after_fees",
+        return_value=-10.0,
+    )
     def test_fitness_score_includes_synthetic_open_stop(self, _m: object) -> None:
         from app import optimizer_claude as opt_mod
         from app.branch_config import BRANCH_LAB_A
@@ -495,9 +547,19 @@ class AutoRevertStuckTest(unittest.IsolatedAsyncioTestCase):
     async def test_auto_revert_skips_when_flag_off(self) -> None:
         from app import optimizer_claude as ocm
 
-        rules = [{"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}]
+        rules = [
+            {
+                "name": "a",
+                "min_prob": 0.0,
+                "max_prob": 1.0,
+                "min_minutes_left": 0.0,
+                "max_minutes_left": 60.0,
+            }
+        ]
         cfg: dict = {"lab_a": {"rules": rules}}
-        oc = ocm._norm_opt_cfg({**ocm._opt_cfg({"optimizer": {}}), "enable_auto_revert": False})
+        oc = ocm._norm_opt_cfg(
+            {**ocm._opt_cfg({"optimizer": {}}), "enable_auto_revert": False}
+        )
         store = MagicMock()
         meta = await ocm._maybe_auto_revert_if_stuck(
             store,
@@ -515,7 +577,15 @@ class AutoRevertStuckTest(unittest.IsolatedAsyncioTestCase):
     async def test_auto_revert_respects_4h_cooldown(self) -> None:
         from app import optimizer_claude as ocm
 
-        rules = [{"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}]
+        rules = [
+            {
+                "name": "a",
+                "min_prob": 0.0,
+                "max_prob": 1.0,
+                "min_minutes_left": 0.0,
+                "max_minutes_left": 60.0,
+            }
+        ]
         cfg: dict = {"lab_a": {"rules": rules}}
         base = ocm._norm_opt_cfg(ocm._opt_cfg({"optimizer": {}}))
         base["optimizer_auto_revert_last_at"] = "2026-01-15T10:00:00+00:00"
@@ -533,12 +603,25 @@ class AutoRevertStuckTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta.get("reason"), "cooldown")
         store.list_config_history.assert_not_called()
 
-    @patch("app.optimizer_claude._replay_fitness_bundle", return_value={"score_dollars": 9.5})
+    @patch(
+        "app.optimizer_claude._replay_fitness_bundle",
+        return_value={"score_dollars": 9.5},
+    )
     @patch("app.optimizer_claude._replay_open_kw", return_value={})
-    async def test_auto_revert_red_15_loads_best_history_lab_a(self, _m_open: object, _m_fb: object) -> None:
+    async def test_auto_revert_red_15_loads_best_history_lab_a(
+        self, _m_open: object, _m_fb: object
+    ) -> None:
         from app import optimizer_claude as ocm
 
-        rules = [{"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}]
+        rules = [
+            {
+                "name": "a",
+                "min_prob": 0.0,
+                "max_prob": 1.0,
+                "min_minutes_left": 0.0,
+                "max_minutes_left": 60.0,
+            }
+        ]
         cfg: dict = {"lab_a": {"rules": list(rules)}}
         oc = ocm._norm_opt_cfg(ocm._opt_cfg({"optimizer": {}}))
         store = MagicMock()
@@ -568,11 +651,15 @@ class AutoRevertStuckTest(unittest.IsolatedAsyncioTestCase):
             acceptance_pct=50.0,
         )
         self.assertTrue(bool(meta.get("reverted")))
-        self.assertEqual(float(cfg["lab_a"].get("balance_fraction_per_window") or 0), 0.033)
+        self.assertEqual(
+            float(cfg["lab_a"].get("balance_fraction_per_window") or 0), 0.033
+        )
         self.assertEqual(oc.get("optimizer_red_streak_cycles"), 0)
         tr = oc.get("internal_optimizer_trace")
         self.assertIsInstance(tr, list)
-        self.assertEqual(str((tr[0] if tr else {}).get("reject_reason")), "auto-revert-stuck")
+        self.assertEqual(
+            str((tr[0] if tr else {}).get("reject_reason")), "auto-revert-stuck"
+        )
         self.assertTrue(bool((tr[0] if tr else {}).get("auto_revert")))
 
 
@@ -596,25 +683,48 @@ class WeightedEdgeAndRegimeTest(unittest.TestCase):
                 "replay_stop_loss_trigger_rate_pct": 40.0,
             }
         )
-        r = ocm._trading_regime_key_from_context(oc, [], [], "2026-01-15T12:00:00+00:00")
+        r = ocm._trading_regime_key_from_context(
+            oc, [], [], "2026-01-15T12:00:00+00:00"
+        )
         self.assertEqual(r, "event_risk")
 
     def test_sync_regime_applies_event_rules_to_lab_a(self) -> None:
         from app import optimizer_claude as ocm
 
         base = [
-            {"name": "base", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 99.0}
+            {
+                "name": "base",
+                "min_prob": 0.0,
+                "max_prob": 1.0,
+                "min_minutes_left": 0.0,
+                "max_minutes_left": 99.0,
+            }
         ]
         event_only = [
-            {"name": "event_family", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 99.0}
+            {
+                "name": "event_family",
+                "min_prob": 0.0,
+                "max_prob": 1.0,
+                "min_minutes_left": 0.0,
+                "max_minutes_left": 99.0,
+            }
         ]
-        cfg: dict = {"lab_a": {"rules": [dict(x) for x in base], "rules_event": [dict(x) for x in event_only]}}
+        cfg: dict = {
+            "lab_a": {
+                "rules": [dict(x) for x in base],
+                "rules_event": [dict(x) for x in event_only],
+            }
+        }
         oc = ocm._norm_opt_cfg({"replay_stop_loss_trigger_rate_pct": 50.0})
-        ocm._sync_regime_rule_families_to_lab_a(cfg, oc, [], [], "2026-01-15T12:00:00+00:00")
+        ocm._sync_regime_rule_families_to_lab_a(
+            cfg, oc, [], [], "2026-01-15T12:00:00+00:00"
+        )
         la = cfg.get("lab_a")
         self.assertIsInstance(la, dict)
         self.assertEqual(la.get("active_regime"), "event_risk")
-        names = {str(r.get("name")) for r in (la.get("rules") or []) if isinstance(r, dict)}
+        names = {
+            str(r.get("name")) for r in (la.get("rules") or []) if isinstance(r, dict)
+        }
         self.assertIn("event_family", names)
 
 
@@ -659,7 +769,13 @@ class PaperLoserDetectionTest(unittest.IsolatedAsyncioTestCase):
 
         from app import optimizer_claude as ocm
 
-        r = {"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}
+        r = {
+            "name": "a",
+            "min_prob": 0.0,
+            "max_prob": 1.0,
+            "min_minutes_left": 0.0,
+            "max_minutes_left": 60.0,
+        }
         cfg: dict = {
             "lab_a": {
                 "active_regime": "high_vol",
@@ -679,28 +795,45 @@ class PaperLoserDetectionTest(unittest.IsolatedAsyncioTestCase):
         # high_vol -> next in PAPER_LOSER_REGIME_ORDER is low_vol
         self.assertEqual((cfg.get("lab_a") or {}).get("active_regime"), "low_vol")
         self.assertTrue(oc.get("paper_loser_radical_next") is True)
-        self.assertEqual(int(oc.get("optimizer_consecutive_paper_loser_cycles", -1) or 0), 0)
+        self.assertEqual(
+            int(oc.get("optimizer_consecutive_paper_loser_cycles", -1) or 0), 0
+        )
 
     async def test_paper_loser_no_swap_below_threshold_cycles(self) -> None:
         from unittest.mock import MagicMock
 
         from app import optimizer_claude as ocm
 
-        r = {"name": "a", "min_prob": 0.0, "max_prob": 1.0, "min_minutes_left": 0.0, "max_minutes_left": 60.0}
+        r = {
+            "name": "a",
+            "min_prob": 0.0,
+            "max_prob": 1.0,
+            "min_minutes_left": 0.0,
+            "max_minutes_left": 60.0,
+        }
         cfg: dict = {"lab_a": {"rules": [dict(r)]}}
         meta = await ocm._apply_paper_loser_strategy_swap(
-            MagicMock(), cfg, ocm._norm_opt_cfg({}), at_iso="2026-01-20T00:00:00+00:00", repeated_cycles=3
+            MagicMock(),
+            cfg,
+            ocm._norm_opt_cfg({}),
+            at_iso="2026-01-20T00:00:00+00:00",
+            repeated_cycles=3,
         )
         self.assertFalse(bool(meta.get("swapped")))
 
     def test_check_optimizer_health_shows_paper_loser(self) -> None:
         from app import optimizer_claude as ocm
 
-        oc = ocm._norm_opt_cfg({"enable_paper_loser_detection": True, "paper_loser_cycles_threshold": 4})
+        oc = ocm._norm_opt_cfg(
+            {"enable_paper_loser_detection": True, "paper_loser_cycles_threshold": 4}
+        )
         oc["paper_loser_risk_last"] = True
         oc["optimizer_consecutive_paper_loser_cycles"] = 2
         h = ocm._check_optimizer_health(oc)
-        self.assertTrue("paper_loser" in (h.get("suggested_action") or "").casefold() or "paper-loser" in (h.get("suggested_action") or "").casefold())
+        self.assertTrue(
+            "paper_loser" in (h.get("suggested_action") or "").casefold()
+            or "paper-loser" in (h.get("suggested_action") or "").casefold()
+        )
         self.assertIn("paper_loser_risk_last", h)
 
 
@@ -710,24 +843,50 @@ class AutoRelaxTest(unittest.TestCase):
 
         end = dt.datetime(2026, 4, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
         tr_a = [
-            {"created_at": "2026-04-01T08:00:00+00:00", "status": "settled", "ticker": "A"},
-            {"created_at": "2026-04-01T09:30:00+00:00", "status": "settled", "ticker": "B"},
+            {
+                "created_at": "2026-04-01T08:00:00+00:00",
+                "status": "settled",
+                "ticker": "A",
+            },
+            {
+                "created_at": "2026-04-01T09:30:00+00:00",
+                "status": "settled",
+                "ticker": "B",
+            },
         ]
-        oc = ocm._norm_opt_cfg({"auto_relax_trade_threshold": 3, "auto_relax_hours_window": 6, "interval_minutes": 20})
+        oc = ocm._norm_opt_cfg(
+            {
+                "auto_relax_trade_threshold": 3,
+                "auto_relax_hours_window": 6,
+                "interval_minutes": 20,
+            }
+        )
         self.assertTrue(ocm._is_lab_a_under_trading(tr_a, oc, end))
 
-    def test_is_lab_a_under_trading_zero_trades_in_last_four_optimizer_intervals(self) -> None:
+    def test_is_lab_a_under_trading_zero_trades_in_last_four_optimizer_intervals(
+        self,
+    ) -> None:
         from app import optimizer_claude as ocm
 
         end = dt.datetime(2026, 4, 1, 12, 0, 0, tzinfo=dt.timezone.utc)
         # 3+ trades in 6h, but all older than 4×20m (second branch: no fills in the last 4 sched cycles)
-        t_old = (end - dt.timedelta(hours=2, minutes=5)).replace(tzinfo=dt.timezone.utc).isoformat()
+        t_old = (
+            (end - dt.timedelta(hours=2, minutes=5))
+            .replace(tzinfo=dt.timezone.utc)
+            .isoformat()
+        )
         tr_a = [
             {"created_at": t_old, "status": "settled", "ticker": "A1"},
             {"created_at": t_old, "status": "settled", "ticker": "A2"},
             {"created_at": t_old, "status": "settled", "ticker": "A3"},
         ]
-        oc = ocm._norm_opt_cfg({"auto_relax_trade_threshold": 3, "auto_relax_hours_window": 6, "interval_minutes": 20})
+        oc = ocm._norm_opt_cfg(
+            {
+                "auto_relax_trade_threshold": 3,
+                "auto_relax_hours_window": 6,
+                "interval_minutes": 20,
+            }
+        )
         self.assertTrue(ocm._is_lab_a_under_trading(tr_a, oc, end))
 
     def test_auto_relax_conservative_params_tighten_and_larger_size(self) -> None:
@@ -753,7 +912,9 @@ class AutoRelaxTest(unittest.TestCase):
                 "loss_streak_trigger": 2,
             }
         )
-        out = ocm._auto_relax_conservative_params(cfg, oc, at_iso="2026-04-01T12:00:00+00:00")
+        out = ocm._auto_relax_conservative_params(
+            cfg, oc, at_iso="2026-04-01T12:00:00+00:00"
+        )
         self.assertIsNotNone(out)
         self.assertEqual(out.get("style"), "auto_relax")
         self.assertEqual(oc.get("lab_a_yes_floor_pct"), 58)
@@ -777,7 +938,16 @@ class AutoRelaxTest(unittest.TestCase):
             }
         )
         self.assertTrue(ocm._auto_relax_cooldown_active(oc, end))
-        self.assertTrue(ocm._auto_relax_cooldown_active(dict(oc, optimizer_last_auto_relax_at=end.isoformat(), auto_relax_cooldown_hours=4), end))
+        self.assertTrue(
+            ocm._auto_relax_cooldown_active(
+                dict(
+                    oc,
+                    optimizer_last_auto_relax_at=end.isoformat(),
+                    auto_relax_cooldown_hours=4,
+                ),
+                end,
+            )
+        )
         self.assertFalse(
             ocm._auto_relax_cooldown_active(
                 {
@@ -807,9 +977,13 @@ class AutonomousOptimizerMetaAndTuningTest(unittest.TestCase):
         oc = ocm._norm_opt_cfg({})
         oc["regime_ewma_decay_per_cycle"] = 0.5
         oc["regime_ewma_alpha"] = 0.5
-        ocm._regime_update_meta_and_streaks(oc, active_regime="low_vol", score_dollars=2.0)
+        ocm._regime_update_meta_and_streaks(
+            oc, active_regime="low_vol", score_dollars=2.0
+        )
         e0 = ocm._norm_regime_perf_meta(oc)["low_vol"]["ewma_fitness"]
-        ocm._regime_update_meta_and_streaks(oc, active_regime="low_vol", score_dollars=0.0)
+        ocm._regime_update_meta_and_streaks(
+            oc, active_regime="low_vol", score_dollars=0.0
+        )
         e1 = ocm._norm_regime_perf_meta(oc)["low_vol"]["ewma_fitness"]
         self.assertNotEqual(round(e0, 3), round(e1, 3))
 
@@ -879,10 +1053,14 @@ class BreedingDependentRuleGuardTest(unittest.TestCase):
             "min_minutes_left": 0.0,
             "max_minutes_left": 20.0,
         }
-        hit = pick_trade_rule(0.5, 10.0, [yes_rule], has_yes_rules=False, has_no_book=True, cfg={})
+        hit = pick_trade_rule(
+            0.5, 10.0, [yes_rule], has_yes_rules=False, has_no_book=True, cfg={}
+        )
         self.assertIsNone(hit)
 
-    def test_pick_trade_rule_skips_no_without_orderbook_when_forced_to_no_side(self) -> None:
+    def test_pick_trade_rule_skips_no_without_orderbook_when_forced_to_no_side(
+        self,
+    ) -> None:
         cfg = {"no_bet_when_yes_below_pct": 50.0}
         no_rule = {
             "name": "n",
@@ -892,7 +1070,9 @@ class BreedingDependentRuleGuardTest(unittest.TestCase):
             "min_minutes_left": 0.0,
             "max_minutes_left": 20.0,
         }
-        hit = pick_trade_rule(0.05, 10.0, [no_rule], has_yes_rules=True, has_no_book=False, cfg=cfg)
+        hit = pick_trade_rule(
+            0.05, 10.0, [no_rule], has_yes_rules=True, has_no_book=False, cfg=cfg
+        )
         self.assertIsNone(hit)
 
     def test_rule_matches_false_when_minutes_outside_window(self) -> None:

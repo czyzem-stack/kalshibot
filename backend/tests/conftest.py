@@ -1,4 +1,5 @@
 """Force plain logging in tests (before ``backend.app.main`` is imported and ``configure_logging`` runs)."""
+
 from __future__ import annotations
 
 import os

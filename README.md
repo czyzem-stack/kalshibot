@@ -108,6 +108,8 @@ Breeding answers: **which simulated strategies deserve to move toward Live**, wi
 
 **Think Tank is not breeding** — B–E chat lines are **flavor** for the UI; disabling or ignoring them does **not** stop the GA.
 
+**Parent labs stay runnable after auto-replacement** — When breeding **refills** a parent slot (**hard death**, **soft cull**, or **adoption into Lab A**), persisted config forces **`engine_running: true`** on **Labs A–E** so the GA does not accidentally copy a breeder’s “off” flag or a cleared **`lab_child_*`** slot onto a visible lab. To pause a lab, use **Settings** or **`POST /api/engine/toggle`**.
+
 ---
 
 ## Operator playbook

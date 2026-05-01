@@ -38,7 +38,9 @@ class AutoResetLabPaperTest(unittest.IsolatedAsyncioTestCase):
         engine.store.reset_trading_data.assert_not_called()
         engine.store.bump_lab_paper_lifetime_basis.assert_not_called()
 
-    async def test_bust_still_wipes_when_book_negative_under_same_baseline(self) -> None:
+    async def test_bust_still_wipes_when_book_negative_under_same_baseline(
+        self,
+    ) -> None:
         engine = MagicMock()
         engine.branch = "lab_a"
         engine.state = MagicMock()

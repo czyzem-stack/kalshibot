@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from app.branch_config import BRANCH_LAB_A, effective_parent_lab_engine_running, merge_branch_config
+from app.branch_config import (
+    BRANCH_LAB_A,
+    BRANCH_LAB_B,
+    effective_parent_lab_engine_running,
+    merge_branch_config,
+)
 from app.persistence import _normalize_loaded_config
 
 
@@ -73,6 +78,35 @@ class MergeBranchConfigParentLabsTest(unittest.TestCase):
         rules = la.get("rules")
         assert isinstance(rules, list)
         self.assertGreater(len(rules), 0)
+
+    def test_normalize_lab_b_empty_rules_uses_breeder_pack_not_global_copy(self) -> None:
+        """Empty lab_b.rules must not clone top-level rules (every breeder echoed Live)."""
+        cfg = {
+            "rules": [
+                {
+                    "name": "GLOBAL_UNIQUE_MARKER",
+                    "min_prob": 0.5,
+                    "max_prob": 0.9,
+                    "min_minutes_left": 0.0,
+                    "max_minutes_left": 99.0,
+                }
+            ],
+            "lab_b": {"rules": []},
+        }
+        out = _normalize_loaded_config(cfg)
+        lb = out.get("lab_b")
+        assert isinstance(lb, dict)
+        rules = lb.get("rules")
+        assert isinstance(rules, list)
+        self.assertGreater(len(rules), 0)
+        names = [str(r.get("name") or "") for r in rules if isinstance(r, dict)]
+        self.assertTrue(all("GLOBAL_UNIQUE_MARKER" not in n for n in names))
+
+        mb = merge_branch_config(out, BRANCH_LAB_B)
+        assert mb is not None
+        eff = mb.get("rules") or []
+        eff_names = [str(r.get("name") or "") for r in eff if isinstance(r, dict)]
+        self.assertTrue(all("GLOBAL_UNIQUE_MARKER" not in n for n in eff_names))
 
 
 if __name__ == "__main__":

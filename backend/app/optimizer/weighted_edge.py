@@ -2,6 +2,7 @@
 Liquidity-scaled edge for sim ranking and fitness replay (same contract as the engine’s mid/ask
 geometry, with spread-based liquidity_factor).
 """
+
 from __future__ import annotations
 
 import math
@@ -27,8 +28,16 @@ def calculate_weighted_edge(market: dict[str, Any], rule: dict[str, Any]) -> flo
         has_tradable_yes_ask,
     )
 
-    yb = dollars_to_float(market.get("yes_bid_dollars") if "yes_bid_dollars" in market else market.get("yes_bid"))
-    ya = dollars_to_float(market.get("yes_ask_dollars") if "yes_ask_dollars" in market else market.get("yes_ask"))
+    yb = dollars_to_float(
+        market.get("yes_bid_dollars")
+        if "yes_bid_dollars" in market
+        else market.get("yes_bid")
+    )
+    ya = dollars_to_float(
+        market.get("yes_ask_dollars")
+        if "yes_ask_dollars" in market
+        else market.get("yes_ask")
+    )
     sw_raw = market.get("spread_width")
     if yb is not None and ya is not None and ya >= yb:
         spread_width = float(ya) - float(yb)
@@ -84,7 +93,11 @@ def synthetic_orderbook_for_replay(
         "yes_bid_dollars": yb,
         "yes_ask_dollars": ya,
     }
-    if m["yes_bid_dollars"] is None and m["yes_ask_dollars"] is None and math.isfinite(prob):
+    if (
+        m["yes_bid_dollars"] is None
+        and m["yes_ask_dollars"] is None
+        and math.isfinite(prob)
+    ):
         p = max(0.01, min(0.99, float(prob)))
         m["yes_bid_dollars"] = max(0.0, p - 0.015)
         m["yes_ask_dollars"] = min(1.0, p + 0.015)

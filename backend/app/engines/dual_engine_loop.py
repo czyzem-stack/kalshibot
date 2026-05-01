@@ -50,13 +50,17 @@ def _lab_branch_tick_enabled(br: str, lc: dict[str, Any]) -> bool:
     if br in BRANCH_CHILD_LABS:
         if not isinstance(lc, dict):
             return True
-        return _coerce_engine_running_flag(lc.get("engine_running"), default_if_missing=True)
+        return _coerce_engine_running_flag(
+            lc.get("engine_running"), default_if_missing=True
+        )
     if not isinstance(lc, dict):
         return False
     return effective_parent_lab_engine_running(lc, br)
 
 
-async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asyncio.Event) -> None:
+async def dual_engine_loop(
+    engines: dict[str, TradingEngine], stop_event: asyncio.Event
+) -> None:
     # PHASE 2: never run a tick until lifespan finished pre-warm + WS subscription list seed (see main._app_lifespan).
     await state.startup_complete.wait()
     tick = 0
@@ -69,7 +73,9 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
         cfg = full_cfg
         try:
             # PHASE FINAL: env-backed poll default preserves prior 8s behavior when config omits poll_seconds.
-            poll_candidates: list[float] = [float(cfg.get("poll_seconds") or env.default_poll_seconds)]
+            poll_candidates: list[float] = [
+                float(cfg.get("poll_seconds") or env.default_poll_seconds)
+            ]
             branch_order = [BRANCH_LIVE, *BRANCH_LABS, *BRANCH_CHILD_LABS]
             lab_conf: dict[str, dict[str, Any]] = {}
             for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
@@ -77,7 +83,9 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                 lab_conf[br] = raw if isinstance(raw, dict) else {}
             for bk, bcfg in lab_conf.items():
                 if isinstance(bcfg, dict):
-                    poll_candidates.append(float(bcfg.get("poll_seconds") or poll_candidates[0]))
+                    poll_candidates.append(
+                        float(bcfg.get("poll_seconds") or poll_candidates[0])
+                    )
             poll = max(poll_candidates)
 
             # PHASE 2: settle / swing / timeout per branch in parallel (same error handling as sequential).
@@ -88,19 +96,29 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                 try:
                     ns = await settle_simulated_trades(eng, full_cfg=full_cfg)
                     nw = await maybe_swing_exit_open_sim_trades(eng, cfg)
-                    nt = await maybe_timeout_close_open_sim_trades(eng, full_cfg=full_cfg)
+                    nt = await maybe_timeout_close_open_sim_trades(
+                        eng, full_cfg=full_cfg
+                    )
                     return br, ns, nw, nt
                 except Exception as e:
                     err = str(e)
                     _data_log(
                         "system",
-                        {"event": "dual_engine_settle_swing_error", "branch": br, "error": err[:800], "at": iso(utc_now())},
+                        {
+                            "event": "dual_engine_settle_swing_error",
+                            "branch": br,
+                            "error": err[:800],
+                            "at": iso(utc_now()),
+                        },
                     )
                     eng.state.last_error = err[:500]
                     return br, 0, 0, 0
 
             # ``return_exceptions=True`` — per-branch errors already set ``eng.state.last_error`` in ``_branch_settle_cycle``.
-            await asyncio.gather(*[_branch_settle_cycle(br) for br in branch_order], return_exceptions=True)
+            await asyncio.gather(
+                *[_branch_settle_cycle(br) for br in branch_order],
+                return_exceptions=True,
+            )
 
             if effective_live_engine_running(cfg):
                 el = engines[BRANCH_LIVE]
@@ -110,7 +128,12 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                     err = str(e)
                     _data_log(
                         "system",
-                        {"event": "dual_engine_tick_error", "branch": BRANCH_LIVE, "error": err[:800], "at": iso(utc_now())},
+                        {
+                            "event": "dual_engine_tick_error",
+                            "branch": BRANCH_LIVE,
+                            "error": err[:800],
+                            "at": iso(utc_now()),
+                        },
                     )
                     el.state.last_error = err[:500]
             # When Live is off, labs used to tick with zero spacing → three parallel-ish series scans + order books
@@ -120,8 +143,16 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                 lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
                 if _lab_branch_tick_enabled(br, lc):
                     # Per-lab fraction nudger when auto_optimize is on — disabled while scheduled optimizer runs.
-                    oc0 = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
-                    if tick % 25 == 0 and bool(lc.get("auto_optimize")) and not bool(oc0.get("enabled")):
+                    oc0 = (
+                        cfg.get("optimizer")
+                        if isinstance(cfg.get("optimizer"), dict)
+                        else {}
+                    )
+                    if (
+                        tick % 25 == 0
+                        and bool(lc.get("auto_optimize"))
+                        and not bool(oc0.get("enabled"))
+                    ):
                         try:
                             await maybe_auto_optimize(eng_live.store, br)
                         except Exception as e:
@@ -204,9 +235,13 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
                 if _lab_branch_tick_enabled(br, lc):
                     eng = engines.get(br)
                     if eng:
-                        lab_snap_items.append((br, snapshot_equity(eng, full_cfg=full_cfg)))
+                        lab_snap_items.append(
+                            (br, snapshot_equity(eng, full_cfg=full_cfg))
+                        )
             if lab_snap_items:
-                results = await asyncio.gather(*[t for _, t in lab_snap_items], return_exceptions=True)
+                results = await asyncio.gather(
+                    *[t for _, t in lab_snap_items], return_exceptions=True
+                )
                 for (br, _), res in zip(lab_snap_items, results):
                     if isinstance(res, BaseException):
                         err = str(res)
@@ -272,7 +307,11 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
             err = str(e)
             _data_log(
                 "system",
-                {"event": "dual_engine_loop_error", "error": err[:800], "at": iso(utc_now())},
+                {
+                    "event": "dual_engine_loop_error",
+                    "error": err[:800],
+                    "at": iso(utc_now()),
+                },
             )
             el = engines.get(BRANCH_LIVE)
             if el:
@@ -287,7 +326,9 @@ async def dual_engine_loop(engines: dict[str, TradingEngine], stop_event: asynci
         poll_candidates_end: list[float] = [poll_live]
         for lk in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             blk = full_cfg.get(lk) if isinstance(full_cfg.get(lk), dict) else {}
-            poll_candidates_end.append(float((blk or {}).get("poll_seconds") or poll_live))
+            poll_candidates_end.append(
+                float((blk or {}).get("poll_seconds") or poll_live)
+            )
         poll = max(poll_candidates_end)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=poll)

@@ -1,4 +1,5 @@
 """Optimizer read/write endpoints (internal pulse / mutations run in the backend)."""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -8,7 +9,11 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 
-from ..lab_breeding import LABS_BREEDING_VERSION, build_labs_breeding_personality_radar, build_labs_breeding_tree_snapshot
+from ..lab_breeding import (
+    LABS_BREEDING_VERSION,
+    build_labs_breeding_personality_radar,
+    build_labs_breeding_tree_snapshot,
+)
 from ..lab_communication import peek_engine_council_signal
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
 from .. import state
@@ -30,7 +35,9 @@ def _json_finite_deep(obj: Any) -> Any:
 
 
 @router.get("/recommendations")
-async def optimizer_recommendations(limit: int = Query(30, ge=1, le=200)) -> dict[str, Any]:
+async def optimizer_recommendations(
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
     cfg = await state.store.load_config()
     rows = await state.store.recent_optimizer_recommendations(limit=limit)
     return {"config": cfg.get("optimizer") or {}, "rows": rows}
@@ -84,12 +91,16 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
     ):
         if k in body:
             v = body[k]
-            if k in (
-                "max_rows_per_table",
-                "max_history",
-                "min_trades_for_optimize",
-                "min_profitable_trades",
-            ) and v is not None:
+            if (
+                k
+                in (
+                    "max_rows_per_table",
+                    "max_history",
+                    "min_trades_for_optimize",
+                    "min_profitable_trades",
+                )
+                and v is not None
+            ):
                 try:
                     nxt[k] = int(v)
                 except (TypeError, ValueError):
@@ -151,7 +162,9 @@ def _breeding_minutes_ago(iso_s: str) -> float | None:
         t = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
         if t.tzinfo is None:
             t = t.replace(tzinfo=dt.timezone.utc)
-        return max(0.0, (dt.datetime.now(tz=dt.timezone.utc) - t).total_seconds() / 60.0)
+        return max(
+            0.0, (dt.datetime.now(tz=dt.timezone.utc) - t).total_seconds() / 60.0
+        )
     except (TypeError, ValueError):
         return None
 
@@ -183,7 +196,9 @@ def _labs_breeding_child_status_row(c: dict) -> dict:
         "engine_branch": c.get("engine_branch"),
         "traits": c.get("traits") if isinstance(c.get("traits"), dict) else {},
         "origin": origin_out,
-        "rules_n": len(lab.get("rules") or []) if isinstance(lab.get("rules"), list) else 0,
+        "rules_n": len(lab.get("rules") or [])
+        if isinstance(lab.get("rules"), list)
+        else 0,
         "balance_fraction_per_window": lab.get("balance_fraction_per_window"),
         "window_minutes": lab.get("window_minutes"),
         "paper_balance_cents": lab.get("paper_balance_cents"),
@@ -215,7 +230,9 @@ async def optimizer_status() -> OptimizerStatusResponse:
     try:
         tree_snap = build_labs_breeding_tree_snapshot(oc, cfg)
     except Exception:
-        logger.exception("build_labs_breeding_tree_snapshot failed — returning minimal tree payload")
+        logger.exception(
+            "build_labs_breeding_tree_snapshot failed — returning minimal tree payload"
+        )
         tree_snap = {
             "version": LABS_BREEDING_VERSION,
             "nodes": [],
@@ -226,8 +243,15 @@ async def optimizer_status() -> OptimizerStatusResponse:
     try:
         radar = build_labs_breeding_personality_radar(cfg)
     except Exception:
-        logger.exception("build_labs_breeding_personality_radar failed — returning minimal radar payload")
-        radar = {"dimensions": [], "series": [], "rows": [], "error": "radar_unavailable"}
+        logger.exception(
+            "build_labs_breeding_personality_radar failed — returning minimal radar payload"
+        )
+        radar = {
+            "dimensions": [],
+            "series": [],
+            "rows": [],
+            "error": "radar_unavailable",
+        }
     try:
         acc = float(oc.get("acceptance_rate_pct") or 0.0)
     except (TypeError, ValueError):
@@ -249,21 +273,41 @@ async def optimizer_status() -> OptimizerStatusResponse:
         "last_status": str(oc.get("last_status") or ""),
         "last_error": str(oc.get("last_error") or ""),
         "next_tick_preview": str(oc.get("next_tick_preview") or "")[:1200],
-        "proposal_history": [x for x in (oc.get("proposal_history") or []) if isinstance(x, dict)][:50],
+        "proposal_history": [
+            x for x in (oc.get("proposal_history") or []) if isinstance(x, dict)
+        ][:50],
         # LABS BREEDING — fully automatic, invisible, continuous replacement (4 active slots only)
-        "labs_breeding_log": [x for x in (oc.get("labs_breeding_log") or []) if isinstance(x, dict)][:64],
+        "labs_breeding_log": [
+            x for x in (oc.get("labs_breeding_log") or []) if isinstance(x, dict)
+        ][:64],
         "labs_breeding_children": [
-            _labs_breeding_child_status_row(x) for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)
+            _labs_breeding_child_status_row(x)
+            for x in (oc.get("labs_breeding_children") or [])
+            if isinstance(x, dict)
         ][:10],
-        "labs_breeding_death_chamber": [x for x in (oc.get("labs_breeding_death_chamber") or []) if isinstance(x, dict)][:10],
-        "labs_breeding_lineage_history": [x for x in (oc.get("labs_breeding_lineage_history") or []) if isinstance(x, dict)][:40],
+        "labs_breeding_death_chamber": [
+            x
+            for x in (oc.get("labs_breeding_death_chamber") or [])
+            if isinstance(x, dict)
+        ][:10],
+        "labs_breeding_lineage_history": [
+            x
+            for x in (oc.get("labs_breeding_lineage_history") or [])
+            if isinstance(x, dict)
+        ][:40],
         "labs_breeding_tree_snapshot": tree_snap,
         "labs_breeding_version": LABS_BREEDING_VERSION,
         # LABS BREEDING — radar chart + Optimizer/Breeder toggle (Settings > Optimizer > Breeder).
         "labs_breeding_personality_radar": radar,
-        "labs_breeding_last_generation_iso": str(oc.get("labs_breeding_last_generation_iso") or ""),
-        "labs_breeding_replace_cooldown_until": str(oc.get("labs_breeding_replace_cooldown_until") or ""),
-        "internal_optimizer_trace": [x for x in (oc.get("internal_optimizer_trace") or []) if isinstance(x, dict)][:30],
+        "labs_breeding_last_generation_iso": str(
+            oc.get("labs_breeding_last_generation_iso") or ""
+        ),
+        "labs_breeding_replace_cooldown_until": str(
+            oc.get("labs_breeding_replace_cooldown_until") or ""
+        ),
+        "internal_optimizer_trace": [
+            x for x in (oc.get("internal_optimizer_trace") or []) if isinstance(x, dict)
+        ][:30],
         "advanced_metrics_last": dict(oc.get("advanced_metrics_last") or {}),
         "acceptance_rate_pct": acc,
     }

@@ -158,7 +158,11 @@ def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
     try:
         return max(
             0,
-            int(lab.get("paper_balance_cents") or full_cfg.get("paper_balance_cents") or 500_000),
+            int(
+                lab.get("paper_balance_cents")
+                or full_cfg.get("paper_balance_cents")
+                or 500_000
+            ),
         )
     except (TypeError, ValueError):
         return 500_000
@@ -204,7 +208,9 @@ def effective_live_engine_running(full_cfg: dict[str, Any]) -> bool:
     )
 
 
-def effective_parent_lab_engine_running(lab: dict[str, Any] | None, lab_key: str) -> bool:
+def effective_parent_lab_engine_running(
+    lab: dict[str, Any] | None, lab_key: str
+) -> bool:
     """
     Parent lab ``lab_a``…``lab_e`` engines.
 
@@ -296,7 +302,9 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
     return None
 
 
-def effective_swing_exit_implied_drop_pct(full_cfg: dict[str, Any], branch: str) -> float:
+def effective_swing_exit_implied_drop_pct(
+    full_cfg: dict[str, Any], branch: str
+) -> float:
     """
     Minimum adverse move in implied YES (percentage points, e.g. 50.0 = 0.50 probability) to trigger
     a paper swing exit. 0 = disabled. Lab branches may override via ``lab_* .swing_exit_implied_drop_pct``.
@@ -319,7 +327,9 @@ def effective_swing_exit_implied_drop_pct(full_cfg: dict[str, Any], branch: str)
     return max(0.0, min(95.0, v))
 
 
-def effective_trading_cfg_for_fees(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]:
+def effective_trading_cfg_for_fees(
+    full_cfg: dict[str, Any], branch: str
+) -> dict[str, Any]:
     """Branch-merged config when the engine runs that branch; otherwise pulse-style overlay (for settlement)."""
     merged = merge_branch_config(full_cfg, branch)
     if merged is not None:
@@ -429,7 +439,9 @@ for _cb in BRANCH_CHILD_LABS:
     _PATIENT_STOP_DEFAULTS[_cb] = (True, -9.0, 22)
 
 
-def apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg: dict[str, Any], branch: str, out: dict[str, Any]) -> None:
+def apply_patient_stop_loss_defaults_to_merged_cfg(
+    full_cfg: dict[str, Any], branch: str, out: dict[str, Any]
+) -> None:
     """
     After ``merge_branch_config`` builds ``out``, fill patient stop-loss keys from the branch lab dict / live root,
     falling back to per-branch defaults (not Live globals on lab rows).
@@ -473,7 +485,9 @@ def effective_paper_fee_bps(full_cfg: dict[str, Any], branch: str) -> float:
     return paper_fee_bps_from_cfg(effective_trading_cfg_for_fees(full_cfg, branch))
 
 
-def resolve_paper_fee_model(extra: dict[str, Any], full_cfg: dict[str, Any], branch: str) -> str:
+def resolve_paper_fee_model(
+    extra: dict[str, Any], full_cfg: dict[str, Any], branch: str
+) -> str:
     """
     Prefer ``paper_fee_model`` stored on the trade at entry.
 
@@ -484,13 +498,17 @@ def resolve_paper_fee_model(extra: dict[str, Any], full_cfg: dict[str, Any], bra
     return "bps"
 
 
-def resolve_kalshi_fee_multiplier(extra: dict[str, Any], full_cfg: dict[str, Any], branch: str) -> float:
+def resolve_kalshi_fee_multiplier(
+    extra: dict[str, Any], full_cfg: dict[str, Any], branch: str
+) -> float:
     if extra.get("kalshi_fee_multiplier") is not None:
         try:
             return max(0.0, min(10.0, float(extra["kalshi_fee_multiplier"])))
         except (TypeError, ValueError):
             pass
-    return kalshi_fee_multiplier_from_cfg(effective_trading_cfg_for_fees(full_cfg, branch))
+    return kalshi_fee_multiplier_from_cfg(
+        effective_trading_cfg_for_fees(full_cfg, branch)
+    )
 
 
 # --- Dashboard optimizer radar (per-branch overlays + focus spokes) ---
@@ -501,7 +519,12 @@ RADAR_AXIS_DEF: list[dict[str, Any]] = [
     {"key": "poll_sec", "label": "Poll (s)", "lo": 3.0, "hi": 120.0},
     {"key": "yes_floor", "label": "YES floor (rules)", "lo": 35.0, "hi": 95.0},
     {"key": "rule_min_m", "label": "Rule min min left", "lo": 0.0, "hi": 30.0},
-    {"key": "min_contracts", "label": "Min position size (contracts)", "lo": 1.0, "hi": 100.0},
+    {
+        "key": "min_contracts",
+        "label": "Min position size (contracts)",
+        "lo": 1.0,
+        "hi": 100.0,
+    },
     {"key": "no_bet_cut", "label": "NO-bet below %", "lo": 0.0, "hi": 80.0},
     {"key": "dev_yes_pct", "label": "Dev sim YES %", "lo": 0.0, "hi": 95.0},
     {"key": "swing_drop", "label": "Swing exit %", "lo": 0.0, "hi": 60.0},
@@ -587,15 +610,27 @@ def _trading_radar_raw_from_merged(m: dict[str, Any]) -> dict[str, float]:
 
 def _optimizer_radar_scalars(opt: dict[str, Any]) -> dict[str, float]:
     return {
-        "opt_loss": float(max(1, min(12, _safe_int_radar(opt.get("loss_streak_trigger"), 3)))),
-        "opt_thresh": float(max(1, min(5, _safe_int_radar(opt.get("threshold_step_pct"), 2)))),
-        "opt_minute_step": float(max(1, min(5, _safe_int_radar(opt.get("minute_step"), 2)))),
-        "opt_min_tr": float(max(2, min(80, _safe_int_radar(opt.get("min_trades_for_optimize"), 8)))),
-        "opt_regime_h": float(max(1, min(72, _safe_int_radar(opt.get("regime_lookback_hours"), 4)))),
+        "opt_loss": float(
+            max(1, min(12, _safe_int_radar(opt.get("loss_streak_trigger"), 3)))
+        ),
+        "opt_thresh": float(
+            max(1, min(5, _safe_int_radar(opt.get("threshold_step_pct"), 2)))
+        ),
+        "opt_minute_step": float(
+            max(1, min(5, _safe_int_radar(opt.get("minute_step"), 2)))
+        ),
+        "opt_min_tr": float(
+            max(2, min(80, _safe_int_radar(opt.get("min_trades_for_optimize"), 8)))
+        ),
+        "opt_regime_h": float(
+            max(1, min(72, _safe_int_radar(opt.get("regime_lookback_hours"), 4)))
+        ),
     }
 
 
-def branch_radar_profile(full_cfg: dict[str, Any], branch: str, opt: dict[str, Any] | None) -> dict[str, float]:
+def branch_radar_profile(
+    full_cfg: dict[str, Any], branch: str, opt: dict[str, Any] | None
+) -> dict[str, float]:
     """Numeric snapshot for one branch + shared optimizer slider scalars (same on every branch)."""
     oc = opt if isinstance(opt, dict) else {}
     if branch == BRANCH_LIVE:
@@ -633,7 +668,11 @@ def radar_focus_from_history(
     from collections import defaultdict
 
     scores: dict[str, float] = defaultdict(float)
-    slice_h = change_history[-n_recent:] if len(change_history) > n_recent else list(change_history)
+    slice_h = (
+        change_history[-n_recent:]
+        if len(change_history) > n_recent
+        else list(change_history)
+    )
     w = 1.0
     for h in reversed(slice_h):
         if not isinstance(h, dict):
@@ -642,7 +681,9 @@ def radar_focus_from_history(
         aft = h.get("after") if isinstance(h.get("after"), dict) else {}
 
         def changed(kb: str) -> bool:
-            return bef.get(kb) != aft.get(kb) and (aft.get(kb) is not None or bef.get(kb) is not None)
+            return bef.get(kb) != aft.get(kb) and (
+                aft.get(kb) is not None or bef.get(kb) is not None
+            )
 
         if changed("yes_floor_pct"):
             scores["yes_floor"] += w
@@ -688,10 +729,14 @@ def radar_focus_from_history(
     return {k: min(1.0, float(scores.get(k, 0.0)) / mx) for k in RADAR_AXIS_KEYS}
 
 
-def build_optimizer_radar_payload(full_cfg: dict[str, Any], opt_blk: dict[str, Any]) -> dict[str, Any]:
+def build_optimizer_radar_payload(
+    full_cfg: dict[str, Any], opt_blk: dict[str, Any]
+) -> dict[str, Any]:
     """Dashboard ``optimizer_activity.radar``: per-branch normalized polygons + raw + focus."""
     opt = opt_blk if isinstance(opt_blk, dict) else {}
-    ch = opt.get("change_history") if isinstance(opt.get("change_history"), list) else []
+    ch = (
+        opt.get("change_history") if isinstance(opt.get("change_history"), list) else []
+    )
     pt = opt.get("pulse_trace") if isinstance(opt.get("pulse_trace"), list) else []
     profiles_raw: dict[str, dict[str, float]] = {}
     profiles_norm: dict[str, dict[str, float]] = {}
@@ -708,7 +753,10 @@ def build_optimizer_radar_payload(full_cfg: dict[str, Any], opt_blk: dict[str, A
         profiles_norm[slug] = radar_norm_profile(raw)
     focus = radar_focus_from_history(ch, pulse_trace=pt)
     return {
-        "axes": [{"key": d["key"], "label": d["label"], "lo": d["lo"], "hi": d["hi"]} for d in RADAR_AXIS_DEF],
+        "axes": [
+            {"key": d["key"], "label": d["label"], "lo": d["lo"], "hi": d["hi"]}
+            for d in RADAR_AXIS_DEF
+        ],
         "profiles_raw": profiles_raw,
         "profiles_norm": profiles_norm,
         "axis_focus": focus,

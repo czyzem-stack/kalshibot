@@ -35,7 +35,9 @@ class KalshiFeesTest(unittest.TestCase):
         self.assertEqual(debit, int(debit))
 
     def test_sell_credit_non_negative(self) -> None:
-        credit, _br = kalshi_sell_credit_cents(2.0, 0.42, maker=False, fee_multiplier=1.0)
+        credit, _br = kalshi_sell_credit_cents(
+            2.0, 0.42, maker=False, fee_multiplier=1.0
+        )
         self.assertGreaterEqual(credit, 0)
 
 

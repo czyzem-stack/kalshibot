@@ -26,7 +26,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         resp = await call_next(request)
         path = request.url.path
         if path.startswith("/api/dashboard"):
@@ -35,7 +37,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        resp.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
         return resp
 
 
@@ -46,7 +50,9 @@ class ApiBearerAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._token = token.strip()
 
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         if not self._token:
             return await call_next(request)
         if request.method == "OPTIONS":
@@ -60,6 +66,8 @@ class ApiBearerAuthMiddleware(BaseHTTPMiddleware):
             if auth != expected:
                 return JSONResponse(
                     status_code=401,
-                    content={"detail": "Unauthorized — set Authorization: Bearer <KALSHI_API_BEARER_TOKEN>."},
+                    content={
+                        "detail": "Unauthorized — set Authorization: Bearer <KALSHI_API_BEARER_TOKEN>."
+                    },
                 )
         return await call_next(request)

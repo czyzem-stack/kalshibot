@@ -3,7 +3,11 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .branch_config import _lab_key_for_branch, live_paper_trading_enabled, pulse_effective_config
+from .branch_config import (
+    _lab_key_for_branch,
+    live_paper_trading_enabled,
+    pulse_effective_config,
+)
 from .engine import (
     asset_cfg_enabled,
     build_effective_rules,
@@ -29,7 +33,12 @@ from .persistence import Store
 def market_passes_subtitle_excludes(market: dict[str, Any], parts: list[str]) -> bool:
     if not parts:
         return True
-    blob = str(market.get("yes_sub_title") or market.get("subtitle") or market.get("title") or "").lower()
+    blob = str(
+        market.get("yes_sub_title")
+        or market.get("subtitle")
+        or market.get("title")
+        or ""
+    ).lower()
     return not any(p in blob for p in parts)
 
 
@@ -64,7 +73,11 @@ async def fetch_market_pulse(
     if lk is not None:
         trade_mode = "simulate"
         lab_blk = full.get(lk) if isinstance(full.get(lk), dict) else {}
-        paper_cents = int(lab_blk.get("paper_balance_cents") or full.get("paper_balance_cents") or 500_000)
+        paper_cents = int(
+            lab_blk.get("paper_balance_cents")
+            or full.get("paper_balance_cents")
+            or 500_000
+        )
     else:
         trade_mode = "simulate" if live_paper_trading_enabled(full) else "live"
         paper_cents = int(full.get("paper_balance_cents") or 500_000)
@@ -145,7 +158,9 @@ async def fetch_market_pulse(
                         "asset_id": str(asset_id),
                         "asset_label": label,
                         "ticker": ticker,
-                        "yes_title": str(m.get("yes_sub_title") or m.get("subtitle") or "")[:72],
+                        "yes_title": str(
+                            m.get("yes_sub_title") or m.get("subtitle") or ""
+                        )[:72],
                         "close_time": close_time or None,
                         "last_price_dollars": last_px_s,
                         "yes_mid": None,
@@ -176,7 +191,9 @@ async def fetch_market_pulse(
                 and prob is not None
                 and prob >= dev_yes_floor
             ):
-                matched.append(f"DEV ≥{dev_yes_floor * 100:.0f}% implied YES (sim only)")
+                matched.append(
+                    f"DEV ≥{dev_yes_floor * 100:.0f}% implied YES (sim only)"
+                )
 
             if picked is not None:
                 if rule_trade_side(picked) == "no" and has_no_book and na is not None:
@@ -210,10 +227,14 @@ async def fetch_market_pulse(
                     "asset_id": str(asset_id),
                     "asset_label": label,
                     "ticker": ticker,
-                    "yes_title": str(m.get("yes_sub_title") or m.get("subtitle") or "")[:72],
+                    "yes_title": str(m.get("yes_sub_title") or m.get("subtitle") or "")[
+                        :72
+                    ],
                     "close_time": close_time or None,
                     "last_price_dollars": last_px_s,
-                    "yes_mid": round((yb + ya) / 2.0, 4) if yb is not None and ya is not None else round(float(ya), 4),
+                    "yes_mid": round((yb + ya) / 2.0, 4)
+                    if yb is not None and ya is not None
+                    else round(float(ya), 4),
                     "yes_prob_pct": int(round(prob * 100.0)),
                     "bias": _bias_from_prob(prob),
                     "mins_left": round(mins, 1),
@@ -225,7 +246,13 @@ async def fetch_market_pulse(
                 }
             )
 
-    rows.sort(key=lambda r: (r.get("asset_id") or "", r.get("mins_left") is None, r.get("mins_left") or 999))
+    rows.sort(
+        key=lambda r: (
+            r.get("asset_id") or "",
+            r.get("mins_left") is None,
+            r.get("mins_left") or 999,
+        )
+    )
 
     return {
         "branch": branch,

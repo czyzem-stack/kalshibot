@@ -99,9 +99,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     Emits `X-Request-Id` on the response. Runs outermost in the ASGI stack (add last in FastAPI).
     """
 
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         structlog.contextvars.clear_contextvars()
-        existing = (request.headers.get("x-request-id") or request.headers.get("X-Request-Id") or "").strip()
+        existing = (
+            request.headers.get("x-request-id")
+            or request.headers.get("X-Request-Id")
+            or ""
+        ).strip()
         request_id = existing or str(uuid.uuid4())
         structlog.contextvars.bind_contextvars(
             request_id=request_id,

@@ -53,7 +53,11 @@ async def maybe_auto_optimize(store: Store, branch: str) -> None:
 
     window = settled[:40]
     pnl = sum(int(t.get("pnl_cents") or 0) for t in window) / max(1, len(window))
-    frac = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+    frac = float(
+        lab.get("balance_fraction_per_window")
+        or cfg.get("balance_fraction_per_window")
+        or 0.03
+    )
 
     step = 0.003
     if pnl > 0:
@@ -64,7 +68,9 @@ async def maybe_auto_optimize(store: Store, branch: str) -> None:
         if random.random() < 0.2:
             frac = min(
                 MAX_BALANCE_FRACTION_PER_WINDOW,
-                max(MIN_BALANCE_FRACTION_PER_WINDOW, frac + random.uniform(-step, step)),
+                max(
+                    MIN_BALANCE_FRACTION_PER_WINDOW, frac + random.uniform(-step, step)
+                ),
             )
 
     lab = dict(lab)
@@ -73,5 +79,8 @@ async def maybe_auto_optimize(store: Store, branch: str) -> None:
     cfg = dict(cfg)
     cfg[lk] = lab
     await store.save_config(
-        cfg, history_branch="global", history_changed_by="auto_optimize", history_reason="lab_auto_tune"
+        cfg,
+        history_branch="global",
+        history_changed_by="auto_optimize",
+        history_reason="lab_auto_tune",
     )

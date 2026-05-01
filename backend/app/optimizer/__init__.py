@@ -22,4 +22,3 @@ __all__ = [
     "sharpe_approx",
     "volatility_dollars_from_equity_curve",
 ]
-

@@ -15,6 +15,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
+from .branch_config import BRANCH_CHILD_LABS, BRANCH_LABS
 from .settings_env import env
 from .types_kalshi import OpenMarketsResponse, OrderbookPayload
 
@@ -70,14 +71,23 @@ async def _backoff_sleep_after_429(r: httpx.Response, attempt: int) -> None:
     if wait <= 0:
         wait = _rate_limit_reset_sleep(r.headers) or 0.0
     if wait <= 0:
-        wait = min(env.kalshi_429_backoff_cap_s, env.kalshi_429_backoff_base_s * (2**attempt) + random.uniform(0, env.kalshi_429_jitter_s))
+        wait = min(
+            env.kalshi_429_backoff_cap_s,
+            env.kalshi_429_backoff_base_s * (2**attempt)
+            + random.uniform(0, env.kalshi_429_jitter_s),
+        )
     wait = min(120.0, max(0.5, wait))
     await asyncio.sleep(wait)
 
 
 async def _backoff_sleep_after_transient_5xx(attempt: int) -> None:
     """Same formula as public GET retries for 502/503/504."""
-    await asyncio.sleep(min(env.kalshi_5xx_backoff_cap_s, env.kalshi_5xx_backoff_base_s * (2**attempt) + random.random()))
+    await asyncio.sleep(
+        min(
+            env.kalshi_5xx_backoff_cap_s,
+            env.kalshi_5xx_backoff_base_s * (2**attempt) + random.random(),
+        )
+    )
 
 
 def _private_key_pem_from_keyring() -> str | None:
@@ -86,7 +96,9 @@ def _private_key_pem_from_keyring() -> str | None:
     try:
         keyring = importlib.import_module("keyring")
     except ImportError as e:
-        raise RuntimeError("KALSHI_USE_KEYRING=1 but `keyring` is not installed. Run: pip install keyring") from e
+        raise RuntimeError(
+            "KALSHI_USE_KEYRING=1 but `keyring` is not installed. Run: pip install keyring"
+        ) from e
     get_pw = getattr(keyring, "get_password", None)
     if not callable(get_pw):
         raise RuntimeError("keyring.get_password is not available")
@@ -99,14 +111,20 @@ def _private_key_pem_from_keyring() -> str | None:
 def _load_private_key() -> Any:
     if env.kalshi_private_key_pem:
         pem = env.kalshi_private_key_pem.replace("\\n", "\n").encode()
-        return serialization.load_pem_private_key(pem, password=None, backend=default_backend())
+        return serialization.load_pem_private_key(
+            pem, password=None, backend=default_backend()
+        )
     if env.kalshi_private_key_path:
         data = Path(env.kalshi_private_key_path).read_bytes()
-        return serialization.load_pem_private_key(data, password=None, backend=default_backend())
+        return serialization.load_pem_private_key(
+            data, password=None, backend=default_backend()
+        )
     kr = _private_key_pem_from_keyring()
     if kr:
         pem = kr.replace("\\n", "\n").encode()
-        return serialization.load_pem_private_key(pem, password=None, backend=default_backend())
+        return serialization.load_pem_private_key(
+            pem, password=None, backend=default_backend()
+        )
     raise RuntimeError(
         "Set KALSHI_PRIVATE_KEY_PEM or KALSHI_PRIVATE_KEY_PATH, or KALSHI_USE_KEYRING=1 with keyring secret stored."
     )
@@ -116,29 +134,38 @@ def _sign(private_key: Any, timestamp_ms: str, method: str, sign_path: str) -> s
     message = f"{timestamp_ms}{method.upper()}{sign_path}".encode("utf-8")
     sig = private_key.sign(
         message,
-        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH
+        ),
         hashes.SHA256(),
     )
     return base64.b64encode(sig).decode("utf-8")
 
 
 # Shared HTTP connection pool: one AsyncClient for the whole process (set from FastAPI lifespan).
-_DEFAULT_HTTP_TIMEOUT = httpx.Timeout(env.kalshi_http_timeout_s, connect=env.kalshi_http_connect_timeout_s)
-_DEFAULT_LIMITS = httpx.Limits(max_connections=env.kalshi_http_max_connections, max_keepalive_connections=env.kalshi_http_max_keepalive_connections)
+_DEFAULT_HTTP_TIMEOUT = httpx.Timeout(
+    env.kalshi_http_timeout_s, connect=env.kalshi_http_connect_timeout_s
+)
+_DEFAULT_LIMITS = httpx.Limits(
+    max_connections=env.kalshi_http_max_connections,
+    max_keepalive_connections=env.kalshi_http_max_keepalive_connections,
+)
 
 
 def new_shared_http_client() -> httpx.AsyncClient:
     """Single process-wide pool; use from FastAPI lifespan and ``require_kalshi`` lazy path."""
-    return httpx.AsyncClient(timeout=_DEFAULT_HTTP_TIMEOUT, limits=_DEFAULT_LIMITS, http2=False)
+    return httpx.AsyncClient(
+        timeout=_DEFAULT_HTTP_TIMEOUT, limits=_DEFAULT_LIMITS, http2=False
+    )
 
 
 def series_tickers_from_full_config(full_cfg: dict[str, Any]) -> list[str]:
     """
-    Union of ``series_ticker`` from global ``assets`` and each lab block so pre-warm matches all branches.
+    Union of ``series_ticker`` from global ``assets`` and each parent + child lab block so pre-warm matches all branches.
     """
     found: set[str] = set()
     blocks: list[dict[str, Any]] = [full_cfg]
-    for k in ("lab_a", "lab_b", "lab_c", "lab_d"):
+    for k in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
         b = full_cfg.get(k)
         if isinstance(b, dict):
             blocks.append(b)
@@ -155,7 +182,9 @@ def series_tickers_from_full_config(full_cfg: dict[str, Any]) -> list[str]:
 class KalshiClient:
     """Class-level caches: all ``TradingEngine`` instances + dashboard share one /markets + orderbook view per key."""
 
-    _open_markets_cache: dict[str, tuple[float, OpenMarketsResponse | dict[str, Any]]] = {}
+    _open_markets_cache: dict[
+        str, tuple[float, OpenMarketsResponse | dict[str, Any]]
+    ] = {}
     _orderbook_cache: dict[str, tuple[float, OrderbookPayload | dict[str, Any]]] = {}
     _single_market_cache: dict[str, tuple[float, dict[str, Any]]] = {}
     OPEN_MARKETS_CACHE_TTL: float = 10.0
@@ -178,11 +207,19 @@ class KalshiClient:
         self.base = env.base_rest_url.rstrip("/")
         self._key_id = env.kalshi_api_key_id
         self._pk: Any | None = None
-        self._http = http_client if http_client is not None else new_shared_http_client()
+        self._http = (
+            http_client if http_client is not None else new_shared_http_client()
+        )
         self._own_http = http_client is None
 
     @classmethod
-    def apply_cold_start_cache_ttls(cls, *, open_markets: float, orderbooks: float, single_market: float | None = None) -> None:
+    def apply_cold_start_cache_ttls(
+        cls,
+        *,
+        open_markets: float,
+        orderbooks: float,
+        single_market: float | None = None,
+    ) -> None:
         """Widen TTLs for the first minutes after process start; call ``apply_steady_state_cache_ttls`` after pre-warm."""
         cls.OPEN_MARKETS_CACHE_TTL = max(5.0, open_markets)
         cls.ORDERBOOK_CACHE_TTL = max(5.0, orderbooks)
@@ -198,9 +235,17 @@ class KalshiClient:
         single_market: float | None = None,
     ) -> None:
         """Restore defaults from env (or passed values) so steady state does not use cold TTL forever."""
-        cls.OPEN_MARKETS_CACHE_TTL = open_markets if open_markets is not None else float(env.kalshi_open_markets_ttl_s)
-        cls.ORDERBOOK_CACHE_TTL = orderbooks if orderbooks is not None else float(env.kalshi_orderbook_ttl_s)
-        cls.SINGLE_MARKET_CACHE_TTL_S = single_market if single_market is not None else 2.5
+        cls.OPEN_MARKETS_CACHE_TTL = (
+            open_markets
+            if open_markets is not None
+            else float(env.kalshi_open_markets_ttl_s)
+        )
+        cls.ORDERBOOK_CACHE_TTL = (
+            orderbooks if orderbooks is not None else float(env.kalshi_orderbook_ttl_s)
+        )
+        cls.SINGLE_MARKET_CACHE_TTL_S = (
+            single_market if single_market is not None else 2.5
+        )
 
     async def aclose(self) -> None:
         if self._own_http and self._http is not None:
@@ -226,7 +271,11 @@ class KalshiClient:
         """# PHASE 2: ``https://…/trade-api/v2`` → ``wss://…/trade-api/ws/v2``."""
         b = str(rest_base or "").rstrip("/")
         if b.endswith("/trade-api/v2"):
-            return b.replace("https://", "wss://").replace("http://", "ws://").replace("/trade-api/v2", "/trade-api/ws/v2")
+            return (
+                b.replace("https://", "wss://")
+                .replace("http://", "ws://")
+                .replace("/trade-api/v2", "/trade-api/ws/v2")
+            )
         if "demo-api.kalshi.co" in b:
             return "wss://demo-api.kalshi.co/trade-api/ws/v2"
         return "wss://api.elections.kalshi.com/trade-api/ws/v2"
@@ -252,7 +301,9 @@ class KalshiClient:
         return list(out)
 
     @classmethod
-    def record_ws_orderbook_rest_shape(cls, ticker: str, orderbook_payload: OrderbookPayload | dict[str, Any]) -> None:
+    def record_ws_orderbook_rest_shape(
+        cls, ticker: str, orderbook_payload: OrderbookPayload | dict[str, Any]
+    ) -> None:
         """# PHASE 2: Push WS snapshot/delta-derived book into the same cache REST readers use."""
         tk = str(ticker or "").strip()
         if not tk or not isinstance(orderbook_payload, dict):
@@ -423,4 +474,3 @@ async def prewarm_open_markets_for_config(
 
     await asyncio.gather(*[one(s) for s in series], return_exceptions=True)
     KalshiClient.prewarm_complete = True
-

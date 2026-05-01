@@ -1,9 +1,10 @@
 # pip install pre-commit && pre-commit install
-# Ruff only by default — run mypy/black manually or extend hooks as needed.
+# CI runs the same linters without mutating the tree: ``ruff check backend`` + ``ruff format --check backend``.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.3
+    rev: v0.9.10
     hooks:
       - id: ruff
-        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
         files: ^backend/

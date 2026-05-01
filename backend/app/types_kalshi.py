@@ -47,4 +47,3 @@ class WsSubscription:
     msg_id: int
     channels: list[str]
     market_tickers: list[str] | None = None
-

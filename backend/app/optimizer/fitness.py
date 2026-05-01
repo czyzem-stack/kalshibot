@@ -26,7 +26,9 @@ def max_drawdown_cents_from_cumulative(cumulative_equity_cents: Sequence[int]) -
     return max(0, worst)
 
 
-def volatility_dollars_from_equity_curve(cumulative_equity_cents: Sequence[int]) -> float:
+def volatility_dollars_from_equity_curve(
+    cumulative_equity_cents: Sequence[int],
+) -> float:
     """Std dev of step-to-step equity changes in dollars (empty / single -> 0)."""
     if len(cumulative_equity_cents) < 2:
         return 0.0
@@ -44,7 +46,9 @@ def volatility_dollars_from_equity_curve(cumulative_equity_cents: Sequence[int])
         return 0.0
 
 
-def sharpe_approx(per_trade_pnls_dollars: Sequence[float], *, eps: float = 1e-9) -> float:
+def sharpe_approx(
+    per_trade_pnls_dollars: Sequence[float], *, eps: float = 1e-9
+) -> float:
     """
     Very rough per-trade Sharpe: mean / std of dollar PnLs (not annualized).
     """
@@ -150,14 +154,29 @@ def is_statistically_better(
 
     ``control_scores`` should be one composite score per control lab (B,C,D) with enough data; filter NaNs.
     """
-    ctrl_scores = [float(x) for x in control_scores if isinstance(x, (int, float)) and x == x]
+    ctrl_scores = [
+        float(x) for x in control_scores if isinstance(x, (int, float)) and x == x
+    ]
     med_ctrl = float(sorted(ctrl_scores)[len(ctrl_scores) // 2]) if ctrl_scores else 0.0
-    score_ok = bool(lab_a_score >= (1.0 + score_margin_pct) * med_ctrl) if ctrl_scores else False
+    score_ok = (
+        bool(lab_a_score >= (1.0 + score_margin_pct) * med_ctrl)
+        if ctrl_scores
+        else False
+    )
 
-    t_p = welch_one_sided_pvalue_approx(lab_a_per_trade_pnls_dollars, control_per_trade_pnls_dollars)
+    t_p = welch_one_sided_pvalue_approx(
+        lab_a_per_trade_pnls_dollars, control_per_trade_pnls_dollars
+    )
     mean_a = mean(lab_a_per_trade_pnls_dollars) if lab_a_per_trade_pnls_dollars else 0.0
-    mean_b = mean(control_per_trade_pnls_dollars) if control_per_trade_pnls_dollars else 0.0
-    t_ok = bool(t_p < alpha and mean_a > mean_b and len(lab_a_per_trade_pnls_dollars) >= 3 and len(control_per_trade_pnls_dollars) >= 3)
+    mean_b = (
+        mean(control_per_trade_pnls_dollars) if control_per_trade_pnls_dollars else 0.0
+    )
+    t_ok = bool(
+        t_p < alpha
+        and mean_a > mean_b
+        and len(lab_a_per_trade_pnls_dollars) >= 3
+        and len(control_per_trade_pnls_dollars) >= 3
+    )
 
     ok = score_ok or t_ok
     detail: dict[str, Any] = {

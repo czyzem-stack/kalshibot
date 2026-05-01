@@ -37,27 +37,41 @@ def _parse_legacy_optimizer_gate_until_iso(raw: Any) -> datetime | None:
         return None
 
 
-def _restore_legacy_optimizer_gate_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
+def _restore_legacy_optimizer_gate_baseline(
+    cfg: dict[str, Any], base: dict[str, Any]
+) -> None:
     """Restore yes-floors / lab thresholds from snapshot (legacy timed optimizer DB rows; JSON keys unchanged)."""
     oc = cfg.setdefault("optimizer", {})
     if not isinstance(oc, dict):
         return
-    for k in ("lab_b_yes_floor_pct", "lab_c_yes_floor_pct", "lab_d_yes_floor_pct", "lab_e_yes_floor_pct"):
+    for k in (
+        "lab_b_yes_floor_pct",
+        "lab_c_yes_floor_pct",
+        "lab_d_yes_floor_pct",
+        "lab_e_yes_floor_pct",
+    ):
         if k in base and base[k] is not None:
             oc[k] = base[k]
     labs = base.get("labs") if isinstance(base.get("labs"), dict) else {}
     for lk, patch in labs.items():
         if lk not in cfg or not isinstance(cfg.get(lk), dict):
             continue
-        if isinstance(patch, dict) and patch.get("no_bet_when_yes_below_pct") is not None:
+        if (
+            isinstance(patch, dict)
+            and patch.get("no_bet_when_yes_below_pct") is not None
+        ):
             cfg[lk]["no_bet_when_yes_below_pct"] = patch["no_bet_when_yes_below_pct"]
     oc.pop("emergency_diversify_revert_at", None)
     oc.pop("emergency_diversify_baseline", None)
 
 
-async def _maybe_revert_legacy_optimizer_gate_if_due(store: Any, cfg: dict[str, Any]) -> bool:
+async def _maybe_revert_legacy_optimizer_gate_if_due(
+    store: Any, cfg: dict[str, Any]
+) -> bool:
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
-    until = _parse_legacy_optimizer_gate_until_iso(oc.get("emergency_diversify_revert_at"))
+    until = _parse_legacy_optimizer_gate_until_iso(
+        oc.get("emergency_diversify_revert_at")
+    )
     base = oc.get("emergency_diversify_baseline")
     if until is None or not isinstance(base, dict):
         return False
@@ -94,9 +108,27 @@ _CATCHALL_MID_RULE: dict[str, Any] = {
 
 # Shared YES/NO bands for top-level Live + lab defaults (each lab gets its own list copy).
 _TRADING_RULES_BASE: tuple[dict[str, Any], ...] = (
-    {"name": "Low 42-52%", "min_prob": 0.42, "max_prob": 0.52, "min_minutes_left": 6.0, "max_minutes_left": 20.0},
-    {"name": "Mid 55-72%", "min_prob": 0.55, "max_prob": 0.72, "min_minutes_left": 4.0, "max_minutes_left": 18.0},
-    {"name": "High 78-94%", "min_prob": 0.78, "max_prob": 0.94, "min_minutes_left": 3.0, "max_minutes_left": 15.0},
+    {
+        "name": "Low 42-52%",
+        "min_prob": 0.42,
+        "max_prob": 0.52,
+        "min_minutes_left": 6.0,
+        "max_minutes_left": 20.0,
+    },
+    {
+        "name": "Mid 55-72%",
+        "min_prob": 0.55,
+        "max_prob": 0.72,
+        "min_minutes_left": 4.0,
+        "max_minutes_left": 18.0,
+    },
+    {
+        "name": "High 78-94%",
+        "min_prob": 0.78,
+        "max_prob": 0.94,
+        "min_minutes_left": 3.0,
+        "max_minutes_left": 15.0,
+    },
     {
         "name": "NO conviction 62-78%",
         "side": "no",
@@ -117,10 +149,35 @@ def _copy_trading_rules_default() -> list[dict[str, Any]]:
 def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
     """When global ``rules`` is empty, give breeders a wide BTC/ETH-friendly pack."""
     return [
-        {"name": "Breeder mid YES", "min_prob": 0.36, "max_prob": 0.82, "min_minutes_left": 1.5, "max_minutes_left": 22.0},
-        {"name": "Breeder low YES", "min_prob": 0.34, "max_prob": 0.54, "min_minutes_left": 1.5, "max_minutes_left": 18.0},
-        {"name": "Breeder high YES", "min_prob": 0.70, "max_prob": 0.95, "min_minutes_left": 1.5, "max_minutes_left": 16.0},
-        {"name": "Breeder NO lane", "side": "no", "min_prob": 0.52, "max_prob": 0.85, "min_minutes_left": 1.5, "max_minutes_left": 20.0},
+        {
+            "name": "Breeder mid YES",
+            "min_prob": 0.36,
+            "max_prob": 0.82,
+            "min_minutes_left": 1.5,
+            "max_minutes_left": 22.0,
+        },
+        {
+            "name": "Breeder low YES",
+            "min_prob": 0.34,
+            "max_prob": 0.54,
+            "min_minutes_left": 1.5,
+            "max_minutes_left": 18.0,
+        },
+        {
+            "name": "Breeder high YES",
+            "min_prob": 0.70,
+            "max_prob": 0.95,
+            "min_minutes_left": 1.5,
+            "max_minutes_left": 16.0,
+        },
+        {
+            "name": "Breeder NO lane",
+            "side": "no",
+            "min_prob": 0.52,
+            "max_prob": 0.85,
+            "min_minutes_left": 1.5,
+            "max_minutes_left": 20.0,
+        },
     ]
 
 
@@ -129,36 +186,173 @@ def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     Default **predator** templates on **disjoint minute bands** (reduces lockstep fills):
 
     * **C** — stalker: early kill-box (≤ ~7m)
-    * **D** — rips mid herd (7.5–14m)
-    * **E** — adaptive cut (14.25–17.75m)
+    * **D** — rips mid herd (7.5–14m); minute bands kept **poll-wide** (not ~1m needles) so ticks usually see the window.
+    * **E** — adaptive: **early** bands (~12–19m) plus **mid/late** (down to a few min left) so a 15m market is not
+      uncovered for ~80% of its life (old pack only had ``min_minutes_left`` ≥ 12.5m → no trades for most of the clock).
     * **B** — ambush late (≥ 18m)
     """
     if lab_key == "lab_b":
         return [
-            {"name": "B ambush NO 18–20.5m", "side": "no", "min_prob": 0.54, "max_prob": 0.84, "min_minutes_left": 18.0, "max_minutes_left": 20.5},
-            {"name": "B den NO 19.5–23m", "side": "no", "min_prob": 0.46, "max_prob": 0.74, "min_minutes_left": 19.5, "max_minutes_left": 23.0},
-            {"name": "B lair NO 21.5–24m", "side": "no", "min_prob": 0.34, "max_prob": 0.60, "min_minutes_left": 21.5, "max_minutes_left": 24.0},
-            {"name": "B kill-bite YES 23.2–23.9m", "min_prob": 0.58, "max_prob": 0.80, "min_minutes_left": 23.2, "max_minutes_left": 23.9},
+            {
+                "name": "B ambush NO 18–20.5m",
+                "side": "no",
+                "min_prob": 0.54,
+                "max_prob": 0.84,
+                "min_minutes_left": 18.0,
+                "max_minutes_left": 20.5,
+            },
+            {
+                "name": "B den NO 19.5–23m",
+                "side": "no",
+                "min_prob": 0.46,
+                "max_prob": 0.74,
+                "min_minutes_left": 19.5,
+                "max_minutes_left": 23.0,
+            },
+            {
+                "name": "B lair NO 21.5–24m",
+                "side": "no",
+                "min_prob": 0.34,
+                "max_prob": 0.60,
+                "min_minutes_left": 21.5,
+                "max_minutes_left": 24.0,
+            },
+            {
+                "name": "B kill-bite YES 23.2–23.9m",
+                "min_prob": 0.58,
+                "max_prob": 0.80,
+                "min_minutes_left": 23.2,
+                "max_minutes_left": 23.9,
+            },
         ]
     if lab_key == "lab_c":
         return [
-            {"name": "C lunge YES 0.08–0.75m", "min_prob": 0.54, "max_prob": 0.995, "min_minutes_left": 0.08, "max_minutes_left": 0.75},
-            {"name": "C sprint YES 0.08–7m", "min_prob": 0.07, "max_prob": 0.96, "min_minutes_left": 0.08, "max_minutes_left": 7.0},
-            {"name": "C maul YES 2.2–7m", "min_prob": 0.40, "max_prob": 0.99, "min_minutes_left": 2.2, "max_minutes_left": 7.0},
-            {"name": "C throat NO 0.08–1.9m", "side": "no", "min_prob": 0.42, "max_prob": 0.86, "min_minutes_left": 0.08, "max_minutes_left": 1.9},
-            {"name": "C rake NO 2.3–5.9m", "side": "no", "min_prob": 0.26, "max_prob": 0.60, "min_minutes_left": 2.3, "max_minutes_left": 5.9},
+            {
+                "name": "C lunge YES 0.08–0.75m",
+                "min_prob": 0.54,
+                "max_prob": 0.995,
+                "min_minutes_left": 0.08,
+                "max_minutes_left": 0.75,
+            },
+            {
+                "name": "C sprint YES 0.08–7m",
+                "min_prob": 0.07,
+                "max_prob": 0.96,
+                "min_minutes_left": 0.08,
+                "max_minutes_left": 7.0,
+            },
+            {
+                "name": "C maul YES 2.2–7m",
+                "min_prob": 0.40,
+                "max_prob": 0.99,
+                "min_minutes_left": 2.2,
+                "max_minutes_left": 7.0,
+            },
+            {
+                "name": "C throat NO 0.08–1.9m",
+                "side": "no",
+                "min_prob": 0.42,
+                "max_prob": 0.86,
+                "min_minutes_left": 0.08,
+                "max_minutes_left": 1.9,
+            },
+            {
+                "name": "C rake NO 2.3–5.9m",
+                "side": "no",
+                "min_prob": 0.26,
+                "max_prob": 0.60,
+                "min_minutes_left": 2.3,
+                "max_minutes_left": 5.9,
+            },
         ]
     if lab_key == "lab_d":
+        # Avoid sub‑2m YES needles — with 8–12s polls + lab stagger, a 10–11m-only YES rule often never fires.
         return [
-            {"name": "D fang YES 10–11m", "min_prob": 0.34, "max_prob": 0.56, "min_minutes_left": 10.0, "max_minutes_left": 11.0},
-            {"name": "D flank NO 7.5–9.9m", "side": "no", "min_prob": 0.32, "max_prob": 0.56, "min_minutes_left": 7.5, "max_minutes_left": 9.9},
-            {"name": "D gut NO 11.1–14m", "side": "no", "min_prob": 0.44, "max_prob": 0.74, "min_minutes_left": 11.1, "max_minutes_left": 14.0},
+            {
+                "name": "D fang YES 8.5–12m",
+                "min_prob": 0.28,
+                "max_prob": 0.64,
+                "min_minutes_left": 8.5,
+                "max_minutes_left": 12.0,
+            },
+            {
+                "name": "D flank NO 7.5–10.25m",
+                "side": "no",
+                "min_prob": 0.26,
+                "max_prob": 0.60,
+                "min_minutes_left": 7.5,
+                "max_minutes_left": 10.25,
+            },
+            {
+                "name": "D gut NO 10–14m",
+                "side": "no",
+                "min_prob": 0.38,
+                "max_prob": 0.78,
+                "min_minutes_left": 10.0,
+                "max_minutes_left": 14.0,
+            },
+            {
+                "name": "D sweep YES 11–13.5m",
+                "min_prob": 0.36,
+                "max_prob": 0.74,
+                "min_minutes_left": 11.0,
+                "max_minutes_left": 13.5,
+            },
         ]
     if lab_key == "lab_e":
+        # Poll-friendly widths; **must** cover minutes_left well below 12 — otherwise E sits idle most of each 15m leg.
         return [
-            {"name": "E stalk YES 14.25–15.45m", "min_prob": 0.48, "max_prob": 0.82, "min_minutes_left": 14.25, "max_minutes_left": 15.45},
-            {"name": "E cut NO 15.55–17.05m", "side": "no", "min_prob": 0.40, "max_prob": 0.72, "min_minutes_left": 15.55, "max_minutes_left": 17.05},
-            {"name": "E pounce YES 17.15–17.75m", "min_prob": 0.46, "max_prob": 0.80, "min_minutes_left": 17.15, "max_minutes_left": 17.75},
+            {
+                "name": "E stalk YES 12–16m",
+                "min_prob": 0.44,
+                "max_prob": 0.84,
+                "min_minutes_left": 12.0,
+                "max_minutes_left": 16.0,
+            },
+            {
+                "name": "E cut NO 13–17m",
+                "side": "no",
+                "min_prob": 0.36,
+                "max_prob": 0.74,
+                "min_minutes_left": 13.0,
+                "max_minutes_left": 17.0,
+            },
+            {
+                "name": "E pounce YES 14–19m",
+                "min_prob": 0.42,
+                "max_prob": 0.82,
+                "min_minutes_left": 14.0,
+                "max_minutes_left": 19.0,
+            },
+            {
+                "name": "E roam YES 5–12m",
+                "min_prob": 0.26,
+                "max_prob": 0.72,
+                "min_minutes_left": 5.0,
+                "max_minutes_left": 12.0,
+            },
+            {
+                "name": "E weave NO 4–11m",
+                "side": "no",
+                "min_prob": 0.28,
+                "max_prob": 0.68,
+                "min_minutes_left": 4.0,
+                "max_minutes_left": 11.0,
+            },
+            {
+                "name": "E tail YES 1.2–6m",
+                "min_prob": 0.22,
+                "max_prob": 0.78,
+                "min_minutes_left": 1.2,
+                "max_minutes_left": 6.0,
+            },
+            {
+                "name": "E dart YES 0.35–3.8m",
+                "min_prob": 0.18,
+                "max_prob": 0.82,
+                "min_minutes_left": 0.35,
+                "max_minutes_left": 3.8,
+            },
         ]
     return _breeder_loose_rules_fallback()
 
@@ -201,8 +395,10 @@ def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
     """
     Lab A and breeder labs B–E must never run with ``rules: []`` (engine would scan markets but never match).
 
-    * If the lab block has no / empty ``rules`` and top-level ``rules`` exist, copy globals (Lab A staging mirrors Live).
-    * If globals are empty too, Lab A gets the shipped default YES/NO pack; B–E get their breeder fallback packs.
+    * **Lab A (staging):** empty rules inherit a **copy** of top-level ``rules`` when present (mirror Live for promotion).
+      If globals are empty too, Lab A gets the shipped default YES/NO pack.
+    * **Labs B–E (breeders):** empty rules must **not** copy globals — that forced every breeder to trade the same
+      bands as Live and looked like synchronized “echo” agents. They always get ``_breeder_fallback_rules_for``.
     """
     glob = cfg.get("rules")
     global_rules: list[dict[str, Any]] = []
@@ -215,10 +411,11 @@ def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
             continue
         rules = block.get("rules")
         if not isinstance(rules, list) or len(rules) == 0:
-            if global_rules:
-                block["rules"] = [dict(r) for r in global_rules]
-            elif lk == "lab_a":
-                block["rules"] = [dict(r) for r in default_pack]
+            if lk == "lab_a":
+                if global_rules:
+                    block["rules"] = [dict(r) for r in global_rules]
+                else:
+                    block["rules"] = [dict(r) for r in default_pack]
             else:
                 block["rules"] = _breeder_fallback_rules_for(lk)
             cfg[lk] = block
@@ -397,11 +594,19 @@ def default_bot_config() -> dict[str, Any]:
             "eth": {"enabled": True, "label": "ETH 15m", "series_ticker": "KXETH15M"},
             "sol": {"enabled": True, "label": "SOL 15m", "series_ticker": "KXSOL15M"},
             "xrp": {"enabled": True, "label": "XRP 15m", "series_ticker": "KXXRP15M"},
-            "doge": {"enabled": True, "label": "DOGE 15m", "series_ticker": "KXDOGE15M"},
+            "doge": {
+                "enabled": True,
+                "label": "DOGE 15m",
+                "series_ticker": "KXDOGE15M",
+            },
             "ada": {"enabled": True, "label": "ADA 15m", "series_ticker": "KXADA15M"},
             "bch": {"enabled": True, "label": "BCH 15m", "series_ticker": "KXBCH15M"},
             "bnb": {"enabled": True, "label": "BNB 15m", "series_ticker": "KXBNB15M"},
-            "hype": {"enabled": True, "label": "HYPE 15m", "series_ticker": "KXHYPE15M"},
+            "hype": {
+                "enabled": True,
+                "label": "HYPE 15m",
+                "series_ticker": "KXHYPE15M",
+            },
         },
         "rules": _copy_trading_rules_default(),
         "only_yes_subtitle_contains": "",
@@ -499,7 +704,7 @@ def default_bot_config() -> dict[str, Any]:
             "min_hold_minutes_before_stop": 28,
             "balance_fraction_per_window": 0.102,
             "window_minutes": 12,
-            "no_bet_when_yes_below_pct": 22,
+            "no_bet_when_yes_below_pct": 15,
             "council_influence_weight_pct": 100,
             "breeder_personality": "adaptive",
             "rules": _breeder_fallback_rules_for("lab_e"),
@@ -552,7 +757,7 @@ def default_bot_config() -> dict[str, Any]:
             "lab_b_yes_floor_pct": 62,
             "lab_c_yes_floor_pct": 41,
             "lab_d_yes_floor_pct": 44,
-            "lab_e_yes_floor_pct": 51,
+            "lab_e_yes_floor_pct": 45,
             "lab_a_min_minutes_left": 5,
             "lab_b_min_minutes_left": 4,
             "lab_c_min_minutes_left": 2,
@@ -591,7 +796,9 @@ def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any
     cannot strip ``engine_running``, fee keys, or other lab defaults.
     """
     if branch not in ALL_CFG_LAB_KEYS:
-        raise ValueError(f"branch must be a known lab key (parents or lab_child_*), got {branch!r}")
+        raise ValueError(
+            f"branch must be a known lab key (parents or lab_child_*), got {branch!r}"
+        )
     base = dict(default_bot_config().get(branch) or {})
     base.update(lab)
     if isinstance(base.get("assets"), dict) and len(base["assets"]) == 0:
@@ -609,10 +816,14 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
     for table in ("signals", "trades", "equity_snapshots"):
         have = await cols(table)
         if "branch" not in have:
-            await db.execute(f"ALTER TABLE {table} ADD COLUMN branch TEXT DEFAULT 'live'")
+            await db.execute(
+                f"ALTER TABLE {table} ADD COLUMN branch TEXT DEFAULT 'live'"
+            )
     eq_have = await cols("equity_snapshots")
     if "mtm_equity_cents" not in eq_have:
-        await db.execute("ALTER TABLE equity_snapshots ADD COLUMN mtm_equity_cents INTEGER")
+        await db.execute(
+            "ALTER TABLE equity_snapshots ADD COLUMN mtm_equity_cents INTEGER"
+        )
     await db.commit()
 
 
@@ -718,16 +929,19 @@ def _maybe_strip_legacy_breeder_stub_engine_false(cfg: dict[str, Any]) -> None:
     """
     Older ``_normalize_loaded_config`` stubs for lab_b–e embedded ``engine_running: false``. Because
     ``expand_partial_lab_branch`` overlays the saved dict on defaults, that **false** overwrote breeder ``True``
-    and kept engines off. Drop ``engine_running`` when the block still matches the legacy stub fingerprint so the
+    and kept engines off. Drop ``engine_running`` when the block still matches a known legacy fingerprint so the
     next merge restores shipped defaults (operators who truly want off can set ``engine_running: false`` again).
+
+    Lab E gained a second shipped sizing tuple (0.102, 12); configs stuck at ``false`` with that fingerprint never
+    matched the older (0.095, 11)-only rule and stayed **Stopped** in the UI until operators toggled manually.
     """
-    sigs = {
-        "lab_b": (0.05, 15),
-        "lab_c": (0.08, 12),
-        "lab_d": (0.13, 10),
-        "lab_e": (0.095, 11),
+    sigs: dict[str, tuple[tuple[float, int], ...]] = {
+        "lab_b": ((0.05, 15),),
+        "lab_c": ((0.08, 12),),
+        "lab_d": ((0.13, 10),),
+        "lab_e": ((0.095, 11), (0.102, 12)),
     }
-    for lk, (frac, wmin) in sigs.items():
+    for lk, pairs in sigs.items():
         block = cfg.get(lk)
         if not isinstance(block, dict):
             continue
@@ -740,7 +954,7 @@ def _maybe_strip_legacy_breeder_stub_engine_false(cfg: dict[str, Any]) -> None:
             wi = int(float(block.get("window_minutes")))
         except (TypeError, ValueError):
             continue
-        if abs(bf - frac) > 1e-4 or wi != wmin:
+        if not any(abs(bf - frac) <= 1e-4 and wi == wmin for frac, wmin in pairs):
             continue
         del block["engine_running"]
         cfg[lk] = block
@@ -782,9 +996,13 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         legacy = cfg.get("sim_lab") if isinstance(cfg.get("sim_lab"), dict) else {}
         lab_a_stub: dict[str, Any] = {
             "auto_optimize": False,
-            "balance_fraction_per_window": legacy.get("balance_fraction_per_window", 0.05),
+            "balance_fraction_per_window": legacy.get(
+                "balance_fraction_per_window", 0.05
+            ),
             "window_minutes": legacy.get("window_minutes", 15),
-            "paper_balance_cents": legacy.get("paper_balance_cents", cfg.get("paper_balance_cents") or 500_000),
+            "paper_balance_cents": legacy.get(
+                "paper_balance_cents", cfg.get("paper_balance_cents") or 500_000
+            ),
         }
         if "engine_running" in legacy:
             lab_a_stub["engine_running"] = legacy["engine_running"]
@@ -832,7 +1050,10 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     default_assets = default_bot_config().get("assets") or {}
     if isinstance(default_assets, dict) and default_assets:
         if not isinstance(assets, dict):
-            cfg["assets"] = {k: dict(v) if isinstance(v, dict) else v for k, v in default_assets.items()}
+            cfg["assets"] = {
+                k: dict(v) if isinstance(v, dict) else v
+                for k, v in default_assets.items()
+            }
         else:
             merged = dict(assets)
             for aid, adef in default_assets.items():
@@ -849,7 +1070,9 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 assets_norm[aid] = {**a, "enabled": True}
 
     # Dev sim high-YES bypass: migrate legacy boolean to percent field
-    if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(cfg.get("dev_sim_yes_implied_ge_70")):
+    if cfg.get("dev_sim_yes_implied_ge_pct") is None and bool(
+        cfg.get("dev_sim_yes_implied_ge_70")
+    ):
         cfg["dev_sim_yes_implied_ge_pct"] = 70.0
     _maybe_strip_legacy_lab_a_stub_engine_false(cfg)
     _maybe_strip_legacy_breeder_stub_engine_false(cfg)
@@ -859,7 +1082,11 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
     # Per-lab ``assets: {}`` would override globals at merge time and disable all scanning for that lab.
     for lk in ALL_CFG_LAB_KEYS:
         block = cfg.get(lk)
-        if isinstance(block, dict) and isinstance(block.get("assets"), dict) and len(block["assets"]) == 0:
+        if (
+            isinstance(block, dict)
+            and isinstance(block.get("assets"), dict)
+            and len(block["assets"]) == 0
+        ):
             del block["assets"]
             cfg[lk] = block
     # Drop legacy mirror key from persisted config (clients use lab_a only).
@@ -915,7 +1142,9 @@ class Store:
                     parsed = json.loads(raw)
                 except (json.JSONDecodeError, TypeError, ValueError):
                     merged = default_bot_config()
-                    await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                    await db.execute(
+                        "UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),)
+                    )
                     await db.commit()
                     _data_log(
                         "system",
@@ -929,7 +1158,10 @@ class Store:
                 else:
                     if not isinstance(parsed, dict):
                         merged = default_bot_config()
-                        await db.execute("UPDATE bot_config SET json=? WHERE id=1", (json.dumps(merged),))
+                        await db.execute(
+                            "UPDATE bot_config SET json=? WHERE id=1",
+                            (json.dumps(merged),),
+                        )
                         await db.commit()
                         _data_log(
                             "system",
@@ -1152,7 +1384,9 @@ class Store:
         cfg = await self.load_config()
         lab_key = br
         lab = dict(cfg.get(lab_key) or {})
-        seed = int(lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000)
+        seed = int(
+            lab.get("paper_balance_cents") or cfg.get("paper_balance_cents") or 500_000
+        )
         prev = int(lab.get("paper_lifetime_basis_cents") or 0)
         if prev <= 0:
             prev = seed
@@ -1434,11 +1668,15 @@ class Store:
 
     async def recent_trades(self, limit: int = 200) -> list[dict[str, Any]]:
         async with self._open_db() as db:
-            cur = await db.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
+            cur = await db.execute(
+                "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+            )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def dashboard_branch_trade_rollups(self, branch: str, trade_mode: str) -> dict[str, Any]:
+    async def dashboard_branch_trade_rollups(
+        self, branch: str, trade_mode: str
+    ) -> dict[str, Any]:
         """
         Full-table aggregates for one branch + trade mode (not capped at recent N rows).
         Settled / fee slices still use ``trade_mode`` (paper vs live). Open sim **premium** uses
@@ -1562,7 +1800,9 @@ class Store:
                 out.append(d)
             return out
 
-    async def has_open_sim_for_ticker(self, branch: str, trade_mode: str, market_ticker: str) -> bool:
+    async def has_open_sim_for_ticker(
+        self, branch: str, trade_mode: str, market_ticker: str
+    ) -> bool:
         """
         True if this branch already has a simulated open/resting row for this **exact** Kalshi market ticker.
 
@@ -1586,7 +1826,9 @@ class Store:
             row = await cur.fetchone()
         return row is not None
 
-    async def has_open_sim_for_series_prefix(self, branch: str, series_prefix: str) -> bool:
+    async def has_open_sim_for_series_prefix(
+        self, branch: str, series_prefix: str
+    ) -> bool:
         """
         True if this branch already has any simulated open/resting row whose ticker starts with
         ``series_prefix`` (Kalshi series family, e.g. KXETH15M). Used to enforce one open sim per series.
@@ -1607,7 +1849,9 @@ class Store:
             row = await cur.fetchone()
         return row is not None
 
-    async def first_open_sim_ticker_for_series_prefix(self, branch: str, series_prefix: str) -> str | None:
+    async def first_open_sim_ticker_for_series_prefix(
+        self, branch: str, series_prefix: str
+    ) -> str | None:
         """
         Newest open-sim row whose market ticker is under this series family (same filter as
         :meth:`has_open_sim_for_series_prefix`). When non-empty, a new bet in that family is blocked; return the
@@ -1633,7 +1877,9 @@ class Store:
         s = str(row[0]).strip()
         return s or None
 
-    async def open_committed_cents_for_branch_mode(self, branch: str, trade_mode: str) -> int:
+    async def open_committed_cents_for_branch_mode(
+        self, branch: str, trade_mode: str
+    ) -> int:
         """
         Sum of premium tied up in open/resting simulated rows for one branch + mode.
         For simulate mode, legacy empty mode rows are treated as simulate.
@@ -1659,7 +1905,9 @@ class Store:
         d = dict(row)
         return int(d.get("open_cents") or 0)
 
-    async def equity_series(self, limit: int = 500, branch: str | None = None) -> list[dict[str, Any]]:
+    async def equity_series(
+        self, limit: int = 500, branch: str | None = None
+    ) -> list[dict[str, Any]]:
         async with self._open_db() as db:
             if branch:
                 cur = await db.execute(
@@ -1758,7 +2006,9 @@ class Store:
             lr = cur.lastrowid
             return int(lr) if lr is not None else 0
 
-    async def recent_optimizer_recommendations(self, limit: int = 50) -> list[dict[str, Any]]:
+    async def recent_optimizer_recommendations(
+        self, limit: int = 50
+    ) -> list[dict[str, Any]]:
         async with self._open_db() as db:
             cur = await db.execute(
                 "SELECT * FROM optimizer_recommendations ORDER BY id DESC LIMIT ?",

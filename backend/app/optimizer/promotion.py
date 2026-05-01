@@ -6,7 +6,13 @@ import datetime as dt
 import statistics
 from typing import TYPE_CHECKING, Any
 
-from ..branch_config import BRANCH_LAB_A, BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E
+from ..branch_config import (
+    BRANCH_LAB_A,
+    BRANCH_LAB_B,
+    BRANCH_LAB_C,
+    BRANCH_LAB_D,
+    BRANCH_LAB_E,
+)
 from .fitness import composite_fitness_score, is_statistically_better
 
 if TYPE_CHECKING:
@@ -22,7 +28,9 @@ def _iso(v: dt.datetime) -> str:
     return v.astimezone(dt.timezone.utc).isoformat()
 
 
-def _ensure_lab_rules(cfg: dict[str, Any], branch: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _ensure_lab_rules(
+    cfg: dict[str, Any], branch: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from ..branch_config import _lab_key_for_branch
 
     lk = _lab_key_for_branch(branch) or "lab_a"
@@ -69,35 +77,76 @@ async def lab_a_promotion_report(
     legacy_ok = bool(pa > pb and pa > pc and pa > pd and pa > pe)
 
     tr_a = await store.query_table(
-        "trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "trades",
+        branch=BRANCH_LAB_A,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     tr_b = await store.query_table(
-        "trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "trades",
+        branch=BRANCH_LAB_B,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     tr_c = await store.query_table(
-        "trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "trades",
+        branch=BRANCH_LAB_C,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     tr_d = await store.query_table(
-        "trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "trades",
+        branch=BRANCH_LAB_D,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     sg_a = await store.query_table(
-        "signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "signals",
+        branch=BRANCH_LAB_A,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     sg_b = await store.query_table(
-        "signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "signals",
+        branch=BRANCH_LAB_B,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     sg_c = await store.query_table(
-        "signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "signals",
+        branch=BRANCH_LAB_C,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
     sg_d = await store.query_table(
-        "signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows
+        "signals",
+        branch=BRANCH_LAB_D,
+        mode="simulate",
+        start_at=start_iso,
+        end_at=end_iso,
+        limit=max_rows,
     )
 
     def _settled(tr: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
             t
             for t in tr
-            if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
         ]
 
     st_a = _settled(tr_a)
@@ -114,9 +163,20 @@ async def lab_a_promotion_report(
     sc = _signals_sorted_desc(sg_c)
     sd = _signals_sorted_desc(sg_d)
 
-    def _replay(branch: str, settled: list[dict[str, Any]], rules: list[dict[str, Any]], sig: list[dict[str, Any]]) -> dict[str, Any]:
+    def _replay(
+        branch: str,
+        settled: list[dict[str, Any]],
+        rules: list[dict[str, Any]],
+        sig: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         tail = settled[:replay_tail] if len(settled) > replay_tail else settled
-        return replay_under_rules_detail(tail, rules, sig, include_fees_in_score=include_fees, max_considered=replay_tail)
+        return replay_under_rules_detail(
+            tail,
+            rules,
+            sig,
+            include_fees_in_score=include_fees,
+            max_considered=replay_tail,
+        )
 
     rep_a = _replay(BRANCH_LAB_A, st_a, rules_a, sa)
     rep_b = _replay(BRANCH_LAB_B, st_b, rules_b, sb)
@@ -144,7 +204,11 @@ async def lab_a_promotion_report(
         per_trade_pnl_cents=rep_d["per_trade_pnl_cents_chrono"],
     )
     score_a = float(fit_a["score_dollars"])
-    scores_bcd = [float(fit_b["score_dollars"]), float(fit_c["score_dollars"]), float(fit_d["score_dollars"])]
+    scores_bcd = [
+        float(fit_b["score_dollars"]),
+        float(fit_c["score_dollars"]),
+        float(fit_d["score_dollars"]),
+    ]
     med_bcd = float(statistics.median(scores_bcd)) if scores_bcd else 0.0
     score_gate = bool(score_a > med_bcd)
 
@@ -166,9 +230,20 @@ async def lab_a_promotion_report(
     return {
         "window_start": start_iso,
         "window_end": end_iso,
-        "legacy_pnl_cents": {"lab_a": pa, "lab_b": pb, "lab_c": pc, "lab_d": pd, "lab_e": pe},
+        "legacy_pnl_cents": {
+            "lab_a": pa,
+            "lab_b": pb,
+            "lab_c": pc,
+            "lab_d": pd,
+            "lab_e": pe,
+        },
         "legacy_pnl_ok": legacy_ok,
-        "composite_scores": {"lab_a": fit_a, "lab_b": fit_b, "lab_c": fit_c, "lab_d": fit_d},
+        "composite_scores": {
+            "lab_a": fit_a,
+            "lab_b": fit_b,
+            "lab_c": fit_c,
+            "lab_d": fit_d,
+        },
         "score_median_controls": med_bcd,
         "score_gate": score_gate,
         "statistical_gate": stat_detail,

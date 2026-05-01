@@ -25,7 +25,7 @@ class RuleCfg(BaseModel):
     min_minutes_left: float = 0.0
     max_minutes_left: float = 1e9
     # "yes" (default): band is implied YES probability. "no": band is implied NO (= 1 − YES mid); buys NO at no ask.
-    side: str | None = Field(default=None, description='yes or no')
+    side: str | None = Field(default=None, description="yes or no")
 
 
 def normalize_rules_list(raw: Any, *, max_rules: int = 48) -> list[dict[str, Any]]:
@@ -52,7 +52,9 @@ def normalize_rules_list(raw: Any, *, max_rules: int = 48) -> list[dict[str, Any
     return out
 
 
-def merge_lab_branch_patch(cur: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+def merge_lab_branch_patch(
+    cur: dict[str, Any], patch: dict[str, Any]
+) -> dict[str, Any]:
     """Merge lab_a / lab_b patch; always coerce ``paper_balance_cents`` to int when provided (non-null)."""
     out = dict(cur)
     for k, v in patch.items():
@@ -140,9 +142,15 @@ class BotConfigPayload(BaseModel):
             else:
                 fv = float(v)
                 out["swing_exit_implied_drop_pct"] = None if fv <= 0 else fv
-        if "enable_patient_stop_loss" in self.model_fields_set and self.enable_patient_stop_loss is not None:
+        if (
+            "enable_patient_stop_loss" in self.model_fields_set
+            and self.enable_patient_stop_loss is not None
+        ):
             out["enable_patient_stop_loss"] = bool(self.enable_patient_stop_loss)
-        if "stop_loss_trigger_pct" in self.model_fields_set and self.stop_loss_trigger_pct is not None:
+        if (
+            "stop_loss_trigger_pct" in self.model_fields_set
+            and self.stop_loss_trigger_pct is not None
+        ):
             try:
                 fv = float(self.stop_loss_trigger_pct)
                 if fv > 0:
@@ -150,7 +158,10 @@ class BotConfigPayload(BaseModel):
                 out["stop_loss_trigger_pct"] = max(-20.0, min(-2.0, fv))
             except (TypeError, ValueError):
                 pass
-        if "min_hold_minutes_before_stop" in self.model_fields_set and self.min_hold_minutes_before_stop is not None:
+        if (
+            "min_hold_minutes_before_stop" in self.model_fields_set
+            and self.min_hold_minutes_before_stop is not None
+        ):
             try:
                 iv = int(self.min_hold_minutes_before_stop)
                 out["min_hold_minutes_before_stop"] = max(5, min(120, iv))
@@ -180,13 +191,17 @@ class BotConfigPayload(BaseModel):
             merged_assets = dict(out.get("assets") or {})
             for aid, acfg in self.assets.items():
                 base = dict(merged_assets.get(aid) or {})
-                patch = {kk: vv for kk, vv in acfg.model_dump().items() if vv is not None}
+                patch = {
+                    kk: vv for kk, vv in acfg.model_dump().items() if vv is not None
+                }
                 merged_assets[aid] = {**base, **patch}
             out["assets"] = merged_assets
         if self.rules is not None:
             out["rules"] = [r.model_dump(exclude_none=True) for r in self.rules]
         if self.sim_lab is not None:
-            cur = merge_lab_branch_patch(dict(out.get("lab_a") or out.get("sim_lab") or {}), self.sim_lab)
+            cur = merge_lab_branch_patch(
+                dict(out.get("lab_a") or out.get("sim_lab") or {}), self.sim_lab
+            )
             out["lab_a"] = expand_partial_lab_branch("lab_a", cur)
         if self.lab_a is not None:
             cur = merge_lab_branch_patch(dict(out.get("lab_a") or {}), self.lab_a)
@@ -200,6 +215,9 @@ class BotConfigPayload(BaseModel):
         if self.lab_d is not None:
             cur = merge_lab_branch_patch(dict(out.get("lab_d") or {}), self.lab_d)
             out["lab_d"] = expand_partial_lab_branch("lab_d", cur)
+        if self.lab_e is not None:
+            cur = merge_lab_branch_patch(dict(out.get("lab_e") or {}), self.lab_e)
+            out["lab_e"] = expand_partial_lab_branch("lab_e", cur)
         if self.optimizer is not None:
             cur = dict(out.get("optimizer") or {})
             for k, v in self.optimizer.items():

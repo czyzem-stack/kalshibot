@@ -48,7 +48,9 @@ async def notify_branch_engine_error(*, branch: str, message: str) -> None:
         logger.warning("alert_webhook post failed: %s", e)
 
 
-async def post_branch_error_alerts(engines: dict[str, Any], *, prev_errors: dict[str, str | None]) -> None:
+async def post_branch_error_alerts(
+    engines: dict[str, Any], *, prev_errors: dict[str, str | None]
+) -> None:
     """If ``last_error`` for a branch is new or changed, enqueue a webhook POST. Updates *prev_errors* in place."""
     for br, eng in engines.items():
         cur = getattr(getattr(eng, "state", None), "last_error", None)

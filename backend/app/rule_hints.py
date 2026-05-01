@@ -4,7 +4,9 @@ import math
 from typing import Any
 
 
-def _gather_probs_mins(snapshots: dict[str, Any] | None) -> tuple[list[float], list[float]]:
+def _gather_probs_mins(
+    snapshots: dict[str, Any] | None,
+) -> tuple[list[float], list[float]]:
     probs: list[float] = []
     mins: list[float] = []
     if not isinstance(snapshots, dict):

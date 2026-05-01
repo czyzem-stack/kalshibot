@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field, field_validator
 class RuleDeltaOp(BaseModel):
     """Single rule mutation from Claude."""
 
-    op: Literal["add", "patch", "modify", "delete"] = Field(description="add | patch | modify | delete")
+    op: Literal["add", "patch", "modify", "delete"] = Field(
+        description="add | patch | modify | delete"
+    )
     rule: dict[str, Any] | None = Field(
         default=None,
         description="Full rule object for add; patch fields for patch; ignored for delete",
@@ -68,7 +70,9 @@ class ClaudeOptimizerResponse(BaseModel):
         return v
 
 
-def parse_claude_optimizer_json(raw: str) -> tuple[ClaudeOptimizerResponse | None, dict[str, Any]]:
+def parse_claude_optimizer_json(
+    raw: str,
+) -> tuple[ClaudeOptimizerResponse | None, dict[str, Any]]:
     """
     Parse model JSON text. On failure returns (None, {"parse_error": ...}).
     """

@@ -1,4 +1,5 @@
 """Liveness, deep health, and storage metadata (no heavy I/O in basic health)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,7 +9,12 @@ from fastapi import APIRouter
 from ..kalshi_client import KalshiClient
 from ..settings_env import env
 from .. import state
-from ..types_api import DataStorageResponse, HealthDeepResponse, HealthResponse, HealthStartupResponse
+from ..types_api import (
+    DataStorageResponse,
+    HealthDeepResponse,
+    HealthResponse,
+    HealthStartupResponse,
+)
 
 router = APIRouter(tags=["meta"])
 

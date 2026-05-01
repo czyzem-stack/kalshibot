@@ -2,6 +2,29 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.072 - CI + quality gates (parallel jobs, frontend TS, Ruff format) - 2026-04-30
+
+- **GitHub Actions (``.github/workflows/ci.yml``):** Parallel **backend** + **frontend** jobs; **concurrency** cancel stale runs; **workflow_dispatch**; explicit **Ruff** lint + **format --check**, ``compileall``, **pytest** with shorter tracebacks; pinned **ruff==0.9.10**. Frontend: **Node 20**, ``npm ci``, ``npm run typecheck``, ``npm run build``.
+- **Frontend (`package.json`):** ``npm run typecheck`` → ``tsc --noEmit``.
+- **Pre-commit (``.pre-commit-config.yaml``):** **ruff** + **ruff-format** on ``backend/``, rev **v0.9.10** (replaces single mutating hook).
+- **Backend:** ``ruff format`` baseline applied across ``backend/`` (plus three unused-import fixes) so format checks stay green.
+
+## v0.4.15.071 - Trade toasts + ticks: merge fix, trades poll synced to dashboard - 2026-04-30
+
+- **Frontend (`App.tsx`):** **Toast merge** — capped trade stack could drop the **new** card when its sort key was older than four others (silent “toasts never show”). Merge now **partitions** trade vs other notifs and **pins** the incoming trade id into the cap. Stack cap raised to **8**. **Tick sync** — ``/api/trades`` interval matches **equity poll** (``DASHBOARD_EQUITY_POLL_MS`` / ``…_LIVE_TAB`` via ``equityGranularity``); **after each merged dashboard batch** (full + equity), a **coalesced** trades refresh (~≥1.4s apart, visible tab only); **tab catch-up** also triggers trades poll alongside equity refresh.
+
+## v0.4.15.070 - Trade toasts: event timestamps, spacing, smaller stack - 2026-04-30
+
+- **Frontend (`App.tsx`):** Trade cards use **SQLite event times** — **opened** uses row ``created_at``; **settled** prefers ``settled_at`` (then ``updated_at`` / ``created_at``). Subtitle + sort key match execution/resolution instead of “toast fired now”. **Stagger** between cards increased (**1750ms**); **auto-dismiss** shortened (**~6.4–8.2s**) so bursts do not leave ~10 visible at once; **at most 4** trade cards kept (oldest dropped). Queue drains in **chronological** order. Optimizer / breeding dismiss windows unchanged.
+
+## v0.4.15.069 - Trade toasts: fix bootstrap deadlock + tidy stack pump - 2026-04-30
+
+- **Frontend (`App.tsx`):** Trade toast bootstrap treated **omitted** ``recent_trades`` (partial dashboard merge) as “non-empty” and never set ``tradeToastsBootstrappedRef`` — **no open/settle toasts** ever fired. **Fix:** treat missing / non-array as empty via ``dashboardRecentTradesAbsentOrEmpty``. Hoisted toast timing constants; stagger pump uses a **ref** for chained ``setTimeout`` so the queue always drains correctly.
+
+## v0.4.15.068 - Lab D default rules: poll-safe mid windows - 2026-04-30
+
+- **Backend (`persistence.py`):** **`_breeder_fallback_rules_for(lab_d)`** widened from a **1‑minute** YES needle (**10–11m**) to multi‑minute mid bands (**8.5–12m**, **11–13.5m**, plus adjusted NO lanes) so Lab D still hunts the **7.5–14m** slice but does not miss every cycle between polls. Apply via **Reset Lab D to smart defaults** (or merge fresh `rules`) if your saved config still has the old tight bands.
+
 ## v0.4.15.067 - Breeders B–E as predator hunters (edge-weighted skew + templates) - 2026-04-29
 
 - **Backend (`engines/engine.py`):** Ranked-market edge scaled by **book edge magnitude** (C hardest, B softest). **`handle_market`** structural skew scales per lab with edge so strong setups diverge rule geometry faster; council coupling on ranked edge slightly sharper.

@@ -39,19 +39,30 @@ def _orderbook_dict_from_ws_msg(msg: MarketRow) -> OrderbookPayload | None:
 
 
 async def _send_subscription(ws: _WsClientLike, sub: WsSubscription) -> None:
-    payload: dict[str, Any] = {"id": sub.msg_id, "cmd": "subscribe", "params": {"channels": sub.channels}}
+    payload: dict[str, Any] = {
+        "id": sub.msg_id,
+        "cmd": "subscribe",
+        "params": {"channels": sub.channels},
+    }
     if sub.market_tickers is not None:
         payload["params"]["market_tickers"] = sub.market_tickers
     await ws.send(json.dumps(payload))
 
 
-async def _subscribe_orderbooks(ws: _WsClientLike, tickers: list[str], *, chunk: int, msg_id_start: int) -> int:
+async def _subscribe_orderbooks(
+    ws: _WsClientLike, tickers: list[str], *, chunk: int, msg_id_start: int
+) -> int:
     mid = msg_id_start
     for i in range(0, len(tickers), chunk):
         part = tickers[i : i + chunk]
         if not part:
             continue
-        await _send_subscription(ws, WsSubscription(msg_id=mid, channels=["orderbook_delta"], market_tickers=part))
+        await _send_subscription(
+            ws,
+            WsSubscription(
+                msg_id=mid, channels=["orderbook_delta"], market_tickers=part
+            ),
+        )
         mid += 1
     return mid
 
@@ -79,10 +90,16 @@ async def kalshi_ws_loop(client: KalshiClient, stop_event: asyncio.Event) -> Non
     backoff = float(env.kalshi_ws_reconnect_base_s)
 
     while not stop_event.is_set():
-        tickers = list(KalshiClient.ws_subscribe_tickers) or KalshiClient.seed_ws_market_tickers(max_tickers=int(env.kalshi_ws_max_markets))
+        tickers = list(
+            KalshiClient.ws_subscribe_tickers
+        ) or KalshiClient.seed_ws_market_tickers(
+            max_tickers=int(env.kalshi_ws_max_markets)
+        )
         if not tickers:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=env.kalshi_ws_no_ticker_sleep_s)
+                await asyncio.wait_for(
+                    stop_event.wait(), timeout=env.kalshi_ws_no_ticker_sleep_s
+                )
             except TimeoutError:
                 pass
             continue
@@ -110,7 +127,9 @@ async def kalshi_ws_loop(client: KalshiClient, stop_event: asyncio.Event) -> Non
 
                 while not stop_event.is_set():
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=env.kalshi_ws_recv_timeout_s)
+                        raw = await asyncio.wait_for(
+                            ws.recv(), timeout=env.kalshi_ws_recv_timeout_s
+                        )
                     except TimeoutError:
                         continue
                     KalshiClient.ws_messages += 1
@@ -122,7 +141,9 @@ async def kalshi_ws_loop(client: KalshiClient, stop_event: asyncio.Event) -> Non
                     if mtype == "error":
                         err = data.get("msg") or {}
                         KalshiClient.ws_last_error = str(err)[:400]
-                        logger.warning("kalshi_ws server error: %s", KalshiClient.ws_last_error)
+                        logger.warning(
+                            "kalshi_ws server error: %s", KalshiClient.ws_last_error
+                        )
                         break
                     if mtype not in ("orderbook_snapshot", "orderbook_delta", "ticker"):
                         continue
@@ -130,7 +151,9 @@ async def kalshi_ws_loop(client: KalshiClient, stop_event: asyncio.Event) -> Non
                     if not isinstance(msg, dict):
                         continue
                     if mtype in ("orderbook_snapshot", "orderbook_delta"):
-                        tk = str(msg.get("market_ticker") or msg.get("ticker") or "").strip()
+                        tk = str(
+                            msg.get("market_ticker") or msg.get("ticker") or ""
+                        ).strip()
                         ob = _orderbook_dict_from_ws_msg(msg)
                         if tk and ob:
                             KalshiClient.record_ws_orderbook_rest_shape(tk, ob)
@@ -147,15 +170,25 @@ async def kalshi_ws_loop(client: KalshiClient, stop_event: asyncio.Event) -> Non
 
         if stop_event.is_set():
             break
-        sleep_s = min(cap, backoff + random.uniform(0.0, env.kalshi_ws_reconnect_jitter_s))
+        sleep_s = min(
+            cap, backoff + random.uniform(0.0, env.kalshi_ws_reconnect_jitter_s)
+        )
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=sleep_s)
         except TimeoutError:
             pass
-        backoff = min(cap, max(env.kalshi_ws_reconnect_base_s, backoff * env.kalshi_ws_reconnect_multiplier))
+        backoff = min(
+            cap,
+            max(
+                env.kalshi_ws_reconnect_base_s,
+                backoff * env.kalshi_ws_reconnect_multiplier,
+            ),
+        )
 
 
-async def kalshi_ws_task_group_runner(client: KalshiClient, stop_event: asyncio.Event) -> None:
+async def kalshi_ws_task_group_runner(
+    client: KalshiClient, stop_event: asyncio.Event
+) -> None:
     """PHASE 2: Wrap the WS session in ``TaskGroup`` (single reader task; clean cancel on shutdown)."""
     async with asyncio.TaskGroup() as tg:
         tg.create_task(kalshi_ws_loop(client, stop_event))

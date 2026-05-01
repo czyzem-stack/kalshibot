@@ -27,9 +27,16 @@ from .branch_config import (
 )
 from .engine import _calculate_net_unrealized_pct_after_fees, rule_matches
 from .optimizer.fitness import composite_fitness_score, is_statistically_better
-from .optimizer.weighted_edge import calculate_weighted_edge, synthetic_orderbook_for_replay
+from .optimizer.weighted_edge import (
+    calculate_weighted_edge,
+    synthetic_orderbook_for_replay,
+)
 from .optimizer.schemas import ClaudeOptimizerResponse
-from .lab_breeding import maybe_breed_dead_labs, maybe_soft_cull_lab_branches, run_lab_breeding_ga_cycle
+from .lab_breeding import (
+    maybe_breed_dead_labs,
+    maybe_soft_cull_lab_branches,
+    run_lab_breeding_ga_cycle,
+)
 
 if TYPE_CHECKING:
     from .persistence import Store
@@ -72,14 +79,30 @@ async def _lab_breeding_trades_signals_maps(
     if not BRANCH_CHILD_LABS:
         return trades_by_branch, signals_by_branch
     tr_tasks = [
-        store.query_table("trades", branch=ck, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+        store.query_table(
+            "trades",
+            branch=ck,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        )
         for ck in BRANCH_CHILD_LABS
     ]
     sg_tasks = [
-        store.query_table("signals", branch=ck, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows)
+        store.query_table(
+            "signals",
+            branch=ck,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        )
         for ck in BRANCH_CHILD_LABS
     ]
-    tr_kids, sg_kids = await asyncio.gather(asyncio.gather(*tr_tasks), asyncio.gather(*sg_tasks))
+    tr_kids, sg_kids = await asyncio.gather(
+        asyncio.gather(*tr_tasks), asyncio.gather(*sg_tasks)
+    )
     for i, ck in enumerate(BRANCH_CHILD_LABS):
         trades_by_branch[ck] = tr_kids[i]
         signals_by_branch[ck] = sg_kids[i]
@@ -169,8 +192,12 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     out.setdefault("optimizer_consecutive_low_acceptance_cycles", 0)
     out.setdefault("enable_paper_loser_detection", True)
     out.setdefault("paper_loser_cycles_threshold", 4)
-    out.setdefault("paper_winner_fitness_min", 0.0)  # replay score_dollars must exceed this
-    out.setdefault("paper_loser_neg_equity_trace_min", 5)  # consecutive neg $/h rows in internal trace
+    out.setdefault(
+        "paper_winner_fitness_min", 0.0
+    )  # replay score_dollars must exceed this
+    out.setdefault(
+        "paper_loser_neg_equity_trace_min", 5
+    )  # consecutive neg $/h rows in internal trace
     out.setdefault("paper_loser_stop_rate_pct", 45.0)
     out.setdefault("regime_paper_loser_pin_hours", 4.0)
     out.setdefault("optimizer_consecutive_paper_loser_cycles", 0)
@@ -205,15 +232,22 @@ def _norm_opt_cfg(oc: dict[str, Any]) -> dict[str, Any]:
     )
     out.setdefault("regime_ewma_decay_per_cycle", 0.996)
     out.setdefault("regime_ewma_alpha", 0.12)
-    out.setdefault("regime_negative_fitness_streaks", {"high_vol": 0, "low_vol": 0, "event_risk": 0})
+    out.setdefault(
+        "regime_negative_fitness_streaks",
+        {"high_vol": 0, "low_vol": 0, "event_risk": 0},
+    )
     out.setdefault("prune_streak_regime_min_cycles", 30)
     # Counters for the 24-optimizer-cycle automatic threshold tuner (all backend-only; no API/UI)
     out.setdefault("last_autotune_at_optimizer_cycle", 0)
     out.setdefault("autotune_window_paper_loser_swaps", 0)
     out.setdefault("autotune_window_paper_loser_risk_events", 0)
-    out.setdefault("mutation_aggressiveness_autotune_baseline", None)  # if None, use mutation_aggressiveness
+    out.setdefault(
+        "mutation_aggressiveness_autotune_baseline", None
+    )  # if None, use mutation_aggressiveness
     out.setdefault("enable_auto_relax", True)
-    out.setdefault("auto_relax_trade_threshold", 3)  # under-activity if fewer than this many trades in the window
+    out.setdefault(
+        "auto_relax_trade_threshold", 3
+    )  # under-activity if fewer than this many trades in the window
     out.setdefault("auto_relax_hours_window", 6)
     out.setdefault("auto_relax_cooldown_hours", 4)
     out.setdefault("optimizer_last_auto_relax_at", "")
@@ -263,7 +297,9 @@ def _branch_style(oc: dict[str, Any], branch: str) -> str:
     return str(oc.get("lab_e_style") or "balanced").strip().lower()
 
 
-def _index_signals_by_ticker(signals: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _index_signals_by_ticker(
+    signals: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for s in signals:
         t = str(s.get("ticker") or "").strip()
@@ -382,7 +418,9 @@ def replay_under_rules_detail(
     """
     from .engine import dollars_to_float
 
-    def _scale_pnl_cents(m_rule: dict[str, Any] | None, trow: dict[str, Any], prob0: float, pnl0: int) -> int:
+    def _scale_pnl_cents(
+        m_rule: dict[str, Any] | None, trow: dict[str, Any], prob0: float, pnl0: int
+    ) -> int:
         if m_rule is None:
             return pnl0
         synth = synthetic_orderbook_for_replay(prob0, trow)
@@ -424,9 +462,13 @@ def replay_under_rules_detail(
         except Exception:
             ex = {}
         if include_fees_in_score:
-            fees = int(ex.get("entry_fee_cents") or 0) + int(ex.get("settlement_exit_fee_cents") or 0)
+            fees = int(ex.get("entry_fee_cents") or 0) + int(
+                ex.get("settlement_exit_fee_cents") or 0
+            )
             pnl -= fees
-        if branch_trading_cfg is not None and enable_patient_stop_loss_from_cfg(branch_trading_cfg):
+        if branch_trading_cfg is not None and enable_patient_stop_loss_from_cfg(
+            branch_trading_cfg
+        ):
             thr = float(stop_loss_trigger_pct_from_cfg(branch_trading_cfg))
             min_hold = int(min_hold_minutes_before_stop_from_cfg(branch_trading_cfg))
             entry_prem = int(ex.get("entry_premium_cents") or 0)
@@ -441,7 +483,10 @@ def replay_under_rules_detail(
                     stop_cents = int(round(float(entry_prem) * thr / 100.0))
                     if pnl < stop_cents:
                         pnl = max(pnl, stop_cents)
-        is_stop_exit = bool(ex.get("patient_stop_loss")) or str(t.get("result") or "").lower() == "patient_stop_loss"
+        is_stop_exit = (
+            bool(ex.get("patient_stop_loss"))
+            or str(t.get("result") or "").lower() == "patient_stop_loss"
+        )
         pnl = _scale_pnl_cents(m_first, t, float(prob), pnl)
         if is_stop_exit:
             n_stop_hits += 1
@@ -467,7 +512,9 @@ def replay_under_rules_detail(
             prob_o, mins_o = _entry_prob_mins_for_trade(pos, signals_desc)
             if prob_o is None or mins_o is None:
                 continue
-            m_op = next((r for r in clean_rules if rule_matches(prob_o, mins_o, r)), None)
+            m_op = next(
+                (r for r in clean_rules if rule_matches(prob_o, mins_o, r)), None
+            )
             if m_op is None:
                 continue
             ca0 = _parse_iso_dt(pos.get("created_at"))
@@ -494,7 +541,9 @@ def replay_under_rules_detail(
             cur += pnl
             cumulative.append(cur)
     n_per = len(per_trade)
-    stop_loss_trigger_rate = (100.0 * float(n_stop_hits) / float(max(1, n_per))) if n_per else 0.0
+    stop_loss_trigger_rate = (
+        (100.0 * float(n_stop_hits) / float(max(1, n_per))) if n_per else 0.0
+    )
     return {
         "total_pnl_cents": total,
         "matched_n": matched,
@@ -522,6 +571,7 @@ def _replay_fitness_bundle(
     replay_end_time: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Replay plus composite fitness (drawdown / vol / Sharpe blend)."""
+
     # OPTIMIZER UPGRADE v0.1
     def _safe_ratio(num: float, den: float) -> float:
         if den == 0.0:
@@ -591,31 +641,43 @@ def _replay_fitness_bundle(
     losses = [x for x in pnl_d if x < 0.0]
     gross_win = sum(wins)
     gross_loss = abs(sum(losses))
-    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (gross_win if gross_win > 0 else 0.0)
+    profit_factor = (
+        (gross_win / gross_loss)
+        if gross_loss > 0
+        else (gross_win if gross_win > 0 else 0.0)
+    )
     expectancy = float(mean(pnl_d)) if pnl_d else 0.0
     stdev = _std(pnl_d)
     downside = _downside_std(pnl_d)
     sharpe = _safe_ratio(expectancy, stdev) if stdev > 0 else 0.0
     sortino = _safe_ratio(expectancy, downside) if downside > 0 else sharpe
     mdd_d = float(fit.get("max_drawdown_dollars") or 0.0)
-    calmar = _safe_ratio(float(fit.get("pnl_dollars") or 0.0), mdd_d) if mdd_d > 0 else 0.0
+    calmar = (
+        _safe_ratio(float(fit.get("pnl_dollars") or 0.0), mdd_d) if mdd_d > 0 else 0.0
+    )
     win_rate = _safe_ratio(float(len(wins)), float(max(1, len(pnl_d))))
     avg_win = _safe_ratio(gross_win, float(len(wins))) if wins else 0.0
     avg_loss = _safe_ratio(gross_loss, float(len(losses))) if losses else 0.0
     b = _safe_ratio(avg_win, avg_loss) if avg_loss > 0 else 0.0
-    kelly_fraction = max(0.0, min(1.0, win_rate - ((1.0 - win_rate) / b))) if b > 0 else 0.0
+    kelly_fraction = (
+        max(0.0, min(1.0, win_rate - ((1.0 - win_rate) / b))) if b > 0 else 0.0
+    )
     regime = _regime_from_probs(signals_desc)
     reg_gain, reg_risk = _regime_weights(regime)
     # OPTIMIZER v0.1 — keep smart core, remove visible settings per user request
     slip_bps = max(0.0, float(_ADV_SLIPPAGE_BPS))
     slippage_penalty_dollars = (abs(sum(pnl_d)) * slip_bps) / 10000.0
     min_trades = max(1, int(_ADV_MIN_TRADES))
-    sample_penalty = 0.0 if len(pnl_d) >= min_trades else float(min_trades - len(pnl_d)) * 0.35
+    sample_penalty = (
+        0.0 if len(pnl_d) >= min_trades else float(min_trades - len(pnl_d)) * 0.35
+    )
     mdd_tolerance_pct = max(1.0, float(_ADV_MAX_DD_TOLERANCE_PCT))
     max_drawdown_pct = 0.0
     if d["cumulative_equity_cents"]:
         peak = max([int(x) for x in d["cumulative_equity_cents"]] + [1])
-        max_drawdown_pct = (float(mdd_d * 100.0) / max(1.0, float(peak / 100.0))) * 100.0
+        max_drawdown_pct = (
+            float(mdd_d * 100.0) / max(1.0, float(peak / 100.0))
+        ) * 100.0
     drawdown_tolerance_breach = max_drawdown_pct > mdd_tolerance_pct
     advanced_score = (
         reg_gain * float(_ADV_SHARPE_W) * sharpe
@@ -653,11 +715,17 @@ def _replay_fitness_bundle(
 def _open_sim_rows(trades: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     if not trades:
         return []
-    return [t for t in trades if str(t.get("status") or "").lower() in ("open", "resting")]
+    return [
+        t for t in trades if str(t.get("status") or "").lower() in ("open", "resting")
+    ]
 
 
 def _replay_open_kw(
-    cfg: dict[str, Any], *, at_iso: str, branch: str, trades: list[dict[str, Any]] | None
+    cfg: dict[str, Any],
+    *,
+    at_iso: str,
+    branch: str,
+    trades: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     op = _open_sim_rows(trades)
     return {
@@ -722,7 +790,9 @@ def _equity_slope_dollars_per_hour(snaps: list[dict[str, Any]]) -> float | None:
     return (e1 - e0) / hours
 
 
-def _fitness_score_trend_from_trace(trace_rows: list[dict[str, Any]], *, max_rows: int = 20) -> float | None:
+def _fitness_score_trend_from_trace(
+    trace_rows: list[dict[str, Any]], *, max_rows: int = 20
+) -> float | None:
     """
     Approximate score slope per cycle from the most recent trace entries.
 
@@ -732,7 +802,11 @@ def _fitness_score_trend_from_trace(trace_rows: list[dict[str, Any]], *, max_row
     rows = trace_rows[: max(2, max_rows)]
     for row in reversed(rows):
         try:
-            v = float(row.get("score") if row.get("score") is not None else row.get("score_after"))
+            v = float(
+                row.get("score")
+                if row.get("score") is not None
+                else row.get("score_after")
+            )
         except (TypeError, ValueError):
             continue
         if v == v:
@@ -794,7 +868,9 @@ def _trace_negative_equity_slope_streak(oc: dict[str, Any]) -> int:
 PAPER_LOSER_REGIME_ORDER = ("high_vol", "low_vol", "event_risk")
 
 
-def _is_paper_winner_but_real_loser(oc: dict[str, Any], replay_result: dict[str, Any]) -> bool:
+def _is_paper_winner_but_real_loser(
+    oc: dict[str, Any], replay_result: dict[str, Any]
+) -> bool:
     """
     Detect divergence: composite replay / paper fitness (``score_dollars``) looks good, but Lab A
     is suffering — either a long run of **negative** equity $/h in the internal trace (paper
@@ -828,7 +904,9 @@ def _rules_json_fingerprint(rules: list[dict[str, Any]] | None) -> str:
     if not isinstance(rules, list):
         return ""
     try:
-        return json.dumps([dict(x) for x in rules if isinstance(x, dict)], sort_keys=True)[:3000]
+        return json.dumps(
+            [dict(x) for x in rules if isinstance(x, dict)], sort_keys=True
+        )[:3000]
     except Exception:
         return ""
 
@@ -851,7 +929,10 @@ def _norm_streaks(oc: dict[str, Any]) -> dict[str, int]:
     st = oc.get("regime_negative_fitness_streaks")
     if not isinstance(st, dict):
         st = {}
-    return {k: max(0, int(st.get(k) or 0) if k in st else 0) for k in PAPER_LOSER_REGIME_ORDER}
+    return {
+        k: max(0, int(st.get(k) or 0) if k in st else 0)
+        for k in PAPER_LOSER_REGIME_ORDER
+    }
 
 
 def _regime_update_meta_and_streaks(
@@ -861,7 +942,10 @@ def _regime_update_meta_and_streaks(
     Exponential meta-learning: decay every tick (older beliefs fade), then nudge the active
     regime's EWMA with the current replay composite. Negative-score streaks drive self-cleanup.
     """
-    dcy = max(0.5, min(0.9999, _safe_float(oc.get("regime_ewma_decay_per_cycle", 0.996), 0.996)))
+    dcy = max(
+        0.5,
+        min(0.9999, _safe_float(oc.get("regime_ewma_decay_per_cycle", 0.996), 0.996)),
+    )
     a = max(0.02, min(0.4, _safe_float(oc.get("regime_ewma_alpha", 0.12), 0.12)))
     m = _norm_regime_perf_meta(oc)
     for k in PAPER_LOSER_REGIME_ORDER:
@@ -891,7 +975,9 @@ def _regime_preferred_from_meta(oc: dict[str, Any], cycled: str) -> str:
     cycled = cycled if cycled in PAPER_LOSER_REGIME_ORDER else "low_vol"
 
     def w(k: str) -> float:
-        return float(m[k].get("ewma_fitness", 0.0) or 0.0) * (1.0 + 0.01 * min(200, int(m[k].get("observations", 0) or 0)))
+        return float(m[k].get("ewma_fitness", 0.0) or 0.0) * (
+            1.0 + 0.01 * min(200, int(m[k].get("observations", 0) or 0))
+        )
 
     by = {k: w(k) for k in PAPER_LOSER_REGIME_ORDER}
     best = max(PAPER_LOSER_REGIME_ORDER, key=lambda k: by.get(k, -1e9))
@@ -907,7 +993,9 @@ async def _load_top_distinct_history_rules(
         return []
     out: list[tuple[str, list[dict[str, Any]]]] = []
     try:
-        rows = await store.list_config_history(max(8, int(limit) or 24), include_config=True)
+        rows = await store.list_config_history(
+            max(8, int(limit) or 24), include_config=True
+        )
     except (TypeError, OSError):
         return []
     for row in rows:
@@ -934,14 +1022,21 @@ async def _load_top_distinct_history_rules(
 
 
 def _interleave_blended_rules(
-    nxt: str, la0: dict[str, Any], hist: list[tuple[str, list[dict[str, Any]]]], max_rules: int = 22
+    nxt: str,
+    la0: dict[str, Any],
+    hist: list[tuple[str, list[dict[str, Any]]]],
+    max_rules: int = 22,
 ) -> list[dict[str, Any]]:
     """
     Merge the target regime's family with up to two historical configs' ``lab_a.rules`` in round-robin
     order (keeps the head of each, dedupes by name); caps list size for the API.
     """
     nxtk = _regime_to_rules_list_key(nxt)
-    base = [dict(x) for x in (la0.get(nxtk) or la0.get("rules") or []) if isinstance(x, dict)]
+    base = [
+        dict(x)
+        for x in (la0.get(nxtk) or la0.get("rules") or [])
+        if isinstance(x, dict)
+    ]
     if not base:
         base = [dict(x) for x in (la0.get("rules") or []) if isinstance(x, dict)]
     per_hist = [[dict(x) for x in lst if isinstance(x, dict)][:8] for _fp, lst in hist]
@@ -972,7 +1067,7 @@ def _interleave_blended_rules(
             break
         i += 1
     if not merged and base:
-        return [json.loads(json.dumps(x)) for x in base[: max_rules]]
+        return [json.loads(json.dumps(x)) for x in base[:max_rules]]
     for b in base:
         if len(merged) >= max_rules:
             break
@@ -1007,7 +1102,9 @@ def _auto_tune_internal_thresholds(oc: dict[str, Any]) -> None:
     elif rsk >= 14 and sw == 0:
         pthr = max(2, pthr - 1)
     if pthr != pthr0:
-        ch.append(f"paper_loser_cycles_threshold {pthr0}→{pthr} (swaps_24c={sw} risk_24c={rsk})")
+        ch.append(
+            f"paper_loser_cycles_threshold {pthr0}→{pthr} (swaps_24c={sw} risk_24c={rsk})"
+        )
     pls0 = pls
     if sw >= 3:
         pls = min(60.0, pls + 1.0)
@@ -1021,7 +1118,9 @@ def _auto_tune_internal_thresholds(oc: dict[str, Any]) -> None:
     elif acc > 72.0:
         nb = max(0.4, base - 0.02)
     if abs(nb - base) > 0.0005:
-        ch.append(f"mutation_aggressiveness {base:.3f}→{nb:.3f} (acceptance={acc:.0f}%)")
+        ch.append(
+            f"mutation_aggressiveness {base:.3f}→{nb:.3f} (acceptance={acc:.0f}%)"
+        )
         oc["mutation_aggressiveness_autotune_baseline"] = round(nb, 4)
         oc["mutation_aggressiveness"] = round(nb, 4)
     if pthr != pthr0:
@@ -1040,7 +1139,9 @@ def _auto_tune_internal_thresholds(oc: dict[str, Any]) -> None:
         )
 
 
-def _prune_failing_regime_families(cfg: dict[str, Any], oc: dict[str, Any]) -> list[str]:
+def _prune_failing_regime_families(
+    cfg: dict[str, Any], oc: dict[str, Any]
+) -> list[str]:
     """
     If a family accrues ``prune_streak_regime_min_cycles`` consecutive *negative* composite
     replays while active, drop that regime's stored ruleset and re-seed from the active ``rules``.
@@ -1049,7 +1150,11 @@ def _prune_failing_regime_families(cfg: dict[str, Any], oc: dict[str, Any]) -> l
     mnc = max(3, int(oc.get("prune_streak_regime_min_cycles", 30) or 30))
     st2 = _norm_streaks(oc)
     pruned: list[str] = []
-    base = [json.loads(json.dumps(x)) for x in (la0.get("rules") or []) if isinstance(x, dict)]
+    base = [
+        json.loads(json.dumps(x))
+        for x in (la0.get("rules") or [])
+        if isinstance(x, dict)
+    ]
     for k in PAPER_LOSER_REGIME_ORDER:
         if st2.get(k, 0) < mnc:
             continue
@@ -1061,12 +1166,19 @@ def _prune_failing_regime_families(cfg: dict[str, Any], oc: dict[str, Any]) -> l
     if pruned:
         oc["regime_negative_fitness_streaks"] = st2
         cfg["lab_a"] = la0
-        logger.info("regime self-cleanup (prune stored families): %s", ", ".join(pruned))
+        logger.info(
+            "regime self-cleanup (prune stored families): %s", ", ".join(pruned)
+        )
     return pruned
 
 
 def _append_radical_fresh_rules(
-    rules_base: list[dict[str, Any]], rng: random.Random, *, cyc: int, deep: bool, max_rules: int
+    rules_base: list[dict[str, Any]],
+    rng: random.Random,
+    *,
+    cyc: int,
+    deep: bool,
+    max_rules: int,
 ) -> None:
     """1–2 lightweight exploratory YES rules in deep-stuck (radical) mode only."""
     if not deep or not rules_base or len(rules_base) >= max_rules:
@@ -1074,7 +1186,13 @@ def _append_radical_fresh_rules(
     nadd = 2 if rng.random() < 0.2 else 1
     nadd = min(nadd, max(0, max_rules - len(rules_base) - 1))
     for j in range(nadd):
-        seed0 = next((r for r in rules_base if str(r.get("side") or "yes").lower() != "no"), None) or rules_base[0]
+        seed0 = (
+            next(
+                (r for r in rules_base if str(r.get("side") or "yes").lower() != "no"),
+                None,
+            )
+            or rules_base[0]
+        )
         nbr = dict(seed0) if isinstance(seed0, dict) else {}
         nbr["name"] = f"auto-radical-{rng.randint(1000, 9999)}-c{cyc}"[:58]
         nbr["min_prob"] = round(max(0.02, min(0.5, 0.35 + rng.uniform(-0.1, 0.1))), 4)
@@ -1098,7 +1216,10 @@ async def _apply_paper_loser_strategy_swap(
     history ``lab_a`` rules, (2) one-shot radical mutation, (3) short regime pin. Fully autonomous
     (no user toggles in frontends).
     """
-    base_meta: dict[str, Any] = {"swapped": False, "repeated_cycles": int(repeated_cycles)}
+    base_meta: dict[str, Any] = {
+        "swapped": False,
+        "repeated_cycles": int(repeated_cycles),
+    }
     pthr = max(1, int(oc.get("paper_loser_cycles_threshold", 4) or 4))
     if repeated_cycles < pthr:
         return base_meta
@@ -1117,10 +1238,16 @@ async def _apply_paper_loser_strategy_swap(
     cur = str(la0.get("active_regime") or "low_vol").strip().lower()
     if cur not in PAPER_LOSER_REGIME_ORDER:
         cur = "low_vol"
-    cycled = PAPER_LOSER_REGIME_ORDER[(PAPER_LOSER_REGIME_ORDER.index(cur) + 1) % len(PAPER_LOSER_REGIME_ORDER)]
+    cycled = PAPER_LOSER_REGIME_ORDER[
+        (PAPER_LOSER_REGIME_ORDER.index(cur) + 1) % len(PAPER_LOSER_REGIME_ORDER)
+    ]
     nxt = _regime_preferred_from_meta(oc, cycled)
     cur_rules_sig = _rules_json_fingerprint(
-        [dict(x) for x in (la0.get("rules") if isinstance(la0.get("rules"), list) else []) if isinstance(x, dict)]
+        [
+            dict(x)
+            for x in (la0.get("rules") if isinstance(la0.get("rules"), list) else [])
+            if isinstance(x, dict)
+        ]
     )
     h_two = await _load_top_distinct_history_rules(
         store, limit=32, current_fingerprint=cur_rules_sig, take=2
@@ -1128,9 +1255,15 @@ async def _apply_paper_loser_strategy_swap(
     blended = _interleave_blended_rules(nxt, la0, h_two, max_rules=22)
     if not blended:
         rk0 = _regime_to_rules_list_key(nxt)
-        blended = [json.loads(json.dumps(x)) for x in (la0.get(rk0) or base_rules) if isinstance(x, dict)]
+        blended = [
+            json.loads(json.dumps(x))
+            for x in (la0.get(rk0) or base_rules)
+            if isinstance(x, dict)
+        ]
     try:
-        blended = normalize_rules_list(blended)[: int(MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS) - 2]
+        blended = normalize_rules_list(blended)[
+            : int(MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS) - 2
+        ]
     except Exception as ex:
         logger.info("paper_loser: normalize_rules_list for blend: %s", ex)
     nlist2 = [json.loads(json.dumps(x)) for x in blended if isinstance(x, dict)]
@@ -1203,7 +1336,9 @@ def _recalculate_acceptance_rate(oc: dict[str, Any]) -> None:
     tr_list = tr_rows if isinstance(tr_rows, list) else []
     accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
     total_n = len(tr_list)
-    oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    oc["acceptance_rate_pct"] = (
+        round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    )
 
 
 async def _maybe_auto_revert_if_stuck(
@@ -1238,7 +1373,9 @@ async def _maybe_auto_revert_if_stuck(
         meta["reason"] = "cooldown"
         return meta
 
-    trig = _auto_revert_stuck_triggers(red_streak=red_streak, acceptance_pct=acceptance_pct, oc=oc)
+    trig = _auto_revert_stuck_triggers(
+        red_streak=red_streak, acceptance_pct=acceptance_pct, oc=oc
+    )
     stuck_red = bool(trig["stuck_red_15"])
     stuck_slope = bool(trig["stuck_low_acceptance_neg_slope"])
     neg_streak = int(trig.get("negative_equity_slope_streak") or 0)
@@ -1248,7 +1385,12 @@ async def _maybe_auto_revert_if_stuck(
 
     hist = await store.list_config_history(500, include_config=True)
     cutoff = now - dt.timedelta(days=30)
-    st_settled = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_settled = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     tail_n = min(200, max(8, len(st_settled)))
     window = st_settled[:tail_n]
     if len(window) < 8:
@@ -1278,7 +1420,9 @@ async def _maybe_auto_revert_if_stuck(
         cfg_try["lab_a"] = json.loads(json.dumps(lab_snap))
         lab_x, rules_x = _ensure_lab_rules(cfg_try, BRANCH_LAB_A)
         try:
-            rk = _replay_open_kw(cfg_try, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a)
+            rk = _replay_open_kw(
+                cfg_try, at_iso=at_iso, branch=BRANCH_LAB_A, trades=tr_a
+            )
             fb = _replay_fitness_bundle(
                 window,
                 rules_x,
@@ -1303,7 +1447,9 @@ async def _maybe_auto_revert_if_stuck(
 
     if best_lab is None or best_score == float("-inf"):
         meta["reason"] = "no_eligible_history"
-        logger.info("auto_revert: stuck criteria met but no eligible config_history row with replayable Lab A.")
+        logger.info(
+            "auto_revert: stuck criteria met but no eligible config_history row with replayable Lab A."
+        )
         return meta
 
     cfg["lab_a"] = best_lab
@@ -1408,7 +1554,9 @@ def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
     ``optimizer_consecutive_paper_loser_cycles`` reflect the latest tick (swap clears the counter).
     """
     acc = round(_safe_float(oc.get("acceptance_rate_pct"), 0.0), 2)
-    user_mag = round(max(0.0, min(1.0, _safe_float(oc.get("mutation_aggressiveness"), 0.75))), 4)
+    user_mag = round(
+        max(0.0, min(1.0, _safe_float(oc.get("mutation_aggressiveness"), 0.75))), 4
+    )
     pthr = max(1, int(oc.get("paper_loser_cycles_threshold", 4) or 4))
     pwc = int(oc.get("optimizer_consecutive_paper_loser_cycles", 0) or 0)
     pwl = bool(oc.get("paper_loser_risk_last"))
@@ -1416,7 +1564,9 @@ def _check_optimizer_health(oc: dict[str, Any]) -> dict[str, Any]:
     pin_ex = str(oc.get("regime_paper_loser_pinned_until") or "")
     if acc > 60.0:
         color = "green"
-        action = "Continue; acceptance is healthy — keep monitoring trace and replay PnL."
+        action = (
+            "Continue; acceptance is healthy — keep monitoring trace and replay PnL."
+        )
     elif acc >= 30.0:
         color = "yellow"
         action = (
@@ -1463,7 +1613,9 @@ def _count_trades_created_between(
     return n
 
 
-def _is_lab_a_under_trading(tr_a: list[dict[str, Any]], oc: dict[str, Any], end: dt.datetime) -> bool:
+def _is_lab_a_under_trading(
+    tr_a: list[dict[str, Any]], oc: dict[str, Any], end: dt.datetime
+) -> bool:
     """True when Lab A is placing too few sim trades: sparse window and/or nothing in the last 4 sched cycles."""
     th = max(0, int(oc.get("auto_relax_trade_threshold", 3) or 3))
     hw = max(0.5, float(oc.get("auto_relax_hours_window", 6) or 6))
@@ -1479,7 +1631,9 @@ def _is_lab_a_under_trading(tr_a: list[dict[str, Any]], oc: dict[str, Any], end:
     return False
 
 
-def _paper_loser_swap_recently(oc: dict[str, Any], end: dt.datetime, hours: float) -> bool:
+def _paper_loser_swap_recently(
+    oc: dict[str, Any], end: dt.datetime, hours: float
+) -> bool:
     t = _parse_iso_dt(str(oc.get("last_paper_loser_swap_at") or ""))
     if t is None:
         return False
@@ -1540,7 +1694,9 @@ def _auto_relax_conservative_params(
         return None
 
     style = _branch_style(oc, BRANCH_LAB_A)
-    proposed_rules = _apply_rule_thresholds(rules0, yes_floor_pct=after_floor, min_minutes_left=after_mins, style=style)
+    proposed_rules = _apply_rule_thresholds(
+        rules0, yes_floor_pct=after_floor, min_minutes_left=after_mins, style=style
+    )
     lab1 = json.loads(json.dumps(lab0))
     lab1["rules"] = proposed_rules
     lab1["balance_fraction_per_window"] = after_bf
@@ -1558,12 +1714,20 @@ def _auto_relax_conservative_params(
         after_floor=after_floor,
         before_minm=before_mins,
         after_minm=after_mins,
-        before_extra={"loss_streak_trigger": before_loss, "balance_fraction_per_window": before_bf},
-        after_extra={"loss_streak_trigger": after_loss, "balance_fraction_per_window": after_bf},
+        before_extra={
+            "loss_streak_trigger": before_loss,
+            "balance_fraction_per_window": before_bf,
+        },
+        after_extra={
+            "loss_streak_trigger": after_loss,
+            "balance_fraction_per_window": after_bf,
+        },
     )
 
 
-def _regime_volatility(signals: list[dict[str, Any]], *, hours: float, end: dt.datetime) -> dict[str, Any]:
+def _regime_volatility(
+    signals: list[dict[str, Any]], *, hours: float, end: dt.datetime
+) -> dict[str, Any]:
     cutoff = end - dt.timedelta(hours=max(0.5, hours))
     vals: list[float] = []
     for s in signals:
@@ -1587,7 +1751,10 @@ def _regime_volatility(signals: list[dict[str, Any]], *, hours: float, end: dt.d
 
 
 def _trading_regime_key_from_context(
-    oc: dict[str, Any], sg_a: list[dict[str, Any]], st_a: list[dict[str, Any]], at_iso: str
+    oc: dict[str, Any],
+    sg_a: list[dict[str, Any]],
+    st_a: list[dict[str, Any]],
+    at_iso: str,
 ) -> str:
     """``high_vol`` | ``low_vol`` | ``event_risk`` — which Lab A family should be active (internal optimizer)."""
     end = _parse_iso_dt(at_iso) or _utc_now()
@@ -1638,7 +1805,9 @@ def _sync_regime_rule_families_to_lab_a(
         return False
     at_dt = _parse_iso_dt(at_iso) or _utc_now()
     pin_raw = str(oc.get("regime_paper_loser_pinned") or "").strip().lower()
-    pin_until = _parse_iso_dt(str(oc.get("regime_paper_loser_pinned_until") or "").strip())
+    pin_until = _parse_iso_dt(
+        str(oc.get("regime_paper_loser_pinned_until") or "").strip()
+    )
     if (
         pin_raw in ("high_vol", "low_vol", "event_risk")
         and pin_until is not None
@@ -1674,7 +1843,13 @@ def _sync_regime_rule_families_to_lab_a(
     la0["rules"] = nlist
     cfg["lab_a"] = la0
     if prev and prev != new_reg:
-        logger.info("Lab A regime: %s -> %s; active ruleset %s (%d rules)", prev, new_reg, rk, len(nlist))
+        logger.info(
+            "Lab A regime: %s -> %s; active ruleset %s (%d rules)",
+            prev,
+            new_reg,
+            rk,
+            len(nlist),
+        )
     return bool(prev) and prev != new_reg
 
 
@@ -1719,11 +1894,36 @@ def _build_metrics_context(
     sc = _signals_sorted_desc(sg_c)
     sd = _signals_sorted_desc(sg_d)
     se = _signals_sorted_desc(sg_e)
-    st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_a = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_b = [
+        t
+        for t in tr_b
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_c = [
+        t
+        for t in tr_c
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_d = [
+        t
+        for t in tr_d
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_e = [
+        t
+        for t in tr_e
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
     lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
@@ -1749,9 +1949,20 @@ def _build_metrics_context(
     rep_e = _replay_pnl_under_rules(
         st_e, rules_e, se, include_fees_in_score=include_fees, branch_trading_cfg=lab_e
     )
+
     def _pf_var(rows: list[dict[str, Any]]) -> dict[str, Any]:
-        gross_win = sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) > 0)
-        gross_loss = abs(sum(int(t.get("pnl_cents") or 0) for t in rows if int(t.get("pnl_cents") or 0) < 0))
+        gross_win = sum(
+            int(t.get("pnl_cents") or 0)
+            for t in rows
+            if int(t.get("pnl_cents") or 0) > 0
+        )
+        gross_loss = abs(
+            sum(
+                int(t.get("pnl_cents") or 0)
+                for t in rows
+                if int(t.get("pnl_cents") or 0) < 0
+            )
+        )
         pf = (gross_win / gross_loss) if gross_loss > 0 else None
         pc = [int(t.get("pnl_cents") or 0) for t in rows]
         if len(pc) < 2:
@@ -1768,7 +1979,9 @@ def _build_metrics_context(
         },
         "lab_a": {
             "settled_trades": len(st_a),
-            "profitable_trades": sum(1 for t in st_a if int(t.get("pnl_cents") or 0) > 0),
+            "profitable_trades": sum(
+                1 for t in st_a if int(t.get("pnl_cents") or 0) > 0
+            ),
             "balance_fraction_per_window": lab_a.get("balance_fraction_per_window"),
             "window_minutes": lab_a.get("window_minutes"),
             "replay_under_current_rules_pnl_cents": rep_a[0],
@@ -1783,7 +1996,9 @@ def _build_metrics_context(
         },
         "lab_b": {
             "settled_trades": len(st_b),
-            "profitable_trades": sum(1 for t in st_b if int(t.get("pnl_cents") or 0) > 0),
+            "profitable_trades": sum(
+                1 for t in st_b if int(t.get("pnl_cents") or 0) > 0
+            ),
             "balance_fraction_per_window": lab_b.get("balance_fraction_per_window"),
             "window_minutes": lab_b.get("window_minutes"),
             "replay_under_current_rules_pnl_cents": rep_b[0],
@@ -1798,7 +2013,9 @@ def _build_metrics_context(
         },
         "lab_c": {
             "settled_trades": len(st_c),
-            "profitable_trades": sum(1 for t in st_c if int(t.get("pnl_cents") or 0) > 0),
+            "profitable_trades": sum(
+                1 for t in st_c if int(t.get("pnl_cents") or 0) > 0
+            ),
             "balance_fraction_per_window": lab_c.get("balance_fraction_per_window"),
             "window_minutes": lab_c.get("window_minutes"),
             "replay_under_current_rules_pnl_cents": rep_c[0],
@@ -1813,7 +2030,9 @@ def _build_metrics_context(
         },
         "lab_d": {
             "settled_trades": len(st_d),
-            "profitable_trades": sum(1 for t in st_d if int(t.get("pnl_cents") or 0) > 0),
+            "profitable_trades": sum(
+                1 for t in st_d if int(t.get("pnl_cents") or 0) > 0
+            ),
             "balance_fraction_per_window": lab_d.get("balance_fraction_per_window"),
             "window_minutes": lab_d.get("window_minutes"),
             "replay_under_current_rules_pnl_cents": rep_d[0],
@@ -1828,7 +2047,9 @@ def _build_metrics_context(
         },
         "lab_e": {
             "settled_trades": len(st_e),
-            "profitable_trades": sum(1 for t in st_e if int(t.get("pnl_cents") or 0) > 0),
+            "profitable_trades": sum(
+                1 for t in st_e if int(t.get("pnl_cents") or 0) > 0
+            ),
             "balance_fraction_per_window": lab_e.get("balance_fraction_per_window"),
             "window_minutes": lab_e.get("window_minutes"),
             "replay_under_current_rules_pnl_cents": rep_e[0],
@@ -1850,7 +2071,9 @@ def _build_metrics_context(
     }
 
 
-def _ensure_lab_rules(cfg: dict[str, Any], branch: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _ensure_lab_rules(
+    cfg: dict[str, Any], branch: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     lk = _lab_key_for_branch(branch) or "lab_a"
     lab = cfg.get(lk)
     if not isinstance(lab, dict):
@@ -1862,7 +2085,13 @@ def _ensure_lab_rules(cfg: dict[str, Any], branch: str) -> tuple[dict[str, Any],
     return dict(lab), [dict(r) for r in rules if isinstance(r, dict)]
 
 
-def _apply_rule_thresholds(rules: list[dict[str, Any]], *, yes_floor_pct: int, min_minutes_left: int, style: str) -> list[dict[str, Any]]:
+def _apply_rule_thresholds(
+    rules: list[dict[str, Any]],
+    *,
+    yes_floor_pct: int,
+    min_minutes_left: int,
+    style: str,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     floor = max(1, min(99, int(yes_floor_pct))) / 100.0
     minm = max(0, int(min_minutes_left))
@@ -1922,8 +2151,14 @@ def _history_item(
         lab = "Lab E"
     else:
         lab = "Lab ?"
-    before: dict[str, Any] = {"yes_floor_pct": before_floor, "min_minutes_left": before_minm}
-    after: dict[str, Any] = {"yes_floor_pct": after_floor, "min_minutes_left": after_minm}
+    before: dict[str, Any] = {
+        "yes_floor_pct": before_floor,
+        "min_minutes_left": before_minm,
+    }
+    after: dict[str, Any] = {
+        "yes_floor_pct": after_floor,
+        "min_minutes_left": after_minm,
+    }
     if before_extra:
         before.update(before_extra)
     if after_extra:
@@ -1988,20 +2223,35 @@ def _merge_pulse_trace(oc: dict[str, Any], changes: list[dict[str, Any]]) -> Non
     oc["pulse_trace"] = [*new_rows, *old_pt][:40]
 
 
-def _optimizer_pulse_bc_enrichment(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, Any]:
+def _optimizer_pulse_bc_enrichment(
+    cfg: dict[str, Any], oc: dict[str, Any]
+) -> dict[str, Any]:
     """Extra ``after`` keys so the dashboard pulse chart can plot Lab B/C/D/E reference floors and bet fractions."""
+
     def gfrac(lk: str) -> float:
         lab = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
         try:
-            return float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+            return float(
+                lab.get("balance_fraction_per_window")
+                or cfg.get("balance_fraction_per_window")
+                or 0.03
+            )
         except (TypeError, ValueError):
             return 0.03
 
     return {
-        "lab_b_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_b_yes_floor_pct"), 55))),
-        "lab_c_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_c_yes_floor_pct"), 52))),
-        "lab_d_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_d_yes_floor_pct"), 50))),
-        "lab_e_yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_e_yes_floor_pct"), 53))),
+        "lab_b_yes_floor_pct": max(
+            1, min(99, _safe_int(oc.get("lab_b_yes_floor_pct"), 55))
+        ),
+        "lab_c_yes_floor_pct": max(
+            1, min(99, _safe_int(oc.get("lab_c_yes_floor_pct"), 52))
+        ),
+        "lab_d_yes_floor_pct": max(
+            1, min(99, _safe_int(oc.get("lab_d_yes_floor_pct"), 50))
+        ),
+        "lab_e_yes_floor_pct": max(
+            1, min(99, _safe_int(oc.get("lab_e_yes_floor_pct"), 53))
+        ),
         "lab_b_balance_fraction": round(gfrac("lab_b"), 4),
         "lab_c_balance_fraction": round(gfrac("lab_c"), 4),
         "lab_d_balance_fraction": round(gfrac("lab_d"), 4),
@@ -2013,7 +2263,11 @@ def pulse_chart_baseline(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, A
     """Current Lab A YES floor + bet fraction and Lab B/C/D/E reference values (same keys as pulse change_history ``after``)."""
     lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
     try:
-        bf_a = float(lab_a.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        bf_a = float(
+            lab_a.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         bf_a = 0.03
     bc = _optimizer_pulse_bc_enrichment(cfg, oc)
@@ -2021,10 +2275,16 @@ def pulse_chart_baseline(cfg: dict[str, Any], oc: dict[str, Any]) -> dict[str, A
         "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
         "balance_fraction_per_window": round(bf_a, 4),
         **bc,
-        "loss_streak_trigger": max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 3))),
-        "threshold_step_pct": max(1, min(5, _safe_int(oc.get("threshold_step_pct"), 2))),
+        "loss_streak_trigger": max(
+            1, min(12, _safe_int(oc.get("loss_streak_trigger"), 3))
+        ),
+        "threshold_step_pct": max(
+            1, min(5, _safe_int(oc.get("threshold_step_pct"), 2))
+        ),
         "minute_step": max(1, min(5, _safe_int(oc.get("minute_step"), 2))),
-        "lab_a_min_minutes_left": max(0, min(30, _safe_int(oc.get("lab_a_min_minutes_left"), 5))),
+        "lab_a_min_minutes_left": max(
+            0, min(30, _safe_int(oc.get("lab_a_min_minutes_left"), 5))
+        ),
     }
 
 
@@ -2033,7 +2293,8 @@ def _settled_lab_n(trades: list[dict[str, Any]]) -> int:
         [
             t
             for t in trades
-            if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
         ]
     )
 
@@ -2053,7 +2314,11 @@ def _set_next_tick_preview(
     floor = max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57)))
     trig = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 3)))
     try:
-        frac = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        frac = float(
+            lab.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         frac = 0.03
     sched = bool(oc.get("enabled"))
@@ -2070,7 +2335,11 @@ def _set_next_tick_preview(
     c_style = str(oc.get("lab_c_style") or "aggressive").strip()
     d_style = str(oc.get("lab_d_style") or "wild").strip()
     e_style = str(oc.get("lab_e_style") or "balanced").strip()
-    adv = oc.get("advanced_metrics_last") if isinstance(oc.get("advanced_metrics_last"), dict) else {}
+    adv = (
+        oc.get("advanced_metrics_last")
+        if isinstance(oc.get("advanced_metrics_last"), dict)
+        else {}
+    )
     adv_sharpe = _safe_float(adv.get("sharpe"), 0.0)
     adv_dd = _safe_float(adv.get("max_drawdown_pct"), 0.0)
     adv_reg = str(adv.get("regime") or "n/a")
@@ -2101,7 +2370,12 @@ def _apply_adaptive_lab_tuning(
     # Staging only: adaptive rule/threshold tuning persists on Lab A; B/C stay fixed reference arms.
     if branch != BRANCH_LAB_A or not bool(oc.get("lab_a_enabled", True)):
         return None
-    settled = [t for t in trades if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    settled = [
+        t
+        for t in trades
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
     min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
     if len(settled) < min_tr:
@@ -2120,7 +2394,9 @@ def _apply_adaptive_lab_tuning(
     loss_trigger = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 1)))
     style = _branch_style(oc, branch)
 
-    losses_at_threshold = _count_losses_at_or_above_yes_floor(settled, sig_idx, yes_floor_pct=cur_floor)
+    losses_at_threshold = _count_losses_at_or_above_yes_floor(
+        settled, sig_idx, yes_floor_pct=cur_floor
+    )
 
     if losses_at_threshold < loss_trigger:
         return None
@@ -2129,7 +2405,11 @@ def _apply_adaptive_lab_tuning(
     before_mins = cur_mins
     lab_base0, _rules0 = _ensure_lab_rules(cfg, branch)
     try:
-        bf0 = float(lab_base0.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        bf0 = float(
+            lab_base0.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         bf0 = 0.03
     if style == "conservative":
@@ -2173,9 +2453,9 @@ def _apply_adaptive_lab_tuning(
             branch_trading_cfg=lab_base,
             **rok,
         )
-        if float(new_fb["score_dollars"]) <= float(base_fb["score_dollars"]) and not bool(
-            oc.get("adaptive_skip_backtest_gate", False)
-        ):
+        if float(new_fb["score_dollars"]) <= float(
+            base_fb["score_dollars"]
+        ) and not bool(oc.get("adaptive_skip_backtest_gate", False)):
             logger.info(
                 "adaptive_lab_tuning_rejected: fitness did not improve (score %.4f -> %.4f)",
                 float(base_fb["score_dollars"]),
@@ -2191,7 +2471,11 @@ def _apply_adaptive_lab_tuning(
     oc[mins_key] = cur_mins
     reason = f"{losses_at_threshold} losing settled trades at/above {before_floor}% YES threshold"
     try:
-        bf1 = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        bf1 = float(
+            lab.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         bf1 = bf0
     hint = (
@@ -2227,7 +2511,12 @@ def _apply_adaptive_win_relax_lab_a(
         return None
     if not bool(oc.get("lab_a_enabled", True)):
         return None
-    settled = [t for t in trades if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    settled = [
+        t
+        for t in trades
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
     min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
     if len(settled) < min_tr:
@@ -2246,7 +2535,9 @@ def _apply_adaptive_win_relax_lab_a(
     loss_trigger = max(1, min(12, _safe_int(oc.get("loss_streak_trigger"), 1)))
     style = _branch_style(oc, BRANCH_LAB_A)
 
-    losses_at_threshold = _count_losses_at_or_above_yes_floor(settled, sig_idx, yes_floor_pct=cur_floor)
+    losses_at_threshold = _count_losses_at_or_above_yes_floor(
+        settled, sig_idx, yes_floor_pct=cur_floor
+    )
     if losses_at_threshold > 0:
         return None
 
@@ -2261,7 +2552,11 @@ def _apply_adaptive_win_relax_lab_a(
     before_mins = cur_mins
     lab_base, rules_base = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     try:
-        bf0 = float(lab_base.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        bf0 = float(
+            lab_base.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         bf0 = 0.03
 
@@ -2304,9 +2599,9 @@ def _apply_adaptive_win_relax_lab_a(
             branch_trading_cfg=lab_base,
             **rok,
         )
-        if float(new_fb["score_dollars"]) <= float(base_fb["score_dollars"]) and not bool(
-            oc.get("adaptive_skip_backtest_gate", False)
-        ):
+        if float(new_fb["score_dollars"]) <= float(
+            base_fb["score_dollars"]
+        ) and not bool(oc.get("adaptive_skip_backtest_gate", False)):
             logger.info(
                 "adaptive_win_relax_rejected: fitness did not improve (score %.4f -> %.4f)",
                 float(base_fb["score_dollars"]),
@@ -2320,12 +2615,14 @@ def _apply_adaptive_win_relax_lab_a(
     oc[floor_key] = cur_floor
     oc[mins_key] = cur_mins
     try:
-        bf1 = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        bf1 = float(
+            lab.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         bf1 = bf0
-    reason = (
-        f"Win momentum (mean {mean_pnl:.0f}¢/trade over last {len(tail)}); no ≥{loss_trigger} losses at {before_floor}% floor"
-    )
+    reason = f"Win momentum (mean {mean_pnl:.0f}¢/trade over last {len(tail)}); no ≥{loss_trigger} losses at {before_floor}% floor"
     hint = (
         f"Regime shift (win path): eased YES floor {before_floor}%→{cur_floor}% after positive short-run PnL; "
         f"next tick still watches for {loss_trigger} losses at the new floor before tightening again."
@@ -2370,11 +2667,36 @@ def _internal_lab_a_bet_pulse(
         return None
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
     min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
-    st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_a = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_b = [
+        t
+        for t in tr_b
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_c = [
+        t
+        for t in tr_c
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_d = [
+        t
+        for t in tr_d
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_e = [
+        t
+        for t in tr_e
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     if len(st_a) + len(st_b) + len(st_c) + len(st_d) + len(st_e) < min_tr:
         return None
     prof = (
@@ -2390,7 +2712,11 @@ def _internal_lab_a_bet_pulse(
     _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a, at_iso)
     lab_base, rules_a = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     try:
-        old_f = float(lab_base.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+        old_f = float(
+            lab_base.get("balance_fraction_per_window")
+            or cfg.get("balance_fraction_per_window")
+            or 0.03
+        )
     except (TypeError, ValueError):
         old_f = 0.03
 
@@ -2414,10 +2740,18 @@ def _internal_lab_a_bet_pulse(
     fitness_score = float(fb.get("score_dollars") or 0.0)
     sl_rate = float(fb.get("stop_loss_trigger_rate") or 0.0)
     regime_h = max(1.0, float(oc.get("regime_lookback_hours") or 4))
-    regime = _regime_volatility(sg_a, hours=regime_h, end=_parse_iso_dt(at_iso) or _utc_now())
+    regime = _regime_volatility(
+        sg_a, hours=regime_h, end=_parse_iso_dt(at_iso) or _utc_now()
+    )
     regime_bucket = str(regime.get("bucket") or "unknown")
     # High-vol cuts aggressiveness; low-vol allows slightly larger nudges.
-    regime_mult = 0.65 if regime_bucket == "high_vol" else 1.15 if regime_bucket == "low_vol" else 1.0
+    regime_mult = (
+        0.65
+        if regime_bucket == "high_vol"
+        else 1.15
+        if regime_bucket == "low_vol"
+        else 1.0
+    )
     eq_slope = _equity_slope_dollars_per_hour(eq_a) or 0.0
     trace_rows = oc.get("internal_optimizer_trace")
     trace_list = trace_rows if isinstance(trace_rows, list) else []
@@ -2452,8 +2786,16 @@ def _internal_lab_a_bet_pulse(
         f"internal_pulse score={fitness_score:.3f} matched={matched_n} mean_pnl_cents={pnl:.1f} -> fraction={new_f}"
     )
     cfg["lab_a"] = lab
-    mom_note = f"momentum_streak={eq_slope_streak} (need≥3 for +8% step on increases)" if not momentum_ok else "momentum_ok≥3 +8% step on increases"
-    sl_note = f"stop_loss_rate={sl_rate:.1f}% (>40% tightens shrink / damps adds)" if sl_rate > 40.0 else f"stop_loss_rate={sl_rate:.1f}%"
+    mom_note = (
+        f"momentum_streak={eq_slope_streak} (need≥3 for +8% step on increases)"
+        if not momentum_ok
+        else "momentum_ok≥3 +8% step on increases"
+    )
+    sl_note = (
+        f"stop_loss_rate={sl_rate:.1f}% (>40% tightens shrink / damps adds)"
+        if sl_rate > 40.0
+        else f"stop_loss_rate={sl_rate:.1f}%"
+    )
     reason = (
         f"internal pulse: fitness={fitness_score:.3f}, trend={fitness_slope:+.3f}/cycle, "
         f"equity_slope={eq_slope:+.2f}$/h, {mom_note}, {sl_note}, regime={regime_bucket}, mean={pnl:.0f}¢, matched={matched_n}"
@@ -2483,7 +2825,9 @@ def _internal_lab_a_bet_pulse(
         after_f=new_f,
         after_extra={
             **bc,
-            "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
+            "yes_floor_pct": max(
+                1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))
+            ),
         },
     )
     item["tick_hint"] = hint[:500]
@@ -2590,7 +2934,9 @@ def _internal_mutate_rules_and_params(
         eff = min(1.75, eff * 2.0)
     if was_plr:
         oc["paper_loser_radical_next"] = False
-        logger.info("Paper-loser strategy swap: one-shot radical exploration scale (forced).")
+        logger.info(
+            "Paper-loser strategy swap: one-shot radical exploration scale (forced)."
+        )
     elif rad0:
         # Normal recovery mode — not an operator error; avoid warning-level noise in default INFO logs.
         logger.info(
@@ -2604,7 +2950,9 @@ def _internal_mutate_rules_and_params(
     meta["effective_mutation_scale"] = round(eff, 4)
     cyc = max(1, _safe_int(oc.get("optimizer_cycle_count"), 1))
     rng = random.Random(cyc * 997 + len(st_a) * 17 + len(sg_a))
-    drift = max(-0.03, min(0.03, float(base_fb["sharpe_approx"]) * 0.01 * min(1.25, eff)))
+    drift = max(
+        -0.03, min(0.03, float(base_fb["sharpe_approx"]) * 0.01 * min(1.25, eff))
+    )
     span = max(1, min(4, int(round(eff * (1.4 if rad0 else 1.0)))))
     prob_span = 0.015 * eff
     mutated_rules: list[dict[str, Any]] = []
@@ -2617,9 +2965,13 @@ def _internal_mutate_rules_and_params(
         jitter_prob = rng.uniform(-prob_span, prob_span) + drift
         jitter_mins = rng.randint(-span, span)
         lo = max(0.01, min(0.99, _safe_float(nr.get("min_prob"), 0.0) + jitter_prob))
-        hi = max(lo + 0.005, min(0.995, _safe_float(nr.get("max_prob"), 1.0) + jitter_prob))
+        hi = max(
+            lo + 0.005, min(0.995, _safe_float(nr.get("max_prob"), 1.0) + jitter_prob)
+        )
         minm = max(0, min(60, _safe_int(nr.get("min_minutes_left"), 0) + jitter_mins))
-        maxm = max(minm, min(120, _safe_int(nr.get("max_minutes_left"), 60) + jitter_mins))
+        maxm = max(
+            minm, min(120, _safe_int(nr.get("max_minutes_left"), 60) + jitter_mins)
+        )
         nr["min_prob"] = round(lo, 4)
         nr["max_prob"] = round(hi, 4)
         nr["min_minutes_left"] = int(minm)
@@ -2628,7 +2980,9 @@ def _internal_mutate_rules_and_params(
             nr["name"] = f"{str(nr.get('name') or 'rule')[:48]} · m{cyc}"
         mutated_rules.append(nr)
     if rad0 and len(mutated_rules) < 24 and rng.random() < 0.3:
-        seed0 = next((r for r in rules_base if str(r.get("side") or "yes").lower() != "no"), None) or (rules_base[0] if rules_base else None)
+        seed0 = next(
+            (r for r in rules_base if str(r.get("side") or "yes").lower() != "no"), None
+        ) or (rules_base[0] if rules_base else None)
         if seed0 and isinstance(seed0, dict):
             nbr = dict(seed0)
             nbr["name"] = f"radical-explore-{rng.randint(0, 9999)}-m{cyc}"[:56]
@@ -2641,9 +2995,18 @@ def _internal_mutate_rules_and_params(
         int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0) >= 4
         and _safe_float(oc.get("acceptance_rate_pct", 100.0), 100.0) < 15.0
     )
-    if rad0 and not was_plr and deepx and len(mutated_rules) < (MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS - 1):
+    if (
+        rad0
+        and not was_plr
+        and deepx
+        and len(mutated_rules) < (MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS - 1)
+    ):
         _append_radical_fresh_rules(
-            mutated_rules, rng, cyc=cyc, deep=True, max_rules=MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS
+            mutated_rules,
+            rng,
+            cyc=cyc,
+            deep=True,
+            max_rules=MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS,
         )
     try:
         mutated_rules = normalize_rules_list(mutated_rules)
@@ -2651,7 +3014,10 @@ def _internal_mutate_rules_and_params(
         meta["reject_reason"] = f"normalize_failed:{e}"
         return None, meta
     old_f = clamp_balance_fraction_per_window(
-        _safe_float(lab_a.get("balance_fraction_per_window"), _safe_float(cfg.get("balance_fraction_per_window"), 0.03))
+        _safe_float(
+            lab_a.get("balance_fraction_per_window"),
+            _safe_float(cfg.get("balance_fraction_per_window"), 0.03),
+        )
     )
     frac_span = 0.0035 * eff * (1.6 if rad0 else 1.0)
     frac_step = rng.uniform(-frac_span, frac_span) + drift * 0.35 * min(1.2, eff)
@@ -2675,8 +3041,12 @@ def _internal_mutate_rules_and_params(
     if meta["score_after"] <= meta["score_before"]:
         meta["reject_reason"] = "fitness_not_improved"
         return None, meta
+
     def _tail_fb(
-        st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str, tr_all: list[dict[str, Any]] | None
+        st: list[dict[str, Any]],
+        sg: list[dict[str, Any]],
+        br: str,
+        tr_all: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
         _, r = _ensure_lab_rules(cfg, br)
         lk = _lab_key_for_branch(br) or "lab_a"
@@ -2691,6 +3061,7 @@ def _internal_mutate_rules_and_params(
             branch_trading_cfg=lb,
             **rko,
         )
+
     fb_b = _tail_fb(st_b, sg_b, BRANCH_LAB_B, tr_b)
     fb_c = _tail_fb(st_c, sg_c, BRANCH_LAB_C, tr_c)
     fb_d = _tail_fb(st_d, sg_d, BRANCH_LAB_D, tr_d)
@@ -2708,7 +3079,9 @@ def _internal_mutate_rules_and_params(
         float(fb_d["score_dollars"]),
         float(fb_e["score_dollars"]),
     ]
-    stat_ok, stat_detail = is_statistically_better(a_d, ctrl_d, lab_a_score=meta["score_after"], control_scores=ctrl_scores)
+    stat_ok, stat_detail = is_statistically_better(
+        a_d, ctrl_d, lab_a_score=meta["score_after"], control_scores=ctrl_scores
+    )
     meta["statistical_detail"] = stat_detail
     if not stat_ok:
         meta["reject_reason"] = "statistical_gate_failed"
@@ -2716,11 +3089,17 @@ def _internal_mutate_rules_and_params(
     mut_lab["rules"] = mutated_rules
     rlk2 = _regime_to_rules_list_key(
         str(
-            (mut_lab.get("active_regime") or (cfg.get("lab_a") or {}).get("active_regime") or "low_vol")
+            (
+                mut_lab.get("active_regime")
+                or (cfg.get("lab_a") or {}).get("active_regime")
+                or "low_vol"
+            )
         )
     )
     mut_lab[rlk2] = mutated_rules
-    mut_lab["optimizer_note"] = f"internal_mutation cycle={cyc} score={meta['score_before']:.3f}->{meta['score_after']:.3f}"
+    mut_lab["optimizer_note"] = (
+        f"internal_mutation cycle={cyc} score={meta['score_before']:.3f}->{meta['score_after']:.3f}"
+    )
     cfg["lab_a"] = mut_lab
     oc["last_mutation_at"] = at_iso
     meta["accepted"] = True
@@ -2744,8 +3123,16 @@ def _internal_mutate_rules_and_params(
             f"Lab A mutant cycle: score {meta['score_before']:.3f}->{meta['score_after']:.3f}, "
             f"fraction {old_f:.4f}->{new_f:.4f}, rules={len(mutated_rules)}"
         )[:400],
-        "before": {"score": meta["score_before"], "balance_fraction_per_window": old_f, "rules_count": len(rules_base)},
-        "after": {"score": meta["score_after"], "balance_fraction_per_window": round(new_f, 4), "rules_count": len(mutated_rules)},
+        "before": {
+            "score": meta["score_before"],
+            "balance_fraction_per_window": old_f,
+            "rules_count": len(rules_base),
+        },
+        "after": {
+            "score": meta["score_after"],
+            "balance_fraction_per_window": round(new_f, 4),
+            "rules_count": len(mutated_rules),
+        },
     }
     return row, meta
 
@@ -2766,10 +3153,30 @@ def _apply_claude_bet_recommendations(
         return []
     min_tr = max(2, _safe_int(oc.get("min_trades_for_optimize"), 8))
     min_prof = max(0, _safe_int(oc.get("min_profitable_trades"), 2))
-    st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_a = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_b = [
+        t
+        for t in tr_b
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_c = [
+        t
+        for t in tr_c
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_d = [
+        t
+        for t in tr_d
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     if len(st_a) + len(st_b) + len(st_c) + len(st_d) < min_tr:
         return []
     prof = (
@@ -2816,7 +3223,9 @@ def _apply_claude_bet_recommendations(
                 after_f=new_f,
                 after_extra={
                     **bc,
-                    "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
+                    "yes_floor_pct": max(
+                        1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))
+                    ),
                 },
             )
         )
@@ -2838,9 +3247,15 @@ def _apply_claude_lab_parameter_patch(
     lab_raw = cfg.get("lab_a")
     lab = dict(lab_raw) if isinstance(lab_raw, dict) else {}
     if patch.balance_fraction_per_window is not None:
-        new_f = clamp_balance_fraction_per_window(float(patch.balance_fraction_per_window))
+        new_f = clamp_balance_fraction_per_window(
+            float(patch.balance_fraction_per_window)
+        )
         try:
-            old_f = float(lab.get("balance_fraction_per_window") or cfg.get("balance_fraction_per_window") or 0.03)
+            old_f = float(
+                lab.get("balance_fraction_per_window")
+                or cfg.get("balance_fraction_per_window")
+                or 0.03
+            )
         except (TypeError, ValueError):
             old_f = 0.03
         if abs(new_f - old_f) >= 0.0004:
@@ -2855,7 +3270,9 @@ def _apply_claude_lab_parameter_patch(
                     after_f=new_f,
                     after_extra={
                         **bc,
-                        "yes_floor_pct": max(1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))),
+                        "yes_floor_pct": max(
+                            1, min(99, _safe_int(oc.get("lab_a_yes_floor_pct"), 57))
+                        ),
                     },
                 )
             )
@@ -2867,7 +3284,9 @@ def _apply_claude_lab_parameter_patch(
         if wm is not None:
             wm = max(1, min(1440, wm))
             try:
-                old_w = int(lab.get("window_minutes") or cfg.get("window_minutes") or 15)
+                old_w = int(
+                    lab.get("window_minutes") or cfg.get("window_minutes") or 15
+                )
             except (TypeError, ValueError):
                 old_w = 15
             if wm != old_w:
@@ -2890,7 +3309,9 @@ def _apply_claude_lab_parameter_patch(
     return out_hist
 
 
-def _settled_trade_examples_for_prompt(st_a: list[dict[str, Any]], *, n: int = 5) -> list[dict[str, Any]]:
+def _settled_trade_examples_for_prompt(
+    st_a: list[dict[str, Any]], *, n: int = 5
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for t in st_a[: max(1, n)]:
         ex: dict[str, Any] = {}
@@ -3007,7 +3428,9 @@ def apply_claude_rule_changes(
     lab_base, rules_base = _ensure_lab_rules(cfg, BRANCH_LAB_A)
     merged = _merge_rule_operations_from_claude(rules_base, parsed.rule_operations)
     if len(merged) > MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS:
-        meta["reject_reason"] = f"rule_count_exceeds_cap_{MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS}"
+        meta["reject_reason"] = (
+            f"rule_count_exceeds_cap_{MAX_LAB_A_RULES_AFTER_CLAUDE_DELTAS}"
+        )
         logger.info(
             "claude_rules_rejected: %s (len=%s)",
             meta["reject_reason"],
@@ -3053,9 +3476,17 @@ def apply_claude_rule_changes(
         return [], meta
 
     def _tail_fb(
-        st: list[dict[str, Any]], sg: list[dict[str, Any]], br: str, tr_all: list[dict[str, Any]] | None
+        st: list[dict[str, Any]],
+        sg: list[dict[str, Any]],
+        br: str,
+        tr_all: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
-        stx = [t for t in st if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        stx = [
+            t
+            for t in st
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
+        ]
         _, rx = _ensure_lab_rules(cfg, br)
         lk = _lab_key_for_branch(br) or "lab_a"
         lab_sub = cfg.get(lk) if isinstance(cfg.get(lk), dict) else {}
@@ -3079,7 +3510,11 @@ def apply_claude_rule_changes(
         + [x / 100.0 for x in fb_c["per_trade_pnl_cents_chrono"]]
         + [x / 100.0 for x in fb_d["per_trade_pnl_cents_chrono"]]
     )
-    scores_bcd = [float(fb_b["score_dollars"]), float(fb_c["score_dollars"]), float(fb_d["score_dollars"])]
+    scores_bcd = [
+        float(fb_b["score_dollars"]),
+        float(fb_c["score_dollars"]),
+        float(fb_d["score_dollars"]),
+    ]
     stat_ok, stat_detail = is_statistically_better(
         a_dollars,
         ctrl_pool,
@@ -3100,7 +3535,11 @@ def apply_claude_rule_changes(
             return [], meta
         if not stat_ok:
             meta["reject_reason"] = "statistical_gate_failed_vs_controls"
-            logger.info("claude_rules_rejected: %s detail=%s", meta["reject_reason"], stat_detail)
+            logger.info(
+                "claude_rules_rejected: %s detail=%s",
+                meta["reject_reason"],
+                stat_detail,
+            )
             return [], meta
 
     lab = dict(lab_base)
@@ -3140,7 +3579,11 @@ def _append_claude_trace(oc: dict[str, Any], entry: dict[str, Any]) -> None:
 
 def _drawdown_guard_violation(fb: dict[str, Any]) -> bool:
     # OPTIMIZER UPGRADE v0.1: never accept proposals above max drawdown tolerance.
-    adv = fb.get("advanced_metrics") if isinstance(fb.get("advanced_metrics"), dict) else {}
+    adv = (
+        fb.get("advanced_metrics")
+        if isinstance(fb.get("advanced_metrics"), dict)
+        else {}
+    )
     return bool(adv.get("drawdown_tolerance_breach"))
 
 
@@ -3197,8 +3640,8 @@ def _build_claude_system_prompt(*, mutant_run: bool, regime_hint: str) -> str:
         f"- **Regime snapshot:** {regime_hint}\n"
         f"{diversity}\n{mutant}\n"
         "Think through the proposal quality internally, but output only strict JSON.\n"
-        "Few-shot exemplar 1: {\"summary\":\"tighten high-vol floors\",\"rule_operations\":[{\"op\":\"patch\",\"rule_name\":\"High Vol Band\",\"rule\":{\"min_prob\":0.62}}],\"held_out_simulation\":{\"expected_sharpe\":0.44,\"expected_max_drawdown_pct\":12.8,\"sample_size\":38}}\n"
-        "Few-shot exemplar 2: {\"summary\":\"add NO convexity hedge\",\"rule_operations\":[{\"op\":\"add\",\"rule\":{\"name\":\"NO hedge\",\"side\":\"no\",\"min_prob\":0.58,\"max_prob\":0.8,\"min_minutes_left\":8,\"max_minutes_left\":75}}],\"held_out_simulation\":{\"expected_sharpe\":0.52,\"expected_max_drawdown_pct\":10.3,\"sample_size\":41}}\n"
+        'Few-shot exemplar 1: {"summary":"tighten high-vol floors","rule_operations":[{"op":"patch","rule_name":"High Vol Band","rule":{"min_prob":0.62}}],"held_out_simulation":{"expected_sharpe":0.44,"expected_max_drawdown_pct":12.8,"sample_size":38}}\n'
+        'Few-shot exemplar 2: {"summary":"add NO convexity hedge","rule_operations":[{"op":"add","rule":{"name":"NO hedge","side":"no","min_prob":0.58,"max_prob":0.8,"min_minutes_left":8,"max_minutes_left":75}}],"held_out_simulation":{"expected_sharpe":0.52,"expected_max_drawdown_pct":10.3,"sample_size":41}}\n'
         "Output **only** a single JSON object matching the user payload `output_schema` (no markdown fences). "
         "You may emit `rule_operations` (add/patch/delete) for **lab_a only**, `lab_parameter_patch` for Lab A scalars, "
         "and `recommendations` with field=`balance_fraction_per_window` and target=`lab_a` for sizing. "
@@ -3297,16 +3740,86 @@ async def _load_sim_paper_labs(
 ]:
     """Trades+signals for Lab A–E paper only (``mode=simulate``) — used by optimizer + lab breeding paths."""
     tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await asyncio.gather(
-        store.query_table("trades", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("trades", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("trades", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("trades", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("trades", branch=BRANCH_LAB_E, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("signals", branch=BRANCH_LAB_A, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("signals", branch=BRANCH_LAB_B, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("signals", branch=BRANCH_LAB_C, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("signals", branch=BRANCH_LAB_D, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
-        store.query_table("signals", branch=BRANCH_LAB_E, mode="simulate", start_at=start_iso, end_at=end_iso, limit=max_rows),
+        store.query_table(
+            "trades",
+            branch=BRANCH_LAB_A,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "trades",
+            branch=BRANCH_LAB_B,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "trades",
+            branch=BRANCH_LAB_C,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "trades",
+            branch=BRANCH_LAB_D,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "trades",
+            branch=BRANCH_LAB_E,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "signals",
+            branch=BRANCH_LAB_A,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "signals",
+            branch=BRANCH_LAB_B,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "signals",
+            branch=BRANCH_LAB_C,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "signals",
+            branch=BRANCH_LAB_D,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
+        store.query_table(
+            "signals",
+            branch=BRANCH_LAB_E,
+            mode="simulate",
+            start_at=start_iso,
+            end_at=end_iso,
+            limit=max_rows,
+        ),
     )
     return tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e
 
@@ -3363,7 +3876,9 @@ async def _run_labs_breeding_mutation_pipeline(
             open_kw=_replay_open_kw,
         )
     except Exception as e:
-        logger.warning("[breeding] block_error err=%s grep=breeding_block", e, exc_info=True)
+        logger.warning(
+            "[breeding] block_error err=%s grep=breeding_block", e, exc_info=True
+        )
         return [], [], [], False
     if breed_rows or soft_rows or ga_rows:
         cfg["optimizer"] = oc
@@ -3388,14 +3903,32 @@ async def _run_breeding_only_tick(store: "Store") -> dict[str, Any]:
         logger.info(
             "[breeding] tick_skip reason=breeding_enabled_false grep=breeding_skip (set optimizer.breeding_enabled)"
         )
-        return {"ok": True, "skipped": True, "reason": "breeding_disabled", "mode": "breeding_only"}
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "breeding_disabled",
+            "mode": "breeding_only",
+        }
     lookback_h = max(1, min(24 * 30, int(oc.get("lookback_hours") or 48)))
     max_rows = max(100, min(10000, int(oc.get("max_rows_per_table") or 5000)))
     end = _utc_now()
     end_iso = _iso(end)
     start = end - dt.timedelta(hours=lookback_h)
     start_iso = _iso(start)
-    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows)
+    (
+        tr_a,
+        tr_b,
+        tr_c,
+        tr_d,
+        tr_e,
+        sg_a,
+        sg_b,
+        sg_c,
+        sg_d,
+        sg_e,
+    ) = await _load_sim_paper_labs(
+        store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
+    )
     trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
         store,
         start_iso=start_iso,
@@ -3425,7 +3958,9 @@ async def _run_breeding_only_tick(store: "Store") -> dict[str, Any]:
     if _did:
         cfg = await store.load_config()
         oc = _norm_opt_cfg(_opt_cfg(cfg))
-    summary = f"breed={len(breed_rows)} soft_cull={len(soft_rows)} ga_events={len(ga_rows)}"
+    summary = (
+        f"breed={len(breed_rows)} soft_cull={len(soft_rows)} ga_events={len(ga_rows)}"
+    )
     oc["breeding_last_run_at"] = end_iso
     oc["breeding_last_summary"] = summary
     cfg["optimizer"] = oc
@@ -3493,7 +4028,18 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     mutant_run = int(oc.get("optimizer_cycle_count") or 0) % 8 == 0
     oc["last_mutant_cycle"] = bool(mutant_run)
 
-    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
+    (
+        tr_a,
+        tr_b,
+        tr_c,
+        tr_d,
+        tr_e,
+        sg_a,
+        sg_b,
+        sg_c,
+        sg_d,
+        sg_e,
+    ) = await _load_sim_paper_labs(
         store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
     )
 
@@ -3501,7 +4047,10 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     soft_rows: list[dict[str, Any]] = []
     ga_rows: list[dict[str, Any]] = []
     if breeding_on:
-        trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+        (
+            trades_by_branch_lb,
+            signals_by_branch_lb,
+        ) = await _lab_breeding_trades_signals_maps(
             store,
             start_iso=start_iso,
             end_iso=end_iso,
@@ -3517,7 +4066,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             sg_d=sg_d,
             sg_e=sg_e,
         )
-        breed_rows, soft_rows, ga_rows, _did = await _run_labs_breeding_mutation_pipeline(
+        (
+            breed_rows,
+            soft_rows,
+            ga_rows,
+            _did,
+        ) = await _run_labs_breeding_mutation_pipeline(
             store,
             cfg,
             oc,
@@ -3530,11 +4084,24 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         if _did:
             cfg = await store.load_config()
             oc = _norm_opt_cfg(_opt_cfg(cfg))
-            tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
+            (
+                tr_a,
+                tr_b,
+                tr_c,
+                tr_d,
+                tr_e,
+                sg_a,
+                sg_b,
+                sg_c,
+                sg_d,
+                sg_e,
+            ) = await _load_sim_paper_labs(
                 store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
             )
         oc["breeding_last_run_at"] = end_iso
-        oc["breeding_last_summary"] = f"breed={len(breed_rows)} soft_cull={len(soft_rows)} ga_events={len(ga_rows)}"
+        oc["breeding_last_summary"] = (
+            f"breed={len(breed_rows)} soft_cull={len(soft_rows)} ga_events={len(ga_rows)}"
+        )
         logger.info(
             "[breeding] gen_summary mode=full_tick %s grep=breeding_gen",
             oc["breeding_last_summary"],
@@ -3544,7 +4111,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             "[breeding] full_tick_skip_breeding reason=breeding_enabled_false grep=breeding_skip (optimizer.adaptive.pulse.still run)"
         )
 
-    st_a_prev = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_a_prev = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     _sync_regime_rule_families_to_lab_a(cfg, oc, sg_a, st_a_prev, end_iso)
     prof_n = sum(1 for t in st_a_prev if int(t.get("pnl_cents") or 0) > 0)
 
@@ -3552,12 +4124,19 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     changes: list[dict[str, Any]] = []
     if adaptive_on:
         ca = _apply_adaptive_lab_tuning(
-            cfg=cfg, oc=oc, branch=BRANCH_LAB_A, trades=tr_a, signals=sg_a, at_iso=end_iso
+            cfg=cfg,
+            oc=oc,
+            branch=BRANCH_LAB_A,
+            trades=tr_a,
+            signals=sg_a,
+            at_iso=end_iso,
         )
         if ca:
             changes.append(ca)
     if adaptive_on and not changes:
-        cw = _apply_adaptive_win_relax_lab_a(cfg=cfg, oc=oc, trades=tr_a, signals=sg_a, at_iso=end_iso)
+        cw = _apply_adaptive_win_relax_lab_a(
+            cfg=cfg, oc=oc, trades=tr_a, signals=sg_a, at_iso=end_iso
+        )
         if cw:
             changes.append(cw)
     eq_a = await store.equity_series(limit=500, branch=BRANCH_LAB_A)
@@ -3576,13 +4155,42 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     if bi:
         changes.append(bi)
     auto_relax_applied = False
-    mutation_meta: dict[str, Any] = {"accepted": False, "mutant_run": mutant_run, "reject_reason": ""}
+    mutation_meta: dict[str, Any] = {
+        "accepted": False,
+        "mutant_run": mutant_run,
+        "reject_reason": "",
+    }
     if mutant_run:
-        st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-        st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-        st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-        st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-        st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+        st_a = [
+            t
+            for t in tr_a
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
+        ]
+        st_b = [
+            t
+            for t in tr_b
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
+        ]
+        st_c = [
+            t
+            for t in tr_c
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
+        ]
+        st_d = [
+            t
+            for t in tr_d
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
+        ]
+        st_e = [
+            t
+            for t in tr_e
+            if str(t.get("status") or "").lower() == "settled"
+            and t.get("pnl_cents") is not None
+        ]
         mut_row, mutation_meta = _internal_mutate_rules_and_params(
             cfg=cfg,
             oc=oc,
@@ -3623,10 +4231,14 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             source="internal_mutation",
             accepted=bool(mutation_meta.get("accepted")),
             score_before=(
-                float(mutation_meta["score_before"]) if mutation_meta.get("score_before") is not None else None
+                float(mutation_meta["score_before"])
+                if mutation_meta.get("score_before") is not None
+                else None
             ),
             score_after=(
-                float(mutation_meta["score_after"]) if mutation_meta.get("score_after") is not None else None
+                float(mutation_meta["score_after"])
+                if mutation_meta.get("score_after") is not None
+                else None
             ),
             details={
                 "reject_reason": str(mutation_meta.get("reject_reason") or ""),
@@ -3642,7 +4254,12 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         _merge_pulse_trace(oc, changes)
     bet_frac_n = sum(1 for c in changes if str(c.get("style") or "") == "bet_size")
     lab_tr, rules_tr = _ensure_lab_rules(cfg, BRANCH_LAB_A)
-    st_tr = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_tr = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
     rb_lab = _replay_fitness_bundle(
         st_tr[:200],
         rules_tr,
@@ -3657,11 +4274,17 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     sl_n = int(rb_lab.get("stop_loss_exits_n") or 0)
     oc["replay_stop_loss_trigger_rate_pct"] = round(sl_rate, 2)
     oc["replay_total_pnl_from_stops_dollars"] = round(sl_cents / 100.0, 4)
-    oc["advanced_metrics_last"] = rb_lab.get("advanced_metrics") if isinstance(rb_lab.get("advanced_metrics"), dict) else {}
+    oc["advanced_metrics_last"] = (
+        rb_lab.get("advanced_metrics")
+        if isinstance(rb_lab.get("advanced_metrics"), dict)
+        else {}
+    )
     ar_now = str(lab_tr.get("active_regime") or "low_vol")
     # Meta-learning: decay + EWMA of composite score per (logical) Lab A regime; also streaks for cleanup.
     _regime_update_meta_and_streaks(
-        oc, active_regime=ar_now, score_dollars=_safe_float(rb_lab.get("score_dollars"), 0.0)
+        oc,
+        active_regime=ar_now,
+        score_dollars=_safe_float(rb_lab.get("score_dollars"), 0.0),
     )
     _prune_failing_regime_families(cfg, oc)
     eq_dph = _equity_slope_dollars_per_hour(eq_a)
@@ -3681,7 +4304,9 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         "total_pnl_from_stops_dollars": round(sl_cents / 100.0, 4),
         "stop_loss_trigger_rate_pct": sl_rate,
         "stop_loss_exits_n": sl_n,
-        "open_simulated_stop_exits_n": int(rb_lab.get("open_simulated_stop_exits_n") or 0),
+        "open_simulated_stop_exits_n": int(
+            rb_lab.get("open_simulated_stop_exits_n") or 0
+        ),
         "equity_slope_dph": (round(float(eq_dph), 6) if eq_dph is not None else None),
     }
     _append_internal_trace(oc, trace_entry)
@@ -3689,10 +4314,14 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
     tr_list = tr_rows if isinstance(tr_rows, list) else []
     accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
     total_n = len(tr_list)
-    oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    oc["acceptance_rate_pct"] = (
+        round((accepted_n * 100.0 / total_n), 2) if total_n > 0 else 0.0
+    )
     _ap0 = _safe_float(oc.get("acceptance_rate_pct", 0.0), 0.0)
     if _ap0 < 15.0:
-        oc["optimizer_consecutive_low_acceptance_cycles"] = int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0) + 1
+        oc["optimizer_consecutive_low_acceptance_cycles"] = (
+            int(oc.get("optimizer_consecutive_low_acceptance_cycles", 0) or 0) + 1
+        )
     else:
         oc["optimizer_consecutive_low_acceptance_cycles"] = 0
     plr_t = bool(oc.get("enable_paper_loser_detection", True))
@@ -3728,11 +4357,13 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
             }
             oc["change_history"] = [ch_row, *ph0][:hlim]
     if plr_t and pl:
-        oc["autotune_window_paper_loser_risk_events"] = int(
-            oc.get("autotune_window_paper_loser_risk_events", 0) or 0
-        ) + 1
+        oc["autotune_window_paper_loser_risk_events"] = (
+            int(oc.get("autotune_window_paper_loser_risk_events", 0) or 0) + 1
+        )
     if bool(swap_pl.get("swapped")):
-        oc["autotune_window_paper_loser_swaps"] = int(oc.get("autotune_window_paper_loser_swaps", 0) or 0) + 1
+        oc["autotune_window_paper_loser_swaps"] = (
+            int(oc.get("autotune_window_paper_loser_swaps", 0) or 0) + 1
+        )
 
     if (
         bool(oc.get("enable_auto_relax", True))
@@ -3740,10 +4371,14 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         and bool(oc.get("lab_a_enabled", True))
         and not bool(swap_pl.get("swapped"))
         and not _auto_relax_cooldown_active(oc, end)
-        and not _paper_loser_swap_recently(oc, end, float(oc.get("auto_relax_cooldown_hours", 4) or 4))
+        and not _paper_loser_swap_recently(
+            oc, end, float(oc.get("auto_relax_cooldown_hours", 4) or 4)
+        )
     ):
         health_pre = _check_optimizer_health(oc)
-        if str(health_pre.get("health_color") or "") != "red" and _is_lab_a_under_trading(tr_a, oc, end):
+        if str(
+            health_pre.get("health_color") or ""
+        ) != "red" and _is_lab_a_under_trading(tr_a, oc, end):
             ar_row = _auto_relax_conservative_params(cfg, oc, at_iso=end_iso)
             if ar_row is not None:
                 logger.info(
@@ -3791,8 +4426,10 @@ async def run_optimizer_once(store: Store, *, force: bool = False) -> dict[str, 
         elif auto_relax_applied:
             oc["last_status"] = "ok_internal_auto_relax"
         else:
-            oc["last_status"] = "ok_internal_mutation" if mutation_meta.get("accepted") else (
-                "ok_internal_pulse" if changes else "ok_noop"
+            oc["last_status"] = (
+                "ok_internal_mutation"
+                if mutation_meta.get("accepted")
+                else ("ok_internal_pulse" if changes else "ok_noop")
             )
     oc["last_error"] = ""
     if mutation_meta.get("score_after") is not None:
@@ -3851,13 +4488,27 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     except (TypeError, ValueError):
         oc["optimizer_cycle_count"] = 1
 
-    tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
+    (
+        tr_a,
+        tr_b,
+        tr_c,
+        tr_d,
+        tr_e,
+        sg_a,
+        sg_b,
+        sg_c,
+        sg_d,
+        sg_e,
+    ) = await _load_sim_paper_labs(
         store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
     )
 
     breeding_on = bool(oc.get("breeding_enabled", True))
     if breeding_on:
-        trades_by_branch_lb, signals_by_branch_lb = await _lab_breeding_trades_signals_maps(
+        (
+            trades_by_branch_lb,
+            signals_by_branch_lb,
+        ) = await _lab_breeding_trades_signals_maps(
             store,
             start_iso=start_iso,
             end_iso=end_iso,
@@ -3886,7 +4537,18 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         if _did:
             cfg = await store.load_config()
             oc = _norm_opt_cfg(_opt_cfg(cfg))
-            tr_a, tr_b, tr_c, tr_d, tr_e, sg_a, sg_b, sg_c, sg_d, sg_e = await _load_sim_paper_labs(
+            (
+                tr_a,
+                tr_b,
+                tr_c,
+                tr_d,
+                tr_e,
+                sg_a,
+                sg_b,
+                sg_c,
+                sg_d,
+                sg_e,
+            ) = await _load_sim_paper_labs(
                 store, start_iso=start_iso, end_iso=end_iso, max_rows=max_rows
             )
     else:
@@ -3894,11 +4556,36 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
             "[breeding] force_internal_skip reason=breeding_enabled_false grep=breeding_skip"
         )
 
-    st_a = [t for t in tr_a if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_b = [t for t in tr_b if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_c = [t for t in tr_c if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_d = [t for t in tr_d if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
-    st_e = [t for t in tr_e if str(t.get("status") or "").lower() == "settled" and t.get("pnl_cents") is not None]
+    st_a = [
+        t
+        for t in tr_a
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_b = [
+        t
+        for t in tr_b
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_c = [
+        t
+        for t in tr_c
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_d = [
+        t
+        for t in tr_d
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
+    st_e = [
+        t
+        for t in tr_e
+        if str(t.get("status") or "").lower() == "settled"
+        and t.get("pnl_cents") is not None
+    ]
 
     row, meta = _internal_mutate_rules_and_params(
         cfg=cfg,
@@ -3948,7 +4635,9 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
     trace_entry = {
         "at": end_iso,
         "cycle": int(oc.get("optimizer_cycle_count") or 0),
-        "score": meta.get("score_after") if meta.get("score_after") is not None else meta.get("score_before"),
+        "score": meta.get("score_after")
+        if meta.get("score_after") is not None
+        else meta.get("score_before"),
         "score_before": meta.get("score_before"),
         "score_after": meta.get("score_after"),
         "accepted": bool(meta.get("accepted")),
@@ -3960,14 +4649,20 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         "total_pnl_from_stops_dollars": round(sl_cents / 100.0, 4),
         "stop_loss_trigger_rate_pct": sl_rate,
         "stop_loss_exits_n": sl_n,
-        "open_simulated_stop_exits_n": int(rb_lab.get("open_simulated_stop_exits_n") or 0),
-        "equity_slope_dph": (round(float(eq_dph_f), 6) if eq_dph_f is not None else None),
+        "open_simulated_stop_exits_n": int(
+            rb_lab.get("open_simulated_stop_exits_n") or 0
+        ),
+        "equity_slope_dph": (
+            round(float(eq_dph_f), 6) if eq_dph_f is not None else None
+        ),
     }
     _append_internal_trace(oc, trace_entry)
     tr_rows = oc.get("internal_optimizer_trace")
     tr_list = tr_rows if isinstance(tr_rows, list) else []
     accepted_n = sum(1 for r in tr_list if bool(r.get("accepted")))
-    oc["acceptance_rate_pct"] = round((accepted_n * 100.0 / len(tr_list)), 2) if tr_list else 0.0
+    oc["acceptance_rate_pct"] = (
+        round((accepted_n * 100.0 / len(tr_list)), 2) if tr_list else 0.0
+    )
     eff_sc_f, mtier_f = _compute_mutation_scale(oc)
     oc["mutation_tier"] = mtier_f
     oc["effective_mutation_scale"] = round(eff_sc_f, 4)
@@ -3986,12 +4681,18 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         )
     oc["last_run_at"] = end_iso
     oc["last_pulse_eval_at"] = end_iso
-    oc["last_status"] = "forced_internal_mutation_accepted" if meta.get("accepted") else "forced_internal_mutation_rejected"
+    oc["last_status"] = (
+        "forced_internal_mutation_accepted"
+        if meta.get("accepted")
+        else "forced_internal_mutation_rejected"
+    )
     oc["last_error"] = ""
     if meta.get("score_after") is not None:
         try:
             best = float(oc.get("best_fitness_score_7d") or 0.0)
-            oc["best_fitness_score_7d"] = round(max(best, float(meta["score_after"])), 6)
+            oc["best_fitness_score_7d"] = round(
+                max(best, float(meta["score_after"])), 6
+            )
         except (TypeError, ValueError):
             pass
     cfg["optimizer"] = oc
@@ -4020,7 +4721,10 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         "ok": True,
         "forced": True,
         "accepted": bool(meta.get("accepted")),
-        "reason": str(meta.get("reject_reason") or ("accepted" if bool(meta.get("accepted")) else "")),
+        "reason": str(
+            meta.get("reject_reason")
+            or ("accepted" if bool(meta.get("accepted")) else "")
+        ),
         "score_before": score_before,
         "score_after": score_after,
         "new_fitness": score_after,
@@ -4029,4 +4733,3 @@ async def force_internal_mutation_once(store: Store) -> dict[str, Any]:
         "cycle": int(oc.get("optimizer_cycle_count") or 0),
         "at": end_iso,
     }
-

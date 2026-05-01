@@ -65,7 +65,9 @@ def kalshi_buy_debit_cents(
     c = Decimal(str(max(0.0, float(contracts))))
     p = Decimal(str(float(price)))
     premium = c * p
-    fee = kalshi_quadratic_trade_fee_usd(float(c), float(p), maker=maker, fee_multiplier=fee_multiplier)
+    fee = kalshi_quadratic_trade_fee_usd(
+        float(c), float(p), maker=maker, fee_multiplier=fee_multiplier
+    )
     revenue = -premium
     balance_change = revenue - fee
     cents = (balance_change * Decimal(100)).to_integral_value(rounding=ROUND_FLOOR)
@@ -91,7 +93,9 @@ def kalshi_sell_credit_cents(
     c = Decimal(str(max(0.0, float(contracts))))
     p = Decimal(str(float(price)))
     proceeds = c * p
-    fee = kalshi_quadratic_trade_fee_usd(float(c), float(p), maker=maker, fee_multiplier=fee_multiplier)
+    fee = kalshi_quadratic_trade_fee_usd(
+        float(c), float(p), maker=maker, fee_multiplier=fee_multiplier
+    )
     balance_change = proceeds - fee
     cents = (balance_change * Decimal(100)).to_integral_value(rounding=ROUND_FLOOR)
     credit = int(cents)
@@ -105,7 +109,9 @@ def kalshi_sell_credit_cents(
     return max(0, credit), breakdown
 
 
-def kalshi_settlement_credit_cents(contracts: float, payout_per_contract_usd: float) -> tuple[int, dict[str, Any]]:
+def kalshi_settlement_credit_cents(
+    contracts: float, payout_per_contract_usd: float
+) -> tuple[int, dict[str, Any]]:
     """
     Posted settlement credit in whole cents (floors sub-cent payout).
 

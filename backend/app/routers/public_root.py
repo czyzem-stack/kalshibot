@@ -1,4 +1,5 @@
 """Minimal HTML when the API is opened in a browser (Vite dev server hosts the real UI)."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter

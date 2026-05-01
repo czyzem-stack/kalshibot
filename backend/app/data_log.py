@@ -15,7 +15,9 @@ _lock = threading.Lock()
 def _resolved_log_dir() -> Path:
     from .settings_env import env
 
-    raw = (getattr(env, "data_log_dir", None) or str(_repo_root / "data" / "logs")).strip()
+    raw = (
+        getattr(env, "data_log_dir", None) or str(_repo_root / "data" / "logs")
+    ).strip()
     p = Path(raw)
     if not p.is_absolute():
         p = _repo_root / p
