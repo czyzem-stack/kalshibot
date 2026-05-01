@@ -2,6 +2,12 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.067 - Breeders B–E as predator hunters (edge-weighted skew + templates) - 2026-04-29
+
+- **Backend (`engines/engine.py`):** Ranked-market edge scaled by **book edge magnitude** (C hardest, B softest). **`handle_market`** structural skew scales per lab with edge so strong setups diverge rule geometry faster; council coupling on ranked edge slightly sharper.
+- **Backend (`persistence.py`):** **`_breeder_fallback_rules_for`** — distinct **predator** rule names and tuned bands on the same disjoint minute partitions; **default_bot_config** sizing/windows nudged for **B** patient / **C** stalker / **D** consensus-rip / **E** adaptive hunter profiles.
+- **Unchanged (per project rules):** ``lab_breeding.py``, Live engine paths, Lab A optimizer mutation, equity curves.
+
 ## v0.4.15.066 - Breeder trading overhaul: disjoint rules + decisive council - 2026-04-29
 
 - **Backend (`engines/engine.py`):** Redesigned breeder YES-mid path — **B** ultra chatter-heavy (**0.78/0.22**), **C** signal-heavy (**0.26/0.74**), stronger drift and council amplitude (**~2.42** mid × weight + **0.94** raw lane). **D/E** mirror threshold **``|sig_bias|≥0.028``** at **~99.8% / 99.6%**; extra random **``1−combined``** pass; **final implied-YES mirror** (**~92%** D, **~88%** E) when bus or signal exists. **B** herd damp **~0.012**, **C** amplify **~2.85**; wider structural skew + **handle_market** jitter.

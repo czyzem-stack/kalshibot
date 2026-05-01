@@ -527,12 +527,12 @@ def _breeder_council_weight_pct(breeder_cfg: dict[str, Any]) -> float:
     return max(0.0, min(1.0, w / 100.0))
 
 
-# Fixed YES-mid skew so B–E diverge on the same ticker even before ticker-local RNG (scaled by council weight in ``handle_market``).
+# Per-lab structural YES-mid skew (same book → different rule geometry); scaled by council weight + edge in ``handle_market``.
 _BREEDER_STRUCT_PROB_SKEW: dict[str, float] = {
-    BRANCH_LAB_B: -0.082,
-    BRANCH_LAB_C: 0.105,
-    BRANCH_LAB_D: 0.062,
-    BRANCH_LAB_E: -0.055,
+    BRANCH_LAB_B: -0.055,
+    BRANCH_LAB_C: 0.118,
+    BRANCH_LAB_D: 0.078,
+    BRANCH_LAB_E: -0.048,
 }
 
 
@@ -559,121 +559,142 @@ def _breeder_effective_prob_yes(
     ticker: str,
 ) -> tuple[float, bool]:
     """
-    Rule-matching YES-mid: cached Think Tank lean + ``peek_engine_council_signal``, personality drift,
-    council amplification, D/E fighting consensus, optional mirror on implied output.
+    Breeder YES-mid for rule matching: **hunter personalities** — patient B, stalking C, consensus-ripping D,
+    adaptive E — over a cached council snapshot (``_breeder_shared_council_inputs``, one deque walk per tick).
 
-    Snapshot per tick: ``_breeder_shared_council_inputs`` (one deque walk per breeder asset tick).
+    ``edge_mag`` (distance of book mid from 0.5) scales aggression: strong implied edges get decisive strikes;
+    weak edges keep B quiet until council shows clear prey.
     """
     bias_msgs, yes_h, no_h, sig, strong_msgs = _breeder_shared_council_inputs(engine)
     cw = _breeder_council_weight_pct(breeder_cfg)
     pers = _breeder_personality_tag(breeder_cfg, branch)
-
     r = _breeder_rng(branch, engine._tick_count, ticker)
-    # Drift — extreme personality-visible spread on implied YES mid.
-    scales = {BRANCH_LAB_B: 0.70, BRANCH_LAB_C: 0.82, BRANCH_LAB_D: 0.96, BRANCH_LAB_E: 0.80}
-    sc = scales.get(branch, 0.80)
-    if pers == "conservative":
-        sc *= 2.68
-    elif pers == "aggressive":
-        sc *= 2.78
-    elif pers == "contrarian":
-        sc *= 2.95
-    elif pers == "adaptive":
-        sc *= 2.38
-
-    drift = r.uniform(-sc, sc)
-    if branch == BRANCH_LAB_B or pers == "conservative":
-        drift -= r.uniform(0.28, 0.54)
-    elif branch == BRANCH_LAB_C or pers == "aggressive":
-        drift += r.uniform(0.32, 0.58)
-    elif branch == BRANCH_LAB_D or pers == "contrarian":
-        if r.random() < 0.988:
-            drift *= -(2.68 + 0.92 * r.random())
-        drift += r.uniform(-0.40, 0.40)
-    elif pers == "adaptive":
-        drift += r.uniform(-0.48, 0.48)
 
     st_sig = float(sig.get("strength", 0.0)) if sig else 0.0
     sig_bias = float(sig.get("bias", 0.0)) if sig else 0.0
+    yn = yes_h + no_h
+    edge_mag = max(0.0, min(1.0, abs(float(prob) - 0.5) * 2.0))
 
-    # Ultra-conservative B trusts chatter; hyper-aggressive C trusts instrumented signal.
+    # Drift — each lab wanders a different hunt pattern on the same ticker.
+    scales = {BRANCH_LAB_B: 0.52, BRANCH_LAB_C: 0.90, BRANCH_LAB_D: 0.88, BRANCH_LAB_E: 0.72}
+    sc = scales.get(branch, 0.72)
+    if pers == "conservative":
+        sc *= 2.45
+    elif pers == "aggressive":
+        sc *= 2.85
+    elif pers == "contrarian":
+        sc *= 2.78
+    elif pers == "adaptive":
+        sc *= 2.55
+
+    drift = r.uniform(-sc, sc)
     if branch == BRANCH_LAB_B or pers == "conservative":
-        w_msg, w_sig_base = 0.78, 0.22
+        drift -= r.uniform(0.12, 0.38) * (0.55 + 0.45 * (1.0 - edge_mag))
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        w_msg, w_sig_base = 0.26, 0.74
+        drift += r.uniform(0.28, 0.58) * (0.55 + 0.55 * edge_mag)
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        w_msg, w_sig_base = 0.42, 0.58
+        if r.random() < 0.985:
+            drift *= -(2.35 + 0.95 * r.random())
+        drift += r.uniform(-0.38, 0.38)
+    elif pers == "adaptive":
+        drift += r.uniform(-0.42, 0.42) * (0.7 + 0.35 * edge_mag)
+
+    # --- Council blend: decisive opposition + persona ---
+    clear_prey = bool(strong_msgs and st_sig >= 0.58 and abs(bias_msgs) >= 0.12)
+
+    if branch == BRANCH_LAB_B or pers == "conservative":
+        # Patient hunter: faint council barely moves the needle; clear pack noise → strike.
+        if clear_prey:
+            w_msg, w_sig_b = 0.52, 0.48
+            sig_boost = 0.42
+        else:
+            w_msg, w_sig_b = 0.84, 0.16
+            sig_boost = 0.14
+        combined = bias_msgs * w_msg + sig_bias * (w_sig_b * min(1.0, st_sig + sig_boost))
+    elif branch == BRANCH_LAB_C or pers == "aggressive":
+        # Stalker: chase instrumented signal hard; tape confirms.
+        combined = bias_msgs * 0.20 + sig_bias * (0.80 * min(1.0, st_sig + 0.48))
+    elif branch == BRANCH_LAB_D or pers == "contrarian":
+        # Pure predator: map herd then invert.
+        combined = bias_msgs * 0.36 + sig_bias * (0.64 * min(1.0, st_sig + 0.36))
+        if abs(sig_bias) >= 0.02 or strong_msgs:
+            if r.random() < 0.985:
+                combined = max(-1.0, min(1.0, 1.0 - combined))
     else:
-        w_msg, w_sig_base = 0.46, 0.54
-    w_sig = w_sig_base * min(1.0, st_sig + 0.38)
-    combined = bias_msgs * w_msg + sig_bias * w_sig
+        # Adaptive hunter: urgency rises into the close; edge opens the jaws.
+        urgency = min(1.0, 12.0 / max(1.0, float(mins)) * 0.45 + edge_mag * 0.55)
+        wm = 0.38 + 0.22 * (1.0 - urgency)
+        ws = 1.0 - wm
+        combined = bias_msgs * wm + sig_bias * (ws * min(1.0, st_sig + 0.22 + 0.28 * urgency))
+        if abs(sig_bias) >= 0.05 and r.random() < 0.45 + 0.38 * urgency:
+            combined = max(-1.0, min(1.0, 1.0 - combined))
+
     combined = max(-1.0, min(1.0, combined))
 
-    # Contrarians D/E: mirror vs council bias from tiny |bias|; near-deterministic.
-    _de_hi = 0.028
-    if branch == BRANCH_LAB_D and abs(sig_bias) >= _de_hi:
-        if r.random() < 0.998:
-            combined = max(-1.0, min(1.0, 1.0 - combined))
-    elif branch == BRANCH_LAB_E and abs(sig_bias) >= _de_hi:
-        if r.random() < 0.996:
-            combined = max(-1.0, min(1.0, 1.0 - combined))
+    # E: extra counter-thrust when the council is loud but mispriced vs book edge.
+    if branch == BRANCH_LAB_E and strong_msgs and edge_mag > 0.18 and r.random() < 0.62:
+        combined = max(-1.0, min(1.0, 1.0 - combined))
 
-    if branch == BRANCH_LAB_D and abs(sig_bias) < _de_hi:
-        if strong_msgs or st_sig >= 0.028 or (yes_h + no_h) >= 1:
-            if r.random() < 0.9993:
-                flip = 0.65 + 0.35 * r.random()
-                combined = max(-1.0, min(1.0, -combined * flip))
-    elif branch == BRANCH_LAB_E and abs(sig_bias) < _de_hi:
-        if strong_msgs or st_sig >= 0.024 or (yes_h + no_h) >= 1:
-            if r.random() < 0.9985:
-                flip = 0.62 + 0.38 * r.random()
-                combined = max(-1.0, min(1.0, -combined * flip))
+    # D: rip sparse bias when chatter exists but signal is flat — pick off stragglers.
+    if branch == BRANCH_LAB_D and abs(sig_bias) < 0.04 and yn >= 1 and r.random() < 0.82:
+        combined = max(-1.0, min(1.0, -combined * (0.5 + 0.5 * r.random())))
 
-    if branch in (BRANCH_LAB_D, BRANCH_LAB_E):
-        if r.random() < (0.52 if branch == BRANCH_LAB_D else 0.48):
-            combined = max(-1.0, min(1.0, 1.0 - combined))
-
+    # Scale coupling to herd direction after persona-specific inversions.
     if branch == BRANCH_LAB_B or pers == "conservative":
-        combined *= 0.012
+        strike = clear_prey or (edge_mag > 0.22 and st_sig >= 0.45)
+        combined *= 0.22 if strike else 0.009
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        combined *= 2.85
+        combined *= 2.65 + 0.75 * edge_mag
+    elif branch == BRANCH_LAB_D or pers == "contrarian":
+        combined *= 1.05 + 0.55 * abs(sig_bias)
+    else:
+        combined *= 1.15 + 0.95 * edge_mag * (1.0 + 0.35 * min(1.0, 10.0 / max(1.0, float(mins))))
 
-    amp_mid = 2.42
-    amp_spread = 0.88
-    amp = amp_mid + (r.random() - 0.5) * amp_spread
-    amp *= cw
+    # Opportunistic council torque — edge and time sharpen strikes.
+    prey_mult = 1.0 + 0.62 * edge_mag
+    if branch == BRANCH_LAB_B:
+        prey_mult = 1.0 + (1.35 * edge_mag if clear_prey else 0.12 * edge_mag)
+    elif branch == BRANCH_LAB_C:
+        prey_mult *= 1.0 + 0.35 * min(1.0, 6.0 / max(1.0, float(mins)))
+    elif branch == BRANCH_LAB_E:
+        prey_mult *= 1.0 + 0.28 * min(1.0, 8.0 / max(1.0, float(mins)))
+
+    amp_mid = 2.18 + 0.35 * edge_mag
+    amp_spread = 0.72 + 0.28 * edge_mag
+    amp = (amp_mid + (r.random() - 0.5) * amp_spread) * cw * prey_mult
 
     council_push = combined * amp
-    st_eff = min(1.0, max(0.0, st_sig) + 0.12)
-    raw_lane = sig_bias * st_eff * cw * 0.94
+    st_eff = min(1.0, max(0.0, st_sig) + 0.10 + 0.12 * edge_mag)
+    raw_lane = sig_bias * st_eff * cw * (0.88 + 0.18 * edge_mag)
     if branch == BRANCH_LAB_B or pers == "conservative":
-        raw_lane *= 0.065
+        raw_lane *= 0.085 if clear_prey else 0.038
     elif branch == BRANCH_LAB_C or pers == "aggressive":
-        raw_lane *= 1.52
+        raw_lane *= 1.58
     elif branch == BRANCH_LAB_D or pers == "contrarian":
-        raw_lane *= -0.82
+        raw_lane *= -0.78
     else:
-        raw_lane *= -0.40 + 0.48 * r.random()
+        raw_lane *= -0.28 + 0.52 * r.random()
+
     council_push += raw_lane
+    council_active = abs(council_push) > 1e-6 or (sig is not None and st_sig >= 0.07)
 
-    council_active = abs(council_push) > 1e-6 or (sig is not None and st_sig >= 0.08)
-
-    time_w = min(1.14, max(0.66, float(mins) / 15.0))
+    time_w = min(1.18, max(0.64, float(mins) / 14.0))
+    if branch == BRANCH_LAB_C or pers == "aggressive":
+        time_w *= 1.04 + 0.10 * min(1.0, 5.0 / max(1.0, float(mins)))
     council_push *= time_w
 
     out = prob + drift + council_push
     out = max(0.01, min(0.99, out))
 
-    # Final implied-YES mirror for D/E whenever bus or signal carries any stance — breaks aligned fills.
-    yn = yes_h + no_h
+    # D: ambush implied mid vs pile-in; E: softer split-strike so adaptive hunters still pounce alone.
     if branch == BRANCH_LAB_D and (sig is not None or yn >= 1):
-        if r.random() < 0.92:
-            out = max(0.01, min(0.99, 1.0 - out))
-    elif branch == BRANCH_LAB_E and (sig is not None or yn >= 1):
         if r.random() < 0.88:
             out = max(0.01, min(0.99, 1.0 - out))
+    elif branch == BRANCH_LAB_E and (sig is not None or yn >= 1) and edge_mag > 0.08:
+        if r.random() < 0.58:
+            out = max(0.01, min(0.99, 1.0 - out))
 
-    if sig is not None and st_sig >= 0.12 and abs(sig_bias) > 0.02:
+    if sig is not None and st_sig >= 0.10 and abs(sig_bias) > 0.02:
         council_active = True
     return out, council_active
 
@@ -690,11 +711,14 @@ def _breeder_touch_ranked_edge(
     ticker: str,
     matched_rule: dict[str, Any],
 ) -> float:
-    """Scale sim-rank edge by time-to-close and weak alignment with council lean (breeders only)."""
+    """Scale sim-rank edge: time-to-close, book edge magnitude, council lean (breeders only)."""
     _ = full_cfg
     r = _breeder_rng(branch, engine._tick_count, f"{ticker}|edge")
     time_scale = 0.84 + 0.26 * min(1.0, max(0.0, float(mins)) / 20.0)
     edge = edge * time_scale
+    em = max(0.0, min(1.0, abs(float(prob) - 0.5) * 2.0))
+    em_k = {BRANCH_LAB_B: 0.10, BRANCH_LAB_C: 0.42, BRANCH_LAB_D: 0.28, BRANCH_LAB_E: 0.24}.get(branch, 0.2)
+    edge *= 1.0 + em_k * em
     sig = _breeder_shared_council_inputs(engine)[3]
     if not sig:
         return edge
@@ -703,12 +727,12 @@ def _breeder_touch_ranked_edge(
     b = float(sig.get("bias", 0.0))
     st = float(sig.get("strength", 0.0))
     side = rule_trade_side(matched_rule)
-    raw_bonus = st * b * (0.046 if side == "yes" else -0.046) * cw
+    raw_bonus = st * b * (0.048 if side == "yes" else -0.048) * cw
     pers = {
-        BRANCH_LAB_B: 0.22,
-        BRANCH_LAB_C: 1.88,
-        BRANCH_LAB_D: 0.48 + 0.58 * r.random(),
-        BRANCH_LAB_E: 0.58 + 0.44 * r.random(),
+        BRANCH_LAB_B: 0.20,
+        BRANCH_LAB_C: 1.95,
+        BRANCH_LAB_D: 0.50 + 0.55 * r.random(),
+        BRANCH_LAB_E: 0.55 + 0.48 * r.random(),
     }.get(branch, 1.0)
     return edge * (1.0 + raw_bonus * pers)
 
@@ -1582,11 +1606,19 @@ async def handle_market(
         )
         if council_used:
             engine._breeder_council_influence_active = True
-        # Structural skew + micro-jitter: same raw market maps to different rule geometry per lab.
         cw_h = _breeder_council_weight_pct(cfg)
-        base_skew = _BREEDER_STRUCT_PROB_SKEW.get(branch, 0.0) * (0.55 + 0.45 * cw_h)
+        edge_mag = max(0.0, min(1.0, abs(float(prob) - 0.5) * 2.0))
+        base = _BREEDER_STRUCT_PROB_SKEW.get(branch, 0.0) * (0.55 + 0.45 * cw_h)
+        if branch == BRANCH_LAB_B:
+            base *= 0.28 + 1.05 * edge_mag
+        elif branch == BRANCH_LAB_C:
+            base *= 0.72 + 1.28 * edge_mag
+        elif branch == BRANCH_LAB_D:
+            base *= 0.52 + 1.02 * edge_mag
+        else:
+            base *= 0.48 + 1.12 * edge_mag
         r_h = _breeder_rng(branch, engine._tick_count, f"{ticker}|hm_skew")
-        prob_for_rules = max(0.01, min(0.99, prob_for_rules + base_skew + r_h.uniform(-0.048, 0.048)))
+        prob_for_rules = max(0.01, min(0.99, prob_for_rules + base + r_h.uniform(-0.042, 0.042)))
     matched_rule = pick_trade_rule(
         prob_for_rules,
         mins,

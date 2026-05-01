@@ -126,39 +126,39 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
 
 def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     """
-    Distinct default rule packs — **disjoint minute partitions** so B/C/D/E rarely share the same clock bucket:
+    Default **predator** templates on **disjoint minute bands** (reduces lockstep fills):
 
-    * **C** → early close only (≤ ~7m)
-    * **D** → mid (~7.5–14m)
-    * **E** → mid-late bridge (~14.25–17.75m)
-    * **B** → late only (≥ 18m)
+    * **C** — stalker: early kill-box (≤ ~7m)
+    * **D** — rips mid herd (7.5–14m)
+    * **E** — adaptive cut (14.25–17.75m)
+    * **B** — ambush late (≥ 18m)
     """
     if lab_key == "lab_b":
         return [
-            {"name": "B wall NO 18–21m", "side": "no", "min_prob": 0.52, "max_prob": 0.82, "min_minutes_left": 18.0, "max_minutes_left": 21.0},
-            {"name": "B bunker NO 20–23m", "side": "no", "min_prob": 0.44, "max_prob": 0.72, "min_minutes_left": 20.0, "max_minutes_left": 23.0},
-            {"name": "B vault NO 21.5–24m", "side": "no", "min_prob": 0.36, "max_prob": 0.62, "min_minutes_left": 21.5, "max_minutes_left": 24.0},
-            {"name": "B whisper YES 23.3–23.95m only", "min_prob": 0.60, "max_prob": 0.78, "min_minutes_left": 23.3, "max_minutes_left": 23.95},
+            {"name": "B ambush NO 18–20.5m", "side": "no", "min_prob": 0.54, "max_prob": 0.84, "min_minutes_left": 18.0, "max_minutes_left": 20.5},
+            {"name": "B den NO 19.5–23m", "side": "no", "min_prob": 0.46, "max_prob": 0.74, "min_minutes_left": 19.5, "max_minutes_left": 23.0},
+            {"name": "B lair NO 21.5–24m", "side": "no", "min_prob": 0.34, "max_prob": 0.60, "min_minutes_left": 21.5, "max_minutes_left": 24.0},
+            {"name": "B kill-bite YES 23.2–23.9m", "min_prob": 0.58, "max_prob": 0.80, "min_minutes_left": 23.2, "max_minutes_left": 23.9},
         ]
     if lab_key == "lab_c":
         return [
-            {"name": "C spark YES 0.1–0.8m", "min_prob": 0.56, "max_prob": 0.995, "min_minutes_left": 0.1, "max_minutes_left": 0.8},
-            {"name": "C blast YES 0.1–7m", "min_prob": 0.08, "max_prob": 0.96, "min_minutes_left": 0.1, "max_minutes_left": 7.0},
-            {"name": "C rip YES 2.5–7m", "min_prob": 0.42, "max_prob": 0.99, "min_minutes_left": 2.5, "max_minutes_left": 7.0},
-            {"name": "C choke NO 0.1–2m", "side": "no", "min_prob": 0.44, "max_prob": 0.88, "min_minutes_left": 0.1, "max_minutes_left": 2.0},
-            {"name": "C slam NO 2.4–5.8m", "side": "no", "min_prob": 0.28, "max_prob": 0.62, "min_minutes_left": 2.4, "max_minutes_left": 5.8},
+            {"name": "C lunge YES 0.08–0.75m", "min_prob": 0.54, "max_prob": 0.995, "min_minutes_left": 0.08, "max_minutes_left": 0.75},
+            {"name": "C sprint YES 0.08–7m", "min_prob": 0.07, "max_prob": 0.96, "min_minutes_left": 0.08, "max_minutes_left": 7.0},
+            {"name": "C maul YES 2.2–7m", "min_prob": 0.40, "max_prob": 0.99, "min_minutes_left": 2.2, "max_minutes_left": 7.0},
+            {"name": "C throat NO 0.08–1.9m", "side": "no", "min_prob": 0.42, "max_prob": 0.86, "min_minutes_left": 0.08, "max_minutes_left": 1.9},
+            {"name": "C rake NO 2.3–5.9m", "side": "no", "min_prob": 0.26, "max_prob": 0.60, "min_minutes_left": 2.3, "max_minutes_left": 5.9},
         ]
     if lab_key == "lab_d":
         return [
-            {"name": "D needle YES 10–11m only", "min_prob": 0.36, "max_prob": 0.58, "min_minutes_left": 10.0, "max_minutes_left": 11.0},
-            {"name": "D rim NO 7.5–9.9m", "side": "no", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 7.5, "max_minutes_left": 9.9},
-            {"name": "D trench NO 11.1–14m", "side": "no", "min_prob": 0.46, "max_prob": 0.76, "min_minutes_left": 11.1, "max_minutes_left": 14.0},
+            {"name": "D fang YES 10–11m", "min_prob": 0.34, "max_prob": 0.56, "min_minutes_left": 10.0, "max_minutes_left": 11.0},
+            {"name": "D flank NO 7.5–9.9m", "side": "no", "min_prob": 0.32, "max_prob": 0.56, "min_minutes_left": 7.5, "max_minutes_left": 9.9},
+            {"name": "D gut NO 11.1–14m", "side": "no", "min_prob": 0.44, "max_prob": 0.74, "min_minutes_left": 11.1, "max_minutes_left": 14.0},
         ]
     if lab_key == "lab_e":
         return [
-            {"name": "E arc YES 14.25–15.45m", "min_prob": 0.50, "max_prob": 0.84, "min_minutes_left": 14.25, "max_minutes_left": 15.45},
-            {"name": "E gate NO 15.55–17.05m", "side": "no", "min_prob": 0.42, "max_prob": 0.74, "min_minutes_left": 15.55, "max_minutes_left": 17.05},
-            {"name": "E fade YES 17.15–17.75m", "min_prob": 0.48, "max_prob": 0.82, "min_minutes_left": 17.15, "max_minutes_left": 17.75},
+            {"name": "E stalk YES 14.25–15.45m", "min_prob": 0.48, "max_prob": 0.82, "min_minutes_left": 14.25, "max_minutes_left": 15.45},
+            {"name": "E cut NO 15.55–17.05m", "side": "no", "min_prob": 0.40, "max_prob": 0.72, "min_minutes_left": 15.55, "max_minutes_left": 17.05},
+            {"name": "E pounce YES 17.15–17.75m", "min_prob": 0.46, "max_prob": 0.80, "min_minutes_left": 17.15, "max_minutes_left": 17.75},
         ]
     return _breeder_loose_rules_fallback()
 
@@ -432,7 +432,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab B: ultra-conservative breeder — tight fractions, high skip floor, lower council coupling.
+        # Lab B: patient hunter — smaller bites until setup is clean; longer ambush window.
         "lab_b": {
             "engine_running": True,
             "auto_optimize": False,
@@ -440,7 +440,7 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.0,
             "min_hold_minutes_before_stop": 30,
-            "balance_fraction_per_window": 0.038,
+            "balance_fraction_per_window": 0.034,
             "window_minutes": 22,
             "no_bet_when_yes_below_pct": 36,
             "council_influence_weight_pct": 78,
@@ -451,7 +451,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab C: aggressive breeder — large fractions, short window, wide rule bands.
+        # Lab C: stalker — heavy sizing, short window, strikes fast on early tape.
         "lab_c": {
             "engine_running": True,
             "auto_optimize": False,
@@ -459,8 +459,8 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -12.0,
             "min_hold_minutes_before_stop": 60,
-            "balance_fraction_per_window": 0.155,
-            "window_minutes": 8,
+            "balance_fraction_per_window": 0.172,
+            "window_minutes": 7,
             "no_bet_when_yes_below_pct": 21,
             "council_influence_weight_pct": 100,
             "breeder_personality": "aggressive",
@@ -470,7 +470,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab D: contrarian breeder — opposes consensus in-engine; moderate sizing, longer window.
+        # Lab D: consensus predator — sizes into ripping crowded mistakes.
         "lab_d": {
             "engine_running": True,
             "auto_optimize": False,
@@ -478,8 +478,8 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -7.0,
             "min_hold_minutes_before_stop": 25,
-            "balance_fraction_per_window": 0.105,
-            "window_minutes": 14,
+            "balance_fraction_per_window": 0.118,
+            "window_minutes": 13,
             "no_bet_when_yes_below_pct": 19,
             "council_influence_weight_pct": 92,
             "breeder_personality": "contrarian",
@@ -489,7 +489,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab E: adaptive blend + strong fade capability.
+        # Lab E: adaptive hunter — opportunistic sizing between B patience and C aggression.
         "lab_e": {
             "engine_running": True,
             "auto_optimize": False,
@@ -497,8 +497,8 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.5,
             "min_hold_minutes_before_stop": 28,
-            "balance_fraction_per_window": 0.088,
-            "window_minutes": 13,
+            "balance_fraction_per_window": 0.102,
+            "window_minutes": 12,
             "no_bet_when_yes_below_pct": 22,
             "council_influence_weight_pct": 100,
             "breeder_personality": "adaptive",
