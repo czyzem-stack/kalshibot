@@ -24,7 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _logger = logging.getLogger("kalshibot.store")
 
 
-def _parse_emergency_diversify_until_iso(raw: Any) -> datetime | None:
+def _parse_legacy_optimizer_gate_until_iso(raw: Any) -> datetime | None:
     s = str(raw or "").strip()
     if not s:
         return None
@@ -37,8 +37,8 @@ def _parse_emergency_diversify_until_iso(raw: Any) -> datetime | None:
         return None
 
 
-def _restore_legacy_emergency_diversify_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
-    """Legacy timed optimizer gate bumps — restore yes-floors / lab thresholds from snapshot (old DB rows only)."""
+def _restore_legacy_optimizer_gate_baseline(cfg: dict[str, Any], base: dict[str, Any]) -> None:
+    """Restore yes-floors / lab thresholds from snapshot (legacy timed optimizer DB rows; JSON keys unchanged)."""
     oc = cfg.setdefault("optimizer", {})
     if not isinstance(oc, dict):
         return
@@ -55,23 +55,23 @@ def _restore_legacy_emergency_diversify_baseline(cfg: dict[str, Any], base: dict
     oc.pop("emergency_diversify_baseline", None)
 
 
-async def _maybe_revert_emergency_diversify_if_due(store: Any, cfg: dict[str, Any]) -> bool:
+async def _maybe_revert_legacy_optimizer_gate_if_due(store: Any, cfg: dict[str, Any]) -> bool:
     oc = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
-    until = _parse_emergency_diversify_until_iso(oc.get("emergency_diversify_revert_at"))
+    until = _parse_legacy_optimizer_gate_until_iso(oc.get("emergency_diversify_revert_at"))
     base = oc.get("emergency_diversify_baseline")
     if until is None or not isinstance(base, dict):
         return False
     now = datetime.now(timezone.utc)
     if now <= until:
         return False
-    _restore_legacy_emergency_diversify_baseline(cfg, base)
+    _restore_legacy_optimizer_gate_baseline(cfg, base)
     await store.save_config(
         cfg,
         history_branch="global",
         history_changed_by="system",
-        history_reason="emergency_diversify_expired",
+        history_reason="legacy_optimizer_gate_expired",
     )
-    _logger.info("legacy emergency_diversify gates reverted after window")
+    _logger.info("legacy optimizer gate window reverted after expiry")
     return True
 
 
@@ -125,73 +125,40 @@ def _breeder_loose_rules_fallback() -> list[dict[str, Any]]:
 
 
 def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
-    """Distinct default rule packs when a breeder lab has no rules and there is no global rules list."""
+    """
+    Distinct default rule packs — **disjoint minute partitions** so B/C/D/E rarely share the same clock bucket:
+
+    * **C** → early close only (≤ ~7m)
+    * **D** → mid (~7.5–14m)
+    * **E** → mid-late bridge (~14.25–17.75m)
+    * **B** → late only (≥ 18m)
+    """
     if lab_key == "lab_b":
-        # Iceberg: NO stacks in mid/late clock — avoids C’s microburst YES and D’s 2m spike; lone YES only terminal.
         return [
-            {"name": "B frost NO 8–11m", "side": "no", "min_prob": 0.48, "max_prob": 0.74, "min_minutes_left": 8.0, "max_minutes_left": 11.0},
-            {"name": "B glacier NO 15–20m", "side": "no", "min_prob": 0.54, "max_prob": 0.80, "min_minutes_left": 15.0, "max_minutes_left": 20.0},
-            {"name": "B bunker NO 18–24m", "side": "no", "min_prob": 0.42, "max_prob": 0.68, "min_minutes_left": 18.0, "max_minutes_left": 24.0},
-            {
-                "name": "B veto NO 11–16m",
-                "side": "no",
-                "min_prob": 0.60,
-                "max_prob": 0.88,
-                "min_minutes_left": 11.0,
-                "max_minutes_left": 16.0,
-            },
-            {"name": "B vault NO 21–24m", "side": "no", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 21.0, "max_minutes_left": 24.0},
-            {"name": "B whisper YES 22.0–23.0m only", "min_prob": 0.62, "max_prob": 0.78, "min_minutes_left": 22.0, "max_minutes_left": 23.0},
+            {"name": "B wall NO 18–21m", "side": "no", "min_prob": 0.52, "max_prob": 0.82, "min_minutes_left": 18.0, "max_minutes_left": 21.0},
+            {"name": "B bunker NO 20–23m", "side": "no", "min_prob": 0.44, "max_prob": 0.72, "min_minutes_left": 20.0, "max_minutes_left": 23.0},
+            {"name": "B vault NO 21.5–24m", "side": "no", "min_prob": 0.36, "max_prob": 0.62, "min_minutes_left": 21.5, "max_minutes_left": 24.0},
+            {"name": "B whisper YES 23.3–23.95m only", "min_prob": 0.60, "max_prob": 0.78, "min_minutes_left": 23.3, "max_minutes_left": 23.95},
         ]
     if lab_key == "lab_c":
-        # Plasma: micro YES + long vacuum; NO confined to open — clocks disjoint from B’s 8m+ NO wall and D needle.
         return [
-            {"name": "C spark YES 0.12–0.72m", "min_prob": 0.58, "max_prob": 0.995, "min_minutes_left": 0.12, "max_minutes_left": 0.72},
-            {"name": "C cyclone YES 0.12–38m", "min_prob": 0.09, "max_prob": 0.96, "min_minutes_left": 0.12, "max_minutes_left": 38.0},
-            {"name": "C afterburn YES 1.2–7m", "min_prob": 0.48, "max_prob": 0.99, "min_minutes_left": 1.2, "max_minutes_left": 7.0},
-            {"name": "C choke NO 0.12–1.8m", "side": "no", "min_prob": 0.46, "max_prob": 0.90, "min_minutes_left": 0.12, "max_minutes_left": 1.8},
-            {
-                "name": "C torch NO 0.25–3.5m",
-                "side": "no",
-                "min_prob": 0.22,
-                "max_prob": 0.52,
-                "min_minutes_left": 0.25,
-                "max_minutes_left": 3.5,
-            },
-            {"name": "C sweep NO 3.8–6m", "side": "no", "min_prob": 0.30, "max_prob": 0.76, "min_minutes_left": 3.8, "max_minutes_left": 6.0},
+            {"name": "C spark YES 0.1–0.8m", "min_prob": 0.56, "max_prob": 0.995, "min_minutes_left": 0.1, "max_minutes_left": 0.8},
+            {"name": "C blast YES 0.1–7m", "min_prob": 0.08, "max_prob": 0.96, "min_minutes_left": 0.1, "max_minutes_left": 7.0},
+            {"name": "C rip YES 2.5–7m", "min_prob": 0.42, "max_prob": 0.99, "min_minutes_left": 2.5, "max_minutes_left": 7.0},
+            {"name": "C choke NO 0.1–2m", "side": "no", "min_prob": 0.44, "max_prob": 0.88, "min_minutes_left": 0.1, "max_minutes_left": 2.0},
+            {"name": "C slam NO 2.4–5.8m", "side": "no", "min_prob": 0.28, "max_prob": 0.62, "min_minutes_left": 2.4, "max_minutes_left": 5.8},
         ]
     if lab_key == "lab_d":
-        # Inversion: narrow early YES spike + NO elsewhere — minimal overlap with B frost or C torch windows.
         return [
-            {"name": "D needle YES 1.85–3.35m only", "min_prob": 0.38, "max_prob": 0.60, "min_minutes_left": 1.85, "max_minutes_left": 3.35},
-            {"name": "D void NO 0.35–7m", "side": "no", "min_prob": 0.32, "max_prob": 0.56, "min_minutes_left": 0.35, "max_minutes_left": 7.0},
-            {"name": "D trench NO 6.5–15m", "side": "no", "min_prob": 0.44, "max_prob": 0.74, "min_minutes_left": 6.5, "max_minutes_left": 15.0},
-            {
-                "name": "D bury NO 4–13m",
-                "side": "no",
-                "min_prob": 0.26,
-                "max_prob": 0.52,
-                "min_minutes_left": 4.0,
-                "max_minutes_left": 13.0,
-            },
-            {"name": "D eclipse NO 13–29m", "side": "no", "min_prob": 0.48, "max_prob": 0.86, "min_minutes_left": 13.0, "max_minutes_left": 29.0},
+            {"name": "D needle YES 10–11m only", "min_prob": 0.36, "max_prob": 0.58, "min_minutes_left": 10.0, "max_minutes_left": 11.0},
+            {"name": "D rim NO 7.5–9.9m", "side": "no", "min_prob": 0.34, "max_prob": 0.58, "min_minutes_left": 7.5, "max_minutes_left": 9.9},
+            {"name": "D trench NO 11.1–14m", "side": "no", "min_prob": 0.46, "max_prob": 0.76, "min_minutes_left": 11.1, "max_minutes_left": 14.0},
         ]
     if lab_key == "lab_e":
-        # Zigzag: offset ladders vs B/C/D — pulse → gate → ramp → brake → zen → veil on shifted minutes.
         return [
-            {"name": "E pulse YES 0.35–1.9m", "min_prob": 0.52, "max_prob": 0.86, "min_minutes_left": 0.35, "max_minutes_left": 1.9},
-            {"name": "E gate NO 2.6–5.8m", "side": "no", "min_prob": 0.40, "max_prob": 0.70, "min_minutes_left": 2.6, "max_minutes_left": 5.8},
-            {"name": "E ramp YES 6.8–9.5m", "min_prob": 0.46, "max_prob": 0.82, "min_minutes_left": 6.8, "max_minutes_left": 9.5},
-            {
-                "name": "E brake NO 10–14m",
-                "side": "no",
-                "min_prob": 0.48,
-                "max_prob": 0.80,
-                "min_minutes_left": 10.0,
-                "max_minutes_left": 14.0,
-            },
-            {"name": "E zen YES 15–18m", "min_prob": 0.54, "max_prob": 0.88, "min_minutes_left": 15.0, "max_minutes_left": 18.0},
-            {"name": "E veil NO 16.5–21m", "side": "no", "min_prob": 0.36, "max_prob": 0.66, "min_minutes_left": 16.5, "max_minutes_left": 21.0},
+            {"name": "E arc YES 14.25–15.45m", "min_prob": 0.50, "max_prob": 0.84, "min_minutes_left": 14.25, "max_minutes_left": 15.45},
+            {"name": "E gate NO 15.55–17.05m", "side": "no", "min_prob": 0.42, "max_prob": 0.74, "min_minutes_left": 15.55, "max_minutes_left": 17.05},
+            {"name": "E fade YES 17.15–17.75m", "min_prob": 0.48, "max_prob": 0.82, "min_minutes_left": 17.15, "max_minutes_left": 17.75},
         ]
     return _breeder_loose_rules_fallback()
 
@@ -976,12 +943,11 @@ class Store:
                     else:
                         out = _normalize_loaded_config(parsed)
         try:
-            await _maybe_revert_emergency_diversify_if_due(self, out)
+            await _maybe_revert_legacy_optimizer_gate_if_due(self, out)
         except Exception as exc:
-            _logger.warning("emergency_diversify revert check failed: %s", exc)
+            _logger.warning("legacy optimizer gate revert check failed: %s", exc)
         _opt = out.get("optimizer")
         if isinstance(_opt, dict):
-            # Legacy manual council window key — strip so nothing gates Think Tank / UI off stale ISO timestamps.
             _opt.pop("labs_council_diversity_until", None)
         return out
 

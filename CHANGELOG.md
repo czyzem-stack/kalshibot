@@ -2,6 +2,13 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.066 - Breeder trading overhaul: disjoint rules + decisive council - 2026-04-29
+
+- **Backend (`engines/engine.py`):** Redesigned breeder YES-mid path — **B** ultra chatter-heavy (**0.78/0.22**), **C** signal-heavy (**0.26/0.74**), stronger drift and council amplitude (**~2.42** mid × weight + **0.94** raw lane). **D/E** mirror threshold **``|sig_bias|≥0.028``** at **~99.8% / 99.6%**; extra random **``1−combined``** pass; **final implied-YES mirror** (**~92%** D, **~88%** E) when bus or signal exists. **B** herd damp **~0.012**, **C** amplify **~2.85**; wider structural skew + **handle_market** jitter.
+- **Backend (`lab_communication.py`):** **8** breeder lines; **hybrid** bias (62% newer-weighted + 38% aggregate ratio); sharper exponent on newest lines; **bias sharpen** when text exists; tiered **strength** from hit counts (single-hit no longer maxes strength).
+- **Backend (`persistence.py`):** **`_breeder_fallback_rules_for`** rebuilt on **non-overlapping minute partitions**: **C** early **0.1–7m**, **D** mid **7.5–14m** (+ needle YES **10–11**), **E** bridge **14.25–17.55m**, **B** late **18–24m** + terminal YES whisper. Legacy timed-gate helpers renamed (**``_parse_legacy_optimizer_gate_until_iso``**, etc.); **JSON keys unchanged**; config history reason **``legacy_optimizer_gate_expired``**; stripped obsolete **``labs_council_diversity_until``** without diversify-themed comments.
+- **Unchanged (per project rules):** ``lab_breeding.py``, Live engine paths, Lab A optimizer mutation, equity curves.
+
 ## v0.4.15.065 - Anti-sync drawdowns: smoother council bias + extreme breeder split - 2026-04-29
 
 - **Backend (`lab_communication.py`):** **`think_tank_yes_no_bias_last_n`** now scans **6** breeder lines (``THINK_TANK_COUNCIL_LINE_CAP``) with **newer-weighted** YES/NO bias (less jitter from one old line). **`refresh_engine_council_signal`** uses **count-tiered** strength floors so a single YES/NO mention no longer pins strength at the global ceiling.

@@ -1,7 +1,7 @@
 """
 Breeding Council / Lab Think Tank — Labs B, C, D, E publish short lines with explicit conversational threading.
 
-Rolling **last 6** bus lines drive prompts; every line reacts to **other labs** by name; optional ``reply_to`` UUID ties replies.
+Recent breeder bus lines (weighted toward newest) drive council bias; lines react to **other labs** by name; optional ``reply_to`` UUID ties replies.
 **~58** chars; **anti-repeat** vs last 8 lines; **rotation boost** + **hot-lab damp** when one breeder dominates; council **6–15s**; no ticker ranked hook.
 
 Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ optional ``reply_to`` field).
@@ -9,6 +9,7 @@ Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ opti
 
 from __future__ import annotations
 
+import math
 import random
 import re
 import time
@@ -109,15 +110,16 @@ def get_lab_communication_bus() -> LabCommunicationBus:
     return LabCommunicationBus.instance()
 
 
-# How many recent breeder lines feed council / message bias (longer = smoother; weighted toward newest).
-THINK_TANK_COUNCIL_LINE_CAP = 6
+# Recent breeder lines for council/message bias — weighted toward newest; blended with aggregate ratio.
+THINK_TANK_COUNCIL_LINE_CAP = 8
 
 
 def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = THINK_TANK_COUNCIL_LINE_CAP) -> tuple[float, int, int]:
     """
-    Last ``n`` breeder lines: total YES/NO word counts plus a **newer-weighted** bias in [-1, 1].
+    Last ``n`` breeder lines: total YES/NO hits plus a **hybrid** bias in [-1, 1].
 
-    Weighting damps a single stale line and makes the engine read a steadier lean than a raw total ratio.
+    Combines newer-weighted line bias (~62%) with the aggregate YES/NO ratio (~38%) so one noisy line
+    cannot swing the council while a sustained lean still reads decisive.
     """
     texts: list[str] = []
     for row in reversed(list(bus._dq)):
@@ -139,16 +141,17 @@ def think_tank_yes_no_bias_last_n(bus: LabCommunicationBus, n: int = THINK_TANK_
         line_tot = yi + ni
         if line_tot:
             lb = (yi - ni) / line_tot
-            w = float(i + 1) ** 1.65
+            w = float(i + 1) ** 1.85
             w_num += lb * w
             w_den += w
     tot = yes_h + no_h
+    agg = (yes_h - no_h) / tot if tot else 0.0
     if w_den > 0:
-        bias = max(-1.0, min(1.0, w_num / w_den))
-    elif tot:
-        bias = (yes_h - no_h) / tot
+        w_bias = w_num / w_den
+        bias = 0.62 * w_bias + 0.38 * agg
     else:
-        bias = 0.0
+        bias = agg
+    bias = max(-1.0, min(1.0, bias))
     return bias, yes_h, no_h
 
 
@@ -181,16 +184,21 @@ def refresh_engine_council_signal(
     if tot == 0:
         bus._engine_council_signal = None
         return
-    strength = min(1.0, tot / 5.0) * 1.52
-    if tot >= 4 and abs(bias) >= 0.12:
-        strength = max(strength, 0.88)
+    # Sharpen weak-but-present leans so engines do not sit in a fuzzy middle when text exists.
+    if abs(bias) >= 0.06:
+        bias = math.copysign(min(1.0, abs(bias) * 1.14 + 0.02), bias)
+    strength = min(1.0, tot / 6.0) * 1.58
+    if tot >= 5 and abs(bias) >= 0.10:
+        strength = max(strength, 0.90)
+    elif tot >= 4:
+        strength = max(strength, 0.84)
     elif tot >= 3:
-        strength = max(strength, 0.82)
+        strength = max(strength, 0.78)
     elif tot >= 2:
-        strength = max(strength, 0.74)
+        strength = max(strength, 0.70)
     else:
-        strength = max(strength, 0.62)
-    strength = min(1.0, strength * 1.22)
+        strength = max(strength, 0.58)
+    strength = min(1.0, strength * 1.18)
     ttl = 300.0
     bus._engine_council_signal = {
         "bias": float(bias),
