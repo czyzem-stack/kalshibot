@@ -1036,16 +1036,21 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
         }
         k = m.get(s)
         order = (k,) if k else ()
+    tasks = []
+    keys: list[str] = []
     for br in order:
         eng = state.ENGINES.get(br)
         if not eng:
             continue
-        try:
-            await snapshot_equity(eng)
-        except Exception as e:
-            logger.warning(
-                "equity snapshot seed after reset failed branch=%s: %s", br, e
-            )
+        keys.append(br)
+        tasks.append(snapshot_equity(eng))
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for br, res in zip(keys, results):
+            if isinstance(res, Exception):
+                logger.warning(
+                    "equity snapshot seed after reset failed branch=%s: %s", br, res
+                )
 
 
 def _clear_engine_mem_after_reset(branch_scope: str) -> None:
@@ -1161,15 +1166,11 @@ async def data_reset(
         if br == "all_labs":
             for br2 in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 _clear_engine_mem_after_reset(br2)
-            out = await store.reset_trading_data(backup=backup, branch="lab_a")
-            await store.reset_trading_data(backup=False, branch="lab_b")
-            await store.reset_trading_data(backup=False, branch="lab_c")
-            await store.reset_trading_data(backup=False, branch="lab_d")
-            await store.reset_trading_data(backup=False, branch="lab_e")
-            for ck in BRANCH_CHILD_LABS:
-                await store.reset_trading_data(backup=False, branch=ck)
             _clear_engine_mem_after_reset("live")
-            await store.reset_trading_data(backup=False, branch="live")
+            out = await store.reset_trading_data_bulk(
+                [*BRANCH_LABS, *BRANCH_CHILD_LABS, BRANCH_LIVE],
+                backup=backup,
+            )
             for br2 in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
                 _clear_engine_mem_after_reset(br2)
             _clear_engine_mem_after_reset("live")
@@ -1336,15 +1337,11 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     if reset == "all_labs":
         for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             _clear_engine_mem_after_reset(br)
-        await store.reset_trading_data(backup=backup, branch="lab_a")
-        await store.reset_trading_data(backup=False, branch="lab_b")
-        await store.reset_trading_data(backup=False, branch="lab_c")
-        await store.reset_trading_data(backup=False, branch="lab_d")
-        await store.reset_trading_data(backup=False, branch="lab_e")
-        for ck in BRANCH_CHILD_LABS:
-            await store.reset_trading_data(backup=False, branch=ck)
         _clear_engine_mem_after_reset("live")
-        await store.reset_trading_data(backup=False, branch="live")
+        await store.reset_trading_data_bulk(
+            [*BRANCH_LABS, *BRANCH_CHILD_LABS, BRANCH_LIVE],
+            backup=backup,
+        )
         for br in (*BRANCH_LABS, *BRANCH_CHILD_LABS):
             _clear_engine_mem_after_reset(br)
         _clear_engine_mem_after_reset("live")
@@ -1352,8 +1349,10 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
     elif reset == "both":
         _clear_engine_mem_after_reset("lab_a")
         _clear_engine_mem_after_reset("lab_b")
-        await store.reset_trading_data(backup=backup, branch="lab_a")
-        await store.reset_trading_data(backup=False, branch="lab_b")
+        await store.reset_trading_data_bulk(
+            [BRANCH_LAB_A, BRANCH_LAB_B],
+            backup=backup,
+        )
         _clear_engine_mem_after_reset("lab_a")
         _clear_engine_mem_after_reset("lab_b")
         await _seed_equity_snapshots_after_reset("both")
@@ -1428,8 +1427,9 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
         history_branch="global",
         history_changed_by="api:put_lab_branches",
         history_reason=str(body.get("reset_data") or "lab_merge")[:200] or None,
+        skip_config_history=(reset in ("none", "")),
     )
-    return {"ok": True, "config": await store.load_config()}
+    return {"ok": True, "config": cfg}
 
 
 @app.get("/api/config/lab-a-promotion-report")
@@ -2033,8 +2033,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     )
 
     def _child_lab_polling_on(raw: Any) -> bool:
-        slab = raw if isinstance(raw, dict) else {}
-        return slab.get("engine_running") is not False
+        return isinstance(raw, dict)
 
     child_lab_engine_any_on = any(
         _child_lab_polling_on(cfg.get(ck)) for ck in BRANCH_CHILD_LABS
@@ -2189,7 +2188,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         eng_ch = state.ENGINES.get(br)
         raw_ch = cfg.get(br)
         slab_ch = raw_ch if isinstance(raw_ch, dict) else {}
-        polling_on = slab_ch.get("engine_running") is not False
+        polling_on = True
         if eng_ch is not None:
             trace_tail = eng_ch.state.last_tick_trace or []
             tail_rows = trace_tail[-5:] if isinstance(trace_tail, list) else []
@@ -2707,12 +2706,6 @@ async def engine_toggle(
     confirm: str = Query(
         "", description="Required YES when simulate=False (disable Live paper)"
     ),
-    sim_lab_running: bool | None = Query(None),
-    lab_a_running: bool | None = Query(None),
-    lab_b_running: bool | None = Query(None),
-    lab_c_running: bool | None = Query(None),
-    lab_d_running: bool | None = Query(None),
-    lab_e_running: bool | None = Query(None),
 ) -> dict[str, Any]:
     cfg = await store.load_config()
     was_paper = _config_live_paper_flag(cfg)
@@ -2722,30 +2715,6 @@ async def engine_toggle(
         v = bool(simulate)
         cfg["live_paper_trading"] = v
         cfg["simulate"] = v
-    if sim_lab_running is not None:
-        lab = dict(cfg.get("lab_a") or {})
-        lab["engine_running"] = bool(sim_lab_running)
-        cfg["lab_a"] = lab
-    if lab_a_running is not None:
-        lab = dict(cfg.get("lab_a") or {})
-        lab["engine_running"] = bool(lab_a_running)
-        cfg["lab_a"] = lab
-    if lab_b_running is not None:
-        lab = dict(cfg.get("lab_b") or {})
-        lab["engine_running"] = bool(lab_b_running)
-        cfg["lab_b"] = lab
-    if lab_c_running is not None:
-        lab = dict(cfg.get("lab_c") or {})
-        lab["engine_running"] = bool(lab_c_running)
-        cfg["lab_c"] = lab
-    if lab_d_running is not None:
-        lab = dict(cfg.get("lab_d") or {})
-        lab["engine_running"] = bool(lab_d_running)
-        cfg["lab_d"] = lab
-    if lab_e_running is not None:
-        lab = dict(cfg.get("lab_e") or {})
-        lab["engine_running"] = bool(lab_e_running)
-        cfg["lab_e"] = lab
     sync_live_paper_trading_keys(cfg)
     if was_paper and not _config_live_paper_flag(cfg):
         if str(confirm).strip().upper() != "YES":
@@ -2771,12 +2740,6 @@ async def engine_toggle(
                     ("running", running),
                     ("simulate", simulate),
                     ("confirm", confirm),
-                    ("sim_lab_running", sim_lab_running),
-                    ("lab_a_running", lab_a_running),
-                    ("lab_b_running", lab_b_running),
-                    ("lab_c_running", lab_c_running),
-                    ("lab_d_running", lab_d_running),
-                    ("lab_e_running", lab_e_running),
                 )
                 if v is not None
             },
@@ -2789,6 +2752,7 @@ async def engine_toggle(
         if paper_off_audit
         else None,
         history_audit_meta=paper_off_audit,
+        skip_config_history=(paper_off_audit is None),
     )
     return {"ok": True, "config": cfg}
 

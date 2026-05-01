@@ -25,12 +25,16 @@ class MergeBranchConfigParentLabsTest(unittest.TestCase):
         self.assertTrue(m.get("_simulate_orders"))
         self.assertEqual(m.get("_trade_mode"), "simulate")
 
-    def test_explicit_parent_engine_off_returns_none(self) -> None:
-        full_cfg: dict = {"lab_a": {"engine_running": False}}
+    def test_explicit_parent_engine_off_still_merges(self) -> None:
+        """``engine_running`` on labs is ignored — branches always run."""
+        full_cfg: dict = {"lab_a": {"engine_running": False, "window_minutes": 9}}
         lab_a = full_cfg["lab_a"]
         assert isinstance(lab_a, dict)
-        self.assertFalse(effective_parent_lab_engine_running(lab_a, BRANCH_LAB_A))
-        self.assertIsNone(merge_branch_config(full_cfg, BRANCH_LAB_A))
+        self.assertTrue(effective_parent_lab_engine_running(lab_a, BRANCH_LAB_A))
+        m = merge_branch_config(full_cfg, BRANCH_LAB_A)
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(int(m.get("window_minutes") or 0), 9)
 
     def test_normalize_strips_legacy_lab_a_stub_engine_false(self) -> None:
         """Old normalize backfill left lab_a stuck off; migration removes that fingerprint."""

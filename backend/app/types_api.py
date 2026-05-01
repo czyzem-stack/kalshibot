@@ -197,3 +197,5 @@ class OptimizerStatusResponse(TypedDict, total=False):
     internal_optimizer_trace: list[dict[str, Any]]
     advanced_metrics_last: dict[str, Any]
     acceptance_rate_pct: float
+    labs_breeding_pending_adoption: dict[str, Any] | None
+    labs_breeding_elite_archive: list[dict[str, Any]]

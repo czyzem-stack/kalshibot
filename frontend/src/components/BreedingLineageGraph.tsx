@@ -99,7 +99,7 @@ export default function BreedingLineageGraph({ tree }: { tree: TreeObj }) {
     const n = nodeById.get(bid);
     const x = parentX[bid] ?? 0;
     const label = String(n?.label || bid.replace("lab_", "Lab ").toUpperCase());
-    const run = Boolean(n?.engine_running);
+    const run = true;
     return (
       <g key={bid}>
         <rect

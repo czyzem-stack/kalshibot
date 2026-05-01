@@ -76,8 +76,6 @@ function BreederLabCard({
   cfg,
   optimizerCfg,
   busy,
-  engineOn,
-  onToggleEngine,
   onApplyLabBranches,
   onSaveOptimizerConfig,
   onSavePatientStopLossLab,
@@ -91,8 +89,6 @@ function BreederLabCard({
   cfg: AnyObj;
   optimizerCfg: AnyObj;
   busy: boolean;
-  engineOn: boolean;
-  onToggleEngine: () => void | Promise<void>;
   onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
   onSaveOptimizerConfig: (patch: AnyObj) => void | Promise<void>;
   onSavePatientStopLossLab: (patch: AnyObj) => void | Promise<void>;
@@ -157,16 +153,9 @@ function BreederLabCard({
             {blurb}
           </p>
         </div>
-        <button
-          type="button"
-          className={engineOn ? "primary" : undefined}
-          style={{ fontSize: 11, padding: "6px 10px", whiteSpace: "nowrap" }}
-          disabled={busy}
-          title="Toggle this lab paper engine (persists engine_running)."
-          onClick={() => void onToggleEngine()}
-        >
-          Engine {engineOn ? "on" : "off"}
-        </button>
+        <span className="pill pill--engine-on" style={{ fontSize: 11, padding: "6px 10px", whiteSpace: "nowrap" }} title="Simulation labs always run.">
+          Always on
+        </span>
       </div>
 
       <div className="field" style={{ marginTop: 10 }} title="Scales Think Tank + council signal impact on breeder rule matching (0 = ignore council tilt).">
@@ -550,19 +539,9 @@ export type SettingsOverlayProps = {
   onApplyLabBranches: (body: AnyObj) => void | Promise<void>;
   /** GET ``/api/config/breeder-smart-defaults/{lab_b..lab_e}`` for Reset to Smart Defaults. */
   onFetchBreederSmartDefaults?: (labKey: string) => Promise<AnyObj>;
-  /** Paper lab engine toggles + shared bankroll bump (same actions as the former hero rail). */
+  /** Live engine toggle only; simulation labs A–E always run. */
   liveEngineOn: boolean;
   onToggleLive: () => void | Promise<void>;
-  labEngineAOn: boolean;
-  labEngineBOn: boolean;
-  labEngineCOn: boolean;
-  labEngineDOn: boolean;
-  labEngineEOn: boolean;
-  onToggleLabA: () => void | Promise<void>;
-  onToggleLabB: () => void | Promise<void>;
-  onToggleLabC: () => void | Promise<void>;
-  onToggleLabD: () => void | Promise<void>;
-  onToggleLabE: () => void | Promise<void>;
   onAddAllLabsPaper: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   onOpenHistory: () => void | Promise<void>;
@@ -618,16 +597,6 @@ export default function SettingsOverlay({
   onFetchBreederSmartDefaults,
   liveEngineOn,
   onToggleLive,
-  labEngineAOn,
-  labEngineBOn,
-  labEngineCOn,
-  labEngineDOn,
-  labEngineEOn,
-  onToggleLabA,
-  onToggleLabB,
-  onToggleLabC,
-  onToggleLabD,
-  onToggleLabE,
   onAddAllLabsPaper,
   onRefresh,
   onOpenHistory,
@@ -794,20 +763,8 @@ export default function SettingsOverlay({
             <span className={`pill ${liveEngineOn ? "pill--engine-on" : "pill--engine-off"}`}>
               Live · <strong>{liveEngineOn ? "Active" : "Stopped"}</strong>
             </span>
-            <span className={`pill ${labEngineAOn ? "pill--engine-on" : "pill--engine-off"}`}>
-              Lab A · <strong>{labEngineAOn ? "Active" : "Stopped"}</strong>
-            </span>
-            <span className={`pill ${labEngineBOn ? "pill--engine-on" : "pill--engine-off"}`}>
-              Lab B · <strong>{labEngineBOn ? "Active" : "Stopped"}</strong>
-            </span>
-            <span className={`pill ${labEngineCOn ? "pill--engine-on" : "pill--engine-off"}`}>
-              Lab C · <strong>{labEngineCOn ? "Active" : "Stopped"}</strong>
-            </span>
-            <span className={`pill ${labEngineDOn ? "pill--engine-on" : "pill--engine-off"}`}>
-              Lab D · <strong>{labEngineDOn ? "Active" : "Stopped"}</strong>
-            </span>
-            <span className={`pill ${labEngineEOn ? "pill--engine-on" : "pill--engine-off"}`}>
-              Lab E · <strong>{labEngineEOn ? "Active" : "Stopped"}</strong>
+            <span className="pill pill--engine-on">
+              Labs A–E · <strong>Always on</strong>
             </span>
           </div>
           <div className="settings-lab-engine-actions">
@@ -830,27 +787,6 @@ export default function SettingsOverlay({
             </button>
             <button type="button" className="primary" disabled={busy} title="Start or stop the Live trading loop (paper or real per config)." onClick={() => void onToggleLive()}>
               Turn Live {liveEngineOn ? "off" : "on"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy}
-              title="Lab A: paper simulation engine."
-              onClick={() => void onToggleLabA()}
-            >
-              Turn A {labEngineAOn ? "off" : "on"}
-            </button>
-            <button type="button" className="primary" disabled={busy} title="Lab B: paper simulation." onClick={() => void onToggleLabB()}>
-              Turn B {labEngineBOn ? "off" : "on"}
-            </button>
-            <button type="button" className="primary" disabled={busy} title="Lab C: paper simulation." onClick={() => void onToggleLabC()}>
-              Turn C {labEngineCOn ? "off" : "on"}
-            </button>
-            <button type="button" className="primary" disabled={busy} title="Lab D: paper simulation." onClick={() => void onToggleLabD()}>
-              Turn D {labEngineDOn ? "off" : "on"}
-            </button>
-            <button type="button" className="primary" disabled={busy} title="Lab E: paper simulation." onClick={() => void onToggleLabE()}>
-              Turn E {labEngineEOn ? "off" : "on"}
             </button>
             <button
               type="button"
@@ -1189,8 +1125,6 @@ export default function SettingsOverlay({
                     cfg={cfg}
                     optimizerCfg={optimizerCfg}
                     busy={busy}
-                    engineOn={labEngineBOn}
-                    onToggleEngine={onToggleLabB}
                     onApplyLabBranches={onApplyLabBranches}
                     onSaveOptimizerConfig={onSaveOptimizerConfig}
                     onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("b", patch)}
@@ -1211,8 +1145,6 @@ export default function SettingsOverlay({
                     cfg={cfg}
                     optimizerCfg={optimizerCfg}
                     busy={busy}
-                    engineOn={labEngineCOn}
-                    onToggleEngine={onToggleLabC}
                     onApplyLabBranches={onApplyLabBranches}
                     onSaveOptimizerConfig={onSaveOptimizerConfig}
                     onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("c", patch)}
@@ -1233,8 +1165,6 @@ export default function SettingsOverlay({
                     cfg={cfg}
                     optimizerCfg={optimizerCfg}
                     busy={busy}
-                    engineOn={labEngineDOn}
-                    onToggleEngine={onToggleLabD}
                     onApplyLabBranches={onApplyLabBranches}
                     onSaveOptimizerConfig={onSaveOptimizerConfig}
                     onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("d", patch)}
@@ -1255,8 +1185,6 @@ export default function SettingsOverlay({
                     cfg={cfg}
                     optimizerCfg={optimizerCfg}
                     busy={busy}
-                    engineOn={labEngineEOn}
-                    onToggleEngine={onToggleLabE}
                     onApplyLabBranches={onApplyLabBranches}
                     onSaveOptimizerConfig={onSaveOptimizerConfig}
                     onSavePatientStopLossLab={(patch) => void onSavePatientStopLossLab("e", patch)}
@@ -1308,8 +1236,10 @@ export default function SettingsOverlay({
                   disabled={busy}
                   defaultValue={String(Number(labA?.paper_balance_cents ?? cfg?.paper_balance_cents ?? 500_000))}
                 />
-                <div className="sub" style={{ marginTop: 4, fontSize: 11, opacity: 0.88 }}>
-                  Example: <code>10000</code> = $100.00 each where applied. Clear the field to wipe history without changing bankroll fields in config.
+                <div className="sub" style={{ marginTop: 4, fontSize: 11, opacity: 0.88, lineHeight: 1.45 }}>
+                  The input is prefilled from your config (typically <code>500000</code> = $5,000 per branch). That value is sent with the reset and overwrites Live + every lab slot in{" "}
+                  <code>bot_config</code>. Only change it if you want a different seed.{" "}
+                  <code>10000</code> = $100 each — common mistake vs $5k. Clear the field to wipe SQLite only and leave bankroll fields unchanged.
                 </div>
               </div>
               <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
@@ -1389,7 +1319,7 @@ export default function SettingsOverlay({
                 Mass apply to selected labs
               </h3>
               <p className="sub" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
-                One request updates only the labs you check. <strong>Copy sizing from active tab</strong> reads the paper / fraction / window row for the tab selected above. Engines map to each lab&apos;s <code>engine_running</code> flag (same as the lab rail toggles, but batched).
+                One request updates only the labs you check. <strong>Copy sizing from active tab</strong> reads the paper / fraction / window row for the tab selected above. Simulation labs always run — there is no per-lab engine toggle.
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 16px", marginBottom: 12 }}>
                 {(["a", "b", "c", "d", "e"] as const).map((k) => (
@@ -1403,9 +1333,7 @@ export default function SettingsOverlay({
                 <label htmlFor="mass_apply_mode" className="section-tip">
                   Action
                 </label>
-                <select id="mass_apply_mode" disabled={busy} defaultValue="engines_on">
-                  <option value="engines_on">Turn paper engines ON</option>
-                  <option value="engines_off">Turn paper engines OFF</option>
+                <select id="mass_apply_mode" disabled={busy} defaultValue="copy_sizing_from_active_tab">
                   <option value="uniform_paper">Set paper balance (cents) from field below</option>
                   <option value="copy_sizing_from_active_tab">Copy sizing from active lab tab</option>
                   <option value="copy_patient_stop">Copy patient stop-loss from source lab</option>
@@ -1472,11 +1400,7 @@ export default function SettingsOverlay({
                   };
                   const body: AnyObj = { reset_data: "none" };
                   const labLabel = (k: LabBranchKey) => `Lab ${k.toUpperCase()}`;
-                  if (mode === "engines_on") {
-                    for (const s of selected) body[labBranchToApiKey(s)] = { engine_running: true };
-                  } else if (mode === "engines_off") {
-                    for (const s of selected) body[labBranchToApiKey(s)] = { engine_running: false };
-                  } else if (mode === "uniform_paper") {
+                  if (mode === "uniform_paper") {
                     const n = parseC("mass_uniform_paper", NaN);
                     if (!Number.isFinite(n) || n < 0 || n > 100_000_000) {
                       window.alert("Paper balance must be a number between 0 and 100000000 cents.");
@@ -1537,7 +1461,10 @@ export default function SettingsOverlay({
                   Reset lab data + apply sizing (A–E)
                 </h3>
                 <p className="sub" style={{ marginBottom: 10, fontSize: 12, lineHeight: 1.45 }}>
-                  Combines optional branch reset with the bankroll fields above—same scope as per-lab resets, fewer clicks.
+                  Combines optional branch reset with the bankroll fields above—same scope as per-lab resets, fewer clicks.{" "}
+                  <strong>Important:</strong> the &quot;All branches&quot; option matches{" "}
+                  <code className="section-tip">PUT …/lab-branches</code> <code>reset_data=all_labs</code>: it wipes{" "}
+                  <strong>Live paper/history</strong>, <strong>labs A–E</strong>, and <strong>GA child slots</strong>—not only A–E.
                 </p>
                 <div className="field">
                   <label htmlFor="bulk_lab_reset" className="section-tip" title="If not &quot;No reset&quot;, wipe runs before lab_* fields are written.">
@@ -1551,7 +1478,7 @@ export default function SettingsOverlay({
                     <option value="lab_d">Lab D only</option>
                     <option value="lab_e">Lab E only</option>
                     <option value="both">Lab A + Lab B</option>
-                    <option value="all_labs">Lab A + B + C + D + E</option>
+                    <option value="all_labs">All branches (Live + A–E + GA children)</option>
                   </select>
                 </div>
                 <label className="checkbox section-tip" style={{ border: "none", marginBottom: 10 }}>
@@ -1671,7 +1598,7 @@ export default function SettingsOverlay({
                         resetVal === "both"
                           ? "Lab A and Lab B"
                           : resetVal === "all_labs"
-                            ? "Lab A, Lab B, Lab C, Lab D, and Lab E"
+                            ? "Live, Lab A–E, and GA lab_child_* slots (full multi-branch wipe)"
                             : resetVal;
                       const ok = window.confirm(
                         `Reset SQLite trading data for ${scope} before saving new bankroll/sizing? This cannot be undone (backups may run).`,
@@ -2227,10 +2154,9 @@ export default function SettingsOverlay({
           </div>
           <div className="sub" style={{ marginTop: 6, fontSize: 11, opacity: 0.88, lineHeight: 1.45 }}>
             <strong>Hero strip vs $5k:</strong> each branch uses <strong>Paper balance (cents)</strong> in config — shipped defaults are{" "}
-            <code>500000</code> ($5k) unless you changed them. The dashboard also prefers{" "}
-            <code>paper_lifetime_basis_cents</code> when present; if that field disappears from a lab block after{" "}
-            <strong>Save / Mass apply</strong>, equity metrics fall back to <code>paper_balance_cents</code>, which can look like a sudden jump
-            upward even if you never used Data reset. Check each lab in Simulation labs or <code>GET /api/config</code>.
+            <code>500000</code> ($5k) unless you changed them. Book equity and charts use <code>paper_balance_cents</code> only.{" "}
+            <code>paper_lifetime_basis_cents</code> (from auto-resets / bumps) is cumulative capital for bust-guard logic only — it no longer
+            shifts the book line away from your configured bankroll.
           </div>
         </div>
         <button

@@ -66,6 +66,8 @@ def merge_lab_branch_patch(
             except (TypeError, ValueError):
                 pass
             continue
+        if k == "engine_running":
+            continue
         if v is not None:
             out[k] = v
     return out

@@ -470,6 +470,15 @@ def _sql_branch_predicate(branch: str) -> str:
     raise ValueError(f"unsupported branch for SQL filter: {branch!r}")
 
 
+def _sql_any_branch_predicate(branches: list[str]) -> str:
+    """OR-combine canonical branch predicates (multi-branch DELETE in one transaction)."""
+    bs = [str(b or "").strip().lower() for b in branches if str(b or "").strip()]
+    if not bs:
+        raise ValueError("reset_trading_data_bulk: branches must be non-empty")
+    parts = [_sql_branch_predicate(b) for b in bs]
+    return "(" + ") OR (".join(parts) + ")"
+
+
 def normalize_trade_branch_for_db(branch: str | None) -> str:
     """Persisted ``branch`` on signals/trades: lowercase known keys; ``sim_lab`` -> ``lab_a``."""
     b = str(branch or "").strip().lower()
@@ -786,6 +795,14 @@ def default_bot_config() -> dict[str, Any]:
             "breeding_enabled": True,
             "breeding_last_run_at": "",
             "breeding_last_summary": "",
+            # Labs breeding v2 — GA aggressiveness, safer Lab A adoption, optional confirm gate.
+            "breeding_aggressiveness": 0.45,
+            "min_adoption_confidence_z": 1.5,
+            "lab_a_adoption_requires_confirmation": False,
+            "adoption_margin_base": 0.04,
+            "adoption_volatility_margin_scale": 0.06,
+            "labs_breeding_elite_archive": [],
+            "labs_breeding_pending_adoption": None,
         },
     }
 
@@ -793,7 +810,9 @@ def default_bot_config() -> dict[str, Any]:
 def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any]:
     """
     Shallow-merge ``lab`` over ``default_bot_config()[branch]`` so thin saves (e.g. only paper / fraction / window)
-    cannot strip ``engine_running``, fee keys, or other lab defaults.
+    cannot strip fee keys or other lab defaults.
+
+    Simulation lab branches always run in the dual loop; ``engine_running`` is not persisted (stripped here).
     """
     if branch not in ALL_CFG_LAB_KEYS:
         raise ValueError(
@@ -801,6 +820,7 @@ def expand_partial_lab_branch(branch: str, lab: dict[str, Any]) -> dict[str, Any
         )
     base = dict(default_bot_config().get(branch) or {})
     base.update(lab)
+    base.pop("engine_running", None)
     if isinstance(base.get("assets"), dict) and len(base["assets"]) == 0:
         del base["assets"]
     ensure_patient_stop_loss_on_branch_dict(base)
@@ -1004,8 +1024,6 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
                 "paper_balance_cents", cfg.get("paper_balance_cents") or 500_000
             ),
         }
-        if "engine_running" in legacy:
-            lab_a_stub["engine_running"] = legacy["engine_running"]
         cfg["lab_a"] = lab_a_stub
     # Omit ``engine_running`` on breeder stubs so ``expand_partial_lab_branch`` keeps ``default_bot_config`` True — an
     # explicit False here overwrote defaults and left Lab B–E permanently off after migration.
@@ -1203,6 +1221,10 @@ class Store:
         ``history_audit_meta`` (optional) is JSON-serialized into ``audit_meta`` for forensics (e.g. confirm gate
         context when disabling Live paper trading). Older databases pick up the column via ``_migrate_config_history_audit_meta``.
         """
+        for lk in ALL_CFG_LAB_KEYS:
+            blk = cfg.get(lk)
+            if isinstance(blk, dict):
+                blk.pop("engine_running", None)
         sync_live_paper_trading_keys(cfg)
         payload = json.dumps(cfg, default=str)
         ts = datetime.now(timezone.utc).isoformat()
@@ -1375,8 +1397,8 @@ class Store:
         """
         After an auto lab wipe, add one more paper seed tranche to cumulative basis.
 
-        Dashboard return % vs ``paper_lifetime_basis_cents`` (falling back to per-lab
-        ``paper_balance_cents``) then reflects all capital ever re-seeded into that lab.
+        Stored for **auto-reset bust** comparisons (``lab_paper_cumulative_basis_cents``) and audit;
+        book equity / charts / SQLite snapshots use configured ``paper_balance_cents`` only.
         """
         br = str(branch or "").strip().lower()
         if br not in ALL_CFG_LAB_KEYS:
@@ -2115,3 +2137,86 @@ class Store:
             },
         )
         return {"ok": True, "backup": backup, "branch": scope, "exports": exports}
+
+    async def reset_trading_data_bulk(
+        self,
+        branches: list[str],
+        *,
+        backup: bool = True,
+        vacuum: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Delete signals, trades, and equity snapshots for **multiple** branches in **one** SQLite transaction.
+
+        Replaces N sequential ``reset_trading_data`` calls so **all_labs** wipes finish quickly.
+        """
+        _allowed = frozenset(("live", *ALL_CFG_LAB_KEYS))
+        norm: list[str] = []
+        for raw in branches:
+            b = str(raw or "").strip().lower()
+            if b == "sim_lab":
+                b = "lab_a"
+            if b not in _allowed:
+                raise ValueError(f"invalid reset branch for bulk: {raw!r}")
+            norm.append(b)
+        seen: set[str] = set()
+        uniq: list[str] = []
+        for b in norm:
+            if b not in seen:
+                seen.add(b)
+                uniq.append(b)
+
+        exports: list[str] = []
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        log_root = Path(env.data_log_dir)
+        if not log_root.is_absolute():
+            log_root = _REPO_ROOT / log_root
+        export_dir = log_root / "exports"
+        if backup:
+            export_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                src = Path(self.path)
+                if src.is_file():
+                    dest_sql = export_dir / f"bot_{ts}.sqlite3.bak"
+                    shutil.copy2(src, dest_sql)
+                    exports.append(str(dest_sql.resolve()))
+            except OSError as e:
+                exports.append(f"sqlite_copy_error:{e}")
+            try:
+                dumped = await self.dump_trading_tables_jsonl(export_dir, ts)
+                exports.extend(dumped)
+            except OSError as e:
+                exports.append(f"jsonl_export_error:{e}")
+
+        pred = _sql_any_branch_predicate(uniq)
+        async with self._open_db() as db:
+            await db.execute(f"DELETE FROM equity_snapshots WHERE {pred}")
+            await db.execute(f"DELETE FROM signals WHERE {pred}")
+            await db.execute(f"DELETE FROM trades WHERE {pred}")
+            await db.commit()
+            if vacuum:
+                try:
+                    await db.execute("VACUUM")
+                    await db.commit()
+                except Exception as e:
+                    exports.append(f"vacuum_skipped:{e}")
+        self._trading_data_revision += 1
+        _data_log(
+            "system",
+            {
+                "event": "reset_trading_data_bulk",
+                "backup": backup,
+                "branches": uniq,
+                "vacuum": vacuum,
+                "trading_data_revision": self._trading_data_revision,
+                "exports": exports,
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {
+            "ok": True,
+            "backup": backup,
+            "branch": ",".join(uniq),
+            "branches": uniq,
+            "exports": exports,
+        }

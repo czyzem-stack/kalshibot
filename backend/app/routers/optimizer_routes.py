@@ -7,12 +7,13 @@ import logging
 import math
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
 
 from ..lab_breeding import (
     LABS_BREEDING_VERSION,
     build_labs_breeding_personality_radar,
     build_labs_breeding_tree_snapshot,
+    resolve_lab_a_pending_adoption,
 )
 from ..lab_communication import peek_engine_council_signal
 from ..optimizer_claude import force_internal_mutation_once, run_optimizer_once
@@ -88,6 +89,11 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
         "backtest_proposals",
         "adaptive_skip_backtest_gate",
         "optimize_internal_mutations",
+        "breeding_enabled",
+        "breeding_aggressiveness",
+        "min_adoption_confidence_z",
+        "adoption_margin_base",
+        "adoption_volatility_margin_scale",
     ):
         if k in body:
             v = body[k]
@@ -127,8 +133,19 @@ async def optimizer_config(body: dict[str, Any]) -> dict[str, Any]:
                 "adaptive_skip_backtest_gate",
                 "optimize_internal_mutations",
                 "breeding_enabled",
+                "lab_a_adoption_requires_confirmation",
             ):
                 nxt[k] = bool(v)
+            elif k in (
+                "breeding_aggressiveness",
+                "min_adoption_confidence_z",
+                "adoption_margin_base",
+                "adoption_volatility_margin_scale",
+            ) and v is not None:
+                try:
+                    nxt[k] = float(v)
+                except (TypeError, ValueError):
+                    nxt[k] = v
             else:
                 nxt[k] = v
     nxt.pop("max_bet_fraction", None)
@@ -152,6 +169,15 @@ async def optimizer_force_internal_mutation() -> dict[str, Any]:
     """Force one internal mutant cycle (bypasses scheduler cadence)."""
     logger.info("forced internal mutation requested via API")
     return await force_internal_mutation_once(state.store)
+
+
+@router.post("/lab-a-adoption/pending")
+async def optimizer_lab_a_adoption_pending_resolve(
+    body: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """Confirm or decline a gated Lab A adoption (``lab_a_adoption_requires_confirmation``)."""
+    accept = bool(body.get("accept"))
+    return await resolve_lab_a_pending_adoption(state.store, accept=accept)
 
 
 def _breeding_minutes_ago(iso_s: str) -> float | None:
@@ -310,5 +336,15 @@ async def optimizer_status() -> OptimizerStatusResponse:
         ][:30],
         "advanced_metrics_last": dict(oc.get("advanced_metrics_last") or {}),
         "acceptance_rate_pct": acc,
+        "labs_breeding_pending_adoption": oc.get("labs_breeding_pending_adoption"),
+        "labs_breeding_elite_archive": [
+            {
+                "replay_fitness": float(x.get("replay_fitness") or 0.0),
+                "at": str(x.get("at") or ""),
+                "parent_ids": list(x.get("parent_ids") or []),
+            }
+            for x in (oc.get("labs_breeding_elite_archive") or [])
+            if isinstance(x, dict)
+        ][:8],
     }
     return _json_finite_deep(out)  # type: ignore[return-value]

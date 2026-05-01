@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import datetime as dt
@@ -23,6 +23,7 @@ from ..branch_config import (
     BRANCH_LAB_E,
     BRANCH_LIVE,
     _lab_key_for_branch,
+    lab_paper_cumulative_basis_cents,
     lab_paper_equity_start_cents,
     effective_paper_fee_bps,
     effective_swing_exit_implied_drop_pct,
@@ -138,15 +139,42 @@ def implied_yes_for_open_sim_marks(m: dict[str, Any]) -> float | None:
     List endpoints often have thin or one-sided YES quotes; this matches trading fallbacks
     (NO book, mirror, last trade) so mark value does not spuriously read as $0 while a position
     is open — the dashed curve shows potential recovery-to-$1 or slide toward a full loss of premium.
+
+    MTM is more sensitive than rule gates: crossed books, huge YES spreads, or ask-only quotes
+    glued to $1.00 from bad feeds can mark entire notionals at par for one tick (multi-lab spikes).
+    Those cases return ``None`` so ``_fair_value_open_sim_position_cents`` falls back to entry implieds.
     """
     yb = dollars_to_float(m.get("yes_bid_dollars"))
     ya = dollars_to_float(m.get("yes_ask_dollars"))
+    if yb is not None and not math.isfinite(yb):
+        yb = None
+    if ya is not None and not math.isfinite(ya):
+        ya = None
+    if yb is not None and ya is not None and math.isfinite(yb) and math.isfinite(ya):
+        if ya + 1e-9 < yb:
+            return None
+        if ya - yb > 0.48:
+            return None
+        return max(0.0, min(1.0, (yb + ya) / 2.0))
+    if ya is not None and math.isfinite(ya) and yb is None:
+        if ya >= 0.995:
+            return None
+        return max(0.0, min(1.0, float(ya)))
+    if yb is not None and math.isfinite(yb) and ya is None:
+        if yb <= 0.005:
+            return None
+        return max(0.0, min(1.0, float(yb)))
     p = implied_yes_probability(yb, ya)
     if p is not None and math.isfinite(p):
         return max(0.0, min(1.0, float(p)))
     na = dollars_to_float(m.get("no_ask_dollars"))
     nb = dollars_to_float(m.get("no_bid_dollars"))
     if na is not None and 0 < na < 1:
+        if nb is not None and 0 < nb < 1:
+            if na + 1e-9 < nb:
+                return None
+            if na - nb > 0.48:
+                return None
         p_no = (na + nb) / 2.0 if (nb is not None and 0 < nb < 1) else na
         return max(0.0, min(1.0, 1.0 - p_no))
     e = effective_no_ask(m, yb, ya)
@@ -154,6 +182,8 @@ def implied_yes_for_open_sim_marks(m: dict[str, Any]) -> float | None:
         return max(0.0, min(1.0, 1.0 - float(e)))
     lp = dollars_to_float(m.get("last_price_dollars"))
     if lp is not None and 0 < lp < 1:
+        if lp >= 0.998 or lp <= 0.002:
+            return None
         return max(0.0, min(1.0, float(lp)))
     return None
 
@@ -1061,9 +1091,8 @@ async def tick_once(
         engine.state.markets_scanned = 0
         engine.state.asset_snapshots = {}
         engine.state.last_tick_trace = [
-            f"skip {iso(now)} | branch={br} | no merged config — start the engine: "
-            f"Settings / ``engine_running`` (Live) or each lab’s ``engine_running`` must be on. "
-            f"Child ``lab_child_*`` only stop when engine_running is explicitly off."
+            f"skip {iso(now)} | branch={br} | no merged config — ensure ``{br}`` exists in bot_config "
+            f"(Live uses top-level ``engine_running`` when paper/real gates allow)."
         ]
         return
 
@@ -1321,9 +1350,9 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
     """
     When ``auto_reset_paper_on_tick_failure`` is on for a lab, wipe that branch's SQLite trading
     rows (once per bad streak) if the tick ended with ``last_error`` **or** derived paper equity
-    (``lab_paper_equity_start_cents`` + settled PnL − open commit) is ≤ 0. Baseline must match the
-    dashboard / MTM (includes ``paper_lifetime_basis_cents`` when set), not ``paper_balance_cents``
-    alone — otherwise re-seeded labs can spuriously wipe overnight while tiles still show positive equity.
+    (``lab_paper_cumulative_basis_cents`` + settled PnL − open commit) is ≤ 0. The cumulative basis
+    includes ``paper_lifetime_basis_cents`` when set so a lab is not wiped while still solvent on
+    total capital ever seeded; **dashboard book / charts** use configured ``paper_balance_cents`` only.
     """
     br_engine = engine.branch
     if not _is_lab_branch(br_engine):
@@ -1345,7 +1374,7 @@ async def _maybe_auto_reset_lab_paper_on_tick_failure(
         roll = await engine.store.dashboard_branch_trade_rollups(br_engine, "simulate")
         settled_pnl = int(roll.get("total_pnl_cents") or 0)
         open_committed = int(roll.get("open_committed_cents") or 0)
-        paper = lab_paper_equity_start_cents(full_cfg, br_engine)
+        paper = lab_paper_cumulative_basis_cents(full_cfg, br_engine)
         equity_cents = paper + settled_pnl - open_committed
         bust = equity_cents <= 0
 

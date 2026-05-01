@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.branch_config import lab_paper_cumulative_basis_cents, lab_paper_equity_start_cents
 from app.persistence import Store
 
 
@@ -70,6 +71,34 @@ class BranchResetTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("T2", tickers)
         self.assertNotIn("T3", tickers)
 
+    async def test_bulk_reset_one_transaction_removes_listed_branches(self) -> None:
+        for ticker, branch in (
+            ("TX", "live"),
+            ("TY", "lab_a"),
+            ("TZ", "lab_child_1"),
+        ):
+            await self.store.insert_signal(
+                {
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "window_id": "w",
+                    "asset_id": "btc",
+                    "ticker": ticker,
+                    "side": "yes",
+                    "executed": False,
+                    "mode": "simulate",
+                    "branch": branch,
+                }
+            )
+        await self.store.reset_trading_data_bulk(
+            ["lab_a", "lab_child_1"],
+            backup=False,
+        )
+        sigs = await self.store.recent_signals(limit=50)
+        tickers = {str(s.get("ticker")) for s in sigs}
+        self.assertIn("TX", tickers)
+        self.assertNotIn("TY", tickers)
+        self.assertNotIn("TZ", tickers)
+
     async def test_query_table_lab_a_includes_sim_lab(self) -> None:
         await self.store.insert_trade(
             {
@@ -95,6 +124,17 @@ class BranchResetTest(unittest.IsolatedAsyncioTestCase):
         )
         tickers = {str(r.get("ticker")) for r in rows}
         self.assertIn("KX-OLD", tickers)
+
+    def test_lab_paper_book_ignores_lifetime_cumulative_does_not(self) -> None:
+        cfg = {
+            "paper_balance_cents": 100_000,
+            "lab_b": {
+                "paper_balance_cents": 100_000,
+                "paper_lifetime_basis_cents": 300_000,
+            },
+        }
+        self.assertEqual(lab_paper_equity_start_cents(cfg, "lab_b"), 100_000)
+        self.assertEqual(lab_paper_cumulative_basis_cents(cfg, "lab_b"), 300_000)
 
     async def test_bump_lab_paper_lifetime_basis_accumulates(self) -> None:
         cfg = await self.store.load_config()

@@ -18,9 +18,7 @@ from ..branch_config import (
     BRANCH_CHILD_LABS,
     BRANCH_LABS,
     BRANCH_LIVE,
-    _coerce_engine_running_flag,
     effective_live_engine_running,
-    effective_parent_lab_engine_running,
     live_paper_trading_enabled,
 )
 from ..kalshi_client import KalshiClient
@@ -41,21 +39,9 @@ from ..settings_env import env
 logger = logging.getLogger("kalshibot.dual_engine")
 
 
-def _lab_branch_tick_enabled(br: str, lc: dict[str, Any]) -> bool:
-    """
-    Must match :func:`merge_branch_config` / :func:`tick_once` — the old ``bool(…)`` on ``engine_running`` treated
-    string ``"false"`` and other non-bool values as *on*, so the dual loop could call ``tick_once`` (no merged config)
-    and still run ``snapshot_equity``, producing a flat or misleading equity curve.
-    """
-    if br in BRANCH_CHILD_LABS:
-        if not isinstance(lc, dict):
-            return True
-        return _coerce_engine_running_flag(
-            lc.get("engine_running"), default_if_missing=True
-        )
-    if not isinstance(lc, dict):
-        return False
-    return effective_parent_lab_engine_running(lc, br)
+def _lab_branch_tick_enabled(br: str, _lc: dict[str, Any]) -> bool:
+    """Labs ``lab_a``…``lab_e`` and ``lab_child_*`` always tick (see :func:`merge_branch_config`)."""
+    return br in (*BRANCH_LABS, *BRANCH_CHILD_LABS)
 
 
 async def dual_engine_loop(
@@ -257,30 +243,6 @@ async def dual_engine_loop(
                         eng_snap = engines.get(br)
                         if eng_snap:
                             eng_snap.state.last_error = err[:500]
-            # Parent labs (A–E) with engine **off**: still append equity snapshots each loop — same policy as Live paper
-            # above (``simulate_live`` snapshots without requiring ``tick_once``). Previously Lab A skipped SQLite rows
-            # entirely when toggled off, so equity curves looked empty vs Live or vs trade toasts for other branches.
-            for br in BRANCH_LABS:
-                lc = lab_conf[br] if isinstance(lab_conf.get(br), dict) else {}
-                if _lab_branch_tick_enabled(br, lc):
-                    continue
-                eng_off = engines.get(br)
-                if not eng_off:
-                    continue
-                try:
-                    await snapshot_equity(eng_off, full_cfg=full_cfg)
-                except Exception as e:
-                    err = str(e)
-                    _data_log(
-                        "system",
-                        {
-                            "event": "dual_engine_snapshot_error",
-                            "branch": br,
-                            "error": err[:800],
-                            "at": iso(utc_now()),
-                        },
-                    )
-                    eng_off.state.last_error = err[:500]
             try:
                 await post_branch_error_alerts(engines, prev_errors=prev_engine_alert)
             except Exception:

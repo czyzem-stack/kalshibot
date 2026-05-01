@@ -19,7 +19,7 @@ import copy
 import datetime as dt
 import logging
 import random
-from statistics import median
+from statistics import fmean, median
 from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 
@@ -32,8 +32,15 @@ from .branch_config import (
     BRANCH_LABS,
     LAB_BREEDING_INTERNAL_MAX_SLOTS,
     LAB_BREEDING_MAX_CHILD_SLOTS,
+    LAB_BREEDING_TRAIT_KEYS,
+    MIN_SETTLED_FOR_ADOPTION_COMPARE,
     _lab_key_for_branch,
     clamp_balance_fraction_per_window,
+)
+from .breeding_engine import (
+    BreedingEngine,
+    clear_pending_lab_a_adoption,
+    decline_pending_lab_a_adoption,
 )
 
 if TYPE_CHECKING:
@@ -44,18 +51,13 @@ logger = logging.getLogger("kalshibot.lab_breeding")
 
 def _expand_parent_lab_after_replacement(lab_key: str, patch: dict[str, Any]) -> dict[str, Any]:
     """
-    Hard/soft replacement and crossover write a fresh genome onto a **parent** lab (``lab_a``–``lab_e``).
+    Hard/soft replacement and crossover write a fresh genome onto a parent lab or ``lab_child_*`` slot.
 
-    ``_breed_child`` deep-copies ``parent_a`` including any persisted ``engine_running: false``; child-slot births
-    explicitly force ``engine_running: true``, but fallback crossover did not — that could turn Labs B–E off overnight.
-    Cleared ``lab_child_*`` slots also persist ``engine_running: false``, which must not propagate when promoted onto a
-    parent. Always leave parent engines on here; operators pause labs via the engine toggle, not via breeding.
+    ``expand_partial_lab_branch`` strips ``engine_running`` — simulation branches always tick.
     """
     from .persistence import expand_partial_lab_branch
 
     merged = dict(patch)
-    if lab_key in BRANCH_LABS:
-        merged["engine_running"] = True
     return expand_partial_lab_branch(lab_key, merged)
 
 
@@ -78,15 +80,9 @@ ReplayOpenKwFn = Callable[..., dict[str, Any]]
 LABS_BREEDING_VERSION = "0.4.15.001"
 LAB_BREEDING_GENERATION_INTERVAL = dt.timedelta(minutes=30)
 REPLACEMENT_COOLDOWN = dt.timedelta(minutes=5)
-MIN_SETTLED_FOR_ADOPTION_COMPARE = 4
 MIN_SETTLED_FOR_SOFT_CULL = 5
-TRAIT_KEYS = (
-    "aggressiveness",
-    "risk_tolerance",
-    "adaptivity",
-    "exploration",
-    "resilience",
-)
+# Back-compat alias: trait keys live in ``branch_config.LAB_BREEDING_TRAIT_KEYS``.
+TRAIT_KEYS = LAB_BREEDING_TRAIT_KEYS
 DEATH_CHAMBER_CAP = 10
 LINEAGE_HISTORY_CAP = 10
 BREEDER_V3_FIT_WEIGHT = 0.77
@@ -664,9 +660,12 @@ def _breeder_reason_text(
     synergy_score: float,
     repeated_culls: bool,
     fitness_by_br: dict[str, float],
+    parent_c: str | None = None,
+    select_reason_c: str = "",
 ) -> tuple[str, str]:
     fa = float(fitness_by_br.get(parent_a, 0.0))
     fb = float(fitness_by_br.get(parent_b, 0.0))
+    fc = float(fitness_by_br.get(parent_c, 0.0)) if parent_c else 0.0
     if repeated_culls:
         short = "diversity boost after repeated similar culls"
     elif synergy_score >= 72.0:
@@ -675,9 +674,13 @@ def _breeder_reason_text(
         short = "strong recent lineage momentum"
     else:
         short = "balanced replay fitness with diversity guardrails"
+    if parent_c:
+        short = short + " + tri-parent blend"
+    trip = f", C={parent_c} fit={fc:.3f}" if parent_c else ""
+    sel_c = f"; selectC={select_reason_c}" if parent_c and select_reason_c else ""
     full = (
-        f"{short} (A={parent_a} fit={fa:.3f}, B={parent_b} fit={fb:.3f}, "
-        f"synergy={synergy_score:.1f}/100; selectA={select_reason_a}; selectB={select_reason_b})"
+        f"{short} (A={parent_a} fit={fa:.3f}, B={parent_b} fit={fb:.3f}{trip}, "
+        f"synergy={synergy_score:.1f}/100; selectA={select_reason_a}; selectB={select_reason_b}{sel_c})"
     )
     return short, full
 
@@ -907,7 +910,7 @@ def build_labs_breeding_tree_snapshot(
             else []
         )
         parent_labels = [
-            str(x).replace("_", " ").title() for x in parent_ids if str(x).strip()
+            str(x).replace("_", " ").title() for x in parent_ids[:3] if str(x).strip()
         ]
         inherited_summary = origin.get("inherited_traits_summary")
         if not isinstance(inherited_summary, list):
@@ -937,8 +940,8 @@ def build_labs_breeding_tree_snapshot(
                 "breeder_reason_full": str(origin.get("breeder_reason") or ""),
                 "synergy_score": float(origin.get("synergy_score") or 0.0),
                 "inherited_traits_summary": inherited_summary[:4],
-                "parent_labels": parent_labels[:2],
-                "parent_ids": parent_ids[:2],
+                "parent_labels": parent_labels[:3],
+                "parent_ids": parent_ids[:3],
                 "mutated_traits": list(origin.get("mutated_traits") or [])[:6]
                 if isinstance(origin.get("mutated_traits"), list)
                 else [],
@@ -948,7 +951,7 @@ def build_labs_breeding_tree_snapshot(
         )
         if parent in BRANCH_BREEDERS:
             edges.append({"from": parent, "to": nid, "kind": "birth"})
-        for pid in parent_ids[:2]:
+        for pid in parent_ids[:3]:
             ps = str(pid).strip().lower()
             if ps in BRANCH_BREEDERS and ps != parent:
                 edges.append({"from": ps, "to": nid, "kind": "birth"})
@@ -1068,7 +1071,6 @@ async def _clear_child_engine_slot(
     if slot not in BRANCH_CHILD_LABS:
         return
     base = dict((default_bot_config() or {}).get(slot) or {})
-    base["engine_running"] = False
     cfg[slot] = expand_partial_lab_branch(slot, base)
     try:
         await store.reset_trading_data(backup=False, branch=slot)
@@ -1551,6 +1553,23 @@ async def run_lab_breeding_ga_cycle(
 
     from .persistence import expand_partial_lab_branch
 
+    engine = BreedingEngine(
+        cfg=cfg,
+        oc=oc,
+        rng=rng,
+        tournament_select=_tournament_select_parent,
+        replay_bundle=replay_bundle,
+        open_kw=open_kw,
+        lab_dict_fn=_lab_dict,
+        rules_for_lab_fn=_rules_for_lab,
+        replay_metrics_fn=_replay_metrics_for_branch,
+        trait_read_fn=_read_traits,
+        trait_complementarity_pair_fn=_trait_complementarity_score,
+        competitive_trait_breed_fn=_competitive_trait_breed,
+        apply_competitive_traits_fn=_apply_competitive_traits,
+        blend_filters_fn=_blend_filters,
+    )
+
     new_babies: list[dict[str, Any]] = []
     for parent in BRANCH_BREEDERS:
         eq = await _last_equity_cents(store, parent)
@@ -1605,21 +1624,24 @@ async def run_lab_breeding_ga_cycle(
         if not slot:
             logger.warning("LABS BREEDING: no free child slot for parent=%s", parent)
             continue
-        candidates = [b for b in BRANCH_BREEDERS if b != parent]
-        pa, pa_sel_reason, _ = _tournament_select_parent(
-            candidates=[parent, *candidates],
+        sel = engine.select_parents(
+            slot_owner=parent,
             fitness_by_br=fitness_by_br,
             settled_by_br=settled_by_br,
-            rng=rng,
         )
-        pb, pb_sel_reason, _ = _tournament_select_parent(
-            candidates=[b for b in BRANCH_BREEDERS if b != pa] or [pa],
-            fitness_by_br=fitness_by_br,
-            settled_by_br=settled_by_br,
-            rng=rng,
-        )
-        traits, mutated_traits = _traits_from_two_parents(cfg, pa, pb, rng)
-        synergy_score = _trait_complementarity_score(cfg, pa, pb)
+        pa, pb = sel.primary, sel.secondary
+        pc = sel.tertiary
+        pa_sel_reason, pb_sel_reason = sel.reason_primary, sel.reason_secondary
+        pc_sel_reason = "tri_parent_exploration" if pc else ""
+        parents_list = [pa, pb] + ([pc] if pc else [])
+        synergy_score = float(sel.synergy_pair)
+        if pc is not None and sel.synergy_triple is not None:
+            synergy_score = (
+                0.55 * float(sel.synergy_pair)
+                + 0.225 * _trait_complementarity_score(cfg, pa, pc)
+                + 0.225 * _trait_complementarity_score(cfg, pb, pc)
+            )
+        mutation_scale = engine.adaptive_mutation_scale(fitness_by_br)
         reason_short, reason_full = _breeder_reason_text(
             parent_a=pa,
             parent_b=pb,
@@ -1628,23 +1650,24 @@ async def run_lab_breeding_ga_cycle(
             synergy_score=synergy_score,
             repeated_culls=_has_repeated_similar_culls(oc),
             fitness_by_br=fitness_by_br,
+            parent_c=pc,
+            select_reason_c=pc_sel_reason,
         )
-        baby_lab = _breed_child(
+        baby_lab = engine.crossover(
             victim_branch=parent,
-            parent_a=pa,
-            parent_b=pb,
-            cfg=cfg,
-            rng=rng,
-            competitive_traits=traits,
-            mutated_traits=mutated_traits,
+            parents=parents_list,
+            mutation_scale=mutation_scale,
             breeder_reason_short=reason_short,
             breeder_reason_full=reason_full,
             synergy_score=synergy_score,
-            parent_ids=[pa, pb],
-            parent_fitness={
-                pa: fitness_by_br.get(pa, 0.0),
-                pb: fitness_by_br.get(pb, 0.0),
-            },
+            parent_fitness={p: float(fitness_by_br.get(p, 0.0)) for p in parents_list},
+        )
+        traits = _read_traits(baby_lab)
+        mutated_traits = list(
+            (
+                baby_lab.get("_labs_breeding_origin") or {}
+            ).get("mutated_traits")
+            or []
         )
         tr_p = trades_by_branch.get(parent) or []
         sg_p = signals_by_branch.get(parent) or []
@@ -1665,9 +1688,8 @@ async def run_lab_breeding_ga_cycle(
             if isinstance(baby_lab.get("_labs_breeding_origin"), dict)
             else {}
         )
-        parent_fit_a = float(fitness_by_br.get(pa, 0.0))
-        parent_fit_b = float(fitness_by_br.get(pb, 0.0))
-        avg_parent_fit = 0.5 * (parent_fit_a + parent_fit_b)
+        parent_fits = [float(fitness_by_br.get(p, 0.0)) for p in parents_list]
+        avg_parent_fit = float(fmean(parent_fits)) if parent_fits else 0.0
         fit_delta = float(baby_fit) - avg_parent_fit
         origin["fitness_delta_vs_parents"] = round(fit_delta, 4)
         origin["inherited_traits_summary"] = _trait_badges(traits, 3)
@@ -1682,14 +1704,17 @@ async def run_lab_breeding_ga_cycle(
             )
         cid = str(uuid4())
         baby_traits = _read_traits(baby_lab)
+        trait_delta_vs_mid = {
+            k: round(float(baby_traits.get(k, 0.5)) - float(_read_traits(_lab_dict(cfg, pa)).get(k, 0.5)), 4)
+            for k in TRAIT_KEYS
+        }
         new_babies.append(
             {
                 "id": cid,
                 "parent": parent,
-                "parent_ids": [pa, pb],
+                "parent_ids": parents_list,
                 "parent_labels": [
-                    pa.replace("_", " ").title(),
-                    pb.replace("_", " ").title(),
+                    p.replace("_", " ").title() for p in parents_list[:3]
                 ],
                 "born_at": end_iso,
                 "traits": baby_traits,
@@ -1714,7 +1739,23 @@ async def run_lab_breeding_ga_cycle(
                 "kind": "child_born",
                 "at": end_iso,
                 "parent": parent,
-                "parent_ids": [pa, pb],
+                "parent_ids": parents_list,
+                "parent_count": len(parents_list),
+                "mutation_scale": round(mutation_scale, 4),
+                "stagnation_boost": bool(sel.stagnation_boost),
+                "trait_delta_vs_primary_parent": trait_delta_vs_mid,
+                "confidence_pct": round(
+                    min(
+                        99.9,
+                        max(
+                            0.0,
+                            52.0
+                            + 120.0 * float(fit_delta)
+                            + 8.0 * float(sel.synergy_pair or 0.0),
+                        ),
+                    ),
+                    2,
+                ),
                 "child_id": cid,
                 "replay_fitness": baby_fit,
                 "fitness_delta_vs_parents": round(fit_delta, 4),
@@ -1735,7 +1776,7 @@ async def run_lab_breeding_ga_cycle(
                 "at": end_iso,
                 "kind": "birth",
                 "parent": parent,
-                "parent_ids": [pa, pb],
+                "parent_ids": parents_list,
                 "child_id": cid,
                 "replay_fitness": baby_fit,
                 "fitness_delta_vs_parents": round(fit_delta, 4),
@@ -1745,13 +1786,15 @@ async def run_lab_breeding_ga_cycle(
                 "engine_branch": slot,
             },
         )
+        nb_row = new_babies[-1]
+        engine.update_elite_archive(nb_row, baby_lab)
 
     prev = _sorted_child_pool(oc, cfg)
     merged = new_babies + prev
     cap = max(1, int(LAB_BREEDING_MAX_CHILD_SLOTS))
     while len(merged) > cap:
-        merged.sort(key=lambda x: float(x.get("replay_fitness", 0.0)))
-        evicted = merged.pop(0)
+        ev_i = engine.manage_diversity_eviction_index(merged)
+        evicted = merged.pop(ev_i)
         eb = str(evicted.get("engine_branch") or "").strip()
         if eb in BRANCH_CHILD_LABS:
             await _clear_child_engine_slot(store, cfg, eb, end_iso)
@@ -1790,15 +1833,56 @@ async def run_lab_breeding_ga_cycle(
 
     fit_a = float(fitness_by_br.get(BRANCH_LAB_A, 0.0))
     st_a = settled_by_br.get(BRANCH_LAB_A) or []
-    adopt_margin = 0.04
     pool_after = _sorted_child_pool(oc, cfg)
+    cool = _replacement_cooldown_active(oc, end_iso)
+    pending_exists = isinstance(oc.get("labs_breeding_pending_adoption"), dict)
     if (
-        not _replacement_cooldown_active(oc, end_iso)
-        and len(st_a) >= MIN_SETTLED_FOR_ADOPTION_COMPARE
+        len(st_a) >= MIN_SETTLED_FOR_ADOPTION_COMPARE
         and pool_after
+        and not pending_exists
     ):
         best_child = max(pool_after, key=lambda x: float(x.get("replay_fitness", 0.0)))
-        if float(best_child.get("replay_fitness", 0.0)) > fit_a + adopt_margin:
+        adoption = engine.adopt_to_lab_a(
+            end_iso=end_iso,
+            max_rows=max_rows,
+            include_fees=include_fees,
+            fitness_by_br=fitness_by_br,
+            settled_by_br=settled_by_br,
+            signals_by_branch=signals_by_branch,
+            trades_by_branch=trades_by_branch,
+            best_child=best_child,
+            replacement_cooldown_active=cool,
+        )
+        if adoption.rejected_reason and adoption.rejected_reason not in (
+            "replacement_cooldown",
+            "lab_a_settled_lt_min",
+        ):
+            append_breeding_log(
+                oc,
+                {
+                    "kind": "adoption_rejected",
+                    "at": end_iso,
+                    "reason": adoption.rejected_reason,
+                    "report": adoption.report,
+                    "child_id": best_child.get("id"),
+                },
+            )
+        elif adoption.pending:
+            append_breeding_log(
+                oc,
+                {
+                    "kind": "adoption_pending_confirmation",
+                    **_toast_fields(family="birth"),
+                    "at": end_iso,
+                    "child_id": best_child.get("id"),
+                    "lab_a_fitness_before": fit_a,
+                    "gate_report": adoption.report,
+                    "dynamic_margin": adoption.dynamic_margin,
+                    "z_score": adoption.z_score,
+                },
+            )
+            out_log.append({"kind": "adoption_pending_confirmation", "at": end_iso})
+        elif adoption.adopted:
             cid = best_child.get("id")
             slot_ad = str(best_child.get("engine_branch") or "").strip()
             if slot_ad in BRANCH_CHILD_LABS and isinstance(cfg.get(slot_ad), dict):
@@ -1827,6 +1911,10 @@ async def run_lab_breeding_ga_cycle(
                     "child_id": cid,
                     "replay_fitness": best_child.get("replay_fitness"),
                     "lab_a_fitness_before": fit_a,
+                    "gate_report": adoption.report,
+                    "dynamic_margin": adoption.dynamic_margin,
+                    "z_score": adoption.z_score,
+                    "confidence_pct": adoption.report.get("confidence_pct"),
                 },
             )
             _append_lineage_history(
@@ -1836,6 +1924,7 @@ async def run_lab_breeding_ga_cycle(
                     "kind": "adoption",
                     "child_id": cid,
                     "replay_fitness": best_child.get("replay_fitness"),
+                    "gate_report": adoption.report,
                 },
             )
             out_log.append({"kind": "adoption", "at": end_iso})
@@ -1857,3 +1946,108 @@ async def run_lab_breeding_ga_cycle(
     )
     out_log.append({"kind": "generation", "at": end_iso})
     return out_log
+
+
+async def resolve_lab_a_pending_adoption(
+    store: Store,
+    *,
+    accept: bool,
+) -> dict[str, Any]:
+    """
+    Operator confirmation path when ``optimizer.lab_a_adoption_requires_confirmation`` deferred adoption.
+
+    **accept=False** clears pending without touching Lab A. **accept=True** promotes the pending child's genome
+    into Lab A (same mechanics as automatic adoption) and clears pending.
+    """
+    cfg = await store.load_config()
+    oc = cfg.setdefault("optimizer", {})
+    if not isinstance(oc, dict):
+        oc = {}
+        cfg["optimizer"] = oc
+    pend = oc.get("labs_breeding_pending_adoption")
+    if not isinstance(pend, dict):
+        return {"ok": False, "reason": "no_pending"}
+    cid = pend.get("child_id")
+    pool = [x for x in (oc.get("labs_breeding_children") or []) if isinstance(x, dict)]
+
+    if not accept:
+        report = copy.deepcopy(pend.get("report") or {})
+        decline_pending_lab_a_adoption(oc)
+        append_breeding_log(
+            oc,
+            {
+                "kind": "adoption_pending_declined",
+                "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "child_id": cid,
+                "gate_report": report,
+            },
+        )
+        cfg["optimizer"] = oc
+        await store.save_config(
+            cfg,
+            history_branch="global",
+            history_changed_by="lab_a_adoption_pending",
+            history_reason="pending_lab_a_declined",
+        )
+        return {"ok": True, "declined": True}
+
+    chosen = next((x for x in pool if x.get("id") == cid), None)
+    if not chosen:
+        clear_pending_lab_a_adoption(oc)
+        cfg["optimizer"] = oc
+        await store.save_config(
+            cfg,
+            history_branch="global",
+            history_changed_by="lab_a_adoption_pending",
+            history_reason="pending_cleared_missing_child",
+        )
+        return {"ok": False, "reason": "child_missing"}
+
+    pool_after = pool
+    slot_ad = str(chosen.get("engine_branch") or "").strip()
+    if slot_ad in BRANCH_CHILD_LABS and isinstance(cfg.get(slot_ad), dict):
+        cfg["lab_a"] = _expand_parent_lab_after_replacement(
+            "lab_a", copy.deepcopy(cfg[slot_ad])
+        )
+        await _clear_child_engine_slot(store, cfg, slot_ad, pend.get("proposed_at") or "")
+    else:
+        lab_src = _child_row_effective_lab(chosen, cfg) or chosen.get("lab")
+        cfg["lab_a"] = _expand_parent_lab_after_replacement(
+            "lab_a", dict(lab_src) if isinstance(lab_src, dict) else {}
+        )
+    _set_child_pool(oc, [c for c in pool_after if c.get("id") != cid])
+    clear_pending_lab_a_adoption(oc)
+    cfg["optimizer"] = oc
+    try:
+        await store.reset_trading_data(backup=False, branch=BRANCH_LAB_A)
+    except Exception as e:
+        logger.warning("manual pending lab_a adoption reset failed err=%s", e)
+    now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+    append_breeding_log(
+        oc,
+        {
+            "kind": "adoption_manual_confirm",
+            **_toast_fields(family="birth"),
+            "at": now_iso,
+            "child_id": cid,
+            "replay_fitness": chosen.get("replay_fitness"),
+            "pending_report": pend.get("report"),
+        },
+    )
+    _append_lineage_history(
+        oc,
+        {
+            "at": now_iso,
+            "kind": "adoption_manual_confirm",
+            "child_id": cid,
+            "replay_fitness": chosen.get("replay_fitness"),
+        },
+    )
+    cfg["optimizer"] = oc
+    await store.save_config(
+        cfg,
+        history_branch="global",
+        history_changed_by="lab_a_adoption_pending",
+        history_reason="pending_lab_a_confirmed",
+    )
+    return {"ok": True, "confirmed": True}

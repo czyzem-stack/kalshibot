@@ -56,20 +56,6 @@ const DASHBOARD_STALE_INFLIGHT_MS = DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
 const EMPTY_LAB: AnyObj = Object.freeze({});
 
 /**
- * Matches backend ``effective_parent_lab_engine_running``: for Labs A–E, **missing** ``engine_running`` means **on**.
- * Plain ``Boolean(undefined)`` showed Stopped and ``applyDashboardConfig`` overwrote the server's effective flag with false.
- */
-function coerceParentLabEngineRunning(raw: unknown): boolean {
-  if (raw === undefined || raw === null) return true;
-  if (typeof raw === "boolean") return raw;
-  if (typeof raw === "number") return raw !== 0 && !Number.isNaN(raw);
-  const s = String(raw).trim().toLowerCase();
-  if (s === "" || s === "0" || s === "false" || s === "no" || s === "off" || s === "null" || s === "none") return false;
-  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
-  return Boolean(s);
-}
-
-/**
  * SQLite equity series for charts. Skips non-arrays (e.g. ``{}``).
  * With multiple candidates, prefer the first **non-empty** array so ``[]`` does not hide data in the other field.
  * The API never sends legacy ``equity_snapshots_sim_lab`` (Lab A series is ``equity_snapshots_lab_a`` only).
@@ -107,11 +93,24 @@ const FAST_POLL_METRIC_KEYS = [
 ] as const;
 
 /**
+ * Shallow-merge ``inc`` over ``old``, then remove keys that exist only on ``old``.
+ * Dashboard JSON typically omits ``null`` fields; ``{ ...old, ...inc }`` alone would keep a prior
+ * ``win_rate_pct`` / ``avg_realized_per_settled_dollars`` while ``settled_trades`` updates from ``inc``,
+ * so Live win/loss % and avg/settled looked frozen out of sync with the settled count.
+ */
+function mergeMetricObjectsDropStaleKeys(old: AnyObj, inc: AnyObj): AnyObj {
+  const merged: AnyObj = { ...old, ...inc };
+  for (const k of Object.keys(old)) {
+    if (!(k in inc)) delete merged[k];
+  }
+  return merged;
+}
+
+/**
  * Merge GET /api/dashboard/equity — same as original ``{ ...prev, ...d }`` plus:
  * - Do not replace equity / trade arrays with ``[]`` or non-arrays **unless** ``trading_data_revision`` advanced
  *   (otherwise post-reset empty arrays were overwritten by this merge and charts kept stale history).
- * - Shallow-merge metrics blobs so a partial key set cannot drop ``current_mtm_dollars``.
- * Do **not** strip arbitrary keys from the payload (that froze live tiles / MTM).
+ * - Merge metrics blobs with ``mergeMetricObjectsDropStaleKeys`` so omitted-null JSON cannot leave ghost enrich fields.
  * Always drop ``equity_snapshots_sim_lab`` — it is not returned by the server; retaining it from ``prev`` made Lab A
  * charts fall back to stale ghost history whenever ``equity_snapshots_lab_a`` was ``[]`` after a reset.
  */
@@ -130,7 +129,7 @@ function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
     const inc = incoming[mk];
     const old = prev[mk];
     if (inc && typeof inc === "object" && !Array.isArray(inc) && old && typeof old === "object" && !Array.isArray(old)) {
-      next[mk] = { ...(old as AnyObj), ...(inc as AnyObj) };
+      next[mk] = mergeMetricObjectsDropStaleKeys(old as AnyObj, inc as AnyObj);
     }
   }
   for (const sk of ["metrics_lab_child_slots", "engine_lab_children"] as const) {
@@ -704,22 +703,6 @@ function equityChartSubtitlePtsBookSettledOpen(
   return `${ptsPart} · book ${book} · ${settled} settled · ${open} open${qa}`;
 }
 
-/** Short context for ``engine.*.last_error`` so Kalshi outages do not read as unexplained “flat” labs. */
-function annotateEngineLastErrorForUi(raw: string): { text: string; title: string } {
-  const t = String(raw || "").trim();
-  if (!t) return { text: "", title: "" };
-  const low = t.toLowerCase();
-  let hint = "";
-  if (/\b429\b|rate\s*limit|too many requests/i.test(t)) {
-    hint =
-      " Kalshi HTTP 429 — the client backs off automatically. If this repeats, raise poll_seconds or turn off unused lab engines to cut parallel /markets traffic.";
-  } else if (/temporarily.*disabl|temporarily disabled|service unavailable|under maintenance/i.test(low)) {
-    hint =
-      " Vendor-side restriction or maintenance — paper ticks may skip until the exchange clears it; flat charts at the paper bankroll usually mean no new snapshots yet.";
-  }
-  return { text: t.slice(0, 520), title: hint ? `${t}${hint}` : t };
-}
-
 const HERO_MARQUEE_SPEED_KEY = "kalshibot_hero_marquee_speed_mult_v1";
 
 function readHeroMarqueeSpeedMult(): number {
@@ -1089,7 +1072,6 @@ function BreederPersonalityRadarChart({
         />
         {series.map((s, i) => {
           const col = BREEDER_RADAR_COLORS[i % BREEDER_RADAR_COLORS.length];
-          const on = Boolean(s.engine_running);
           return (
             <Radar
               key={String(s.key ?? i)}
@@ -1097,8 +1079,8 @@ function BreederPersonalityRadarChart({
               dataKey={String(s.key)}
               stroke={col}
               fill={col}
-              fillOpacity={on ? 0.22 : 0.07}
-              strokeWidth={on ? 2.2 : 1}
+              fillOpacity={0.22}
+              strokeWidth={2.2}
               isAnimationActive={false}
             />
           );
@@ -1634,6 +1616,13 @@ function paperUnrealizedPnlDollars(m: AnyObj): number | null {
   return mtmN - st - r;
 }
 
+/** Open sim rows exist but nothing has settled yet — settled / win / avg tiles stay flat by design. */
+function metricsOpenSimsUnsettledOnly(m: AnyObj): boolean {
+  const settled = Number(m.settled_trades ?? 0) || 0;
+  const open = Number(m.open_sim_trades ?? 0) || 0;
+  return settled === 0 && open > 0;
+}
+
 function metricWinRateTone(pct: unknown): MetricValueTone {
   const x = Number(pct);
   if (!Number.isFinite(x)) return "neu";
@@ -1701,11 +1690,17 @@ function WinLossRecordTile({ label, metrics }: { label: string; metrics: AnyObj 
   const wr = decisiveWinRatePct(metrics);
   const lr = decisiveLossRatePct(metrics);
   const scratches = Number(metrics.scratch_trades) > 0 ? ` · ${String(metrics.scratch_trades)} flat` : "";
+  const openUnsettled = metricsOpenSimsUnsettledOnly(metrics);
   const sub = (
     <>
       <span className={metricSubClass(metricWinRateTone(wr))}>Win {fmtPct(wr)}</span>
       <span style={{ color: "var(--muted)" }}> · </span>
       <span className={metricSubClass(metricSignedTone(50 - Number(lr)))}>Loss {fmtPct(lr)}</span>
+      {openUnsettled ? (
+        <span style={{ display: "block", marginTop: 4, color: "var(--muted)", fontSize: "0.85em" }}>
+          No win/loss until a sim settles (same scope as settled PnL).
+        </span>
+      ) : null}
     </>
   );
   return (
@@ -3029,8 +3024,8 @@ function optimizerBriefInfoBody(): ReactNode {
         Optimizer Trace</strong>.
       </p>
       <p>
-        <strong>What to double-check.</strong> (1) Live Real $ vs paper labs. (2) Stale data → Engine strip under <strong>Account</strong> and{" "}
-        <code>last_tick_at</code>. (3) Reconcile headlined PnL in <strong>Branch performance</strong> with this panel’s experiment
+        <strong>What to double-check.</strong> (1) Live Real $ vs paper labs. (2) Stale tiles → hard-refresh the dashboard or check{" "}
+        <strong>Settings → Engines</strong> for Live. (3) Reconcile headlined PnL in <strong>Branch performance</strong> with this panel’s experiment
         chart—they measure different things.
       </p>
     </div>
@@ -3341,7 +3336,7 @@ const EQUITY_COMPARE_CHILD_SLOT_DEFS: readonly {
 function cfgLabChildSlotAnyEngineOn(cfg: AnyObj): boolean {
   for (const k of LAB_CHILD_CFG_KEYS) {
     const o = cfg[k];
-    if (o && typeof o === "object" && Boolean((o as AnyObj).engine_running)) return true;
+    if (o && typeof o === "object") return true;
   }
   return false;
 }
@@ -3715,6 +3710,75 @@ function dashboardLabLetterTabLabel(tab: DashboardLabLetterTab): string {
   return "Child slots";
 }
 
+function dashboardLabTabToActivityBranch(tab: DashboardLabLetterTab): ActivityBranchKey {
+  if (tab === "live") return "live";
+  if (tab === "children") return "lab_children";
+  if (tab === "a") return "lab_a";
+  if (tab === "b") return "lab_b";
+  if (tab === "c") return "lab_c";
+  if (tab === "d") return "lab_d";
+  return "lab_e";
+}
+
+/** Long-form help for the Assets → Activity overlay (same content as former Account Activity Info). */
+function assetWatchActivityHelpBody(): ReactNode {
+  return (
+    <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
+      <p>
+        <strong>What this is.</strong> The Activity log is a read-only, reverse-chronological view of the bot’s recent{" "}
+        <strong>signals</strong> (rule evaluations and intent) and <strong>trades</strong> (rows the engine created or the exchange
+        returned, depending on mode). The backend reads SQLite (and sometimes hydrates with Kalshi) and returns a bounded list so the
+        UI stays snappy. It is the first place to look after “why did / didn’t a trade land?”
+      </p>
+      <p>
+        <strong>Optimizer suggested text is different.</strong> When the server sets <code>optimizer_suggested_action</code>, the
+        dashboard surfaces it as <strong>throttled toasts</strong> in the bottom-right stack (not as rows in this table). Use the
+        Optimizer card, toasts, and <strong>Settings → Internal Optimizer Trace</strong> for that workflow.
+      </p>
+      <p>
+        <strong>Limits and truncation.</strong> The API typically caps each stream (for example, the last 500 signals and 500 trades{" "}
+        <em>combined across branches in the response shape you have</em>—treat the exact number as implementation detail). If you do
+        not see an old fill, it may have rolled off; check on-disk JSONL in <code>data/logs</code> or run SQL against the local DB.
+        Truncation is normal for long runs.
+      </p>
+      <p>
+        <strong>Branch tabs.</strong> Open Activity from <strong>Assets to watch</strong>. All tables (including “Bets not traded”){" "}
+        filter by the branch tab you select there—same picker as per-asset snapshots (Live through Child slots). Switching tabs does
+        not refetch; it re-slices the dashboard payload.
+      </p>
+      <p>
+        <strong>
+          Legacy <code>sim_lab</code>.
+        </strong>{" "}
+        Older rows may only carry a generic lab bit; the UI still maps them into the Lab A bucket for display consistency. When
+        correlating to SQLite, use ids and market tickers, not only the human label in the first column.
+      </p>
+      <p>
+        <strong>“Bets not traded”.</strong> Lists situations where a rule pattern matched the market state but the engine did not
+        place an order—risk caps, <code>series_has_open_sim</code>, time-to-close, fee floors, or hard skips. Do not expect that tab
+        to match the count of the ordinary signals tab: different semantics entirely.
+      </p>
+      <p>
+        <strong>Interpreting columns.</strong> You will see rule names, market tickers, side, notional, skip reason codes, and engine
+        timestamps. A row with <em>no</em> trade in the “Trades” sub-tab is expected when the log line was a pure signal. A trade row
+        with <code>error</code> or empty exchange id in Live mode requires cross-checking Kalshi; in paper, check SQLite for duplicate
+        sims or post failures.
+      </p>
+      <p>
+        <strong>When things look out of order.</strong> (1) Clock skew: server logs use UTC/ISO; your browser localizes. (2) Batch
+        latency: a signal may preface a trade by seconds. (3) Live engine off in Settings: you may only see stale Live rows until it
+        resumes (labs always poll). (4) Multi-branch tests: the same market can produce five rows; always read the branch column. (5)
+        Compare to Optimizer Lab pulse: narrative vs structured rows here.
+      </p>
+      <p>
+        <strong>Operational use.</strong> (1) Debug skips before changing rules. (2) After deploy, verify a single expected fill path
+        end-to-end. (3) Before promoting Lab A, scan all labs’ activity for unintended live-only paths. (4) If support asks for “logs”,
+        export the JSONL plus a screenshot of this overlay with the branch visible.
+      </p>
+    </div>
+  );
+}
+
 function fmtGaOverlayDollars(n: unknown): string {
   if (n == null || n === "") return "—";
   const x = Number(n);
@@ -4083,7 +4147,7 @@ function paperChildSlotsOverlayBody(
         {LAB_CHILD_CFG_KEYS.map((slotKey) => {
           const m = slots[slotKey] || {};
           const eng = engines[slotKey] || {};
-          const on = Boolean(eng.engine_running);
+          const on = true;
           const n = slotKey.replace("lab_child_", "");
           const traces = Array.isArray(eng.last_tick_trace_tail) ? (eng.last_tick_trace_tail as string[]) : [];
           const err = eng.last_error != null && String(eng.last_error).trim() !== "" ? String(eng.last_error) : null;
@@ -4128,9 +4192,9 @@ function paperChildSlotsOverlayBody(
                 <code style={{ fontSize: 11, opacity: 0.85 }}>{slotKey}</code>
                 <span
                   className={`dashboard-grid-panel__badge${on ? " dashboard-grid-panel__badge--ok" : ""}`}
-                  title={on ? "engine_running is not false — dual-loop ticks." : "Paused in config."}
+                  title="GA child slots always tick when configured."
                 >
-                  {on ? "Polling on" : "Polling off"}
+                  Polling on
                 </span>
               </div>
 
@@ -4493,6 +4557,29 @@ function sanityClampSyntheticEquityTail(base: EquityChartRow[], equity: number, 
   return mtm;
 }
 
+/** Drop isolated MTM jumps in SQLite snapshot history when book (cost) barely moves — same failure mode as synthetic tail. */
+function dampEquityMtmHistorySpikes(rows: EquityChartRow[]): EquityChartRow[] {
+  if (rows.length < 2) return rows;
+  const out = rows.map((r) => ({ ...r }));
+  for (let i = 1; i < out.length; i++) {
+    const prev = out[i - 1]!;
+    const pEq = Number(prev.equity);
+    const pMtm = prev.mtm != null && Number.isFinite(Number(prev.mtm)) ? Number(prev.mtm) : pEq;
+    const cur = out[i]!;
+    const eq = Number(cur.equity);
+    const mtmRaw = cur.mtm != null && Number.isFinite(Number(cur.mtm)) ? Number(cur.mtm) : eq;
+    if (!Number.isFinite(pEq) || !Number.isFinite(eq) || !Number.isFinite(pMtm) || !Number.isFinite(mtmRaw)) continue;
+    const bookStep = Math.abs(eq - pEq);
+    const mtmStep = Math.abs(mtmRaw - pMtm);
+    const flatBook = bookStep <= Math.max(8, Math.abs(pEq) * 0.018);
+    const suspiciousMtm = mtmStep > Math.max(180, Math.abs(pMtm) * 0.32, Math.abs(pEq) * 0.38);
+    if (flatBook && suspiciousMtm) {
+      out[i] = { ...cur, mtm: pMtm };
+    }
+  }
+  return out;
+}
+
 /** Append trailing book/MTM from latest ``metrics`` (same instant as hero + bottom marquee on each fast dashboard merge). */
 function appendEquityLiveTailFromMetrics(
   base: EquityChartRow[],
@@ -4574,8 +4661,11 @@ function equitySeriesWithLiveTail(
   opts?: { dropFlatZeroHistory?: boolean },
 ): EquityChartRow[] {
   const baseRaw = buildEquityChartSeries(snaps, mode, fmtIsoLocalFn);
+  const spikeDamped = dampEquityMtmHistorySpikes(baseRaw);
   const base =
-    opts?.dropFlatZeroHistory === true ? dropMisleadingAllZeroSnapshotHistory(baseRaw, metrics) : baseRaw;
+    opts?.dropFlatZeroHistory === true
+      ? dropMisleadingAllZeroSnapshotHistory(spikeDamped, metrics)
+      : spikeDamped;
   return appendEquityLiveTailFromMetrics(base, snaps, metrics, fmtIsoLocalFn, mode);
 }
 
@@ -5117,6 +5207,7 @@ export default function App() {
   const labsBreedingToastBootstrappedRef = useRef(false);
   const [assetWatchLab, setAssetWatchLab] = useState<DashboardLabLetterTab>("live");
   const [holdingsBranchTab, setHoldingsBranchTab] = useState<DashboardLabLetterTab>("live");
+  const [assetWatchActivityOverlayOpen, setAssetWatchActivityOverlayOpen] = useState(false);
   const [accountActivityView, setAccountActivityView] = useState<"signals" | "trades" | "not_traded">("signals");
   const [perfBranch, setPerfBranch] = useState<PerfBranchKey>("live");
   const [equityGranularity, setEquityGranularity] = useState<EquityGranularity>("hourly");
@@ -5337,18 +5428,7 @@ export default function App() {
     setDash((prev) => {
       if (!prev) return prev;
       const sim = Boolean(nextConfig.simulate);
-      const la = (nextConfig.lab_a || {}) as AnyObj;
-      const lb = (nextConfig.lab_b || {}) as AnyObj;
-      const lc = (nextConfig.lab_c || {}) as AnyObj;
-      const ld = (nextConfig.lab_d || {}) as AnyObj;
-      const le = (nextConfig.lab_e || {}) as AnyObj;
       const liveOn = Boolean(nextConfig.engine_running);
-      const labAOn = coerceParentLabEngineRunning(la.engine_running);
-      const labBOn = coerceParentLabEngineRunning(lb.engine_running);
-      const labCOn = coerceParentLabEngineRunning(lc.engine_running);
-      const labDOn = coerceParentLabEngineRunning(ld.engine_running);
-      const labEOn = coerceParentLabEngineRunning(le.engine_running);
-      const labChildrenSlotsOn = cfgLabChildSlotAnyEngineOn(nextConfig as AnyObj);
 
       const engine = { ...((prev.engine || {}) as AnyObj) };
       const live = { ...((engine.live || {}) as AnyObj) };
@@ -5360,7 +5440,7 @@ export default function App() {
         if (cur && typeof cur === "object") {
           engine[key] = { ...cur, engine_running: on, simulate_orders: true };
         } else {
-          // First dashboard after upgrade (or cache) may omit ``lab_e`` — still merge toggles from Settings.
+          // First dashboard after upgrade (or cache) may omit ``lab_e``.
           engine[key] = {
             engine_running: on,
             simulate_orders: true,
@@ -5371,18 +5451,18 @@ export default function App() {
           };
         }
       };
-      patchBranch("lab_a", labAOn);
-      patchBranch("lab_b", labBOn);
-      patchBranch("lab_c", labCOn);
-      patchBranch("lab_d", labDOn);
-      patchBranch("lab_e", labEOn);
+      patchBranch("lab_a", true);
+      patchBranch("lab_b", true);
+      patchBranch("lab_c", true);
+      patchBranch("lab_d", true);
+      patchBranch("lab_e", true);
       if (engine.sim_lab && typeof engine.sim_lab === "object") {
-        engine.sim_lab = { ...engine.sim_lab, engine_running: labAOn, simulate_orders: true };
+        engine.sim_lab = { ...engine.sim_lab, engine_running: true, simulate_orders: true };
       }
 
       const kalshi = { ...((prev.kalshi || {}) as AnyObj) };
       kalshi.simulate_live = sim;
-      kalshi.polling_enabled = liveOn || labAOn || labBOn || labCOn || labDOn || labEOn || labChildrenSlotsOn;
+      kalshi.polling_enabled = true;
       if ("private_ok" in kalshi) {
         kalshi.order_writes_live = Boolean(kalshi.private_ok) && !sim;
       }
@@ -5607,13 +5687,27 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!infoPopup) return;
+    if (!infoPopup && !assetWatchActivityOverlayOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setInfoPopup(null);
+      if (e.key !== "Escape") return;
+      if (infoPopup) {
+        setInfoPopup(null);
+        return;
+      }
+      setAssetWatchActivityOverlayOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [infoPopup]);
+  }, [infoPopup, assetWatchActivityOverlayOpen]);
+
+  useEffect(() => {
+    if (!assetWatchActivityOverlayOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [assetWatchActivityOverlayOpen]);
 
   useEffect(() => {
     if (tradePopupToastsEnabled) return;
@@ -6567,43 +6661,26 @@ export default function App() {
   const engineLabC = dash?.engine?.lab_c as AnyObj | undefined;
   const engineLabD = dash?.engine?.lab_d as AnyObj | undefined;
   const engineLabE = dash?.engine?.lab_e as AnyObj | undefined;
-  /** Dashboard ``engine.*`` can lag; fall back to config (same idea as Lab A toolbar toggle). */
+  /** Dashboard ``engine.live`` can lag; fall back to top-level ``engine_running``. */
   const liveBranchEngineOn = Boolean((dash?.engine?.live as AnyObj | undefined)?.engine_running ?? cfg.engine_running);
-  const labABranchEngineOn = coerceParentLabEngineRunning(engineLabA?.engine_running ?? simLab.engine_running);
-  const labBBranchEngineOn = coerceParentLabEngineRunning(engineLabB?.engine_running ?? labB.engine_running);
-  const labCBranchEngineOn = coerceParentLabEngineRunning(engineLabC?.engine_running ?? labC.engine_running);
-  const labDBranchEngineOn = coerceParentLabEngineRunning(engineLabD?.engine_running ?? labD.engine_running);
-  const labEBranchEngineOn = coerceParentLabEngineRunning(engineLabE?.engine_running ?? labE.engine_running);
 
-  const accountActivityBranch: ActivityBranchKey =
-    holdingsBranchTab === "live"
-      ? "live"
-      : holdingsBranchTab === "children"
-        ? "lab_children"
-        : holdingsBranchTab === "a"
-          ? "lab_a"
-          : holdingsBranchTab === "b"
-            ? "lab_b"
-            : holdingsBranchTab === "c"
-              ? "lab_c"
-              : holdingsBranchTab === "d"
-                ? "lab_d"
-                : "lab_e";
+  /** Activity tables (overlay under Assets to watch) follow this branch picker — independent of Account holdings tabs. */
+  const assetWatchActivityBranch = dashboardLabTabToActivityBranch(assetWatchLab);
 
   const recentSignalsFiltered = useMemo(() => {
     const rs = (dash?.recent_signals || []) as AnyObj[];
-    return rs.filter((r) => normalizeSignalTradeBranch(r.branch) === accountActivityBranch);
-  }, [dash?.recent_signals, accountActivityBranch]);
+    return rs.filter((r) => normalizeSignalTradeBranch(r.branch) === assetWatchActivityBranch);
+  }, [dash?.recent_signals, assetWatchActivityBranch]);
 
   const recentTradesFiltered = useMemo(() => {
     const rt = (dash?.recent_trades || []) as AnyObj[];
-    return rt.filter((r) => normalizeSignalTradeBranch(r.branch) === accountActivityBranch);
-  }, [dash?.recent_trades, accountActivityBranch]);
+    return rt.filter((r) => normalizeSignalTradeBranch(r.branch) === assetWatchActivityBranch);
+  }, [dash?.recent_trades, assetWatchActivityBranch]);
 
   const notTradedFiltered = useMemo(() => {
     const nt = (dash?.not_traded_signals || []) as AnyObj[];
-    return nt.filter((r) => normalizeSignalTradeBranch(r.branch) === accountActivityBranch);
-  }, [dash?.not_traded_signals, accountActivityBranch]);
+    return nt.filter((r) => normalizeSignalTradeBranch(r.branch) === assetWatchActivityBranch);
+  }, [dash?.not_traded_signals, assetWatchActivityBranch]);
 
   const saveRules = async (rules: AnyObj[]) => {
     setBusy(true);
@@ -6675,31 +6752,6 @@ export default function App() {
       setBusy(false);
     }
   };
-
-  const setLabRunning = async (lab: "a" | "b" | "c" | "d" | "e", running: boolean) => {
-    const prevDash = dash;
-    const lk =
-      lab === "a" ? "lab_a" : lab === "b" ? "lab_b" : lab === "c" ? "lab_c" : lab === "d" ? "lab_d" : "lab_e";
-    if (prevDash) {
-      const patch = { ...cfg } as AnyObj;
-      patch[lk] = { ...((cfg[lk] || EMPTY_LAB) as AnyObj), engine_running: running };
-      applyDashboardConfig(patch);
-    }
-    setBusy(true);
-    try {
-      const body: AnyObj = { reset_data: "none", [lk]: { engine_running: running } };
-      const out = (await apiPutLabBranches(body)) as AnyObj;
-      const cfgNext = out?.config;
-      if (cfgNext && typeof cfgNext === "object") applyDashboardConfig(cfgNext as AnyObj);
-      void refresh();
-    } catch (e: any) {
-      if (prevDash) setDash(prevDash);
-      setErr(String(e?.message || e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const setSimLabRunning = async (running: boolean) => setLabRunning("a", running);
 
   const saveLabFromSliders = async (lab: "a" | "b" | "c" | "d" | "e") => {
     const p =
@@ -6996,19 +7048,43 @@ export default function App() {
           q.set("uniform_paper_balance_cents", String(c));
         }
       }
-      const headers: Record<string, string> = {};
-      if (dash?.storage?.data_reset_token_configured) {
-        const el =
-          (document.getElementById("reset_token_field") as HTMLInputElement | null) ??
-          (document.getElementById("reset_token_labs_bulk") as HTMLInputElement | null);
-        const t = el?.value?.trim();
-        if (t) headers["X-Reset-Token"] = t;
+      const tokenEl =
+        (document.getElementById("reset_token_field") as HTMLInputElement | null) ??
+        (document.getElementById("reset_token_labs_bulk") as HTMLInputElement | null);
+      const tokenVal = tokenEl?.value?.trim() ?? "";
+      const tokenRequired = Boolean(dash?.storage?.data_reset_token_configured);
+      if (tokenRequired && !tokenVal) {
+        const hint =
+          "Data reset did not run: the API requires header X-Reset-Token (DATA_RESET_TOKEN in backend .env). Open Settings → Data & backups, enter the token in the Reset token field, then try again.";
+        setErr(hint);
+        window.alert(hint);
+        return;
       }
+      const headers: Record<string, string> = {};
+      if (tokenVal) headers["X-Reset-Token"] = tokenVal;
       const r = await fetch(`/api/data/reset?${q.toString()}`, withApiAuth({ method: "POST", headers }));
-      if (!r.ok) throw new Error((await r.text()) || `reset ${r.status}`);
+      if (!r.ok) {
+        let body = await r.text();
+        try {
+          const j = JSON.parse(body) as { detail?: unknown };
+          if (j?.detail != null) body = String(j.detail);
+        } catch {
+          /* keep body */
+        }
+        const err = new Error(body || `reset failed (${r.status})`) as Error & { status?: number };
+        err.status = r.status;
+        throw err;
+      }
       resetOk = true;
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      const msg = String(e?.message || e);
+      setErr(msg);
+      const st = Number((e as { status?: number }).status);
+      if (st === 403 || /x-reset-token|403/i.test(msg)) {
+        window.alert(
+          "The server rejected this reset (403). If DATA_RESET_TOKEN is set, enter the exact token under Settings → Data & backups, or clear DATA_RESET_TOKEN in the backend .env and restart the API."
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -7272,7 +7348,7 @@ export default function App() {
                         when the sim marks resolution in paper mode. It does <em>not</em> include open marks. A common confusion is
                         seeing green MTM and $0 settled: that means the position is open or not yet final in the sim. Only when
                         the row is closed and realized does it flow into this tile and into win/loss, avg hourly, and promote
-                        gating. Skim the Activity log to match timestamps to what “settled” means for a given row.
+                        gating. Skim <strong>Assets → Activity</strong> to match timestamps to what “settled” means for a given row.
                       </p>
                       <p>
                         <strong>MTM (est.) and open / mark P&amp;L (est.) on paper / lab branches.</strong> MTM is a mark-to-market
@@ -7312,7 +7388,8 @@ export default function App() {
                       </p>
                       <p>
                         <strong>When numbers look “wrong.”</strong> (1) Refresh: metrics come from the last dashboard payload; after
-                        a big fill, wait a tick. (2) Branch mismatch: ensure the tab you read matches the Activity log filter. (3) Open
+                        a big fill, wait a tick. (2) Branch mismatch: ensure the tab you read matches the branch used in{" "}
+                        <strong>Assets → Activity</strong>. (3) Open
                         sim blocking: a stuck open row can depress new entries—see not-traded and engine skip reasons. (4) Compare to
                         Equity curves (book vs MTM) for the same branch for a time-series check; compare Branch performance to the
                         Optimizer’s Experiments chart for experiment divergence, not for identical dollar values (different
@@ -7404,7 +7481,18 @@ export default function App() {
             label={perfBranchMeta.isLive && !cfg.simulate ? "Bot settled PnL" : `${perfBranchMeta.label} settled PnL`}
             value={fmtMoney(Number(perfBranchMeta.metrics.total_pnl_dollars || 0))}
             title="Realized PnL only: sum from settled trades in this branch. Unchanged until a contract finalizes in SQLite."
-            sub={!perfBranchMeta.isLive || cfg.simulate ? `${fmtPct(perfBranchMeta.metrics.realized_pnl_pct_of_start)} of ${perfBranchMeta.bankNoun}` : undefined}
+            sub={(() => {
+              const m = perfBranchMeta.metrics;
+              const pctLine =
+                !perfBranchMeta.isLive || cfg.simulate
+                  ? `${fmtPct(m.realized_pnl_pct_of_start)} of ${perfBranchMeta.bankNoun}`
+                  : "";
+              const openOnly = metricsOpenSimsUnsettledOnly(m);
+              const hint = openOnly ? " · open sims: unrealized is MTM / open P&L until settle" : "";
+              if (pctLine) return `${pctLine}${hint}`;
+              if (openOnly) return "Open sims only — unrealized is MTM / open P&L until settle";
+              return undefined;
+            })()}
             valueTone={metricSignedTone(perfBranchMeta.metrics.total_pnl_dollars)}
             subTone={metricSignedTone(perfBranchMeta.metrics.realized_pnl_pct_of_start)}
           />
@@ -7412,18 +7500,34 @@ export default function App() {
             label={perfBranchMeta.isLive && !cfg.simulate ? "Total Kalshi fees" : `${perfBranchMeta.label} fees`}
             value={fmtMoney(Number(perfBranchMeta.metrics.total_kalshi_fees_dollars || 0))}
             title="Modeled entry + exit fees accumulated for this branch."
+            sub={
+              metricsOpenSimsUnsettledOnly(perfBranchMeta.metrics) &&
+              Number(perfBranchMeta.metrics.total_kalshi_fees_dollars || 0) > 0
+                ? "Includes entry on open sims (settled PnL still $0 until close)"
+                : undefined
+            }
             valueTone="neg"
           />
           <MetricTile
             label={perfBranchMeta.isLive && !cfg.simulate ? "Avg hourly (bot)" : `${perfBranchMeta.label} avg hourly`}
             value={fmtMoney(Number(perfBranchMeta.metrics.avg_hourly_pnl_dollars || 0))}
             title="Realized PnL divided by elapsed hours spanned by settled trades."
+            sub={
+              metricsOpenSimsUnsettledOnly(perfBranchMeta.metrics)
+                ? "Uses settled PnL only — flat while every sim is still open"
+                : undefined
+            }
             valueTone={metricSignedTone(perfBranchMeta.metrics.avg_hourly_pnl_dollars)}
           />
           <MetricTile
             label={perfBranchMeta.isLive && !cfg.simulate ? "Settled (bot)" : `${perfBranchMeta.label} settled`}
             value={String(perfBranchMeta.metrics.settled_trades ?? 0)}
             title="Count of settled trades in this branch."
+            sub={
+              metricsOpenSimsUnsettledOnly(perfBranchMeta.metrics)
+                ? "Open rows are not counted here"
+                : undefined
+            }
           />
           <WinLossRecordTile label={`${perfBranchMeta.label} win / loss · %`} metrics={perfBranchMeta.metrics} />
           <MetricTile
@@ -7434,6 +7538,12 @@ export default function App() {
                 : "—"
             }
             title="Mean realized dollars per settled trade."
+            sub={
+              metricsOpenSimsUnsettledOnly(perfBranchMeta.metrics) &&
+              perfBranchMeta.metrics.avg_realized_per_settled_dollars == null
+                ? "Appears after the first settled close"
+                : undefined
+            }
             valueTone={metricSignedTone(perfBranchMeta.metrics.avg_realized_per_settled_dollars)}
           />
           <MetricTile
@@ -7690,30 +7800,65 @@ export default function App() {
               >
                 Assets to watch
               </h2>
-              <button
-                type="button"
-                className="primary dash-panel-btn dash-panel-btn--info"
-                title={
-                  "Per-asset engine snapshot cards: Live vs Lab A–E select which branch’s last tick view you read; config is unchanged. " +
-                  "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
-                  "window, target, and open-sim hints. If “No snapshot”, the engine may be off, the series has no active 15m row yet, " +
-                  "or Kalshi returned no book. On sandbox/draft hosts, TBD or 0.00 bid/ask often means missing books, not a bug in your " +
-                  "rules. Enable/disable assets in Settings; this panel is read-only telemetry."
-                }
-                onClick={() =>
-                  setInfoPopup({
-                    title: "Assets to watch",
+              <div className="dashboard-grid-panel__assets-watch-actions">
+                <div
+                  className="chart-tabs dashboard-grid-panel__assets-watch-tail-tabs"
+                  role="tablist"
+                  aria-label="Lab E and child slots (same branch as snapshots)"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={assetWatchLab === "e"}
+                    className={`chart-tab ${assetWatchLab === "e" ? "chart-tab--active" : ""}`}
+                    title="Per-asset engine snapshot for Lab E."
+                    onClick={() => setAssetWatchLab("e")}
+                  >
+                    Lab E
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={assetWatchLab === "children"}
+                    className={`chart-tab ${assetWatchLab === "children" ? "chart-tab--active" : ""}`}
+                    title="Open sim exposure summed across lab_child_1…6 for this asset."
+                    onClick={() => setAssetWatchLab("children")}
+                  >
+                    Child slots
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="primary dash-panel-btn"
+                  title="Open capped Recent signals, Recent trades, and Bets not traded for the branch selected below (Live–Child slots)."
+                  onClick={() => setAssetWatchActivityOverlayOpen(true)}
+                >
+                  Activity
+                </button>
+                <button
+                  type="button"
+                  className="primary dash-panel-btn dash-panel-btn--info"
+                  title={
+                    "Per-asset engine snapshot cards: Live vs Lab A–E select which branch’s last tick view you read; config is unchanged. " +
+                    "Rows are ordered (e.g. BTC before ETH, then A–Z). Each card shows what the scanner saw for that series: implied, " +
+                    "window, target, and open-sim hints. If “No snapshot”, the engine may be off, the series has no active 15m row yet, " +
+                    "or Kalshi returned no book. On sandbox/draft hosts, TBD or 0.00 bid/ask often means missing books, not a bug in your " +
+                    "rules. Enable/disable assets in Settings; this panel is read-only telemetry. Use Activity (left) for signal/trade rows."
+                  }
+                  onClick={() =>
+                    setInfoPopup({
+                      title: "Assets to watch",
                     body: (
                       <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
                         <p>
                           <strong>Purpose.</strong> This grid is a <em>telemetry heat map</em> of what the engine last knew about each
-                          configured asset (BTC, ETH, …) for a <em>single branch at a time</em> (Live, Lab A, Lab B, Lab C, Lab D). It
+                          configured asset (BTC, ETH, …) for a <em>single branch at a time</em> (Live, Labs A–E, Child slots). It
                           answers: “Is there a current 15-minute (or configured) market row? What were the mids or implieds? Are we
                           blocked from new entries in this series because of an open sim?” It does <strong>not</strong> edit rules;
                           it reflects the product of config + engine + Kalshi feed.
                         </p>
                         <p>
-                          <strong>Branch tabs vs config.</strong> Switching Live / Lab A / Lab B / Lab C / Lab D only swaps which
+                          <strong>Branch tabs vs config.</strong> Switching Live through Labs A–E / Child slots only swaps which
                           branch’s <code>asset_snapshots</code> (or equivalent) object the UI reads from the dashboard payload. Your
                           SQLite config and environment files are untouched. If two branches show different numbers, that is expected:
                           they may have different paper positions, different rule packs, or different last-tick times.
@@ -7725,11 +7870,11 @@ export default function App() {
                           or shown as inactive—check Settings for the authoritative flag; the UI may still show a stub for visibility.
                         </p>
                         <p>
-                          <strong>“No snapshot” and empty fields.</strong> Common causes: branch engine toggled off for that run; Kalshi
-                          API rate limit or outage; no market row in the series for the current clock; first tick after startup not
-                          completed yet. Distinguish “no data yet” from “data is zero”—read the Engine section under Account for{" "}
-                          <code>last_tick_at</code> and error strings. If <code>last_tick</code> is fresh but the card is empty, the
-                          series might not have a tradable row in this environment.
+                          <strong>“No snapshot” and empty fields.</strong> Common causes: Live engine off in Settings; Kalshi API rate
+                          limit or outage; no market row in the series for the current clock; first tick after startup not completed
+                          yet. Distinguish “no data yet” from “data is zero”—refresh the dashboard and check server logs if it
+                          persists. If snapshots update elsewhere but the card is empty, the series might not have a tradable row in
+                          this environment.
                         </p>
                         <p>
                           <strong>Non-production and draft Kalshi hosts.</strong> Sandbox and internal hosts often show{" "}
@@ -7738,8 +7883,8 @@ export default function App() {
                           markets or verify on the official site. The yellow “non-production feed” banner (if present) calls this out.
                         </p>
                         <p>
-                          <strong>How this ties to trades and skips.</strong> If a card shows an open sim or a series lock, cross-check
-                          Activity log and “Bets not traded” for <code>series_has_open_sim</code> or similar. If implieds look
+                          <strong>How this ties to trades and skips.</strong> If a card shows an open sim or a series lock, cross-check{" "}
+                          <strong>Activity</strong> (overlay → “Bets not traded”) for <code>series_has_open_sim</code> or similar. If implieds look
                           nonsensical (e.g. 0% or 100% with no book), the engine may still skip entries for safety. Use Optimizer Lab
                           pulse for the same tick’s narrative; use Branch performance for money impact, not this panel.
                         </p>
@@ -7756,6 +7901,7 @@ export default function App() {
               >
                 Info
               </button>
+              </div>
             </div>
             <div
               className="chart-tabs dashboard-grid-panel__tabs"
@@ -7812,26 +7958,6 @@ export default function App() {
                 onClick={() => setAssetWatchLab("d")}
               >
                 Lab D
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "e"}
-                className={`chart-tab ${assetWatchLab === "e" ? "chart-tab--active" : ""}`}
-                title="Per-asset engine snapshot for Lab E."
-                onClick={() => setAssetWatchLab("e")}
-              >
-                Lab E
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={assetWatchLab === "children"}
-                className={`chart-tab ${assetWatchLab === "children" ? "chart-tab--active" : ""}`}
-                title="Open sim exposure summed across lab_child_1…6 for this asset."
-                onClick={() => setAssetWatchLab("children")}
-              >
-                Child slots
               </button>
             </div>
           </div>
@@ -7931,68 +8057,40 @@ export default function App() {
                             engineOn={Boolean(cfg.engine_running)}
                           />
                         ) : assetWatchLab === "a" ? (
-                          labABranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab A"
-                              snap={engineSnapsLabA[id]}
-                              lastTick={engineLabA?.last_tick_at}
-                              engineOn={labABranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab A on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab A</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
+                          <EngineAssetSnapBlock
+                            label="Sim · Lab A"
+                            snap={engineSnapsLabA[id]}
+                            lastTick={engineLabA?.last_tick_at}
+                            engineOn
+                          />
                         ) : assetWatchLab === "b" ? (
-                          labBBranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab B"
-                              snap={engineSnapsLabB[id]}
-                              lastTick={engineLabB?.last_tick_at}
-                              engineOn={labBBranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab B on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab B</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
+                          <EngineAssetSnapBlock
+                            label="Sim · Lab B"
+                            snap={engineSnapsLabB[id]}
+                            lastTick={engineLabB?.last_tick_at}
+                            engineOn
+                          />
                         ) : assetWatchLab === "c" ? (
-                          labCBranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab C"
-                              snap={engineSnapsLabC[id]}
-                              lastTick={engineLabC?.last_tick_at}
-                              engineOn={labCBranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab C on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab C</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
+                          <EngineAssetSnapBlock
+                            label="Sim · Lab C"
+                            snap={engineSnapsLabC[id]}
+                            lastTick={engineLabC?.last_tick_at}
+                            engineOn
+                          />
                         ) : assetWatchLab === "d" ? (
-                          labDBranchEngineOn ? (
-                            <EngineAssetSnapBlock
-                              label="Sim · Lab D"
-                              snap={engineSnapsLabD[id]}
-                              lastTick={engineLabD?.last_tick_at}
-                              engineOn={labDBranchEngineOn}
-                            />
-                          ) : (
-                            <div className="sub" style={{ fontSize: 12 }} title="Turn Lab D on in the toolbar to populate lab snapshots.">
-                              <strong>Sim · Lab D</strong> — engine off (no snapshot for this series).
-                            </div>
-                          )
-                        ) : labEBranchEngineOn ? (
+                          <EngineAssetSnapBlock
+                            label="Sim · Lab D"
+                            snap={engineSnapsLabD[id]}
+                            lastTick={engineLabD?.last_tick_at}
+                            engineOn
+                          />
+                        ) : (
                           <EngineAssetSnapBlock
                             label="Sim · Lab E"
                             snap={engineSnapsLabE[id]}
                             lastTick={engineLabE?.last_tick_at}
-                            engineOn={labEBranchEngineOn}
+                            engineOn
                           />
-                        ) : (
-                          <div className="sub" style={{ fontSize: 12 }} title="Turn Lab E on in Settings to populate lab snapshots.">
-                            <strong>Sim · Lab E</strong> — engine off (no snapshot for this series).
-                          </div>
                         )}
                         <OpenExposureLinesForWatch
                           rows={openRowsTab}
@@ -8107,7 +8205,7 @@ export default function App() {
                         </p>
                         <p>
                           <strong>How to work with the rest of the UI.</strong> After a trade, expect dashed to move first, solid to move on
-                          fill/settlement. Use Activity log for the exact event order. Use Account holdings for per-asset exposure, not
+                          fill/settlement. Use <strong>Assets → Activity</strong> for the exact event order. Use Account holdings for per-asset exposure, not
                           the chart’s y-axis, when reconciling. Use Branch performance for headline settled/realized numbers in dollars;
                           use Equity curves for path and stress shape.
                         </p>
@@ -8415,7 +8513,7 @@ export default function App() {
                 className="primary dash-panel-btn dash-panel-btn--info"
                 title={
                   "Account: signed balance/positions when API keys are set; otherwise public market data only. Holdings: Kalshi open vs " +
-                  "per-branch sim columns. Engine strip = dashboard poll, not the exchange. Credentials: KALSHI_API_KEY_ID + private key in " +
+                  "per-branch sim columns. Credentials: KALSHI_API_KEY_ID + private key in " +
                   "backend .env, restart API. Glossary: market lines = tickers; contracts = YES/NO size. " +
                   "Throttled Optimizer toasts and optional trade toasts use the same bottom-right stack (see All tab in Settings for trade toggle)."
                 }
@@ -8462,22 +8560,14 @@ export default function App() {
                           you control should.
                         </p>
                         <p>
-                          <strong>How this pairs with the Engine strip below.</strong> The Engine subsection shows, for the{" "}
-                          <em>same</em> branch tab, whether that branch’s engine loop is on, last tick time, and scan breadth. A
-                          healthy <code>last_tick_at</code> with linked Kalshi and strange holdings usually means a logic issue; a very
-                          old tick means you are staring at static UI while the world moved—refresh dashboard or restart the process
-                          on the host. Engine “simulate orders” on Live in sim mode is expected; in Real $ it should reflect
-                          real posting when rules fire.
-                        </p>
-                        <p>
                           <strong>Privacy and scope.</strong> All numbers here are whatever your backend fetches. If you self-host, you
                           are the custodian. If you use a shared binary, know that the same data appears in logs; treat API keys and
-                          screenshots as secret. The Activity log and trade JSONL on disk are separate but related—delete old logs on
+                          screenshots as secret. The Activity overlay and trade JSONL on disk are separate but related—delete old logs on
                           shared machines.
                         </p>
                         <p>
                           <strong>Reconciliation workflow.</strong> (1) Confirm badge linked. (2) Match one open position in Kalshi UI
-                          to a row in this table. (3) For each branch, check sim column vs Activity log. (4) If Branch performance PnL
+                          to a row in this table. (3) For each branch, check sim column vs Assets → Activity overlay. (4) If Branch performance PnL
                           disagrees, trace settled trades, not this snapshot alone—this is exposure, not full PnL.
                         </p>
                       </div>
@@ -8628,301 +8718,6 @@ export default function App() {
             )}
           </div>
 
-          <div className="account-section-box account-section-box--activity" style={{ marginTop: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <h3
-                className="section-tip"
-                style={{ margin: 0, fontSize: 16 }}
-                title="Structured signal and trade rows from SQLite (capped). Long Optimizer suggested-action text is not stored here—use bottom-right toasts and Settings → trace."
-              >
-                Activity log
-              </h3>
-              <button
-                type="button"
-                className="primary dash-panel-btn dash-panel-btn--info"
-                title={
-                  "Capped signal + trade history; Live/Lab tabs filter rows (legacy sim_lab → Lab A). “Bets not traded” uses separate branch pickers. " +
-                  "Not shown: optimizer suggested_action as toasts (bottom-right, throttled). Timestamps = log order; pair with JSONL for forensics."
-                }
-                onClick={() =>
-                  setInfoPopup({
-                    title: "Activity log",
-                    body: (
-                      <div className="dash-section__legend" style={{ fontSize: 13, lineHeight: 1.55 }}>
-                        <p>
-                          <strong>What this is.</strong> The Activity log is a read-only, reverse-chronological view of the bot’s
-                          recent <strong>signals</strong> (rule evaluations and intent) and <strong>trades</strong> (rows the engine
-                          created or the exchange returned, depending on mode). The backend reads SQLite (and sometimes hydrates
-                          with Kalshi) and returns a bounded list so the UI stays snappy. It is the first place to look after “why
-                          did / didn’t a trade land?”
-                        </p>
-                        <p>
-                          <strong>Optimizer suggested text is different.</strong> When the server sets{" "}
-                          <code>optimizer_suggested_action</code>, the dashboard surfaces it as <strong>throttled toasts</strong> in the
-                          bottom-right stack (not as rows in this table). Use the Optimizer card, toasts, and{" "}
-                          <strong>Settings → Internal Optimizer Trace</strong> for that workflow.
-                        </p>
-                        <p>
-                          <strong>Limits and truncation.</strong> The API typically caps each stream (for example, the last 500
-                          signals and 500 trades <em>combined across branches in the response shape you have</em>—treat the exact
-                          number as implementation detail). If you do not see an old fill, it may have rolled off; check on-disk
-                          JSONL in <code>data/logs</code> or run SQL against the local DB. Truncation is normal for long runs.
-                        </p>
-                        <p>
-                          <strong>Branch tabs (Live, Lab A, Lab B, Lab C, Lab D) for “Recent” tables.</strong> These tabs are a
-                          <em>row filter on the in-memory list</em>. Only rows whose <code>branch</code> (or historical{" "}
-                          <code>sim_lab</code> for Lab A) match are shown. Switching tabs does not refetch; it re-slices. If you
-                          expect a Lab C row and see nothing, either the event never had <code>branch=lab_c</code> or it fell out
-                          of the cap, not because the filter is broken.
-                        </p>
-                        <p>
-                          <strong>Legacy <code>sim_lab</code>.</strong> Older rows may only carry a generic lab bit; the UI still
-                          maps them into the Lab A bucket for display consistency. When correlating to SQLite, use ids and
-                          market tickers, not only the human label in the first column.
-                        </p>
-                        <p>
-                          <strong>“Bets not traded” (separate card below).</strong> That block is its <em>own</em> branch filter and
-                          query path: it lists situations where a rule pattern matched the market state but the engine did not
-                          place an order—risk caps, <code>series_has_open_sim</code>, time-to-close, fee floors, or hard skips.
-                          Do not expect that tab to match the count of the ordinary signals tab: different semantics entirely.
-                        </p>
-                        <p>
-                          <strong>Interpreting columns.</strong> You will see rule names, market tickers, side, notional, skip
-                          reason codes, and engine timestamps. A row with <em>no</em> trade in the “Trades” sub-tab is expected when
-                          the log line was a pure signal. A trade row with <code>error</code> or empty exchange id in Live mode
-                          requires cross-checking Kalshi; in paper, check SQLite for duplicate sims or post failures. Color and
-                          badges, if any, follow the table component— they are not legal settlement records.
-                        </p>
-                        <p>
-                          <strong>When things look out of order.</strong> (1) Clock skew: server logs use UTC/ISO; your browser
-                          localizes. (2) Batch latency: a signal may preface a trade by seconds. (3) Engine off: you may only see
-                          stale items until tick resumes. (4) Multi-branch tests: the same market can produce five rows; always read
-                          the branch column. (5) Compare to Optimizer Lab pulse: narrative vs structured rows here.
-                        </p>
-                        <p>
-                          <strong>Operational use.</strong> (1) Debug skips before changing rules. (2) After deploy, verify a single
-                          expected fill path end-to-end. (3) Before promoting Lab A, scan all labs’ activity for unintended live-only
-                          paths. (4) If support asks for “logs”, export the JSONL plus a screenshot of this table with branch visible.
-                        </p>
-                        <p style={{ fontSize: 12, color: "#9aa6cc", marginTop: 8 }}>
-                          <strong>Reminder.</strong> Recent signals and recent trades (above) use the branch tab in this header.{" "}
-                          <strong>Bets not traded</strong> uses a separate set of branch tabs in its own sub-panel; keep both
-                          consistent when you are debugging a single market.
-                        </p>
-                      </div>
-                    ),
-                  })
-                }
-              >
-                Info
-              </button>
-            </div>
-            <div className="account-activity-fill account-section-scroll account-section-scroll--activity" style={{ marginTop: 10 }}>
-              <div className="account-activity-sticky-head">
-                <div className="chart-tabs" role="tablist" aria-label="Account activity view" style={{ marginBottom: 10 }}>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={accountActivityView === "signals"}
-                    className={`chart-tab ${accountActivityView === "signals" ? "chart-tab--active" : ""}`}
-                    onClick={() => setAccountActivityView("signals")}
-                  >
-                    Recent signals
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={accountActivityView === "trades"}
-                    className={`chart-tab ${accountActivityView === "trades" ? "chart-tab--active" : ""}`}
-                    onClick={() => setAccountActivityView("trades")}
-                  >
-                    Recent trades
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={accountActivityView === "not_traded"}
-                    className={`chart-tab ${accountActivityView === "not_traded" ? "chart-tab--active" : ""}`}
-                    onClick={() => setAccountActivityView("not_traded")}
-                  >
-                    Bets not traded
-                  </button>
-                </div>
-                <p className="sub section-tip" style={{ margin: "0 0 10px 0", fontSize: 12, lineHeight: 1.45 }}>
-                  Showing <strong>{activityBranchTabLabel(accountActivityBranch)}</strong> only (follows Account branch tabs).
-                </p>
-              </div>
-              <div className="account-activity-scroll-content">
-
-              {accountActivityView === "signals" ? (
-                <div className="panel account-activity-tab-panel">
-                  <h3
-                    className="section-tip"
-                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
-                    title="SQLite log when the engine evaluates a logged path (sizing, sim fill, live order attempt). Most silent skips are not rows here - use tick log and asset snapshots."
-                  >
-                    Recent signals — {activityBranchTabLabel(accountActivityBranch)}
-                  </h3>
-                  <SignalsTable
-                    rows={recentSignalsFiltered}
-                    emptyTitle={`No signals for ${activityBranchTabLabel(accountActivityBranch)} yet.`}
-                  />
-                  <ActivityHints
-                    kind="signals"
-                    dash={dash}
-                    cfg={cfg}
-                    simLab={simLab}
-                    activityBranch={accountActivityBranch}
-                    branchRowCount={recentSignalsFiltered.length}
-                    totalRowCount={(dash?.recent_signals || []).length}
-                  />
-                </div>
-              ) : null}
-
-              {accountActivityView === "trades" ? (
-                <div className="panel account-activity-tab-panel">
-                  <h3
-                    className="section-tip"
-                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
-                    title="Fills and simulated orders from the engine for the selected branch."
-                  >
-                    Recent trades — {activityBranchTabLabel(accountActivityBranch)}
-                  </h3>
-                  <TradesTable
-                    rows={recentTradesFiltered}
-                    emptyTitle={`No trades for ${activityBranchTabLabel(accountActivityBranch)} yet.`}
-                  />
-                  <ActivityHints
-                    kind="trades"
-                    dash={dash}
-                    cfg={cfg}
-                    simLab={simLab}
-                    activityBranch={accountActivityBranch}
-                    branchRowCount={recentTradesFiltered.length}
-                    totalRowCount={(dash?.recent_trades || []).length}
-                  />
-                </div>
-              ) : null}
-
-              {accountActivityView === "not_traded" ? (
-                <div className="panel account-activity-tab-panel">
-                  <h3
-                    className="section-tip"
-                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
-                    title="Subset of signals where a rule matched but execution did not run (for selected branch)."
-                  >
-                    Bets not traded — {activityBranchTabLabel(accountActivityBranch)}
-                  </h3>
-                  <SignalsTable
-                    rows={notTradedFiltered}
-                    emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(accountActivityBranch)} yet.`}
-                  />
-                  <ActivityHints
-                    kind="not_traded"
-                    dash={dash}
-                    cfg={cfg}
-                    simLab={simLab}
-                    activityBranch={accountActivityBranch}
-                    branchRowCount={notTradedFiltered.length}
-                    totalRowCount={(dash?.not_traded_signals || []).length}
-                    totalSignalsCount={(dash?.recent_signals || []).length}
-                  />
-                </div>
-              ) : null}
-              </div>
-            </div>
-          </div>
-
-          <div className="account-section-box" style={{ marginTop: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <h3 className="section-tip" style={{ margin: 0, fontSize: 16 }} title="Branch engine status for the selected account tab.">
-                Engine
-              </h3>
-            </div>
-            <div className="sub account-section-scroll account-section-scroll--engine" style={{ marginTop: 10 }} title="Engine polling status from /api/dashboard.">
-              {(() => {
-                const selectedIsLive = holdingsBranchTab === "live";
-                const label = dashboardLabLetterTabLabel(holdingsBranchTab);
-                if (holdingsBranchTab === "children") {
-                  const on = cfgLabChildSlotAnyEngineOn(cfg as AnyObj);
-                  return (
-                    <>
-                      <div title="Child slots use Settings → lab_child_1…6 engines (breeder assigns genomes).">
-                        <strong>{label}</strong> — child slots {on ? "≥1 engine on" : "all off"} · trades log as{" "}
-                        <code>lab_child_N</code>; Activity filter <strong>Child slots</strong> groups them. Tick traces are per slot (not merged here).
-                      </div>
-                    </>
-                  );
-                }
-                const engineObj =
-                  holdingsBranchTab === "live"
-                    ? (dash?.engine?.live as AnyObj | undefined)
-                    : holdingsBranchTab === "a"
-                      ? engineLabA
-                      : holdingsBranchTab === "b"
-                        ? engineLabB
-                        : holdingsBranchTab === "c"
-                          ? engineLabC
-                          : holdingsBranchTab === "d"
-                            ? engineLabD
-                            : engineLabE;
-                const on =
-                  holdingsBranchTab === "live"
-                    ? Boolean(dash?.engine?.live?.engine_running)
-                    : holdingsBranchTab === "a"
-                      ? labABranchEngineOn
-                      : holdingsBranchTab === "b"
-                        ? labBBranchEngineOn
-                        : holdingsBranchTab === "c"
-                          ? labCBranchEngineOn
-                          : holdingsBranchTab === "d"
-                            ? labDBranchEngineOn
-                            : labEBranchEngineOn;
-                const lastTick = engineObj?.last_tick_at;
-                const scanned = engineObj?.markets_scanned;
-                const errRaw = String(engineObj?.last_error || "");
-                const errAnn = annotateEngineLastErrorForUi(errRaw);
-                return (
-                  <>
-                    <div title={`${label} branch engine status from /api/dashboard.`}>
-                      <strong>{label}</strong> engine {on ? "on" : "off"} ·{" "}
-                      {selectedIsLive
-                        ? `orders ${dash?.engine?.live?.simulate_orders ? "simulated (paper)" : "real limit posts"}`
-                        : "always simulated"}{" "}
-                      · last tick: {lastTick ? fmtIsoLocal(String(lastTick)) : "—"} · scanned {String(scanned ?? "—")}
-                    </div>
-                    {errAnn.text ? (
-                      <div
-                        className="error"
-                        style={{ marginTop: 6 }}
-                        title={errAnn.title || `Last ${label} engine error string.`}
-                      >
-                        {label}: {errAnn.text}
-                      </div>
-                    ) : null}
-                  </>
-                );
-              })()}
-              <EngineTickTrace
-                title={`${dashboardLabLetterTabLabel(holdingsBranchTab)} — last tick log`}
-                lines={
-                  holdingsBranchTab === "children"
-                    ? undefined
-                    : holdingsBranchTab === "live"
-                      ? dash?.engine?.live?.last_tick_trace
-                      : holdingsBranchTab === "a"
-                        ? engineLabA?.last_tick_trace
-                        : holdingsBranchTab === "b"
-                          ? engineLabB?.last_tick_trace
-                          : holdingsBranchTab === "c"
-                            ? engineLabC?.last_tick_trace
-                            : holdingsBranchTab === "d"
-                              ? engineLabD?.last_tick_trace
-                              : engineLabE?.last_tick_trace
-                }
-              />
-            </div>
-          </div>
           </div>
         </div>
       </div>
@@ -8970,16 +8765,6 @@ export default function App() {
         onFetchBreederSmartDefaults={fetchBreederSmartDefaults}
         liveEngineOn={liveBranchEngineOn}
         onToggleLive={() => void setRunning(!liveBranchEngineOn)}
-        labEngineAOn={labABranchEngineOn}
-        labEngineBOn={labBBranchEngineOn}
-        labEngineCOn={labCBranchEngineOn}
-        labEngineDOn={labDBranchEngineOn}
-        labEngineEOn={labEBranchEngineOn}
-        onToggleLabA={() => void setSimLabRunning(!labABranchEngineOn)}
-        onToggleLabB={() => void setLabRunning("b", !labBBranchEngineOn)}
-        onToggleLabC={() => void setLabRunning("c", !labCBranchEngineOn)}
-        onToggleLabD={() => void setLabRunning("d", !labDBranchEngineOn)}
-        onToggleLabE={() => void setLabRunning("e", !labEBranchEngineOn)}
         onAddAllLabsPaper={() => void addAllLabsPaperBankroll()}
         onRefresh={() => void refresh({ force: true })}
         onOpenHistory={() => setHistoryOpen(true)}
@@ -9383,6 +9168,158 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {assetWatchActivityOverlayOpen ? (
+        <div
+          className="settings-overlay-root settings-overlay-root--asset-watch-activity"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dash-asset-watch-activity-title"
+        >
+          <div
+            className="settings-overlay-backdrop"
+            onClick={() => setAssetWatchActivityOverlayOpen(false)}
+            aria-hidden="true"
+          />
+          <div
+            className="settings-overlay-panel settings-overlay-panel--asset-watch-activity"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="settings-overlay-header" style={{ alignItems: "flex-start" }}>
+              <div style={{ minWidth: 0 }}>
+                <h2 id="dash-asset-watch-activity-title" style={{ margin: 0 }}>
+                  Activity log
+                </h2>
+                <p className="sub asset-watch-activity-overlay__sub" style={{ margin: "8px 0 0", maxWidth: 560 }}>
+                  Showing <strong>{activityBranchTabLabel(assetWatchActivityBranch)}</strong> — same branch as{" "}
+                  <strong>Assets to watch</strong> (Live through Child slots). Change tabs there while this stays open to refocus rows.
+                </p>
+              </div>
+              <div style={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  className="primary dash-panel-btn dash-panel-btn--info"
+                  title="What Recent signals / Recent trades / Bets not traded mean, caps, and how branches filter."
+                  onClick={() => setInfoPopup({ title: "Activity log", body: assetWatchActivityHelpBody() })}
+                >
+                  Info
+                </button>
+                <button
+                  type="button"
+                  className="settings-overlay-close"
+                  onClick={() => setAssetWatchActivityOverlayOpen(false)}
+                  aria-label="Close activity log"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="chart-tabs asset-watch-activity-overlay__tabs" role="tablist" aria-label="Activity view">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={accountActivityView === "signals"}
+                className={`chart-tab ${accountActivityView === "signals" ? "chart-tab--active" : ""}`}
+                onClick={() => setAccountActivityView("signals")}
+              >
+                Recent signals
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={accountActivityView === "trades"}
+                className={`chart-tab ${accountActivityView === "trades" ? "chart-tab--active" : ""}`}
+                onClick={() => setAccountActivityView("trades")}
+              >
+                Recent trades
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={accountActivityView === "not_traded"}
+                className={`chart-tab ${accountActivityView === "not_traded" ? "chart-tab--active" : ""}`}
+                onClick={() => setAccountActivityView("not_traded")}
+              >
+                Bets not traded
+              </button>
+            </div>
+            <div className="asset-watch-activity-overlay__body">
+              {accountActivityView === "signals" ? (
+                <div className="panel account-activity-tab-panel">
+                  <h3
+                    className="section-tip"
+                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
+                    title="SQLite log when the engine evaluates a logged path (sizing, sim fill, live order attempt). Most silent skips are not rows here - use tick log and asset snapshots."
+                  >
+                    Recent signals — {activityBranchTabLabel(assetWatchActivityBranch)}
+                  </h3>
+                  <SignalsTable
+                    rows={recentSignalsFiltered}
+                    emptyTitle={`No signals for ${activityBranchTabLabel(assetWatchActivityBranch)} yet.`}
+                  />
+                  <ActivityHints
+                    kind="signals"
+                    dash={dash}
+                    cfg={cfg}
+                    simLab={simLab}
+                    activityBranch={assetWatchActivityBranch}
+                    branchRowCount={recentSignalsFiltered.length}
+                    totalRowCount={(dash?.recent_signals || []).length}
+                  />
+                </div>
+              ) : null}
+              {accountActivityView === "trades" ? (
+                <div className="panel account-activity-tab-panel">
+                  <h3
+                    className="section-tip"
+                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
+                    title="Fills and simulated orders from the engine for the selected branch."
+                  >
+                    Recent trades — {activityBranchTabLabel(assetWatchActivityBranch)}
+                  </h3>
+                  <TradesTable
+                    rows={recentTradesFiltered}
+                    emptyTitle={`No trades for ${activityBranchTabLabel(assetWatchActivityBranch)} yet.`}
+                  />
+                  <ActivityHints
+                    kind="trades"
+                    dash={dash}
+                    cfg={cfg}
+                    simLab={simLab}
+                    activityBranch={assetWatchActivityBranch}
+                    branchRowCount={recentTradesFiltered.length}
+                    totalRowCount={(dash?.recent_trades || []).length}
+                  />
+                </div>
+              ) : null}
+              {accountActivityView === "not_traded" ? (
+                <div className="panel account-activity-tab-panel">
+                  <h3
+                    className="section-tip"
+                    style={{ marginTop: 0, marginBottom: 10, fontSize: 14, color: "var(--text)" }}
+                    title="Subset of signals where a rule matched but execution did not run (for selected branch)."
+                  >
+                    Bets not traded — {activityBranchTabLabel(assetWatchActivityBranch)}
+                  </h3>
+                  <SignalsTable
+                    rows={notTradedFiltered}
+                    emptyTitle={`No matched-but-not-executed signals for ${activityBranchTabLabel(assetWatchActivityBranch)} yet.`}
+                  />
+                  <ActivityHints
+                    kind="not_traded"
+                    dash={dash}
+                    cfg={cfg}
+                    simLab={simLab}
+                    activityBranch={assetWatchActivityBranch}
+                    branchRowCount={notTradedFiltered.length}
+                    totalRowCount={(dash?.not_traded_signals || []).length}
+                    totalSignalsCount={(dash?.recent_signals || []).length}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {infoPopup ? (
         <div
           role="dialog"
@@ -9448,13 +9385,6 @@ function ActivityHints({
   if (branchRowCount > 0) return null;
 
   const liveOn = Boolean(cfg.engine_running);
-  const labAOn = coerceParentLabEngineRunning(
-    dash?.engine?.lab_a?.engine_running ?? dash?.engine?.sim_lab?.engine_running ?? simLab.engine_running,
-  );
-  const labBOn = coerceParentLabEngineRunning(dash?.engine?.lab_b?.engine_running ?? (cfg.lab_b as AnyObj | undefined)?.engine_running);
-  const labCOn = coerceParentLabEngineRunning(dash?.engine?.lab_c?.engine_running ?? (cfg.lab_c as AnyObj | undefined)?.engine_running);
-  const labDOn = coerceParentLabEngineRunning(dash?.engine?.lab_d?.engine_running ?? (cfg.lab_d as AnyObj | undefined)?.engine_running);
-  const labEOn = coerceParentLabEngineRunning(dash?.engine?.lab_e?.engine_running ?? (cfg.lab_e as AnyObj | undefined)?.engine_running);
   const liveTick = dash?.engine?.live?.last_tick_at;
   const labATick = dash?.engine?.lab_a?.last_tick_at ?? dash?.engine?.sim_lab?.last_tick_at;
   const labBTick = dash?.engine?.lab_b?.last_tick_at;
@@ -9500,19 +9430,11 @@ function ActivityHints({
     const needE = activityBranch === "lab_e";
     const needChildren = activityBranch === "lab_children";
     const labChildrenSlotsOn = cfgLabChildSlotAnyEngineOn(cfg);
-    if (
-      (needLive && !liveOn) ||
-      (needA && !labAOn) ||
-      (needB && !labBOn) ||
-      (needC && !labCOn) ||
-      (needD && !labDOn) ||
-      (needE && !labEOn) ||
-      (needChildren && !labChildrenSlotsOn)
-    ) {
+    if ((needLive && !liveOn) || (needChildren && !labChildrenSlotsOn)) {
       lines.push(
         needChildren
-          ? `Turn on at least one child slot engine (Settings → lab_child_1…6) — otherwise those rows stay idle.`
-          : `Turn the ${branchName} engine on in the toolbar — otherwise this branch’s ticks (and rows) stay idle.`,
+          ? `No lab_child_* blocks in config yet — Optimizer breeding seeds slots under Settings.`
+          : `Turn the Live engine on in Settings — otherwise Live ticks (and rows) stay idle.`,
       );
     } else {
       if (needLive && liveOn) {
@@ -9520,27 +9442,27 @@ function ActivityHints({
           `Live last tick: ${liveTick ? fmtIsoLocal(String(liveTick)) : "—"} · markets scanned: ${scannedLive ?? "—"}.`,
         );
       }
-      if (needA && labAOn) {
+      if (needA) {
         lines.push(
           `Lab A last tick: ${labATick ? fmtIsoLocal(String(labATick)) : "—"} · markets scanned: ${scannedLabA ?? "—"}.`,
         );
       }
-      if (needB && labBOn) {
+      if (needB) {
         lines.push(
           `Lab B last tick: ${labBTick ? fmtIsoLocal(String(labBTick)) : "—"} · markets scanned: ${scannedLabB ?? "—"}.`,
         );
       }
-      if (needC && labCOn) {
+      if (needC) {
         lines.push(
           `Lab C last tick: ${labCTick ? fmtIsoLocal(String(labCTick)) : "—"} · markets scanned: ${scannedLabC ?? "—"}.`,
         );
       }
-      if (needD && labDOn) {
+      if (needD) {
         lines.push(
           `Lab D last tick: ${labDTick ? fmtIsoLocal(String(labDTick)) : "—"} · markets scanned: ${scannedLabD ?? "—"}.`,
         );
       }
-      if (needE && labEOn) {
+      if (needE) {
         lines.push(
           `Lab E last tick: ${labETick ? fmtIsoLocal(String(labETick)) : "—"} · markets scanned: ${scannedLabE ?? "—"}.`,
         );
@@ -9672,44 +9594,6 @@ function DashboardLoadingScreen({
   );
 }
 
-function EngineTickTrace({ title, lines }: { title: string; lines: unknown }) {
-  const arr = Array.isArray(lines) ? (lines as string[]) : [];
-  if (!arr.length) {
-    return (
-      <div
-        className="sub section-tip"
-        style={{ marginTop: 8, fontSize: 12 }}
-        title={`${title}: turn this engine on and wait for the next poll interval.`}
-      >
-        {title}: no trace yet
-      </div>
-    );
-  }
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>{title}</div>
-      <pre
-        title="Last engine tick log lines (truncated in memory). Scroll for full output."
-        style={{
-          margin: 0,
-          padding: "10px 12px",
-          borderRadius: 8,
-          border: "1px solid var(--border)",
-          background: "#070d1c",
-          fontSize: 11,
-          lineHeight: 1.45,
-          maxHeight: 220,
-          overflow: "auto",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
-        }}
-      >
-        {arr.join("\n")}
-      </pre>
-    </div>
-  );
-}
-
 function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj }) {
   const k = dash?.kalshi as AnyObj | undefined;
   if (!k) return null;
@@ -9739,7 +9623,7 @@ function KalshiStatusBanner({ dash, cfg }: { dash: AnyObj | null; cfg: AnyObj })
   if (!polling && k.public_ok) {
     blocks.push({
       tone: "info",
-      text: "No engine polling yet — turn Live and/or Lab A–E on under Settings → Engines & branches (each branch has its own toggle).",
+      text: "No engine polling yet — turn Live on under Settings → Engines if you expect Live ticks (simulation labs always run).",
       detail:
         "Paper branches only need public Kalshi reachability + engines on; API keys are optional unless you need portfolio link or real fills.",
     });

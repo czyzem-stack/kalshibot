@@ -34,6 +34,32 @@ BRANCH_BREEDERS = (BRANCH_LAB_B, BRANCH_LAB_C, BRANCH_LAB_D, BRANCH_LAB_E)
 LAB_BREEDING_MAX_CHILD_SLOTS = 6
 LAB_BREEDING_INTERNAL_MAX_SLOTS = 10
 
+# --- Labs breeding GA / Lab A adoption (defaults; optimizer JSON may override) ---
+MIN_SETTLED_FOR_ADOPTION_COMPARE = 12
+BREEDING_ELITE_ARCHIVE_CAP = 5
+BREEDING_STAGNATION_VARIANCE_THRESHOLD = 0.015
+"""Population replay-fitness variance below this (across B–E) boosts mutation / third-parent rate."""
+BREEDING_AGGRESSIVENESS_DEFAULT = 0.45
+"""0–1 scaling for tournament exploration vs exploitation (third parent, trait jitter)."""
+MIN_ADOPTION_CONFIDENCE_Z_DEFAULT = 1.5
+"""Required standardized edge vs Lab A pool (σ from visible lab fitness snapshot)."""
+LAB_A_ADOPTION_MULTIMETRIC_MIN_WINS = 4
+"""Child must beat Lab A on at least this many of five headline risk/return metrics."""
+LAB_A_ADOPTION_NO_REGRESS_SHARPE_TOL = 0.08
+LAB_A_ADOPTION_NO_REGRESS_DD_TOL_PCT = 2.0
+BREEDING_ADOPTION_MARGIN_BASE_DEFAULT = 0.04
+BREEDING_VOLATILITY_MARGIN_SCALE_DEFAULT = 0.06
+"""Adds to adoption margin when lab fitness dispersion is high (proxy for regime churn)."""
+
+# Competitive GA trait keys (persisted under ``_labs_breeding_traits`` on lab dicts).
+LAB_BREEDING_TRAIT_KEYS: tuple[str, ...] = (
+    "aggressiveness",
+    "risk_tolerance",
+    "adaptivity",
+    "exploration",
+    "resilience",
+)
+
 # Protected flag: when True, the Live engine uses paper / simulated order flow. Canonical JSON key;
 # `simulate` is still written for backward compatibility and mirrors this value.
 LIVE_PAPER_TRADING_KEY = "live_paper_trading"
@@ -135,12 +161,11 @@ def fleet_visible_paper_start_cents(full_cfg: dict[str, Any]) -> int:
 
 def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
     """
-    Paper **book / MTM** baseline for a branch — must match the dashboard rollups
-    (``_enrich_strategy_metrics`` / ``_refresh_paper_mtm_from_marks``).
+    Configured **paper bankroll** (cents) used for book equity, SQLite snapshots, and MTM tiles.
 
-    When ``paper_lifetime_basis_cents`` is set on a lab (re-seeds / auto-reset), that cumulative
-    basis is used so chart snapshots and the intraday tail do not diverge from tiles.
-    Otherwise falls back to per-lab ``paper_balance_cents`` or the global default.
+    Always follows per-lab ``paper_balance_cents`` (then global ``paper_balance_cents`` / default).
+    ``paper_lifetime_basis_cents`` is **not** included here — that field is cumulative capital for
+    audit / auto-reset bust logic only (see ``lab_paper_cumulative_basis_cents``).
     """
     lab_key = _lab_key_for_branch(branch)
     if lab_key is None:
@@ -149,12 +174,6 @@ def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
         except (TypeError, ValueError):
             return 500_000
     lab = full_cfg.get(lab_key) if isinstance(full_cfg.get(lab_key), dict) else {}
-    lt = lab.get("paper_lifetime_basis_cents")
-    if lt is not None:
-        try:
-            return max(0, int(lt))
-        except (TypeError, ValueError):
-            pass
     try:
         return max(
             0,
@@ -166,6 +185,27 @@ def lab_paper_equity_start_cents(full_cfg: dict[str, Any], branch: str) -> int:
         )
     except (TypeError, ValueError):
         return 500_000
+
+
+def lab_paper_cumulative_basis_cents(full_cfg: dict[str, Any], branch: str) -> int:
+    """
+    Cumulative paper basis when ``paper_lifetime_basis_cents`` is set (auto-reset / re-seed tracking).
+
+    Used only for **auto-reset bust** comparisons so a lab is not wiped while still solvent on
+    cumulative capital even if the current ``paper_balance_cents`` seed is small. Dashboard book,
+    charts, and ``snapshot_equity`` use ``lab_paper_equity_start_cents`` (configured bankroll only).
+    """
+    lab_key = _lab_key_for_branch(branch)
+    if lab_key is None:
+        return lab_paper_equity_start_cents(full_cfg, branch)
+    lab = full_cfg.get(lab_key) if isinstance(full_cfg.get(lab_key), dict) else {}
+    lt = lab.get("paper_lifetime_basis_cents")
+    if lt is not None:
+        try:
+            return max(0, int(lt))
+        except (TypeError, ValueError):
+            pass
+    return lab_paper_equity_start_cents(full_cfg, branch)
 
 
 def pulse_effective_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]:
@@ -212,14 +252,12 @@ def effective_parent_lab_engine_running(
     lab: dict[str, Any] | None, lab_key: str
 ) -> bool:
     """
-    Parent lab ``lab_a``…``lab_e`` engines.
+    Parent labs ``lab_a``…``lab_e`` always tick when the branch block exists.
 
-    A **missing** ``engine_running`` defaults **on** for every parent lab (matches ``default_bot_config`` breeders + staging).
-    Set ``engine_running: false`` explicitly to pause a branch.
+    ``engine_running`` is not configurable for simulation labs — it is stripped from persisted ``bot_config``.
     """
-    raw = lab.get("engine_running") if isinstance(lab, dict) else None
-    default_missing = lab_key in BRANCH_LABS
-    return _coerce_engine_running_flag(raw, default_if_missing=default_missing)
+    _ = lab
+    return lab_key in BRANCH_LABS
 
 
 def _coerce_engine_running_flag(
@@ -263,24 +301,14 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
     lab_key = _lab_key_for_branch(branch)
     if lab_key is not None:
         lab = full_cfg.get(lab_key)
-        # Breeding child engines (``lab_child_*``): on by default; only an explicit ``engine_running: false``
-        # (e.g. pool eviction / cleared slot) stops the branch. Parent labs still require ``engine_running``.
+        # Breeding child engines (``lab_child_*``) always run like parent labs; ``engine_running`` is not used.
         if lab_key in BRANCH_CHILD_LABS:
             if not isinstance(lab, dict):
                 lab = {}
-            if not _coerce_engine_running_flag(
-                lab.get("engine_running"), default_if_missing=True
-            ):
-                return None
         elif lab_key in BRANCH_LABS:
-            # Missing or non-dict parent block: treat like an empty overlay so merge matches
-            # ``effective_parent_lab_engine_running`` / dual-loop tick gating (otherwise ``merge_branch_config``
-            # returned None while the branch still looked "on", breaking ``tick_once`` and helpers that did
-            # ``cfg.get`` on the merge result).
+            # Missing or non-dict parent block: treat like an empty overlay (parent labs always run).
             if not isinstance(lab, dict):
                 lab = {}
-            if not effective_parent_lab_engine_running(lab, lab_key):
-                return None
         else:
             return None
         out = dict(full_cfg)
