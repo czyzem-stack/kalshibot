@@ -420,12 +420,14 @@ class BreedingEngine:
         self._apply_competitive_traits(child, traits)
 
         child.pop("paper_lifetime_basis_cents", None)
-        child["auto_reset_paper_on_tick_failure"] = bool(
-            self.rng.random() < 0.5
-            if p1.get("auto_reset_paper_on_tick_failure")
-            != p2.get("auto_reset_paper_on_tick_failure")
-            else p1.get("auto_reset_paper_on_tick_failure", False)
-        )
+        # Never randomly enable destructive auto-wipes: all contributing parents must opt in.
+        ar_flags = [
+            bool(p1.get("auto_reset_paper_on_tick_failure", False)),
+            bool(p2.get("auto_reset_paper_on_tick_failure", False)),
+        ]
+        if p3:
+            ar_flags.append(bool(p3.get("auto_reset_paper_on_tick_failure", False)))
+        child["auto_reset_paper_on_tick_failure"] = all(ar_flags)
 
         combo_syn = synergy_score
         if len(parents) > 2:

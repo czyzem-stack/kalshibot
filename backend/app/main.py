@@ -46,6 +46,7 @@ from .branch_config import (
 )
 from .engine import (
     TradingEngine,
+    clamp_open_sim_mark_sum_to_position_ceiling,
     compute_open_sim_mark_value_sum_cents,
     dual_engine_loop,
     exclude_subtitle_parts_from_cfg,
@@ -323,6 +324,78 @@ def _merge_lab_children_equity_snapshots(
     return ordered[-limit:]
 
 
+def _sync_consolidated_lab_children_metrics(
+    m_ch: dict[str, Any],
+    slots: dict[str, Any],
+    *,
+    basis_cents: int,
+    fleet_for_committed: int | None,
+) -> None:
+    """After per-slot paper MTM refresh, align merged Child slots tiles with Σ slot ledgers (book + MTM).
+
+    Consolidated rollups sum six ``lab_child_*`` ledgers; basis must be Σ per-slot paper seeds, and
+    ``current_mtm_dollars`` must not rely on merged SQLite alone (stale/zero MTM made open/mark P&L ≈ −basis).
+    """
+    ps = max(0, int(basis_cents)) / 100.0
+    realized = float(m_ch.get("total_pnl_dollars") or 0.0)
+    committed = float(m_ch.get("open_sim_committed_dollars") or 0.0)
+    book_sum = 0.0
+    mtm_sum = 0.0
+    n_slots = 0
+    for br in BRANCH_CHILD_LABS:
+        s = slots.get(br)
+        if not isinstance(s, dict):
+            continue
+        n_slots += 1
+        ce_f: float | None = None
+        ce_raw = s.get("current_equity_dollars")
+        if ce_raw is not None and str(ce_raw).strip() != "":
+            try:
+                ce_f = float(ce_raw)
+            except (TypeError, ValueError):
+                ce_f = None
+        if ce_f is not None:
+            book_sum += ce_f
+        cm_f: float | None = None
+        cm_raw = s.get("current_mtm_dollars")
+        if cm_raw is not None and str(cm_raw).strip() != "":
+            try:
+                cm_f = float(cm_raw)
+            except (TypeError, ValueError):
+                cm_f = None
+        if cm_f is not None:
+            mtm_sum += cm_f
+        elif ce_f is not None:
+            mtm_sum += ce_f
+    if n_slots == len(BRANCH_CHILD_LABS):
+        m_ch["current_equity_dollars"] = round(book_sum, 4)
+        m_ch["current_mtm_dollars"] = round(mtm_sum, 4)
+    else:
+        m_ch["current_equity_dollars"] = round(ps + realized - committed, 4)
+        m_ch["current_mtm_dollars"] = round(float(m_ch["current_equity_dollars"]), 4)
+    eq = float(m_ch["current_equity_dollars"])
+    mtm = float(m_ch["current_mtm_dollars"])
+    m_ch["paper_start_dollars"] = round(ps, 4)
+    m_ch["return_vs_start_pct"] = (
+        round(((eq - ps) / ps * 100.0), 4) if ps > 0 else None
+    )
+    m_ch["return_mtm_vs_start_pct"] = (
+        round(((mtm - ps) / ps * 100.0), 4) if ps > 0 else None
+    )
+    m_ch["realized_pnl_pct_of_start"] = (
+        round(((realized / ps) * 100.0), 4) if ps > 0 else None
+    )
+    m_ch["committed_pct_of_start"] = (
+        round(((committed / ps) * 100.0), 4) if ps > 0 else None
+    )
+    if fleet_for_committed is not None:
+        fleet_ps = max(0, int(fleet_for_committed)) / 100.0
+        if fleet_ps > 0:
+            m_ch["committed_pct_of_fleet_start"] = round(
+                (committed / fleet_ps) * 100.0, 4
+            )
+
+
 def _metrics_from_trade_rollup(roll: dict[str, Any], branch: str) -> dict[str, Any]:
     """Build dashboard metrics dict from ``Store.dashboard_branch_trade_rollups`` (full table, not recent-N)."""
     total_pnl_cents = int(roll.get("total_pnl_cents") or 0)
@@ -424,8 +497,13 @@ async def _refresh_paper_mtm_from_marks(
     paper_start_cents: int,
     roll: dict[str, Any],
     out_metrics: dict[str, Any],
+    persist_snapshot: bool = False,
 ) -> None:
-    """Recompute mark-to-market from latest Kalshi public mids on each dashboard poll (no new snapshot row)."""
+    """Recompute mark-to-market from latest Kalshi public mids on each dashboard poll.
+
+    When ``persist_snapshot`` is true (see ``DASHBOARD_PERSIST_MTM_EQUITY_SNAPSHOTS``), also appends
+    ``equity_snapshots`` using the same book/MTM cents as this pass — no second Kalshi mark fetch.
+    """
     try:
         settled_pnl = int(roll.get("total_pnl_cents") or 0)
         roll_open_committed = int(roll.get("open_committed_cents") or 0)
@@ -437,6 +515,12 @@ async def _refresh_paper_mtm_from_marks(
         else:
             open_committed = roll_open_committed
         mark = await compute_open_sim_mark_value_sum_cents(engine, open_rows)
+        mark = clamp_open_sim_mark_sum_to_position_ceiling(
+            mark,
+            open_rows,
+            branch=str(getattr(engine, "branch", "?")),
+            ctx="dashboard_refresh_mtm",
+        )
         # QA: bad ``contracts_fp`` / cross-wire rows can sum to absurd marks and spike chart tails (flat book, vertical MTM).
         max_mark_abs = max(
             int(open_committed * 10),
@@ -467,6 +551,22 @@ async def _refresh_paper_mtm_from_marks(
             out_metrics["return_mtm_vs_start_pct"] = round(
                 ((mtm_cents / 100.0) - psd) / psd * 100.0, 4
             )
+        if persist_snapshot:
+            try:
+                await engine.store.insert_equity_snapshot(
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "simulate",
+                    book_cents,
+                    "dashboard_mtm",
+                    branch=engine.branch,
+                    mtm_equity_cents=mtm_cents,
+                )
+            except Exception:
+                logger.debug(
+                    "dashboard_mtm equity snapshot insert failed branch=%s",
+                    getattr(engine, "branch", "?"),
+                    exc_info=True,
+                )
     except Exception:
         return
 
@@ -532,6 +632,10 @@ def _enrich_strategy_metrics(
         m["return_mtm_vs_start_pct"] = (
             ((latest_mtm_snap_dollars - ps) / ps * 100.0) if ps > 0 else None
         )
+    else:
+        # No persisted MTM column on last snapshot — treat dashed curve like book until a mark pass runs.
+        m["current_mtm_dollars"] = round(eq, 4)
+        m["return_mtm_vs_start_pct"] = m.get("return_vs_start_pct")
     if (
         latest_equity_snap_dollars is not None
         and ps > 0
@@ -1009,12 +1113,29 @@ async def validate_rules_endpoint(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "count": len(norm), "rules": norm}
 
 
+async def _insert_fallback_equity_snapshot_for_branch(cfg: dict[str, Any], br: str) -> None:
+    """If no engine is mounted yet, still append one snapshot so dashboards/charts are not empty post-reset."""
+    if br == BRANCH_LIVE and not live_paper_trading_enabled(cfg):
+        return
+    ps = max(0, int(lab_paper_equity_start_cents(cfg, br)))
+    mode = "simulate"
+    await store.insert_equity_snapshot(
+        dt.datetime.now(dt.timezone.utc).isoformat(),
+        mode,
+        ps,
+        "reset_seed_fallback",
+        branch=br,
+        mtm_equity_cents=ps,
+    )
+
+
 async def _seed_equity_snapshots_after_reset(scope: str) -> None:
     """
     ``reset_trading_data`` DELETEs ``equity_snapshots`` for that scope but nothing else writes a new row
     until the next engine tick — charts look frozen at the pre-reset tail. Plant one current snapshot per
     affected branch so book/MTM baselines and intraday history advance immediately.
     """
+    cfg = await store.load_config()
     s = str(scope or "all").strip().lower()
     if s == "all":
         # Match ``all_labs`` seed coverage: full wipes clear ``lab_child_*`` rows too (see ``reset_trading_data``).
@@ -1040,10 +1161,14 @@ async def _seed_equity_snapshots_after_reset(scope: str) -> None:
     keys: list[str] = []
     for br in order:
         eng = state.ENGINES.get(br)
-        if not eng:
-            continue
-        keys.append(br)
-        tasks.append(snapshot_equity(eng))
+        if eng:
+            keys.append(br)
+            tasks.append(snapshot_equity(eng))
+        else:
+            try:
+                await _insert_fallback_equity_snapshot_for_branch(cfg, br)
+            except Exception as e:
+                logger.warning("equity snapshot fallback seed failed branch=%s: %s", br, e)
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for br, res in zip(keys, results):
@@ -1429,7 +1554,11 @@ async def put_lab_branches(body: dict[str, Any]) -> dict[str, Any]:
         history_reason=str(body.get("reset_data") or "lab_merge")[:200] or None,
         skip_config_history=(reset in ("none", "")),
     )
-    return {"ok": True, "config": cfg}
+    return {
+        "ok": True,
+        "config": cfg,
+        "trading_data_revision": store.trading_data_revision,
+    }
 
 
 @app.get("/api/config/lab-a-promotion-report")
@@ -1704,10 +1833,7 @@ async def markets_preview(
     ),
 ) -> MarketsPreviewResponse:
     client = require_kalshi()
-    data = await client.get_public(
-        "/markets",
-        {"series_ticker": series_ticker, "status": "open", "limit": "50"},
-    )
+    data = await client.get_open_markets_cached(series_ticker, limit=50)
     markets = list(data.get("markets") or [])
     if not include_unpriced:
         cfg = await store.load_config()
@@ -1923,17 +2049,29 @@ def _sim_open_holdings_asset_count(
     return n
 
 
-async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
+async def _compose_dashboard_base(
+    *, with_marks: bool, _retry_depth: int = 0
+) -> DashboardResponse:
     """
     Assemble the full dashboard JSON. When ``with_marks`` is False, the same
     ``_refresh_paper_mtm_from_marks`` runs per branch with ``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``
     (default ~30s) so ``GET /api/dashboard/equity`` can refresh paper MTM between full polls; a slow
     branch times out alone — others still get live marks. On per-branch timeout, that branch falls
-    back to snapshot-based values from ``_enrich_strategy_metrics`` until the next poll.
+    back to snapshot-based values from ``_enrich_strategy_metrics`` until the next poll. The **batch**
+    ``wait_for`` uses at least ``gather_timeout + 5`` seconds so the wall is never below the per-branch cap.
+
+    When ``with_marks`` is True and ``DASHBOARD_FULL_PAPER_MTM`` is on, the parallel Kalshi paper-MTM batch
+    runs and is capped by ``DASHBOARD_FULL_MTM_BATCH_WALL_S``. Default: full route skips that batch so the
+    Vite shell clears immediately; ``GET /api/dashboard/equity`` still refreshes marks when fast paper MTM is enabled.
+
+    If ``POST /api/data/reset`` runs while this coroutine is mid-flight (long MTM), the first pass can
+    still hold pre-wipe ``trades`` / rollups loaded at the start — ``trading_data_revision`` will have
+    advanced; we discard that body and compose again (bounded retries).
     """
     cfg = await store.load_config()
+    rev_start = store.trading_data_revision
     mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
-    # I/O in parallel: sequential awaits here plus ~55s MTM easily exceeded the browser 90s budget.
+    # Heavy I/O: SQLite gather + Kalshi (capped) + optional paper MTM (capped per route).
     (
         trades,
         signals,
@@ -2042,11 +2180,18 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     client = require_kalshi()
     public_ok = False
     public_err: str | None = None
-    try:
+    portfolio: dict[str, Any]
+    _probe: Any
+    kalshi_t = float(env.dashboard_kalshi_portfolio_timeout_s)
+
+    async def _kalshi_probe_and_portfolio() -> tuple[Any, Any]:
         probe_coro = client.get_public("/markets", {"limit": "1"})
         port_coro = fetch_portfolio_snapshot(client)
-        _probe, portfolio = await asyncio.gather(
-            probe_coro, port_coro, return_exceptions=True
+        return await asyncio.gather(probe_coro, port_coro, return_exceptions=True)
+
+    try:
+        _probe, portfolio = await asyncio.wait_for(
+            _kalshi_probe_and_portfolio(), timeout=kalshi_t
         )
         if isinstance(_probe, Exception):
             public_err = str(_probe)
@@ -2061,9 +2206,40 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
                 "resting_order_count": 0,
                 "error": f"portfolio: {portfolio}",
             }
+    except asyncio.TimeoutError:
+        logger.warning(
+            "dashboard Kalshi probe+portfolio exceeded %.1fs — continuing with empty portfolio (raise DASHBOARD_KALSHI_PORTFOLIO_TIMEOUT_S if needed).",
+            kalshi_t,
+        )
+        public_err = f"Kalshi probe+portfolio timed out after {kalshi_t:.0f}s"
+        _probe = TimeoutError(public_err)
+        portfolio = {
+            "balance": None,
+            "positions": [],
+            "orders": [],
+            "position_count": 0,
+            "resting_order_count": 0,
+            "error": public_err,
+        }
     except Exception as e:
         public_err = str(e)
-        portfolio = await fetch_portfolio_snapshot(client)
+        try:
+            portfolio = await asyncio.wait_for(
+                fetch_portfolio_snapshot(client), timeout=kalshi_t
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "dashboard Kalshi portfolio fallback exceeded %.1fs — empty portfolio.",
+                kalshi_t,
+            )
+            portfolio = {
+                "balance": None,
+                "positions": [],
+                "orders": [],
+                "position_count": 0,
+                "resting_order_count": 0,
+                "error": f"portfolio timeout after {kalshi_t:.0f}s",
+            }
     bal_json = portfolio["balance"]
     private_err: str | None = None
     if bal_json is None:
@@ -2151,8 +2327,10 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
     )
     _inject_last_snap_mtm_minus_equity(metrics_lab_e, snaps_lab_e)
 
-    # Consolidated GA row matches single-lab semantics ($5k via ``DEFAULT_PAPER_BALANCE_CENTS`` / env), not 6× summed seeds.
-    lab_children_basis = max(0, int(env.default_paper_balance_cents))
+    # Σ per-slot paper seeds (each ``lab_child_*`` follows ``lab_paper_equity_start_cents`` like parent labs).
+    lab_children_basis = sum(
+        max(0, lab_paper_equity_start_cents(cfg, br)) for br in BRANCH_CHILD_LABS
+    )
     _enrich_strategy_metrics(
         metrics_lab_children,
         paper_mode=True,
@@ -2210,57 +2388,74 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
                 "last_tick_trace_tail": [],
             }
 
-    # Paper MTM on tiles + chart tail: recompute from Kalshi mids. Full dashboard can wait 50s;
-    # the fast ``/api/dashboard/equity`` poll (``with_marks=False``) uses a short cap so the UI
-    # can refresh chart tails more often than the 12s full round-trip without stalling the client.
-    mtm_tasks: list[Any] = []
-    if simulate_live:
-        mtm_tasks.append(
-            _refresh_paper_mtm_from_marks(
-                state.engine_live,
-                paper_start_cents=int(
-                    cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS
-                ),
-                roll=roll_live,
-                out_metrics=metrics_live,
-            )
-        )
-    mtm_tasks.extend(
-        [
-            _refresh_paper_mtm_from_marks(
-                state.engine_lab_a,
-                paper_start_cents=lab_paper_basis_a,
-                roll=roll_lab_a,
-                out_metrics=metrics_lab_a,
-            ),
-            _refresh_paper_mtm_from_marks(
-                state.engine_lab_b,
-                paper_start_cents=lab_paper_basis_b,
-                roll=roll_lab_b,
-                out_metrics=metrics_lab_b,
-            ),
-            _refresh_paper_mtm_from_marks(
-                state.engine_lab_c,
-                paper_start_cents=lab_paper_basis_c,
-                roll=roll_lab_c,
-                out_metrics=metrics_lab_c,
-            ),
-            _refresh_paper_mtm_from_marks(
-                state.engine_lab_d,
-                paper_start_cents=lab_paper_basis_d,
-                roll=roll_lab_d,
-                out_metrics=metrics_lab_d,
-            ),
-            _refresh_paper_mtm_from_marks(
-                state.engine_lab_e,
-                paper_start_cents=lab_paper_basis_e,
-                roll=roll_lab_e,
-                out_metrics=metrics_lab_e,
-            ),
-        ]
+    # Paper MTM from Kalshi mids: optional on full ``/api/dashboard`` (see ``DASHBOARD_FULL_PAPER_MTM`` — default off
+    # so first paint is not blocked). Fast ``/api/dashboard/equity`` still refreshes marks when ``DASHBOARD_FAST_PAPER_MTM`` is on.
+    persist_mtm_eq_snaps = env.dashboard_persist_mtm_equity_snapshots
+    # GA ``lab_child_*`` slots are **not** refreshed here: six extra Kalshi mark passes inflated the full-route
+    # wall time and blocked the Vite loading screen. Per-slot tiles use ``_enrich_strategy_metrics`` + SQLite
+    # snapshots; consolidated child KPIs still use ``_sync_consolidated_lab_children_metrics`` from those slots.
+    # ``/api/dashboard/equity`` can opt out via ``DASHBOARD_FAST_PAPER_MTM=0``. Full ``/api/dashboard`` runs this batch
+    # only when ``DASHBOARD_FULL_PAPER_MTM=1`` (otherwise first JSON returns quickly; equity polls fill live marks).
+    #
+    # Build coroutines **only** when the batch will run — calling ``_refresh_paper_mtm_from_marks(...)`` creates a
+    # coroutine object; if we skipped the batch after appending, Python would warn "coroutine was never awaited".
+    want_paper_mtm_batch = (with_marks and env.dashboard_full_paper_mtm) or (
+        not with_marks and env.dashboard_fast_paper_mtm
     )
-    # ``/api/dashboard/equity`` can opt out of this batch via env (DASHBOARD_FAST_PAPER_MTM=0) to test or reduce load; full ``/api/dashboard`` always runs it.
-    if mtm_tasks and (with_marks or env.dashboard_fast_paper_mtm):
+    mtm_tasks: list[Any] = []
+    if want_paper_mtm_batch:
+        if simulate_live:
+            mtm_tasks.append(
+                _refresh_paper_mtm_from_marks(
+                    state.engine_live,
+                    paper_start_cents=int(
+                        cfg.get("paper_balance_cents") or _DEFAULT_PAPER_BALANCE_CENTS
+                    ),
+                    roll=roll_live,
+                    out_metrics=metrics_live,
+                    persist_snapshot=persist_mtm_eq_snaps,
+                )
+            )
+        mtm_tasks.extend(
+            [
+                _refresh_paper_mtm_from_marks(
+                    state.engine_lab_a,
+                    paper_start_cents=lab_paper_basis_a,
+                    roll=roll_lab_a,
+                    out_metrics=metrics_lab_a,
+                    persist_snapshot=persist_mtm_eq_snaps,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    state.engine_lab_b,
+                    paper_start_cents=lab_paper_basis_b,
+                    roll=roll_lab_b,
+                    out_metrics=metrics_lab_b,
+                    persist_snapshot=persist_mtm_eq_snaps,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    state.engine_lab_c,
+                    paper_start_cents=lab_paper_basis_c,
+                    roll=roll_lab_c,
+                    out_metrics=metrics_lab_c,
+                    persist_snapshot=persist_mtm_eq_snaps,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    state.engine_lab_d,
+                    paper_start_cents=lab_paper_basis_d,
+                    roll=roll_lab_d,
+                    out_metrics=metrics_lab_d,
+                    persist_snapshot=persist_mtm_eq_snaps,
+                ),
+                _refresh_paper_mtm_from_marks(
+                    state.engine_lab_e,
+                    paper_start_cents=lab_paper_basis_e,
+                    roll=roll_lab_e,
+                    out_metrics=metrics_lab_e,
+                    persist_snapshot=persist_mtm_eq_snaps,
+                ),
+            ]
+        )
+    if mtm_tasks:
         mtm_timeout = (
             50.0 if with_marks else float(env.dashboard_fast_mtm_gather_timeout_s)
         )
@@ -2284,13 +2479,46 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             except Exception as e:
                 logger.debug("paper MTM subtask %d failed: %s", idx, e)
 
-        mtm_res = await asyncio.gather(
+        gather_coro = asyncio.gather(
             *(_run_one_paper_mtm(i, t) for i, t in enumerate(mtm_tasks)),
             return_exceptions=True,
         )
+        if with_marks:
+            wall_cfg = float(env.dashboard_full_mtm_batch_wall_s)
+            wall = max(wall_cfg, mtm_timeout + 5.0)
+            try:
+                mtm_res = await asyncio.wait_for(gather_coro, timeout=wall)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "dashboard full paper MTM batch exceeded wall %.1fs — returning JSON with partial marks (raise DASHBOARD_FULL_MTM_BATCH_WALL_S or reduce open sims).",
+                    wall,
+                )
+                mtm_res = []
+        else:
+            fast_wall_cfg = float(env.dashboard_fast_mtm_batch_wall_s)
+            mtm_gather_t = float(env.dashboard_fast_mtm_gather_timeout_s)
+            # Branches run in parallel; each subtask is capped by ``mtm_gather_t``. A batch wall *below*
+            # that value guarantees spurious timeouts (partial marks, stacked overlapping /equity polls,
+            # SQLite contention that can delay ``POST /api/data/reset``).
+            fast_wall = max(fast_wall_cfg, mtm_gather_t + 5.0)
+            try:
+                mtm_res = await asyncio.wait_for(gather_coro, timeout=fast_wall)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "dashboard fast paper MTM batch exceeded wall %.1fs — returning JSON with partial marks (raise DASHBOARD_FAST_MTM_BATCH_WALL_S or set DASHBOARD_FAST_PAPER_MTM=0).",
+                    fast_wall,
+                )
+                mtm_res = []
         for idx, r in enumerate(mtm_res or []):
             if isinstance(r, Exception):
                 logger.debug("paper MTM gather wrapper %d failed: %s", idx, r)
+
+    _sync_consolidated_lab_children_metrics(
+        metrics_lab_children,
+        metrics_lab_child_slots,
+        basis_cents=lab_children_basis,
+        fleet_for_committed=fleet_for_committed,
+    )
 
     eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
@@ -2415,7 +2643,7 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
             "metrics_lab_children": metrics_lab_children,
         }
 
-    return {
+    out: dict[str, Any] = {
         "config": cfg,
         "storage": storage_dict(),
         "kalshi": {
@@ -2593,6 +2821,36 @@ async def _compose_dashboard_base(*, with_marks: bool) -> DashboardResponse:
         "dashboard_payload_seq": _next_dashboard_payload_seq(),
         "trading_data_revision": store.trading_data_revision,
     }
+    if store.trading_data_revision != rev_start and _retry_depth < 2:
+        logger.warning(
+            "dashboard compose discarded: trading_data_revision changed mid-build (%s -> %s); retry %d/2",
+            rev_start,
+            store.trading_data_revision,
+            _retry_depth + 1,
+        )
+        return await _compose_dashboard_base(
+            with_marks=with_marks, _retry_depth=_retry_depth + 1
+        )
+    return out
+
+
+# ``GET /api/dashboard/equity`` is polled every few seconds from the SPA (and can overlap tabs / catch-up).
+# Without single-flight, each handler runs a parallel Kalshi MTM batch → httpx stampede, 30s branch caps, log spam.
+_equity_dashboard_singleflight_lock: asyncio.Lock | None = None
+_equity_dashboard_singleflight_task: asyncio.Task[Any] | None = None
+
+
+async def _await_equity_dashboard_singleflight() -> DashboardResponse:
+    global _equity_dashboard_singleflight_lock, _equity_dashboard_singleflight_task
+    if _equity_dashboard_singleflight_lock is None:
+        _equity_dashboard_singleflight_lock = asyncio.Lock()
+    async with _equity_dashboard_singleflight_lock:
+        if _equity_dashboard_singleflight_task is None or _equity_dashboard_singleflight_task.done():
+            _equity_dashboard_singleflight_task = asyncio.create_task(
+                _compose_dashboard_base(with_marks=False)
+            )
+        t = _equity_dashboard_singleflight_task
+    return cast(DashboardResponse, await t)
 
 
 @app.get("/api/dashboard")
@@ -2603,11 +2861,14 @@ async def dashboard() -> DashboardResponse:
 @app.get("/api/dashboard/equity")
 async def dashboard_equity() -> DashboardResponse:
     """
-    Same structure as ``/api/dashboard`` but with a 5s cap on the paper mark-refresh pass (vs 50s
-    for the full route). ``metrics*`` still get live mids when the gather finishes in time; if not,
-    they match snapshot-based values until the next poll or a full ``/api/dashboard`` run.
+    Same structure as ``/api/dashboard`` but the paper mark-refresh pass uses ``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``
+    per branch and ``max(DASHBOARD_FAST_MTM_BATCH_WALL_S, gather + 5s)`` for the whole batch (and skips entirely when
+    ``DASHBOARD_FAST_PAPER_MTM=0``). ``metrics*`` get live mids when the gather finishes in time; otherwise snapshot /
+    book fallback until the next poll.
+
+    Concurrent requests share one in-flight compose (single-flight) so overlapping polls do not multiply Kalshi work.
     """
-    return await _compose_dashboard_base(with_marks=False)
+    return await _await_equity_dashboard_singleflight()
 
 
 @app.get("/api/dashboard/recent_trades")

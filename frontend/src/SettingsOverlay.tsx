@@ -542,6 +542,10 @@ export type SettingsOverlayProps = {
   /** Live engine toggle only; simulation labs A–E always run. */
   liveEngineOn: boolean;
   onToggleLive: () => void | Promise<void>;
+  /** Live branch uses simulated order flow (paper) vs posting real limits — canonical ``live_paper_trading`` / ``simulate``. */
+  livePaperTrading: boolean;
+  /** POST ``/api/engine/toggle?simulate=…`` (confirm when switching off paper). */
+  onSetLivePaperTrading: (paper: boolean) => void | Promise<void>;
   onAddAllLabsPaper: () => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
   onOpenHistory: () => void | Promise<void>;
@@ -597,6 +601,8 @@ export default function SettingsOverlay({
   onFetchBreederSmartDefaults,
   liveEngineOn,
   onToggleLive,
+  livePaperTrading,
+  onSetLivePaperTrading,
   onAddAllLabsPaper,
   onRefresh,
   onOpenHistory,
@@ -763,10 +769,36 @@ export default function SettingsOverlay({
             <span className={`pill ${liveEngineOn ? "pill--engine-on" : "pill--engine-off"}`}>
               Live · <strong>{liveEngineOn ? "Active" : "Stopped"}</strong>
             </span>
+            <span className={`pill ${livePaperTrading ? "pill--engine-on" : "pill--engine-off"}`}>
+              Live orders · <strong>{livePaperTrading ? "Paper (sim)" : "Real $"}</strong>
+            </span>
             <span className="pill pill--engine-on">
               Labs A–E · <strong>Always on</strong>
             </span>
           </div>
+          <label
+            className="section-tip"
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              marginTop: 10,
+              cursor: busy ? "not-allowed" : "pointer",
+              opacity: busy ? 0.65 : 1,
+            }}
+            title="Paper: Live uses your Kalshi API keys for market data; fills are simulated in SQLite (demo or prod host). Real: Live posts limit orders to the exchange when rules match — requires keys and explicit setup."
+          >
+            <input
+              type="checkbox"
+              checked={livePaperTrading}
+              disabled={busy}
+              onChange={(e) => void onSetLivePaperTrading(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, lineHeight: 1.45 }}>
+              <strong>Live paper mode</strong> — simulated fills on the Live branch (recommended while you build on demo).
+              Turn off only when you intend to place <em>real</em> limit orders; the app will ask for confirmation.
+            </span>
+          </label>
           <div className="settings-lab-engine-actions">
             <button
               type="button"
@@ -970,7 +1002,7 @@ export default function SettingsOverlay({
             onClick={() => {
               const el = document.getElementById("reset_backup_live") as HTMLInputElement | null;
               const backup = el ? el.checked : true;
-              const sim = Boolean(cfg.simulate);
+              const sim = livePaperTrading;
               if (
                 !window.confirm(
                   sim

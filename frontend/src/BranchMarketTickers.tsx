@@ -29,9 +29,9 @@ function fmtNum$(v: unknown): string {
 }
 
 function ReturnBadge({ metrics }: { metrics: AnyObj }): ReactNode {
-  const rawMtm = metrics?.return_mtm_vs_start_pct;
+  const rawBook = metrics?.return_vs_start_pct;
   const x =
-    rawMtm != null && Number.isFinite(Number(rawMtm)) ? Number(rawMtm) : Number(metrics?.return_vs_start_pct);
+    rawBook != null && Number.isFinite(Number(rawBook)) ? Number(rawBook) : Number(metrics?.return_mtm_vs_start_pct);
   if (!Number.isFinite(x)) return null;
   const arrow = x > 0 ? "▲" : x < 0 ? "▼" : "—";
   const sign = x > 0 ? "+" : "";
@@ -46,6 +46,118 @@ function ReturnBadge({ metrics }: { metrics: AnyObj }): ReactNode {
         {x.toFixed(1)}%
       </span>
     </span>
+  );
+}
+
+const HERO_MTM_PCT_STORAGE = "kalshibot.heroMtmVsStartPct.";
+const HERO_MTM_DOLLAR_STORAGE = "kalshibot.heroMtmDollars.";
+
+function readStoredHeroMtmPct(branchKey: string): number | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const s = sessionStorage.getItem(HERO_MTM_PCT_STORAGE + branchKey);
+    if (s == null || s === "") return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredHeroMtmPct(branchKey: string, pct: number): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(HERO_MTM_PCT_STORAGE + branchKey, String(pct));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function readStoredHeroMtmDollar(branchKey: string): number | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const s = sessionStorage.getItem(HERO_MTM_DOLLAR_STORAGE + branchKey);
+    if (s == null || s === "") return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredHeroMtmDollar(branchKey: string, dollars: number): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(HERO_MTM_DOLLAR_STORAGE + branchKey, String(dollars));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** MTM vs paper basis only (dashed curve) — ▲/▼ + %; up uses ``--ok`` green, down uses ``--danger``. Persists across fast merges when the server omits ``return_mtm_vs_start_pct`` briefly. */
+function MtmReturnBadge({ branchKey, metrics }: { branchKey: string; metrics: AnyObj }): ReactNode {
+  const raw = metrics?.return_mtm_vs_start_pct;
+  const pctVal =
+    raw != null && raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : readStoredHeroMtmPct(branchKey);
+  useEffect(() => {
+    if (raw != null && raw !== "" && Number.isFinite(Number(raw))) {
+      writeStoredHeroMtmPct(branchKey, Number(raw));
+    }
+  }, [branchKey, raw]);
+  if (pctVal == null || !Number.isFinite(pctVal)) return null;
+  const arrow = pctVal > 0 ? "▲" : pctVal < 0 ? "▼" : "—";
+  const sign = pctVal > 0 ? "+" : "";
+  return (
+    <span
+      className={`branch-hero-snapshot__mtm-ret${pctVal < 0 ? " branch-hero-snapshot__mtm-ret--down" : pctVal > 0 ? " branch-hero-snapshot__mtm-ret--up" : ""}`}
+      title="MTM vs configured paper basis (dashed equity curve), same as chart %Δ vs start for MTM."
+    >
+      <span className="branch-hero-snapshot__mtm-ret-arrow" aria-hidden>
+        {arrow}
+      </span>
+      <span>
+        {sign}
+        {pctVal.toFixed(1)}%
+      </span>
+    </span>
+  );
+}
+
+/** Second line under headline: MTM $ (accent) + return vs basis badge; persists MTM $ when thin polls drop ``current_mtm_dollars``. */
+function HeroSnapshotMtmRow({
+  branchKey,
+  metrics,
+  livePaper,
+  bookD,
+  accentHex,
+}: {
+  branchKey: string;
+  metrics: AnyObj;
+  livePaper: boolean;
+  bookD: number | null;
+  accentHex: string;
+}): ReactNode {
+  const fromApi = heroMarkMtmDollars(metrics);
+  useEffect(() => {
+    if (fromApi != null && Number.isFinite(fromApi)) {
+      writeStoredHeroMtmDollar(branchKey, fromApi);
+    }
+  }, [branchKey, fromApi]);
+  const mtm = fromApi ?? readStoredHeroMtmDollar(branchKey);
+  if (branchKey === "live" && !livePaper) return null;
+  if (mtm == null || bookD == null || !Number.isFinite(mtm) || !Number.isFinite(bookD)) return null;
+  if (Math.abs(mtm - bookD) < 0.03) return null;
+  return (
+    <div
+      className="branch-hero-snapshot__mtm-hint branch-hero-snapshot__mtm-hint--rich"
+      title="Mark-to-market — dashed line on equity charts. ▲/▼ vs paper basis; survives brief empty fast polls (session)."
+    >
+      <span className="branch-hero-snapshot__mtm-hint-dollar" style={{ color: accentHex }}>
+        {fmt$(mtm)}
+      </span>
+      <span className="branch-hero-snapshot__mtm-hint-label"> MTM </span>
+      <MtmReturnBadge branchKey={branchKey} metrics={metrics} />
+    </div>
   );
 }
 
@@ -308,6 +420,20 @@ function normBranch(b: unknown): BranchKey {
   return "live";
 }
 
+function botConfigLivePaper(cfg: AnyObj | undefined): boolean {
+  if (!cfg || typeof cfg !== "object") return true;
+  if (Object.prototype.hasOwnProperty.call(cfg, "live_paper_trading")) return Boolean(cfg.live_paper_trading);
+  if (Object.prototype.hasOwnProperty.call(cfg, "simulate")) return Boolean(cfg.simulate);
+  return true;
+}
+
+/** Live paper vs real $: prefer each dashboard payload’s ``kalshi.simulate_live`` so hero/marquee match charts when config JSON lags. */
+function effectiveLivePaper(cfg: AnyObj, dash: AnyObj): boolean {
+  const k = dash?.kalshi as AnyObj | undefined;
+  if (k && typeof k === "object" && "simulate_live" in k) return Boolean(k.simulate_live);
+  return botConfigLivePaper(cfg);
+}
+
 function tradeSegments(t: AnyObj): TickerSeg[] {
   const tick = String(t.ticker || "").slice(0, 26);
   const side = String(t.side || "").toLowerCase();
@@ -336,8 +462,14 @@ function tradeSegments(t: AnyObj): TickerSeg[] {
   return out;
 }
 
-function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalshiPrivateOk: boolean): TickerSeg[] {
-  if (branch === "live" && !cfg.simulate) {
+function headlineSegments(
+  branch: BranchKey,
+  cfg: AnyObj,
+  metrics: AnyObj,
+  kalshiPrivateOk: boolean,
+  livePaper: boolean,
+): TickerSeg[] {
+  if (branch === "live" && !livePaper) {
     const bal = metrics.exchange_balance_dollars;
     const pv = metrics.exchange_portfolio_value_dollars;
     const balS = bal != null && Number.isFinite(Number(bal)) ? fmt$(Number(bal)) : "—";
@@ -350,14 +482,14 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
       seg(" · ", "muted"),
       seg(`settled ${metrics.settled_trades ?? 0}`, "muted"),
       seg(" · ", "muted"),
-      seg(`sim assets ${metrics.open_sim_trades ?? 0}`, "muted"),
+      seg(`assets ${metrics.open_sim_trades ?? 0}`, "muted"),
     );
     return out;
   }
-  const dollars = metrics.current_mtm_dollars ?? metrics.current_equity_dollars;
-  const eqS = dollars != null && Number.isFinite(Number(dollars)) ? fmt$(Number(dollars)) : "—";
+  const dollars = heroLedgerHeadlineDollars(metrics);
+  const eqS = dollars != null && Number.isFinite(dollars) ? fmt$(dollars) : "—";
   const pnl = Number(metrics.total_pnl_dollars || 0);
-  const ret = metrics.return_mtm_vs_start_pct ?? metrics.return_vs_start_pct;
+  const ret = metrics.return_vs_start_pct ?? metrics.return_mtm_vs_start_pct;
   const retN = ret != null && Number.isFinite(Number(ret)) ? Number(ret) : NaN;
   const lab =
     branch === "lab_a"
@@ -379,7 +511,7 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
     seg(fmt$(pnl), pnl > 0 ? "pos" : pnl < 0 ? "neg" : "muted"),
     seg(" · ", "muted"),
     seg(!Number.isFinite(retN) ? "—" : `${retN >= 0 ? "+" : ""}${retN.toFixed(1)}%`, rt),
-    seg(" · sim assets ", "muted"),
+    seg(" · assets ", "muted"),
     seg(String(metrics.open_sim_trades ?? 0), "muted"),
   ];
 }
@@ -387,6 +519,7 @@ function headlineSegments(branch: BranchKey, cfg: AnyObj, metrics: AnyObj, kalsh
 function buildBranchSegments(args: {
   branch: BranchKey;
   cfg: AnyObj;
+  dash: AnyObj;
   metrics: AnyObj;
   snaps: Record<string, AnyObj>;
   engineBlock: AnyObj | undefined;
@@ -395,10 +528,11 @@ function buildBranchSegments(args: {
   kalshiPrivateOk: boolean;
   labThoughts: AnyObj | undefined;
 }): TickerSeg[] {
-  const { branch, cfg, metrics, snaps, engineBlock, recentTrades, positionByAsset, kalshiPrivateOk, labThoughts } = args;
+  const { branch, cfg, dash, metrics, snaps, engineBlock, recentTrades, positionByAsset, kalshiPrivateOk, labThoughts } =
+    args;
   const parts: TickerSeg[][] = [];
 
-  parts.push(headlineSegments(branch, cfg, metrics, kalshiPrivateOk));
+  parts.push(headlineSegments(branch, cfg, metrics, kalshiPrivateOk, effectiveLivePaper(cfg, dash)));
 
   const tickAt = engineBlock?.last_tick_at ? String(engineBlock.last_tick_at) : "";
   if (tickAt) {
@@ -495,9 +629,9 @@ function compactPositionVerdict(
   const posSecs = positionSegmentsForBranch(positionByAsset, branch, kalshiPrivateOk);
   const hasBook = posSecs.length > 0;
   const openN = Number(metrics.open_sim_trades ?? 0);
-  const rawMtm = metrics?.return_mtm_vs_start_pct;
+  const rawBook = metrics?.return_vs_start_pct;
   const r =
-    rawMtm != null && Number.isFinite(Number(rawMtm)) ? Number(rawMtm) : Number(metrics?.return_vs_start_pct);
+    rawBook != null && Number.isFinite(Number(rawBook)) ? Number(rawBook) : Number(metrics?.return_mtm_vs_start_pct);
   const retOk = Number.isFinite(r);
   const exposed = hasBook || openN > 0;
   const expTag = exposureMetaLabel(branch, livePaper);
@@ -523,14 +657,15 @@ function compactPositionVerdict(
 function buildHeroCompactSegments(args: {
   branch: BranchKey;
   cfg: AnyObj;
+  dash: AnyObj;
   metrics: AnyObj;
   snaps: Record<string, AnyObj>;
   engineBlock: AnyObj | undefined;
   positionByAsset: AnyObj | undefined;
   kalshiPrivateOk: boolean;
 }): TickerSeg[] {
-  const { branch, cfg, metrics, snaps, engineBlock, positionByAsset, kalshiPrivateOk } = args;
-  const livePaper = Boolean(cfg.simulate);
+  const { branch, cfg, dash, metrics, snaps, engineBlock, positionByAsset, kalshiPrivateOk } = args;
+  const livePaper = effectiveLivePaper(cfg, dash);
   const flat: TickerSeg[] = [];
   const mon = compactBtcEthSegments(cfg, snaps);
   if (mon.length) {
@@ -599,6 +734,23 @@ function heroMarqueeDurationSec(segments: TickerSeg[]): number {
 /** Autoplay pixels/sec vs baseline; 0.7 ≈ 30% slower horizontal marquee (drag/throw unchanged). */
 const HERO_MARQUEE_SCROLL_PACE = 0.7;
 
+/** Ledger (cost basis) when API sends it — matches equity chart solid line. Falls back to MTM only if book missing. */
+function heroLedgerHeadlineDollars(metrics: AnyObj): number | null {
+  const eq = metrics?.current_equity_dollars;
+  if (eq != null && eq !== "" && Number.isFinite(Number(eq))) return Number(eq);
+  const mtm = metrics?.current_mtm_dollars;
+  if (mtm != null && mtm !== "" && Number.isFinite(Number(mtm))) return Number(mtm);
+  return null;
+}
+
+/** Mark estimate from metrics — dashed equity curve; omit hint when it matches book within a cent. */
+function heroMarkMtmDollars(metrics: AnyObj): number | null {
+  const mtm = metrics?.current_mtm_dollars;
+  if (mtm == null || mtm === "") return null;
+  const n = Number(mtm);
+  return Number.isFinite(n) ? n : null;
+}
+
 function branchHeadlineDollars(
   m: AnyObj | null | undefined,
   which: "live" | "lab",
@@ -609,16 +761,14 @@ function branchHeadlineDollars(
   const mx = m != null && typeof m === "object" ? m : {};
   if (which === "live") {
     if (livePaper) {
-      const v = mx.current_mtm_dollars ?? mx.current_equity_dollars;
-      return v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+      return heroLedgerHeadlineDollars(mx);
     }
     const pv = mx.exchange_portfolio_value_dollars;
     if (pv != null && pv !== "" && Number.isFinite(Number(pv))) return Number(pv);
     if (rb?.portfolio_value != null && Number.isFinite(Number(rb.portfolio_value))) return Number(rb.portfolio_value) / 100;
     return null;
   }
-  const v = mx.current_mtm_dollars ?? mx.current_equity_dollars;
-  return v == null || v === "" ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+  return heroLedgerHeadlineDollars(mx);
 }
 
 /** Single scrolling strip for all branches + optional snapshot rows (Live + Lab A–E, no rotation). */
@@ -656,6 +806,7 @@ export function BranchHeroMarquee({
     const live = buildHeroCompactSegments({
       branch: "live",
       cfg,
+      dash,
       metrics: mLive,
       snaps: snapsLive,
       engineBlock: eng.live,
@@ -665,6 +816,7 @@ export function BranchHeroMarquee({
     const a = buildHeroCompactSegments({
       branch: "lab_a",
       cfg,
+      dash,
       metrics: mA,
       snaps: snapsA,
       engineBlock: eng.lab_a ?? eng.sim_lab,
@@ -674,6 +826,7 @@ export function BranchHeroMarquee({
     const b = buildHeroCompactSegments({
       branch: "lab_b",
       cfg,
+      dash,
       metrics: mB,
       snaps: snapsB,
       engineBlock: eng.lab_b,
@@ -683,6 +836,7 @@ export function BranchHeroMarquee({
     const c = buildHeroCompactSegments({
       branch: "lab_c",
       cfg,
+      dash,
       metrics: mC,
       snaps: snapsC,
       engineBlock: eng.lab_c,
@@ -692,6 +846,7 @@ export function BranchHeroMarquee({
     const d = buildHeroCompactSegments({
       branch: "lab_d",
       cfg,
+      dash,
       metrics: mD,
       snaps: snapsD,
       engineBlock: eng.lab_d,
@@ -701,6 +856,7 @@ export function BranchHeroMarquee({
     const e = buildHeroCompactSegments({
       branch: "lab_e",
       cfg,
+      dash,
       metrics: mE,
       snaps: snapsE,
       engineBlock: eng.lab_e,
@@ -708,7 +864,7 @@ export function BranchHeroMarquee({
       kalshiPrivateOk,
     });
     return { live, lab_a: a, lab_b: b, lab_c: c, lab_d: d, lab_e: e };
-  }, [cfg, mLive, mA, mB, mC, mD, mE, snapsLive, snapsA, snapsB, snapsC, snapsD, snapsE, eng, posBy, kalshiPrivateOk]);
+  }, [cfg, dash, mLive, mA, mB, mC, mD, mE, snapsLive, snapsA, snapsB, snapsC, snapsD, snapsE, eng, posBy, kalshiPrivateOk]);
 
   const combined = useMemo(() => combineHeroMarqueeSegments(segBundles), [segBundles]);
   const speedMult = Number(cfg?.hero_marquee_speed_mult);
@@ -722,7 +878,7 @@ export function BranchHeroMarquee({
 
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
-  const livePaper = Boolean(cfg.simulate);
+  const livePaper = effectiveLivePaper(cfg, dash);
   const dLive = branchHeadlineDollars(mLive, "live", livePaper, keys, rb);
   const dA = branchHeadlineDollars(mA, "lab", livePaper, keys, rb);
   const dB = branchHeadlineDollars(mB, "lab", livePaper, keys, rb);
@@ -730,10 +886,10 @@ export function BranchHeroMarquee({
   const dD = branchHeadlineDollars(mD, "lab", livePaper, keys, rb);
   const dE = branchHeadlineDollars(mE, "lab", livePaper, keys, rb);
   const tipLive = livePaper
-    ? "Live paper: headline $ is mark-to-market total (last equity snapshot); % uses MTM vs bankroll when available."
+    ? "Live paper: headline $ / % use the cost ledger (book) so they match the chart subtitle; dashed curve is MTM."
     : "Exchange portfolio value (and cash when available) from last dashboard refresh.";
   const labTip = (lab: "A" | "B" | "C" | "D" | "E") =>
-    `Lab ${lab}: $ = MTM or cost-basis equity; % = return vs bankroll (MTM) when present.`;
+    `Lab ${lab}: headline $ / % = book ledger vs bankroll (same as chart subtitle); dashed line is MTM.`;
   const cashLiveStr =
     livePaper || !keys
       ? null
@@ -745,6 +901,7 @@ export function BranchHeroMarquee({
     metrics: AnyObj;
     accent: string;
     title: string;
+    bookD: number | null;
     extraCash?: { label: string; value: string } | null;
   }[] = [
     {
@@ -754,18 +911,60 @@ export function BranchHeroMarquee({
       metrics: mLive,
       accent: HERO_BRANCH_ACCENT.live,
       title: tipLive,
+      bookD: dLive,
       extraCash:
         !livePaper && cashLiveStr
           ? { label: "Cash", value: cashLiveStr }
           : null,
     },
-    { key: "lab_a", label: "Lab A", valueStr: dA == null || !Number.isFinite(dA) ? "—" : fmt$(dA), metrics: mA, accent: HERO_BRANCH_ACCENT.lab_a, title: labTip("A") },
-    { key: "lab_b", label: "Lab B", valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB), metrics: mB, accent: HERO_BRANCH_ACCENT.lab_b, title: labTip("B") },
-    { key: "lab_c", label: "Lab C", valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC), metrics: mC, accent: HERO_BRANCH_ACCENT.lab_c, title: labTip("C") },
-    { key: "lab_d", label: "Lab D", valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD), metrics: mD, accent: HERO_BRANCH_ACCENT.lab_d, title: labTip("D") },
-    { key: "lab_e", label: "Lab E", valueStr: dE == null || !Number.isFinite(dE) ? "—" : fmt$(dE), metrics: mE, accent: HERO_BRANCH_ACCENT.lab_e, title: labTip("E") },
+    {
+      key: "lab_a",
+      label: "Lab A",
+      valueStr: dA == null || !Number.isFinite(dA) ? "—" : fmt$(dA),
+      metrics: mA,
+      accent: HERO_BRANCH_ACCENT.lab_a,
+      title: labTip("A"),
+      bookD: dA,
+    },
+    {
+      key: "lab_b",
+      label: "Lab B",
+      valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB),
+      metrics: mB,
+      accent: HERO_BRANCH_ACCENT.lab_b,
+      title: labTip("B"),
+      bookD: dB,
+    },
+    {
+      key: "lab_c",
+      label: "Lab C",
+      valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC),
+      metrics: mC,
+      accent: HERO_BRANCH_ACCENT.lab_c,
+      title: labTip("C"),
+      bookD: dC,
+    },
+    {
+      key: "lab_d",
+      label: "Lab D",
+      valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD),
+      metrics: mD,
+      accent: HERO_BRANCH_ACCENT.lab_d,
+      title: labTip("D"),
+      bookD: dD,
+    },
+    {
+      key: "lab_e",
+      label: "Lab E",
+      valueStr: dE == null || !Number.isFinite(dE) ? "—" : fmt$(dE),
+      metrics: mE,
+      accent: HERO_BRANCH_ACCENT.lab_e,
+      title: labTip("E"),
+      bookD: dE,
+    },
   ];
-  const snapshotAsideTitle = "All branches: headline $ and return vs start (arrows) from last /api/dashboard — Live plus Lab A through Lab E.";
+  const snapshotAsideTitle =
+    "Headline $ = ledger book (solid equity curve). Second line, when shown, is MTM (dashed curve) — not a second wallet.";
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const firstHalfRef = useRef<HTMLSpanElement | null>(null);
@@ -1019,7 +1218,7 @@ export function BranchHeroMarquee({
           className="branch-hero-marquee__rotor branch-hero-marquee__rotor--snapshot section-tip"
           title={snapshotAsideTitle}
           aria-live="polite"
-          aria-label="Live and Lab A through E: balance and return each"
+          aria-label="Live and labs: ledger book and optional MTM when mark differs from book"
         >
           <div className="branch-hero-snapshot" role="list">
             {snapshotRows.map((row) => (
@@ -1041,6 +1240,13 @@ export function BranchHeroMarquee({
                     <ReturnBadge metrics={row.metrics} />
                   </div>
                 </div>
+                <HeroSnapshotMtmRow
+                  branchKey={row.key}
+                  metrics={row.metrics}
+                  livePaper={livePaper}
+                  bookD={row.bookD}
+                  accentHex={row.accent}
+                />
                 {row.extraCash ? (
                   <div className="branch-hero-snapshot__extra" title="Live cash (exchange) from last refresh.">
                     <span className="branch-hero-snapshot__extra-k">{row.extraCash.label}</span>
@@ -1077,7 +1283,7 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
   }, [dash?.dashboard_payload_at]);
   const rb = dash?.remote_balance as AnyObj | undefined;
   const keys = Boolean((dash?.kalshi as AnyObj | undefined)?.private_ok);
-  const livePaper = Boolean(cfg.simulate);
+  const livePaper = effectiveLivePaper(cfg, dash);
   const mLive = (dash?.metrics || {}) as AnyObj;
   const mA = ((dash?.metrics_lab_a || dash?.metrics_sim_lab) || {}) as AnyObj;
   const mB = (dash?.metrics_lab_b || {}) as AnyObj;
@@ -1090,29 +1296,72 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
   const dC = branchHeadlineDollars(mC, "lab", livePaper, keys, rb);
   const dD = branchHeadlineDollars(mD, "lab", livePaper, keys, rb);
   const dE = branchHeadlineDollars(mE, "lab", livePaper, keys, rb);
-  const cashLiveStr =
-    livePaper || !keys
-      ? null
-      : fmtNum$(mLive.exchange_balance_dollars ?? (rb?.balance != null ? Number(rb.balance) / 100 : null));
   const rows: {
     key: string;
     label: string;
     valueStr: string;
+    bookTitle: string;
     metrics: AnyObj;
     accent: string;
+    bookD: number | null;
   }[] = [
     {
       key: "live",
       label: "Live",
       valueStr: dLive == null || !Number.isFinite(dLive) ? "—" : fmt$(dLive),
+      bookTitle:
+        livePaper || !keys
+          ? "Ledger book (solid equity curve). Second line shows mark MTM when it differs — dashed curve."
+          : "Exchange portfolio value (Real $).",
       metrics: mLive,
       accent: HERO_BRANCH_ACCENT.live,
+      bookD: dLive,
     },
-    { key: "lab_a", label: "Lab A", valueStr: dA == null || !Number.isFinite(dA) ? "—" : fmt$(dA), metrics: mA, accent: HERO_BRANCH_ACCENT.lab_a },
-    { key: "lab_b", label: "Lab B", valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB), metrics: mB, accent: HERO_BRANCH_ACCENT.lab_b },
-    { key: "lab_c", label: "Lab C", valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC), metrics: mC, accent: HERO_BRANCH_ACCENT.lab_c },
-    { key: "lab_d", label: "Lab D", valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD), metrics: mD, accent: HERO_BRANCH_ACCENT.lab_d },
-    { key: "lab_e", label: "Lab E", valueStr: dE == null || !Number.isFinite(dE) ? "—" : fmt$(dE), metrics: mE, accent: HERO_BRANCH_ACCENT.lab_e },
+    {
+      key: "lab_a",
+      label: "Lab A",
+      valueStr: dA == null || !Number.isFinite(dA) ? "—" : fmt$(dA),
+      bookTitle: "Ledger book (solid curve). MTM line matches dashed curve when shown.",
+      metrics: mA,
+      accent: HERO_BRANCH_ACCENT.lab_a,
+      bookD: dA,
+    },
+    {
+      key: "lab_b",
+      label: "Lab B",
+      valueStr: dB == null || !Number.isFinite(dB) ? "—" : fmt$(dB),
+      bookTitle: "Ledger book (solid curve). MTM line matches dashed curve when shown.",
+      metrics: mB,
+      accent: HERO_BRANCH_ACCENT.lab_b,
+      bookD: dB,
+    },
+    {
+      key: "lab_c",
+      label: "Lab C",
+      valueStr: dC == null || !Number.isFinite(dC) ? "—" : fmt$(dC),
+      bookTitle: "Ledger book (solid curve). MTM line matches dashed curve when shown.",
+      metrics: mC,
+      accent: HERO_BRANCH_ACCENT.lab_c,
+      bookD: dC,
+    },
+    {
+      key: "lab_d",
+      label: "Lab D",
+      valueStr: dD == null || !Number.isFinite(dD) ? "—" : fmt$(dD),
+      bookTitle: "Ledger book (solid curve). MTM line matches dashed curve when shown.",
+      metrics: mD,
+      accent: HERO_BRANCH_ACCENT.lab_d,
+      bookD: dD,
+    },
+    {
+      key: "lab_e",
+      label: "Lab E",
+      valueStr: dE == null || !Number.isFinite(dE) ? "—" : fmt$(dE),
+      bookTitle: "Ledger book (solid curve). MTM line matches dashed curve when shown.",
+      metrics: mE,
+      accent: HERO_BRANCH_ACCENT.lab_e,
+      bookD: dE,
+    },
   ];
   return (
     <div
@@ -1121,13 +1370,13 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
       aria-live="polite"
       aria-label={
         syncClock
-          ? `Live and Lab A through E: balance and return each — data as of ${syncClock}`
-          : "Live and Lab A through E: balance and return each"
+          ? `Live and labs: ledger book per branch (solid equity curve), optional MTM when it differs — ${syncClock}`
+          : "Live and labs: ledger book per branch (solid equity curve), optional MTM when it differs"
       }
       title={
         syncClock
-          ? `Hero balances · same refresh clock as equity charts (${syncClock})`
-          : "Live and Lab A through E balance and return"
+          ? `Ledger book (matches solid line on equity charts). Extra MTM row when mark ≠ book — same payload as charts (${syncClock}).`
+          : "Ledger book matches solid equity curve; optional MTM matches dashed line."
       }
     >
       {rows.map((row) => (
@@ -1136,18 +1385,26 @@ export function BranchHeroSnapshotHeader({ dash, cfg }: { dash: AnyObj; cfg: Any
           className="branch-hero-snapshot__row"
           style={{ borderLeftColor: `${row.accent}88` }}
           role="listitem"
+          title={row.bookTitle}
         >
           <div className="branch-hero-snapshot__row-main">
             <span className="branch-hero-snapshot__name" style={{ color: row.accent }}>
               {row.label}
             </span>
             <div className="branch-hero-snapshot__row-right">
-              <span className="branch-hero-snapshot__val" style={{ color: row.accent }}>
+              <span className="branch-hero-snapshot__val" style={{ color: row.accent }} title={row.bookTitle}>
                 {row.valueStr}
               </span>
               <ReturnBadge metrics={row.metrics} />
             </div>
           </div>
+          <HeroSnapshotMtmRow
+            branchKey={row.key}
+            metrics={row.metrics}
+            livePaper={livePaper}
+            bookD={row.bookD}
+            accentHex={row.accent}
+          />
         </div>
       ))}
     </div>

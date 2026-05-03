@@ -162,9 +162,12 @@ def mood_vector_for_lab(
     sophisticated = _mood_pct(rules_u * 72.0 + ad * 28.0)
     patient = _mood_pct(mh_u * 52.0 + wm_u * 38.0 + (1.0 - ag) * 10.0)
     calm = _mood_pct(res * 62.0 + (1.0 - ag) * 22.0 + (1.0 - ex) * 16.0)
-    adaptive = _mood_pct(ad * 100.0)
-    exploratory = _mood_pct(ex * 100.0)
-    resilient = _mood_pct(res * 100.0)
+    # These three used to be trait×100 only — GA children then looked "stuck" on the bottom of the radar for days
+    # while ``_apply_competitive_traits`` was still moving window / balance / stop. Blend knobs so every child row
+    # reflects its persisted genome, not only the five floats in ``_labs_breeding_traits``.
+    adaptive = _mood_pct(ad * 68.0 + wm_u * 18.0 + (1.0 - bf_u) * 14.0)
+    exploratory = _mood_pct(ex * 70.0 + (1.0 - mh_u) * 16.0 + rules_u * 14.0)
+    resilient = _mood_pct(res * 68.0 + (1.0 - stp_n) * 20.0 + mh_u * 12.0)
     optimistic = _mood_pct(rt * 100.0)
     cautious = _mood_pct((1.0 - 0.62 * ag - 0.28 * ex) * 100.0)
     ruthless = _mood_pct(ag * 58.0 + (1.0 - res) * 32.0 + bf_u * 28.0 + stp_n * 12.0)
@@ -732,12 +735,10 @@ def _breed_child(
     child["rules"] = _blend_rules(r1, r2, rng)
     child = {**_blend_filters(p1, p2, rng), **child}
     child.pop("paper_lifetime_basis_cents", None)
+    # Never randomly enable destructive auto-wipes: require both parents to opt in.
     child["auto_reset_paper_on_tick_failure"] = bool(
-        rng.random() < 0.5
-        if p1.get("auto_reset_paper_on_tick_failure")
-        != p2.get("auto_reset_paper_on_tick_failure")
-        else p1.get("auto_reset_paper_on_tick_failure", False)
-    )
+        p1.get("auto_reset_paper_on_tick_failure", False)
+    ) and bool(p2.get("auto_reset_paper_on_tick_failure", False))
     if competitive_traits is not None:
         traits = competitive_traits
     else:

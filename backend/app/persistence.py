@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import sqlite3
 from collections.abc import AsyncIterator
@@ -189,40 +190,48 @@ def _breeder_fallback_rules_for(lab_key: str) -> list[dict[str, Any]]:
     * **D** — rips mid herd (7.5–14m); minute bands kept **poll-wide** (not ~1m needles) so ticks usually see the window.
     * **E** — adaptive: **early** bands (~12–19m) plus **mid/late** (down to a few min left) so a 15m market is not
       uncovered for ~80% of its life (old pack only had ``min_minutes_left`` ≥ 12.5m → no trades for most of the clock).
-    * **B** — ambush late (≥ 18m)
+    * **B** — patient hunter: mid-window YES/NO (15m-friendly) + late NO + short-clock YES finisher (older triple stacked
+      late-NO pack correlated losses and fees).
     """
     if lab_key == "lab_b":
         return [
             {
-                "name": "B ambush NO 18–20.5m",
-                "side": "no",
-                "min_prob": 0.54,
-                "max_prob": 0.84,
-                "min_minutes_left": 18.0,
-                "max_minutes_left": 20.5,
-            },
-            {
-                "name": "B den NO 19.5–23m",
-                "side": "no",
-                "min_prob": 0.46,
+                "name": "B stalk YES 9–13m",
+                "min_prob": 0.36,
                 "max_prob": 0.74,
-                "min_minutes_left": 19.5,
-                "max_minutes_left": 23.0,
+                "min_minutes_left": 9.0,
+                "max_minutes_left": 13.0,
             },
             {
-                "name": "B lair NO 21.5–24m",
+                "name": "B lie-low NO 10–14m",
+                "side": "no",
+                "min_prob": 0.42,
+                "max_prob": 0.80,
+                "min_minutes_left": 10.0,
+                "max_minutes_left": 14.0,
+            },
+            {
+                "name": "B ambush NO 15–20m",
+                "side": "no",
+                "min_prob": 0.48,
+                "max_prob": 0.82,
+                "min_minutes_left": 15.0,
+                "max_minutes_left": 20.0,
+            },
+            {
+                "name": "B den NO 18.5–24m",
                 "side": "no",
                 "min_prob": 0.34,
-                "max_prob": 0.60,
-                "min_minutes_left": 21.5,
+                "max_prob": 0.68,
+                "min_minutes_left": 18.5,
                 "max_minutes_left": 24.0,
             },
             {
-                "name": "B kill-bite YES 23.2–23.9m",
-                "min_prob": 0.58,
-                "max_prob": 0.80,
-                "min_minutes_left": 23.2,
-                "max_minutes_left": 23.9,
+                "name": "B finisher YES 0.35–4m",
+                "min_prob": 0.24,
+                "max_prob": 0.62,
+                "min_minutes_left": 0.35,
+                "max_minutes_left": 4.0,
             },
         ]
     if lab_key == "lab_c":
@@ -442,14 +451,21 @@ def _sql_canonical_branch_key_expr() -> str:
     """
     Stable branch bucket for SQLite filters and the open-sim UNIQUE index.
 
-    - Legacy ``sim_lab`` folds into ``lab_a`` (same paper book as Lab A).
+    - Legacy ``sim_lab`` / ``sim lab`` folds into ``lab_a`` (same paper book as Lab A).
     - NULL / empty / whitespace branch is treated as ``live`` (matches COALESCE defaults).
-    - Otherwise ``lower(trim(branch))`` so casing/spacing cannot split one logical branch.
+    - Whitespace runs map to a single underscore so ``lab b`` / ``lab  b`` align with ``lab_b``
+      (fixes scoped resets missing rows written before stricter normalization).
     """
+    t0 = "trim(coalesce(branch, ''))"
+    t1 = f"replace(replace(replace({t0}, char(9), ' '), char(10), ' '), char(13), ' ')"
+    s = t1
+    for _ in range(8):
+        s = f"replace({s}, '  ', ' ')"
+    raw = f"lower(replace({s}, ' ', '_'))"
     return (
-        "CASE WHEN lower(trim(coalesce(branch, ''))) = 'sim_lab' THEN 'lab_a' "
-        "WHEN nullif(trim(coalesce(branch, '')), '') IS NULL THEN 'live' "
-        "ELSE lower(trim(branch)) END"
+        f"CASE WHEN {raw} = 'sim_lab' THEN 'lab_a' "
+        f"WHEN nullif(trim(coalesce(branch, '')), '') IS NULL THEN 'live' "
+        f"ELSE {raw} END"
     )
 
 
@@ -480,8 +496,9 @@ def _sql_any_branch_predicate(branches: list[str]) -> str:
 
 
 def normalize_trade_branch_for_db(branch: str | None) -> str:
-    """Persisted ``branch`` on signals/trades: lowercase known keys; ``sim_lab`` -> ``lab_a``."""
-    b = str(branch or "").strip().lower()
+    """Persisted ``branch`` on signals/trades: lowercase known keys; ``sim_lab`` / ``sim lab`` -> ``lab_a``; whitespace runs -> ``_``."""
+    raw = str(branch or "").strip().lower()
+    b = re.sub(r"\s+", "_", raw)
     if b in ("", "none"):
         return "live"
     if b == "sim_lab":
@@ -501,6 +518,14 @@ def _sql_sim_open_book_predicate(branch: str) -> str:
     """
     br = _sql_branch_predicate(branch)
     return f"simulated = 1 AND LOWER(COALESCE(status, '')) IN ('open', 'resting') AND ({br})"
+
+
+# ``trades.result`` for rows closed via :meth:`Store.update_trade_sim_early_close` (sold / exited before Kalshi final).
+SIM_EARLY_EXIT_RESULT_VALUES: tuple[str, ...] = (
+    "patient_stop_loss",
+    "swing_exit",
+    "auto_timeout",
+)
 
 
 def _series_prefix_like_pattern(series_prefix: str) -> str | None:
@@ -620,7 +645,9 @@ def default_bot_config() -> dict[str, Any]:
         "rules": _copy_trading_rules_default(),
         "only_yes_subtitle_contains": "",
         "exclude_yes_subtitle_contains": "",
-        "no_bet_when_yes_below_pct": 32,
+        # Below this implied-YES (0–1), only NO-side rules run first. 32% left Live/Lab A (mirrors globals) in
+        # NO-only mode on common ~0.25–0.30 mids while breeder labs used 21–36% overrides and still fired YES bands.
+        "no_bet_when_yes_below_pct": 22,
         "dev_sim_yes_implied_ge_pct": None,
         "swing_exit_implied_drop_pct": 25,
         "enable_patient_stop_loss": True,
@@ -646,18 +673,19 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab B: patient hunter — smaller bites until setup is clean; longer ambush window.
+        # Lab B: patient hunter — smaller bites, quicker loss cap vs old defaults; lower council torque reduces
+        # band-skew misses on thin edges while rules above cover 15m clocks (not only 18m+).
         "lab_b": {
             "engine_running": True,
             "auto_optimize": False,
             "auto_reset_paper_on_tick_failure": False,
             "enable_patient_stop_loss": True,
-            "stop_loss_trigger_pct": -8.0,
-            "min_hold_minutes_before_stop": 30,
-            "balance_fraction_per_window": 0.034,
+            "stop_loss_trigger_pct": -7.0,
+            "min_hold_minutes_before_stop": 28,
+            "balance_fraction_per_window": 0.028,
             "window_minutes": 22,
             "no_bet_when_yes_below_pct": 36,
-            "council_influence_weight_pct": 78,
+            "council_influence_weight_pct": 72,
             "breeder_personality": "conservative",
             "rules": _breeder_fallback_rules_for("lab_b"),
             "paper_fee_model": "kalshi_taker",
@@ -665,7 +693,7 @@ def default_bot_config() -> dict[str, Any]:
             "paper_fee_bps": 0,
             "paper_balance_cents": 500_000,
         },
-        # Lab C: stalker — heavy sizing, short window, strikes fast on early tape.
+        # Lab C: stalker — still more bite than Lab A, but fraction was ~3× staging and blew up sim contract counts.
         "lab_c": {
             "engine_running": True,
             "auto_optimize": False,
@@ -673,7 +701,7 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -12.0,
             "min_hold_minutes_before_stop": 60,
-            "balance_fraction_per_window": 0.172,
+            "balance_fraction_per_window": 0.068,
             "window_minutes": 7,
             "no_bet_when_yes_below_pct": 21,
             "council_influence_weight_pct": 100,
@@ -692,7 +720,7 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -7.0,
             "min_hold_minutes_before_stop": 25,
-            "balance_fraction_per_window": 0.118,
+            "balance_fraction_per_window": 0.068,
             "window_minutes": 13,
             "no_bet_when_yes_below_pct": 19,
             "council_influence_weight_pct": 92,
@@ -711,7 +739,7 @@ def default_bot_config() -> dict[str, Any]:
             "enable_patient_stop_loss": True,
             "stop_loss_trigger_pct": -8.5,
             "min_hold_minutes_before_stop": 28,
-            "balance_fraction_per_window": 0.102,
+            "balance_fraction_per_window": 0.062,
             "window_minutes": 12,
             "no_bet_when_yes_below_pct": 15,
             "council_influence_weight_pct": 100,
@@ -731,7 +759,7 @@ def default_bot_config() -> dict[str, Any]:
                 "enable_patient_stop_loss": True,
                 "stop_loss_trigger_pct": -9.0,
                 "min_hold_minutes_before_stop": 22,
-                "balance_fraction_per_window": 0.09,
+                "balance_fraction_per_window": 0.058,
                 "window_minutes": 12,
                 "paper_fee_model": "kalshi_taker",
                 "kalshi_fee_multiplier": 1.0,
@@ -988,6 +1016,9 @@ def _normalize_loaded_config(cfg: dict[str, Any]) -> dict[str, Any]:
         cfg["exclude_yes_subtitle_contains"] = ""
 
     rules = cfg.get("rules")
+    if not isinstance(rules, list) or len(rules) == 0:
+        cfg["rules"] = [dict(r) for r in _copy_trading_rules_default()]
+        rules = cfg.get("rules")
     if isinstance(rules, list) and rules and _rules_miss_mid_yes_band(rules):
         cfg["rules"] = [*rules, dict(_CATCHALL_MID_RULE)]
 
@@ -1508,6 +1539,25 @@ class Store:
         async with self._open_db() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
+                bp = _sql_branch_predicate(branch_db)
+                in_results = ",".join(
+                    "?" * len(SIM_EARLY_EXIT_RESULT_VALUES),
+                )
+                cur_ev = await db.execute(
+                    f"""
+                    SELECT 1 FROM trades
+                    WHERE simulated = 1
+                      AND ({bp})
+                      AND UPPER(TRIM(ticker)) = ?
+                      AND LOWER(COALESCE(status, '')) = 'settled'
+                      AND LOWER(COALESCE(result, '')) IN ({in_results})
+                    LIMIT 1
+                    """,
+                    (tk, *SIM_EARLY_EXIT_RESULT_VALUES),
+                )
+                if await cur_ev.fetchone():
+                    await db.execute("ROLLBACK")
+                    return None
                 if series_pat:
                     cur = await db.execute(
                         f"""
@@ -1657,10 +1707,11 @@ class Store:
         *,
         mtm_equity_cents: int | None = None,
     ) -> None:
+        br_store = normalize_trade_branch_for_db(branch)
         async with self._open_db() as db:
             await db.execute(
                 "INSERT INTO equity_snapshots (created_at, mode, equity_cents, mtm_equity_cents, note, branch) VALUES (?,?,?,?,?,?)",
-                (created_at, mode, equity_cents, mtm_equity_cents, note, branch),
+                (created_at, mode, equity_cents, mtm_equity_cents, note, br_store),
             )
             await db.commit()
         try:
@@ -1674,7 +1725,7 @@ class Store:
                     "equity_cents": equity_cents,
                     "mtm_equity_cents": mtm_equity_cents,
                     "note": note,
-                    "branch": branch,
+                    "branch": br_store,
                 }
             )
         except Exception:
@@ -1844,6 +1895,33 @@ class Store:
                 LIMIT 1
                 """,
                 (tk,),
+            )
+            row = await cur.fetchone()
+        return row is not None
+
+    async def has_sim_early_exit_for_ticker(self, branch: str, market_ticker: str) -> bool:
+        """
+        True if this branch already has a **simulated** row for this market ticker that was closed before Kalshi
+        finalization (patient stop-loss, swing exit, or auto-timeout). Used to avoid re-buying the same contract
+        after the bot intentionally exited while the market was still active.
+        """
+        tk = str(market_ticker or "").strip().upper()
+        if not tk:
+            return False
+        bp = _sql_branch_predicate(branch)
+        in_results = ",".join("?" * len(SIM_EARLY_EXIT_RESULT_VALUES))
+        async with self._open_db() as db:
+            cur = await db.execute(
+                f"""
+                SELECT 1 FROM trades
+                WHERE simulated = 1
+                  AND ({bp})
+                  AND UPPER(TRIM(ticker)) = ?
+                  AND LOWER(COALESCE(status, '')) = 'settled'
+                  AND LOWER(COALESCE(result, '')) IN ({in_results})
+                LIMIT 1
+                """,
+                (tk, *SIM_EARLY_EXIT_RESULT_VALUES),
             )
             row = await cur.fetchone()
         return row is not None

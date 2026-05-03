@@ -401,7 +401,7 @@ pytest -q
 | **Lab won’t stay “on”** | **`PUT /api/config/lab-branches`** from UI; migrated `lab_e` may default `engine_running` false — Mass apply engines ON. |
 | **5174 and 5175 “look the same”** | Same app + same `VITE_API_ORIGIN` → same data; pills differ (**dev** vs **test**) after refresh. |
 | **Think Tank lines in logs** | **`LAB_THINK_TANK_LOG_INFO=0`** or unset (default silent). |
-| **Dashboard slow / MTM flat** | Fewer open sims; **`DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S`**; **`DASHBOARD_FAST_PAPER_MTM=0`** — see `.env.example`. |
+| **Dashboard slow / loading screen** | Default: full **`/api/dashboard`** skips the parallel Kalshi paper-MTM pass (**`DASHBOARD_FULL_PAPER_MTM=0`**); marks catch up on **`/api/dashboard/equity`** (batch wall is **`max(DASHBOARD_FAST_MTM_BATCH_WALL_S, DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S + 5)`** so it is never below the per-branch cap). Kalshi probe+portfolio is capped (**`DASHBOARD_KALSHI_PORTFOLIO_TIMEOUT_S`**). Set **`DASHBOARD_FULL_PAPER_MTM=1`** only if you need freshest marks on first paint (slower). Fewer open sims; tune **`DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S`** / batch walls; **`DASHBOARD_FAST_PAPER_MTM=0`** trades speed for less Kalshi load — see `.env.example`. |
 | **`database is locked`** | Two processes on one **`SQLITE_PATH`**; separate `data/` per checkout. |
 ---
 

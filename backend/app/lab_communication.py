@@ -3,6 +3,7 @@ Breeding Council / Lab Think Tank — Labs B, C, D, E publish short lines with e
 
 Recent breeder bus lines (weighted toward newest) drive council bias; lines react to **other labs** by name; optional ``reply_to`` UUID ties replies.
 **~58** chars; **anti-repeat** vs last 8 lines; **rotation boost** + **hot-lab damp** when one breeder dominates; council **6–15s**; no ticker ranked hook.
+Proactive pulses defer until :func:`snapshots_have_usable_feed` so empty Kalshi passes do not sound like coordinated trading.
 
 Not persisted. Observational only. ``GET /labs/chat`` unchanged contract (+ optional ``reply_to`` field).
 """
@@ -1331,7 +1332,7 @@ def publish_strategic_pulse_if_due(
         branch,
         bus,
         ticker_hint=None,
-        scanned=0,
+        scanned=scanned,
         breeding_enabled=breeding_enabled,
         full_cfg=full_cfg,
     )
@@ -1370,7 +1371,7 @@ def publish_think_tank_break_silence_if_due(
         branch,
         bus,
         ticker_hint=None,
-        scanned=0,
+        scanned=scanned,
         breeding_enabled=breeding_enabled,
         full_cfg=full_cfg,
     )
@@ -1434,6 +1435,19 @@ def think_tank_on_sim_open(
         action="team_dialogue_sim",
         reply_to=str(pid) if pid else None,
     )
+
+
+def snapshots_have_usable_feed(snapshots: dict[str, dict[str, Any]]) -> bool:
+    """
+    True when this tick produced at least one **ok** asset headline (Kalshi book / implied path succeeded).
+
+    Used to avoid proactive Think Tank lines that read like market commentary while every snapshot is still
+    ``no_contracts``, ``fetch_error``, or disabled — the bus should react to peers only until feed is live.
+    """
+    for s in snapshots.values():
+        if isinstance(s, dict) and s.get("ok") is True:
+            return True
+    return False
 
 
 def seed_think_tank_breeder_intros_at_startup(engines: dict[str, Any]) -> None:
@@ -1510,24 +1524,27 @@ def finalize_think_tank_tick(
     publish_council_reply_if_due(
         engine, branch, bus, breeding_enabled=breeding_enabled, full_cfg=full_cfg
     )
-    publish_strategic_pulse_if_due(
-        engine,
-        branch,
-        bus,
-        snapshots=snapshots,
-        scanned=scanned,
-        breeding_enabled=breeding_enabled,
-        full_cfg=full_cfg,
-    )
-    publish_think_tank_break_silence_if_due(
-        engine,
-        branch,
-        bus,
-        snapshots=snapshots,
-        scanned=scanned,
-        breeding_enabled=breeding_enabled,
-        full_cfg=full_cfg,
-    )
+    # Proactive “strategic” lines are not wired to tickers, but they still read like market-adjacent banter.
+    # Skip them until at least one asset has a real headline snapshot so breeders are not noisy on empty feeds.
+    if snapshots_have_usable_feed(snapshots):
+        publish_strategic_pulse_if_due(
+            engine,
+            branch,
+            bus,
+            snapshots=snapshots,
+            scanned=scanned,
+            breeding_enabled=breeding_enabled,
+            full_cfg=full_cfg,
+        )
+        publish_think_tank_break_silence_if_due(
+            engine,
+            branch,
+            bus,
+            snapshots=snapshots,
+            scanned=scanned,
+            breeding_enabled=breeding_enabled,
+            full_cfg=full_cfg,
+        )
 
     refresh_engine_council_signal(bus, full_cfg)
 

@@ -362,6 +362,16 @@ class KalshiClient:
                 KalshiClient._single_market_cache.pop(k, None)
         return data
 
+    @staticmethod
+    def _open_markets_cache_ttl_for_payload(data: Any) -> float:
+        """Shorter TTL when the last response had no rows — avoids pinning ``no_contracts`` for minutes after a blip."""
+        base = float(KalshiClient.OPEN_MARKETS_CACHE_TTL)
+        if isinstance(data, dict):
+            m = data.get("markets")
+            if not m:
+                return min(5.0, max(2.0, base * 0.35))
+        return base
+
     async def get_open_markets_cached(
         self,
         series_ticker: str,
@@ -372,16 +382,35 @@ class KalshiClient:
         key = f"{series_ticker}:{limit}"
         now = time.monotonic()
         hit = KalshiClient._open_markets_cache.get(key)
-        if hit and (now - hit[0]) < KalshiClient.OPEN_MARKETS_CACHE_TTL:
+        if hit:
             prev = hit[1]
-            if isinstance(prev, dict):
+            eff_ttl = KalshiClient._open_markets_cache_ttl_for_payload(prev)
+            if (now - hit[0]) < eff_ttl and isinstance(prev, dict):
                 return prev
+        st = str(series_ticker or "").strip()
+        if not st:
+            empty: dict[str, Any] = {"markets": []}
+            KalshiClient._open_markets_cache[key] = (now, empty)
+            return empty
         data = await self.get_public(
             "/markets",
-            {"series_ticker": series_ticker, "status": "open", "limit": str(limit)},
+            {"series_ticker": st, "status": "open", "limit": str(limit)},
         )
         if not isinstance(data, dict):
             data = {"markets": []}
+        mkts = data.get("markets") or []
+        # Demo / edge cases: ``status=open`` can return an empty list while the same series still has
+        # ``active`` rows when the status filter is omitted. Engine + snapshot code already drop non-tradeable rows.
+        if not mkts:
+            try:
+                data2 = await self.get_public(
+                    "/markets",
+                    {"series_ticker": st, "limit": str(limit)},
+                )
+            except Exception:
+                data2 = None
+            if isinstance(data2, dict) and (data2.get("markets") or []):
+                data = data2
         KalshiClient._open_markets_cache[key] = (now, data)
         return data
 

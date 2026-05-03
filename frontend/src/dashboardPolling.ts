@@ -9,13 +9,33 @@
  * ``FAST_POLL_METRIC_KEYS`` (includes ``equity_snapshots_lab_e`` and ``metrics_lab_e``). When adding
  * branches, extend those tuples so partial ``GET /api/dashboard/equity`` payloads never leave Lab E
  * as ``undefined`` (which caused hero / chart code to hit ``NoneType``-style ``.get`` errors in TS).
+ *
+ * **Child slots:** ``equity_snapshots_lab_child_slots`` is a map of branch → array; it is merged in
+ * ``App.tsx`` with per-key non-empty preference so an empty array from a fast poll cannot wipe SQLite
+ * history (Compare equity overlay would otherwise forward-fill flat lines across the whole X-axis).
  */
 
-export const DASHBOARD_FULL_POLL_MS = 12_000;
-/** Partial dashboard (`GET /api/dashboard/equity`) — faster than full poll but avoid hammering uvicorn access logs. */
-export const DASHBOARD_EQUITY_POLL_MS = 6_000;
-/** When Equity “Live” (6h dense window + live tail) tab is selected — snappier hero / marquee / chart alignment. */
-export const DASHBOARD_EQUITY_POLL_MS_LIVE_TAB = 2_500;
+/** Full dashboard (heavy Kalshi pass). Slightly under legacy 12s so tiles/config catch up between fast equity polls. */
+export const DASHBOARD_FULL_POLL_MS = 10_000;
+/** Partial dashboard (`GET /api/dashboard/equity`) — slower tabs still refresh MTM vs Kalshi faster than full route. */
+export const DASHBOARD_EQUITY_POLL_MS = 4_000;
+/**
+ * Short rolling-window equity tabs (6h “Live” + 24h “Intraday”): same interval for hero, charts, body ticker,
+ * and coalesced `/api/trades` so one clock drives “real time” vs Kalshi mids between full polls.
+ */
+export const DASHBOARD_EQUITY_POLL_MS_LIVE_TAB = 2_000;
+
+/** True for dense windows where operators expect book/MTM to track the tape (not D/M/Y history tabs). */
+export function equityGranularityUsesFastDashboardPoll(granularity: string): boolean {
+  return granularity === "hourly" || granularity === "intraday";
+}
+
+/** Single interval for ``/api/dashboard/equity`` and the trades toast bootstrap poll — keep in sync. */
+export function dashboardEquityPollIntervalMs(granularity: string): number {
+  return equityGranularityUsesFastDashboardPoll(granularity)
+    ? DASHBOARD_EQUITY_POLL_MS_LIVE_TAB
+    : DASHBOARD_EQUITY_POLL_MS;
+}
 /** Think Tank transcript (`GET /labs/chat`) — cosmetic strip; no need for sub‑5s cadence. */
 export const LAB_CHAT_POLL_MS = 12_000;
 
@@ -76,10 +96,13 @@ export function subscribeDashboardCatchUp(fn: () => void): () => void {
   document.addEventListener("visibilitychange", onVis);
   window.addEventListener("pageshow", onPageShow);
   window.addEventListener("online", runIfVisible);
+  /** Some environments fire ``focus`` without a reliable ``visibilitychange`` after sleep or multi-window switches. */
+  window.addEventListener("focus", runIfVisible);
 
   return () => {
     document.removeEventListener("visibilitychange", onVis);
     window.removeEventListener("pageshow", onPageShow);
     window.removeEventListener("online", runIfVisible);
+    window.removeEventListener("focus", runIfVisible);
   };
 }

@@ -123,11 +123,23 @@ def dollars_to_float(v: Any) -> float | None:
 def implied_yes_probability(
     yes_bid: float | None, yes_ask: float | None
 ) -> float | None:
+    """
+    Mid / one-sided YES from Kalshi quote fields.
+
+    List endpoints often send ``0`` / ``0.0000`` for both sides when there is **no** YES book yet.
+    Those are placeholders, not a real ~0% YES — return ``None`` so dashboards do not peg at hard NO.
+    """
     if yes_bid is not None and yes_ask is not None:
+        if yes_bid <= 0 and yes_ask <= 0:
+            return None
         return max(0.0, min(1.0, (yes_bid + yes_ask) / 2.0))
     if yes_ask is not None:
+        if yes_ask <= 0:
+            return None
         return max(0.0, min(1.0, yes_ask))
     if yes_bid is not None:
+        if yes_bid <= 0:
+            return None
         return max(0.0, min(1.0, yes_bid))
     return None
 
@@ -143,6 +155,9 @@ def implied_yes_for_open_sim_marks(m: dict[str, Any]) -> float | None:
     MTM is more sensitive than rule gates: crossed books, huge YES spreads, or ask-only quotes
     glued to $1.00 from bad feeds can mark entire notionals at par for one tick (multi-lab spikes).
     Those cases return ``None`` so ``_fair_value_open_sim_position_cents`` falls back to entry implieds.
+
+    A **lone** ``no_ask_dollars`` with no YES bid/ask is another common glitch: a tiny NO ask implies YES ≈ 1
+    and spikes the dashed MTM curve; ignore that unless two-sided NO quotes exist.
     """
     yb = dollars_to_float(m.get("yes_bid_dollars"))
     ya = dollars_to_float(m.get("yes_ask_dollars"))
@@ -175,10 +190,27 @@ def implied_yes_for_open_sim_marks(m: dict[str, Any]) -> float | None:
                 return None
             if na - nb > 0.48:
                 return None
-        p_no = (na + nb) / 2.0 if (nb is not None and 0 < nb < 1) else na
+            p_no = (na + nb) / 2.0
+            return max(0.0, min(1.0, 1.0 - p_no))
+        if yb is None and ya is None:
+            return None
+        p_no = float(na)
         return max(0.0, min(1.0, 1.0 - p_no))
     e = effective_no_ask(m, yb, ya)
     if e is not None and 0 < e < 1:
+        if yb is None and ya is None:
+            nb2 = dollars_to_float(m.get("no_bid_dollars"))
+            na2 = dollars_to_float(m.get("no_ask_dollars"))
+            two_sided_no = (
+                nb2 is not None
+                and 0 < nb2 < 1
+                and na2 is not None
+                and 0 < na2 < 1
+                and na2 + 1e-9 >= nb2
+                and na2 - nb2 <= 0.48
+            )
+            if not two_sided_no:
+                return None
         return max(0.0, min(1.0, 1.0 - float(e)))
     lp = dollars_to_float(m.get("last_price_dollars"))
     if lp is not None and 0 < lp < 1:
@@ -356,6 +388,43 @@ def consecutive_stake_cents(
     avail_d = available / 100.0
     stake_dollars = max(1, int(math.ceil(avail_d * fraction - 1e-12)))
     return min(available, stake_dollars * 100)
+
+
+_DEFAULT_SIM_MAX_CONTRACTS_BREEDER = 45
+
+
+def effective_sim_max_contracts_per_order(
+    branch: str, cfg: dict[str, Any], full_cfg: dict[str, Any]
+) -> int | None:
+    """
+    Optional ceiling on simulated ticket size (Kalshi contracts).
+
+    Breeder labs (B–E) and ``lab_child_*`` slots ship with much larger ``balance_fraction_per_window`` than
+    staging Lab A / Live paper, which previously produced very large ``contracts_fp`` on the same quotes.
+    Order: merged branch cfg → top-level config → ``SIM_MAX_CONTRACTS_PER_ORDER`` env (>0) → built-in breeder cap.
+    Config value ``0`` disables capping for that scope (falls through to the next source).
+    """
+    for src in (cfg, full_cfg):
+        if not isinstance(src, dict):
+            continue
+        raw = src.get("max_contracts_per_sim_order")
+        if raw is None or raw == "":
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    ev = int(getattr(env, "sim_max_contracts_per_order", 0) or 0)
+    if ev > 0:
+        return ev
+    b = str(branch or "").strip().lower()
+    if b in (BRANCH_LIVE, BRANCH_LAB_A, "sim_lab"):
+        return None
+    if b in BRANCH_BREEDERS or b.startswith("lab_child_"):
+        return _DEFAULT_SIM_MAX_CONTRACTS_BREEDER
+    return None
 
 
 def asset_cfg_enabled(acfg: Any) -> bool:
@@ -1942,6 +2011,35 @@ async def handle_market(
                 f"  {asset_id} {ticker[:40]}… skip: this asset already took a sim slot this budget window ({branch})",
             )
             return None
+        if ticker.strip() and await engine.store.has_sim_early_exit_for_ticker(
+            branch, ticker
+        ):
+            _skip_log_k = f"{window_id}:{dedupe_key}:early_exit_reentry"
+            if _skip_log_k not in engine._sim_transient_skip_logged:
+                engine._sim_transient_skip_logged.add(_skip_log_k)
+                await log_signal(
+                    engine,
+                    window_id=window_id,
+                    asset_id=asset_id,
+                    ticker=ticker,
+                    side=trade_side,
+                    implied_prob=prob,
+                    minutes_left=mins,
+                    rule_name=str(matched_rule.get("name") or ""),
+                    executed=False,
+                    skip_reason="ticker_early_exit_no_reentry",
+                    mode=trade_mode,
+                    branch=branch,
+                    extra={
+                        "ticker": ticker,
+                        "note": "This market was already bought and closed early (before Kalshi settlement) on this branch — no new simulated entry on the same ticker.",
+                    },
+                )
+                _trace_append(
+                    trace,
+                    f"  {asset_id} {ticker[:40]}… skip: early exit on this ticker earlier — no re-entry ({branch})",
+                )
+            return None
         if ticker.strip() and await engine.store.has_open_sim_for_ticker(
             branch, trade_mode, ticker
         ):
@@ -2017,8 +2115,13 @@ async def handle_market(
     fee_mult = kalshi_fee_multiplier_from_cfg(cfg)
     kalshi_maker = fee_model == "kalshi_maker"
     available_cents = free_cash_cents
+    cap = effective_sim_max_contracts_per_order(
+        branch, cfg, full_cfg if isinstance(full_cfg, dict) else {}
+    )
     if fee_model in ("kalshi_taker", "kalshi_maker"):
         contracts = int(math.floor(max_contracts))
+        if cap is not None:
+            contracts = min(contracts, cap)
         while contracts >= min_c:
             debit, _kb = kalshi_buy_debit_cents(
                 float(contracts), limit_px, maker=kalshi_maker, fee_multiplier=fee_mult
@@ -2028,6 +2131,8 @@ async def handle_market(
             contracts -= 1
     else:
         contracts = int(math.floor(max_contracts))
+        if cap is not None:
+            contracts = min(contracts, cap)
     if contracts < min_c:
         await log_signal(
             engine,
@@ -2451,6 +2556,44 @@ async def compute_open_sim_mark_value_sum_cents(
         if isinstance(p, int):
             total += p
     return total
+
+
+def max_fair_mark_value_cents_for_open_rows(open_rows: list[dict[str, Any]]) -> int:
+    """
+    Hard ceiling on summed fair marks (¢): each Kalshi binary contract resolves to at most $1 / contract,
+    so implied fair value ≤ contracts × $1. Feed bugs or duplicated rows that inflate ``mark_sum``
+    cannot push dashboard MTM above this without logging.
+    """
+    total = 0
+    for r in open_rows:
+        c = _parse_contracts_fp(r.get("contracts_fp"))
+        if c > 0:
+            total += int(math.ceil(c) * 100.0)
+    return total
+
+
+def clamp_open_sim_mark_sum_to_position_ceiling(
+    mark_sum: int,
+    open_rows: list[dict[str, Any]],
+    *,
+    branch: str,
+    ctx: str,
+) -> int:
+    ceiling = max_fair_mark_value_cents_for_open_rows(open_rows)
+    if ceiling <= 0:
+        return mark_sum
+    if mark_sum > ceiling:
+        logger.warning(
+            "paper MTM mark sum capped to theoretical max fair value branch=%s ctx=%s "
+            "mark_cents=%s ceiling_cents=%s open_n=%d",
+            branch,
+            ctx,
+            mark_sum,
+            ceiling,
+            len(open_rows),
+        )
+        return ceiling
+    return mark_sum
 
 
 def exit_bid_for_side_close(
@@ -3192,7 +3335,7 @@ async def snapshot_equity(
 
     roll = await engine.store.dashboard_branch_trade_rollups(branch, trade_mode_filter)
     settled_pnl = int(roll.get("total_pnl_cents") or 0)
-    open_committed = int(roll.get("open_committed_cents") or 0)
+    roll_open_committed = int(roll.get("open_committed_cents") or 0)
 
     mtm_equity: int
     if _is_lab_branch(branch) or (
@@ -3204,10 +3347,39 @@ async def snapshot_equity(
             paper = int(
                 full_cfg.get("paper_balance_cents") or env.default_paper_balance_cents
             )
-        equity = paper + settled_pnl - open_committed
         mode = "simulate"
         open_rows = await engine.store.open_sim_trades_for_branch(branch)
+        # Match ``main._refresh_paper_mtm_from_marks``: premium from the same open rows used for marks
+        # (rollup SUM can lag deduped reads or edge-case drift). Same mark cap so SQLite curves align with
+        # dashboard synthetic tails and tiles.
+        if open_rows:
+            open_committed = sum(int(r.get("amount_cents") or 0) for r in open_rows)
+        else:
+            open_committed = roll_open_committed
         mark_sum = await compute_open_sim_mark_value_sum_cents(engine, open_rows)
+        mark_sum = clamp_open_sim_mark_sum_to_position_ceiling(
+            mark_sum,
+            open_rows,
+            branch=str(branch),
+            ctx="snapshot_equity",
+        )
+        ps = max(0, int(paper))
+        max_mark_abs = max(
+            int(open_committed * 10),
+            int(ps * 6),
+            25_000_000,
+        )
+        if abs(mark_sum) > max_mark_abs:
+            logger.warning(
+                "paper MTM mark sum capped (equity snapshot) branch=%s mark_cents=%s cap=%s open_committed=%s paper_cents=%s",
+                branch,
+                mark_sum,
+                max_mark_abs,
+                open_committed,
+                paper,
+            )
+            mark_sum = int(max(-max_mark_abs, min(max_mark_abs, mark_sum)))
+        equity = paper + settled_pnl - open_committed
         mtm_equity = paper + settled_pnl - open_committed + mark_sum
     else:
         try:

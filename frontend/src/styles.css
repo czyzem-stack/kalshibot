@@ -541,19 +541,6 @@ button.primary.dash-panel-btn.dash-panel-btn--info {
   min-width: 0;
 }
 
-.dashboard-grid-panel__assets-watch-tail-tabs {
-  display: inline-flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 4px;
-  margin: 0 !important;
-  padding: 0 !important;
-}
-
-.dashboard-grid-panel__assets-watch-tail-tabs .chart-tab {
-  flex-shrink: 0;
-}
-
 .dashboard-grid-panel__meta {
   display: flex;
   align-items: center;
@@ -2514,10 +2501,11 @@ input[type="number"] {
   border: 1px solid rgba(35, 51, 90, 0.8);
   background: linear-gradient(180deg, rgba(10, 18, 40, 0.98) 0%, rgba(8, 14, 30, 0.95) 100%);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
-  display: grid;
-  /* Live + Lab A–E = six cells; five columns wrapped Lab E onto a second row */
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 3px 4px;
+  /* Flex + nowrap: keeps Live…Lab E in strict column order (grid wrap confused Lab D vs Lab E at narrow widths). */
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 4px;
   align-items: stretch;
   box-sizing: border-box;
   overflow-x: auto;
@@ -2535,8 +2523,10 @@ input[type="number"] {
 }
 
 .branch-hero-snapshot--header .branch-hero-snapshot__row {
+  flex: 1 1 70px;
   width: auto;
-  min-width: 0;
+  min-width: 70px;
+  max-width: 160px;
   min-height: 0;
   padding: 3px 5px 3px 7px;
 }
@@ -2604,6 +2594,64 @@ input[type="number"] {
   letter-spacing: 0.02em;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.45);
   flex: 0 0 auto;
+}
+
+.branch-hero-snapshot__mtm-hint {
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: rgba(186, 205, 238, 0.82);
+  text-align: right;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+
+.branch-hero-snapshot--header .branch-hero-snapshot__mtm-hint {
+  font-size: 8.5px;
+  opacity: 0.92;
+}
+
+.branch-hero-snapshot__mtm-hint--rich {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 3px;
+}
+
+.branch-hero-snapshot__mtm-hint-dollar {
+  font-weight: 700;
+}
+
+.branch-hero-snapshot__mtm-hint-label {
+  color: rgba(186, 205, 238, 0.55);
+  font-weight: 500;
+}
+
+.branch-hero-snapshot__mtm-ret {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  font-weight: 700;
+  color: rgba(186, 205, 238, 0.88);
+}
+
+.branch-hero-snapshot__mtm-ret--up {
+  color: var(--ok);
+}
+
+.branch-hero-snapshot__mtm-ret--down {
+  color: var(--danger);
+}
+
+.branch-hero-snapshot__mtm-ret-arrow {
+  font-size: 0.95em;
+  line-height: 1;
+}
+
+.branch-hero-snapshot:not(.branch-hero-snapshot--header) .branch-hero-snapshot__mtm-ret {
+  font-size: 9.5px;
 }
 
 .branch-hero-snapshot__extra {
@@ -2739,9 +2787,9 @@ input[type="number"] {
     padding: 5px 6px 6px;
   }
 
-  .branch-hero-snapshot--header {
-    /* Keep one horizontal strip; scroll if the viewport is too narrow for six columns */
-    grid-template-columns: repeat(6, minmax(52px, 1fr));
+  .branch-hero-snapshot--header .branch-hero-snapshot__row {
+    min-width: 52px;
+    flex-basis: 52px;
   }
 }
 

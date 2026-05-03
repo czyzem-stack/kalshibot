@@ -18,4 +18,5 @@ if ($env:KALSHI_BOT_PORT -and $env:KALSHI_BOT_PORT -match "^\d+$") {
 }
 
 Write-Host "Starting API on http://127.0.0.1:$port (set KALSHI_BOT_PORT to change)" -ForegroundColor Cyan
+Write-Host "Note: --reload restarts Python on file saves; Vite may log ECONNRESET for in-flight /api/* until the browser retries. Omit --reload for a stable long-run panel." -ForegroundColor DarkGray
 & $Py -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port $port

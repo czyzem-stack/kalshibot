@@ -286,10 +286,37 @@ class EnvSettings:
     dashboard_fast_paper_mtm: bool = _get(
         "DASHBOARD_FAST_PAPER_MTM", "1"
     ).lower() not in ("0", "false", "no", "off")
+    # If true, ``GET /api/dashboard`` runs the same parallel Kalshi paper-MTM batch as before (can block first paint ~24s+).
+    # Default off: first JSON uses SQLite snapshot / book fallback; fast ``/api/dashboard/equity`` polls still refresh marks.
+    dashboard_full_paper_mtm: bool = _get(
+        "DASHBOARD_FULL_PAPER_MTM", "0"
+    ).lower() in ("1", "true", "yes", "on")
     # Per-branch wall-clock cap for each paper MTM refresh on the fast equity poll (Live + labs run concurrently; each branch gets this budget). One slow branch no longer cancels the others.
     dashboard_fast_mtm_gather_timeout_s: float = _get_float(
         "DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S", 30.0, min_value=5.0, max_value=120.0
     )
+    # Hard wall for the **entire** parallel paper-MTM batch on ``GET /api/dashboard`` (with_marks). Without this,
+    # slow Kalshi / many open sims could block the first JSON until each branch's 50s cap — the Vite shell sits on
+    # "Chomp's Diner" loading past the browser budget. Child GA slots do not run in this batch (see ``main.py``).
+    dashboard_full_mtm_batch_wall_s: float = _get_float(
+        "DASHBOARD_FULL_MTM_BATCH_WALL_S", 24.0, min_value=8.0, max_value=90.0
+    )
+    # Wall for the **entire** parallel paper-MTM batch on ``GET /api/dashboard/equity`` (fast path). Without this,
+    # the UI could wait for every branch's per-branch cap (~30s) before merging metrics.
+    dashboard_fast_mtm_batch_wall_s: float = _get_float(
+        # Default ≥ typical per-branch gather cap so parallel MTM is not aborted every poll when Kalshi is slow.
+        "DASHBOARD_FAST_MTM_BATCH_WALL_S", 36.0, min_value=3.0, max_value=90.0
+    )
+    # ``GET /api/dashboard`` and ``/equity`` both await Kalshi public probe + private portfolio reads; cap wall time
+    # so a hung exchange call does not block the Vite loading screen indefinitely.
+    dashboard_kalshi_portfolio_timeout_s: float = _get_float(
+        "DASHBOARD_KALSHI_PORTFOLIO_TIMEOUT_S", 14.0, min_value=3.0, max_value=120.0
+    )
+    # After each paper MTM refresh (same Kalshi marks pass as tiles / chart tail), append equity_snapshots
+    # rows so intraday charts gain points at the fast /api/dashboard/equity cadence, not only engine-loop ticks.
+    dashboard_persist_mtm_equity_snapshots: bool = _get(
+        "DASHBOARD_PERSIST_MTM_EQUITY_SNAPSHOTS", "1"
+    ).lower() not in ("0", "false", "no", "off")
     engine_study_trade_window_minutes: int = _get_int(
         "ENGINE_STUDY_TRADE_WINDOW_MINUTES", 15, min_value=1
     )
@@ -304,6 +331,10 @@ class EnvSettings:
     default_window_minutes: int = _get_int("DEFAULT_WINDOW_MINUTES", 15, min_value=1)
     default_balance_fraction_per_window: float = _get_float(
         "DEFAULT_BALANCE_FRACTION_PER_WINDOW", 0.03, min_value=0.0
+    )
+    # Hard cap on simulated order size (contracts). 0 = use branch defaults in engine (breeder labs / child slots).
+    sim_max_contracts_per_order: int = _get_int(
+        "SIM_MAX_CONTRACTS_PER_ORDER", 0, min_value=0, max_value=500_000
     )
     default_min_contracts: int = _get_int("DEFAULT_MIN_CONTRACTS", 1, min_value=1)
     default_paper_balance_cents: int = _get_int(

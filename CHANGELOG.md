@@ -2,6 +2,23 @@
 
 All notable project-level changes should be documented in this file.
 
+## v0.4.15.076 - Fast equity MTM: batch wall ≥ per-branch cap - 2026-05-03
+
+- **Backend (`main.py`, `settings_env.py`):** Fast paper-MTM batch wall-clock is now **`max(DASHBOARD_FAST_MTM_BATCH_WALL_S, DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S + 5)`** so a configured batch wall **below** the per-branch Kalshi cap cannot spuriously cancel every poll (partial marks, stacked **`/api/dashboard/equity`** requests, SQLite contention that delayed **`POST /api/data/reset`**). Same **`max(..., per-branch + 5)`** for optional full-route paper MTM when **`DASHBOARD_FULL_PAPER_MTM=1`**. Default **`DASHBOARD_FAST_MTM_BATCH_WALL_S`** raised **12 → 36** seconds.
+- **Docs:** `.env.example` comments for the two knobs.
+
+## v0.4.15.075 - Dashboard: cap Kalshi + fast equity MTM wall; earlier UI retry - 2026-05-03
+
+- **Backend (`settings_env.py`, `main.py`):** **`DASHBOARD_KALSHI_PORTFOLIO_TIMEOUT_S`** (default **14s**) wraps the public probe + **`fetch_portfolio_snapshot`** so a hung Kalshi call cannot block **`/api/dashboard`** / **`/equity`** indefinitely. **`DASHBOARD_FAST_MTM_BATCH_WALL_S`** (default **12s** in .075; superseded by .076) caps the **entire** parallel paper-MTM batch on **`GET /api/dashboard/equity`** (previously could wait for each branch’s per-branch cap in parallel ~30s+).
+- **Frontend (`App.tsx`):** While **`dash`** is still null, **force-refresh** at **~28s** as well as after the long HTTP-timeout window (supersedes stuck in-flight dashboard fetches sooner).
+- **Docs:** `.env.example`, `README.md` troubleshooting row.
+
+## v0.4.15.074 - Dashboard: fast first paint (skip full-route paper MTM by default) - 2026-05-03
+
+- **Backend (`settings_env.py`, `main.py`):** New **`DASHBOARD_FULL_PAPER_MTM`** (default **off**). **`GET /api/dashboard`** no longer waits on the parallel Kalshi paper mark-refresh batch unless explicitly enabled — avoids multi‑tens‑of‑seconds first paint when many labs have open sims. Live marks still refresh on **`GET /api/dashboard/equity`** when **`DASHBOARD_FAST_PAPER_MTM`** is on (unchanged default).
+- **Backend (`main.py`):** Paper metrics **`current_mtm_dollars`** / **`return_mtm_vs_start_pct`** fall back to **book** when no SQLite MTM snapshot exists, so tiles stay coherent until the first fast equity poll.
+- **Docs:** `.env.example`, `README.md` troubleshooting row, **`dashboard_equity`** route docstring.
+
 ## v0.4.15.073 - Labs breeding: parent engines stay on after GA refill - 2026-04-30
 
 - **Backend (`lab_breeding.py`):** **`_expand_parent_lab_after_replacement`** — when breeding **refills** a visible parent slot (**hard death**, **soft cull**, **child promotion**, or **Lab A adoption**), merged config now **forces `engine_running: true`** on **`lab_a`–`lab_e`**. Crossover fallback previously deep-copied **`parent_a`**, which could persist **`engine_running: false`** overnight; cleared **`lab_child_*`** genomes could also leak **`false`** onto a parent. Pausing a lab remains an explicit **Settings** / **`POST /api/engine/toggle`** action only.

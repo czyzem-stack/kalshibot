@@ -1,5 +1,13 @@
+import http from "node:http";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+
+/**
+ * Pooled keep-alive toward the FastAPI host cuts random ``ECONNRESET`` on Windows when the dev proxy
+ * opens many parallel /api/* sockets (dashboard + equity + trades). Does **not** survive uvicorn
+ * ``--reload`` restarts or API crashes — those still reset the peer.
+ */
+const apiUpstreamAgent = new http.Agent({ keepAlive: true, maxSockets: 80 });
 
 /** Backend origin for dev + preview proxy; must match uvicorn (develop default 8765; main worktree / Kalshibot-main often 8770). Set `VITE_API_ORIGIN` in frontend/.env — see frontend/.env.example */
 export default defineConfig(({ mode }) => {
@@ -11,13 +19,15 @@ export default defineConfig(({ mode }) => {
     "/api": {
       target: origin,
       changeOrigin: true,
-      // Slow first dashboard + large payloads; does not fix ECONNRESET (peer closed = API died/restarted).
+      agent: apiUpstreamAgent,
+      // Slow first dashboard + large payloads. Peer ``ECONNRESET`` = API process closed socket (reload/crash/OOM).
       timeout: 120_000,
       proxyTimeout: 120_000,
     },
     "/labs": {
       target: origin,
       changeOrigin: true,
+      agent: apiUpstreamAgent,
       timeout: 120_000,
       proxyTimeout: 120_000,
     },
