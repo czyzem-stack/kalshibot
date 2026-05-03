@@ -284,17 +284,25 @@ def _coerce_engine_running_flag(
 
 
 def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any] | None:
-    """Build effective config for one engine branch. Returns None if that branch should not run."""
+    """Build effective config for one engine branch.
+
+    Returns ``None`` when ``full_cfg`` is not a dict or the branch key is unknown.
+    Live always returns a merged dict: when ``engine_running`` is false, ``_live_trading_gate_off``
+    is set so ticks refresh public market data without trading.
+    """
     if not isinstance(full_cfg, dict):
         return None
     if branch == BRANCH_LIVE:
-        if not effective_live_engine_running(full_cfg):
-            return None
         out = dict(full_cfg)
         out["_branch"] = BRANCH_LIVE
         sim = live_paper_trading_enabled(full_cfg)
         out["_simulate_orders"] = sim
         out["_trade_mode"] = "simulate" if sim else "live"
+        # When Live trading is gated off, we still merge a branch cfg so ``tick_once`` can refresh public
+        # market snapshots for the dashboard (previously ``dual_engine_loop`` skipped Live entirely and tiles
+        # looked like Kalshi was down for hours). ``_live_trading_gate_off`` suppresses orders / patient SL.
+        if not effective_live_engine_running(full_cfg):
+            out["_live_trading_gate_off"] = True
         apply_patient_stop_loss_defaults_to_merged_cfg(full_cfg, branch, out)
         return out
 
@@ -319,6 +327,12 @@ def merge_branch_config(full_cfg: dict[str, Any], branch: str) -> dict[str, Any]
             if v is None:
                 continue
             if k == "assets" and isinstance(v, dict) and len(v) == 0:
+                continue
+            # Same idea as ``assets: {}``: a thin client PATCH or a bad save can persist ``rules: []`` on a lab.
+            # That used to overwrite top-level ``rules`` on the merged branch cfg → ``build_effective_rules`` saw
+            # zero bands, tick_once returned before any Kalshi fetch, and **only** GA child slots (non-empty genomes)
+            # kept trading — parents looked "dead" while ``lab_child_*`` still had rules from breeding.
+            if k == "rules" and isinstance(v, list) and len(v) == 0:
                 continue
             out[k] = v
         out["_branch"] = branch

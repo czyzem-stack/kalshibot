@@ -2520,7 +2520,7 @@ async def _compose_dashboard_base(
         fleet_for_committed=fleet_for_committed,
     )
 
-    eff_live = merge_branch_config(cfg, BRANCH_LIVE) if live_engine_on else None
+    eff_live = merge_branch_config(cfg, BRANCH_LIVE)
     eff_lab_a = merge_branch_config(cfg, BRANCH_LAB_A) if lab_a_engine_on else None
     eff_lab_b = merge_branch_config(cfg, BRANCH_LAB_B) if lab_b_engine_on else None
     eff_lab_c = merge_branch_config(cfg, BRANCH_LAB_C) if lab_c_engine_on else None

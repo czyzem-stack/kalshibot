@@ -402,25 +402,32 @@ def breeder_smart_defaults_snapshot(lab_key: str) -> dict[str, Any]:
 
 def _ensure_breeder_labs_have_rules(cfg: dict[str, Any]) -> None:
     """
-    Lab A and breeder labs B–E must never run with ``rules: []`` (engine would scan markets but never match).
+    Parent labs A–E and ``lab_child_*`` slots must never run with ``rules: []`` (engine would skip Kalshi fetches).
 
     * **Lab A (staging):** empty rules inherit a **copy** of top-level ``rules`` when present (mirror Live for promotion).
       If globals are empty too, Lab A gets the shipped default YES/NO pack.
     * **Labs B–E (breeders):** empty rules must **not** copy globals — that forced every breeder to trade the same
       bands as Live and looked like synchronized “echo” agents. They always get ``_breeder_fallback_rules_for``.
+    * **lab_child_1…6:** empty/missing rules inherit **globals** when present, else the default YES/NO pack, so a
+      partial breeding write cannot leave a slot with zero bands while parent labs look mysteriously idle.
     """
     glob = cfg.get("rules")
     global_rules: list[dict[str, Any]] = []
     if isinstance(glob, list) and glob:
         global_rules = [dict(r) for r in glob if isinstance(r, dict)]
     default_pack = _copy_trading_rules_default()
-    for lk in ("lab_a", *_BREEDER_PARENT_LABS):
+    for lk in ("lab_a", *_BREEDER_PARENT_LABS, *BRANCH_CHILD_LABS):
         block = cfg.get(lk)
         if not isinstance(block, dict):
             continue
         rules = block.get("rules")
         if not isinstance(rules, list) or len(rules) == 0:
             if lk == "lab_a":
+                if global_rules:
+                    block["rules"] = [dict(r) for r in global_rules]
+                else:
+                    block["rules"] = [dict(r) for r in default_pack]
+            elif lk in BRANCH_CHILD_LABS:
                 if global_rules:
                     block["rules"] = [dict(r) for r in global_rules]
                 else:

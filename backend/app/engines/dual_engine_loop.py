@@ -106,22 +106,24 @@ async def dual_engine_loop(
                 return_exceptions=True,
             )
 
-            if effective_live_engine_running(cfg):
-                el = engines[BRANCH_LIVE]
-                try:
-                    await tick_once(el, full_cfg=full_cfg)
-                except Exception as e:
-                    err = str(e)
-                    _data_log(
-                        "system",
-                        {
-                            "event": "dual_engine_tick_error",
-                            "branch": BRANCH_LIVE,
-                            "error": err[:800],
-                            "at": iso(utc_now()),
-                        },
-                    )
-                    el.state.last_error = err[:500]
+            # Always tick Live for Kalshi /markets + orderbook snapshots on the dashboard, even when
+            # ``engine_running`` is false (``merge_branch_config`` sets ``_live_trading_gate_off`` so
+            # ``handle_market`` does not trade or log signals).
+            el = engines[BRANCH_LIVE]
+            try:
+                await tick_once(el, full_cfg=full_cfg)
+            except Exception as e:
+                err = str(e)
+                _data_log(
+                    "system",
+                    {
+                        "event": "dual_engine_tick_error",
+                        "branch": BRANCH_LIVE,
+                        "error": err[:800],
+                        "at": iso(utc_now()),
+                    },
+                )
+                el.state.last_error = err[:500]
             # When Live is off, labs used to tick with zero spacing → three parallel-ish series scans + order books
             # in one loop turn, which spikes Kalshi public limits (HTTP 429) and looks like "labs never trade".
             lab_stagger_armed = False

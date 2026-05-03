@@ -120,6 +120,33 @@ def dollars_to_float(v: Any) -> float | None:
         return None
 
 
+# Kalshi market ``status`` (lifecycle) includes ``initialized`` / ``active`` / … — not the same strings as the
+# ``GET /markets?status=open`` query filter. An allowlist of ("active", "open") silently dropped ``initialized``
+# rows that still carry (or soon carry) books, so the engine saw zero tradeable markets while the exchange UI
+# showed activity. We only skip terminal / clearly non-tradeable lifecycles.
+_NON_TRADABLE_MARKET_LIFECYCLE_STATUSES: frozenset[str] = frozenset(
+    {
+        "closed",
+        "settled",
+        "finalized",
+        "determined",
+        "disputed",
+        "amended",
+        "inactive",
+        "canceled",
+        "cancelled",
+    }
+)
+
+
+def market_row_lifecycle_allows_trading(m: dict[str, Any]) -> bool:
+    """True if this market row is not in a terminal / inactive Kalshi lifecycle state."""
+    mstatus = str(m.get("status") or "").strip().lower()
+    if not mstatus:
+        return True
+    return mstatus not in _NON_TRADABLE_MARKET_LIFECYCLE_STATUSES
+
+
 def implied_yes_probability(
     yes_bid: float | None, yes_ask: float | None
 ) -> float | None:
@@ -895,8 +922,7 @@ def _market_sim_trade_rank(
     ticker = str(market.get("ticker") or "")
     if not ticker:
         return (0, -1e18, 0.0)
-    mstatus = str(market.get("status") or "").lower()
-    if mstatus and mstatus not in ("active", "open"):
+    if not market_row_lifecycle_allows_trading(market):
         return (0, -1e18, 0.0)
     yes_sub = str(market.get("yes_sub_title") or market.get("subtitle") or "").lower()
     if subtitle_filter and subtitle_filter not in yes_sub:
@@ -1148,7 +1174,8 @@ async def tick_once(
     engine: TradingEngine, *, full_cfg: dict[str, Any] | None = None
 ) -> None:
     now = utc_now()
-    engine.state.last_tick_at = iso(now)
+    # ``last_tick_at`` is set only after a completed scan (or explicit skip below). Setting it at the very
+    # start made the UI look "fresh" while ``asset_snapshots`` could stay stale if this coroutine raised mid-tick.
     engine.state.last_error = None
 
     if full_cfg is None:
@@ -1163,6 +1190,7 @@ async def tick_once(
             f"skip {iso(now)} | branch={br} | no merged config — ensure ``{br}`` exists in bot_config "
             f"(Live uses top-level ``engine_running`` when paper/real gates allow)."
         ]
+        engine.state.last_tick_at = iso(utc_now())
         return
 
     first_branch_tick = engine._tick_count == 0
@@ -1213,6 +1241,9 @@ async def tick_once(
             or full_cfg.get("paper_balance_cents")
             or env.default_paper_balance_cents
         )
+    elif branch == BRANCH_LIVE and bool(cfg.get("_live_trading_gate_off")):
+        # Display-only ticks while Live is intentionally stopped — avoid hammering private balance.
+        balance_cents = 0
     else:
         try:
             bal = await engine.client.get_private("/portfolio/balance")
@@ -1232,6 +1263,10 @@ async def tick_once(
         f"tick {iso(now)} | branch={branch} | trade_mode={trade_mode} | "
         f"balance_cents={balance_cents} | window={wid} | simulate_orders={bool(cfg.get('_simulate_orders'))}"
     )
+    if branch == BRANCH_LIVE and bool(cfg.get("_live_trading_gate_off")):
+        trace.append(
+            "live_trading_gate_off=1 — public market refresh only (engine_running is false; no orders or signals)."
+        )
 
     rules = build_effective_rules(cfg)
     if not rules:
@@ -1241,169 +1276,182 @@ async def tick_once(
         engine.state.markets_scanned = 0
         engine.state.asset_snapshots = {}
         engine.state.last_tick_trace = trace[-150:]
+        engine.state.last_tick_at = iso(utc_now())
         engine._tick_count += 1
         return
 
     snapshots: dict[str, dict[str, Any]] = {}
     scanned = 0
-    for asset_id, acfg in assets.items():
-        aid = str(asset_id)
-        if not asset_cfg_enabled(acfg):
-            trace.append(f"asset {asset_id}: disabled, skip")
-            snapshots[aid] = {
-                "ok": False,
-                "reason": "disabled",
-                "note": "Asset toggle is off.",
-            }
-            continue
-        series = str(acfg.get("series_ticker") or "").strip()
-        if not series:
-            trace.append(f"asset {asset_id}: no series_ticker, skip")
-            snapshots[aid] = {
-                "ok": False,
-                "reason": "no_series",
-                "note": "Set series_ticker in config.",
-            }
-            continue
-        try:
-            data = await engine.client.get_open_markets_cached(series, limit=100)
-        except Exception as e:
-            engine.state.last_error = f"markets {series}: {e}"
-            trace.append(f"asset {asset_id} series={series}: FETCH ERROR {e}")
-            snapshots[aid] = {
-                "ok": False,
-                "reason": "fetch_error",
-                "note": str(e)[:240],
-            }
-            continue
-        if not isinstance(data, dict):
-            data = {}
-        markets = list(data.get("markets") or [])
-        scanned += len(markets)
-        trace.append(
-            f"asset {asset_id} series={series}: fetched {len(markets)} open markets"
-        )
-        ob_n = await enrich_markets_with_orderbooks(
-            engine.client, markets, now, max_fetches=ob_enrich_cap
-        )
-        if ob_n:
+    try:
+        for asset_id, acfg in assets.items():
+            aid = str(asset_id)
+            if not asset_cfg_enabled(acfg):
+                trace.append(f"asset {asset_id}: disabled, skip")
+                snapshots[aid] = {
+                    "ok": False,
+                    "reason": "disabled",
+                    "note": "Asset toggle is off.",
+                }
+                continue
+            series = str(acfg.get("series_ticker") or "").strip()
+            if not series:
+                trace.append(f"asset {asset_id}: no series_ticker, skip")
+                snapshots[aid] = {
+                    "ok": False,
+                    "reason": "no_series",
+                    "note": "Set series_ticker in config.",
+                }
+                continue
+            try:
+                data = await engine.client.get_open_markets_cached(series, limit=100)
+            except Exception as e:
+                engine.state.last_error = f"markets {series}: {e}"
+                trace.append(f"asset {asset_id} series={series}: FETCH ERROR {e}")
+                snapshots[aid] = {
+                    "ok": False,
+                    "reason": "fetch_error",
+                    "note": str(e)[:240],
+                }
+                continue
+            if not isinstance(data, dict):
+                data = {}
+            markets = list(data.get("markets") or [])
+            scanned += len(markets)
             trace.append(
-                f"asset {asset_id} series={series}: orderbook backfill improved {ob_n} row(s)"
+                f"asset {asset_id} series={series}: fetched {len(markets)} open markets"
             )
-        dev_floor = dev_sim_yes_bypass_threshold(cfg)
-        sim_orders = bool(cfg.get("_simulate_orders"))
-        pre_snap = pick_asset_snapshot(
-            markets,
-            rules,
-            subtitle_filter,
-            exclude_substrings,
-            now,
-            dev_sim_yes_floor=dev_floor,
-            simulate_orders=sim_orders,
-            rule_pick_cfg=cfg,
-        )
-        await maybe_backfill_headline_orderbook(
-            engine.client,
-            markets,
-            pre_snap,
-            trace,
-            asset_id=str(asset_id),
-            series=series,
-        )
-        no_rule = 0
-        _br = branch if branch in BRANCH_BREEDERS else None
-        _fc = full_cfg if _br else None
-        _eng = engine if _br else None
-        if _br and _eng is not None:
-            _breeder_shared_council_inputs(_eng)
-        ranked_markets = sorted(
-            [m for m in markets if isinstance(m, dict)],
-            key=lambda mm: _market_sim_trade_rank(
-                mm,
-                rules=rules,
-                cfg=cfg,
-                subtitle_filter=subtitle_filter,
-                exclude_substrings=exclude_substrings,
-                now=now,
-                dev_floor=dev_floor,
-                simulate_orders=sim_orders,
-                breeder_branch=_br,
-                full_cfg=_fc,
-                engine=_eng,
-            ),
-            reverse=True,
-        )
-        hive_bus = (
-            get_lab_communication_bus() if branch in LAB_CHATTER_BRANCHES else None
-        )
-        for idx, m in enumerate(ranked_markets):
-            prob_rank: float | None = None
-            if hive_bus is not None and isinstance(m, dict):
-                _yb = dollars_to_float(m.get("yes_bid_dollars"))
-                _ya = dollars_to_float(m.get("yes_ask_dollars"))
-                prob_rank = implied_yes_probability(_yb, _ya)
-            kind = await handle_market(
-                engine,
-                cfg=cfg,
-                trade_mode=trade_mode,
-                branch=branch,
-                window_id=wid,
-                asset_id=str(asset_id),
-                series_ticker=series,
-                market=m,
-                rules=rules,
-                subtitle_filter=subtitle_filter,
-                exclude_substrings=exclude_substrings,
-                balance_cents=balance_cents,
-                study_wall_wid=study_wid,
-                trace=trace,
-                full_cfg=full_cfg,
+            ob_n = await enrich_markets_with_orderbooks(
+                engine.client, markets, now, max_fetches=ob_enrich_cap
             )
-            if hive_bus is not None:
-                think_tank_on_ranked_market(
-                    engine,
-                    branch,
-                    idx=idx,
-                    kind=kind,
-                    ticker=str(m.get("ticker") or ""),
-                    implied_yes=prob_rank,
-                    bus=hive_bus,
+            if ob_n:
+                trace.append(
+                    f"asset {asset_id} series={series}: orderbook backfill improved {ob_n} row(s)"
                 )
-            if kind == "no_rule":
-                no_rule += 1
-        if no_rule:
-            trace.append(
-                f"asset {asset_id}: {no_rule} market(s) had book+time but no rule matched"
+            dev_floor = dev_sim_yes_bypass_threshold(cfg)
+            sim_orders = bool(cfg.get("_simulate_orders"))
+            pre_snap = pick_asset_snapshot(
+                markets,
+                rules,
+                subtitle_filter,
+                exclude_substrings,
+                now,
+                dev_sim_yes_floor=dev_floor,
+                simulate_orders=sim_orders,
+                rule_pick_cfg=cfg,
             )
-        snapshots[aid] = pick_asset_snapshot(
-            markets,
-            rules,
-            subtitle_filter,
-            exclude_substrings,
-            now,
-            dev_sim_yes_floor=dev_floor,
-            simulate_orders=sim_orders,
-            rule_pick_cfg=cfg,
-        )
+            await maybe_backfill_headline_orderbook(
+                engine.client,
+                markets,
+                pre_snap,
+                trace,
+                asset_id=str(asset_id),
+                series=series,
+            )
+            no_rule = 0
+            _br = branch if branch in BRANCH_BREEDERS else None
+            _fc = full_cfg if _br else None
+            _eng = engine if _br else None
+            if _br and _eng is not None:
+                _breeder_shared_council_inputs(_eng)
+            ranked_markets = sorted(
+                [m for m in markets if isinstance(m, dict)],
+                key=lambda mm: _market_sim_trade_rank(
+                    mm,
+                    rules=rules,
+                    cfg=cfg,
+                    subtitle_filter=subtitle_filter,
+                    exclude_substrings=exclude_substrings,
+                    now=now,
+                    dev_floor=dev_floor,
+                    simulate_orders=sim_orders,
+                    breeder_branch=_br,
+                    full_cfg=_fc,
+                    engine=_eng,
+                ),
+                reverse=True,
+            )
+            hive_bus = (
+                get_lab_communication_bus() if branch in LAB_CHATTER_BRANCHES else None
+            )
+            for idx, m in enumerate(ranked_markets):
+                prob_rank: float | None = None
+                if hive_bus is not None and isinstance(m, dict):
+                    _yb = dollars_to_float(m.get("yes_bid_dollars"))
+                    _ya = dollars_to_float(m.get("yes_ask_dollars"))
+                    prob_rank = implied_yes_probability(_yb, _ya)
+                kind = await handle_market(
+                    engine,
+                    cfg=cfg,
+                    trade_mode=trade_mode,
+                    branch=branch,
+                    window_id=wid,
+                    asset_id=str(asset_id),
+                    series_ticker=series,
+                    market=m,
+                    rules=rules,
+                    subtitle_filter=subtitle_filter,
+                    exclude_substrings=exclude_substrings,
+                    balance_cents=balance_cents,
+                    study_wall_wid=study_wid,
+                    trace=trace,
+                    full_cfg=full_cfg,
+                )
+                if hive_bus is not None:
+                    think_tank_on_ranked_market(
+                        engine,
+                        branch,
+                        idx=idx,
+                        kind=kind,
+                        ticker=str(m.get("ticker") or ""),
+                        implied_yes=prob_rank,
+                        bus=hive_bus,
+                    )
+                if kind == "no_rule":
+                    no_rule += 1
+            if no_rule:
+                trace.append(
+                    f"asset {asset_id}: {no_rule} market(s) had book+time but no rule matched"
+                )
+            snapshots[aid] = pick_asset_snapshot(
+                markets,
+                rules,
+                subtitle_filter,
+                exclude_substrings,
+                now,
+                dev_sim_yes_floor=dev_floor,
+                simulate_orders=sim_orders,
+                rule_pick_cfg=cfg,
+            )
+    except Exception as e:
+        err = str(e)
+        engine.state.last_error = err[:500]
+        trace.append(f"tick aborted: {err[:400]}")
+        engine.state.markets_scanned = 0
+        engine.state.asset_snapshots = {}
+        engine.state.last_tick_trace = trace[-150:]
+        engine.state.last_tick_at = iso(utc_now())
+        raise
 
     engine.state.markets_scanned = scanned
     engine.state.asset_snapshots = snapshots
     engine.state.last_tick_trace = trace[-150:]
+    engine.state.last_tick_at = iso(utc_now())
 
-    try:
-        n_psl = await _handle_patient_stop_loss_exits(
-            engine, full_cfg=full_cfg, cfg=cfg, now=now, trace=trace
-        )
-        if n_psl:
-            _trace_append(
-                trace,
-                f"patient_stop_loss {branch}: closed {n_psl} position(s) this tick",
+    if branch != BRANCH_LIVE or not bool(cfg.get("_live_trading_gate_off")):
+        try:
+            n_psl = await _handle_patient_stop_loss_exits(
+                engine, full_cfg=full_cfg, cfg=cfg, now=now, trace=trace
             )
-    except Exception as e:
-        _trace_append(
-            trace, f"patient_stop_loss {branch}: handler error {str(e)[:200]}"
-        )
-        engine.state.last_error = f"patient_stop_loss: {e}"
+            if n_psl:
+                _trace_append(
+                    trace,
+                    f"patient_stop_loss {branch}: closed {n_psl} position(s) this tick",
+                )
+        except Exception as e:
+            _trace_append(
+                trace, f"patient_stop_loss {branch}: handler error {str(e)[:200]}"
+            )
+            engine.state.last_error = f"patient_stop_loss: {e}"
 
     await _maybe_auto_reset_lab_paper_on_tick_failure(engine, full_cfg)
 
@@ -1596,8 +1644,7 @@ def pick_asset_snapshot(
             ticker = str(m.get("ticker") or "")
             if not ticker:
                 continue
-            mstatus = str(m.get("status") or "").lower()
-            if mstatus and mstatus not in ("active", "open"):
+            if not market_row_lifecycle_allows_trading(m):
                 continue
             yes_sub = str(m.get("yes_sub_title") or m.get("subtitle") or "").lower()
             if subtitle_filter and subtitle_filter not in yes_sub:
@@ -1792,8 +1839,10 @@ async def handle_market(
     if not ticker:
         return None
 
-    mstatus = str(market.get("status") or "").lower()
-    if mstatus and mstatus not in ("active", "open"):
+    if branch == BRANCH_LIVE and bool(cfg.get("_live_trading_gate_off")):
+        return None
+
+    if not market_row_lifecycle_allows_trading(market):
         return None
 
     yes_sub = str(market.get("yes_sub_title") or market.get("subtitle") or "").lower()

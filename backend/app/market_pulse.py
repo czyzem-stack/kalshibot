@@ -19,6 +19,7 @@ from .engine import (
     enrich_markets_with_orderbooks,
     exclude_subtitle_parts_from_cfg,
     implied_yes_probability,
+    market_row_lifecycle_allows_trading,
     minutes_left,
     pick_trade_rule,
     rule_trade_side,
@@ -129,8 +130,7 @@ async def fetch_market_pulse(
             ticker = str(m.get("ticker") or "")
             if not ticker:
                 continue
-            mstatus = str(m.get("status") or "").lower()
-            if mstatus and mstatus not in ("active", "open"):
+            if not market_row_lifecycle_allows_trading(m):
                 continue
             yes_sub = str(m.get("yes_sub_title") or m.get("subtitle") or "").lower()
             if subtitle_filter and subtitle_filter not in yes_sub:

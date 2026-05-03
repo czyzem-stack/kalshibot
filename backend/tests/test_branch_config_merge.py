@@ -5,6 +5,7 @@ import unittest
 from app.branch_config import (
     BRANCH_LAB_A,
     BRANCH_LAB_B,
+    BRANCH_LIVE,
     effective_parent_lab_engine_running,
     merge_branch_config,
 )
@@ -111,6 +112,44 @@ class MergeBranchConfigParentLabsTest(unittest.TestCase):
         eff = mb.get("rules") or []
         eff_names = [str(r.get("name") or "") for r in eff if isinstance(r, dict)]
         self.assertTrue(all("GLOBAL_UNIQUE_MARKER" not in n for n in eff_names))
+
+    def test_merge_skips_empty_lab_rules_so_globals_survive(self) -> None:
+        """``lab_a.rules: []`` must not wipe top-level ``rules`` on the merged engine cfg (would skip Kalshi fetches)."""
+        full_cfg: dict = {
+            "simulate": True,
+            "live_paper_trading": True,
+            "rules": [
+                {
+                    "name": "Global YES",
+                    "min_prob": 0.4,
+                    "max_prob": 0.9,
+                    "min_minutes_left": 0.0,
+                    "max_minutes_left": 99.0,
+                }
+            ],
+            "lab_a": {"rules": [], "window_minutes": 15},
+        }
+        m = merge_branch_config(full_cfg, BRANCH_LAB_A)
+        self.assertIsNotNone(m)
+        assert m is not None
+        r = m.get("rules") or []
+        self.assertEqual(len(r), 1)
+        self.assertEqual(str((r[0] or {}).get("name")), "Global YES")
+
+    def test_live_engine_off_still_merges_with_gate_flag(self) -> None:
+        """Live ``tick_once`` needs a merged cfg for Kalshi tiles even when ``engine_running`` is false."""
+        full_cfg: dict = {
+            "simulate": True,
+            "live_paper_trading": True,
+            "engine_running": False,
+            "assets": {"btc": {"series_ticker": "KXBTC15M", "enabled": True}},
+        }
+        m = merge_branch_config(full_cfg, BRANCH_LIVE)
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.get("_branch"), BRANCH_LIVE)
+        self.assertTrue(m.get("_live_trading_gate_off"))
+        self.assertIn("KXBTC15M", str((m.get("assets") or {}).get("btc", {}).get("series_ticker")))
 
 
 if __name__ == "__main__":

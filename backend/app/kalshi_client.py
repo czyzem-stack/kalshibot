@@ -4,6 +4,7 @@ import asyncio
 import base64
 import datetime as dt
 import importlib
+import math
 import random
 import time
 from pathlib import Path
@@ -18,6 +19,42 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from .branch_config import BRANCH_CHILD_LABS, BRANCH_LABS
 from .settings_env import env
 from .types_kalshi import OpenMarketsResponse, OrderbookPayload
+
+
+def _fp_last_price(levels: Any) -> float | None:
+    """Best bid from Kalshi ladder ``[[price, qty], …]`` (last = best)."""
+    if not isinstance(levels, list) or not levels:
+        return None
+    last = levels[-1]
+    if not isinstance(last, (list, tuple)) or len(last) < 1:
+        return None
+    try:
+        x = float(last[0])
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x):
+        return None
+    return x
+
+
+def _orderbook_payload_yes_bid_ask(data: Any) -> tuple[float | None, float | None]:
+    """
+    Same geometry as ``engines.engine.orderbook_json_to_yes_bid_ask`` for cache policy only
+    (keeps ``kalshi_client`` importable without pulling ``engine`` at module load).
+    """
+    if not isinstance(data, dict):
+        return None, None
+    ob = data.get("orderbook_fp")
+    if not isinstance(ob, dict):
+        return None, None
+    yes = ob.get("yes_dollars") or []
+    no = ob.get("no_dollars") or []
+    yb = _fp_last_price(yes)
+    ya: float | None = None
+    nb = _fp_last_price(no)
+    if nb is not None:
+        ya = 1.0 - nb
+    return yb, ya
 
 
 def _retry_after_seconds(headers: httpx.Headers) -> float | None:
@@ -308,6 +345,11 @@ class KalshiClient:
         tk = str(ticker or "").strip()
         if not tk or not isinstance(orderbook_payload, dict):
             return
+        # Do not cache empty / unparseable frames — they would hide REST orderbooks for ORDERBOOK_CACHE_TTL
+        # (and cold-start TTL can be 60s), producing long-lived ``no book`` tiles while Kalshi is healthy.
+        yb, ya = _orderbook_payload_yes_bid_ask(orderbook_payload)
+        if yb is None and ya is None:
+            return
         now = time.monotonic()
         cls._orderbook_cache[tk] = (now, orderbook_payload)
         cls.ws_orderbook_cache_writes += 1
@@ -421,9 +463,16 @@ class KalshiClient:
             raise ValueError("ticker required")
         now = time.monotonic()
         hit = KalshiClient._orderbook_cache.get(key)
-        if hit and (now - hit[0]) < KalshiClient.ORDERBOOK_CACHE_TTL:
-            KalshiClient.orderbook_cache_hits += 1
-            return hit[1]
+        if hit:
+            prev = hit[1]
+            age = now - hit[0]
+            eff_ttl = float(KalshiClient.ORDERBOOK_CACHE_TTL)
+            yb, ya = _orderbook_payload_yes_bid_ask(prev)
+            if yb is None and ya is None:
+                eff_ttl = min(2.0, max(0.5, eff_ttl * 0.2))
+            if age < eff_ttl and isinstance(prev, dict):
+                KalshiClient.orderbook_cache_hits += 1
+                return prev
         KalshiClient.orderbook_cache_misses += 1
         path = f"/markets/{quote(key, safe='')}/orderbook"
         data = await self.get_public(path, {"depth": "0"})
