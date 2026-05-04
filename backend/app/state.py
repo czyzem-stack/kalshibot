@@ -56,10 +56,13 @@ startup_complete = asyncio.Event()
 bg_task: asyncio.Task[None] | None = None
 optimizer_task: asyncio.Task[None] | None = None
 kalshi_ws_task: asyncio.Task[None] | None = None
+dashboard_cache_task: asyncio.Task[None] | None = None
 app_started_at_iso: str | None = None
 
 # Filled on each full dashboard run with Kalshi mark refresh; read by ``GET /api/dashboard/orderbooks``.
 DASHBOARD_ORDERBOOK_CACHE: dict[str, Any] = {"t_mono": 0.0, "payload": None}
+# Last background dashboard compose error (cleared on success) — surfaced in JSON for a small UI hint.
+dashboard_cache_last_error: str | None = None
 # PHASE 3: centralize cache TTL in env while preserving default (5.0s).
 DASHBOARD_ORDERBOOK_CACHE_TTL_S = float(env.dashboard_orderbook_cache_ttl_s)
 

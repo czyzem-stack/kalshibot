@@ -21,7 +21,6 @@ import { KalshiSetupOrbRow } from "./KalshiSetupOrbRow";
 import { withApiAuth } from "./apiAuth";
 import {
   DASHBOARD_FULL_POLL_MS,
-  dashboardEquityPollIntervalMs,
   EQUITY_DENSE_CHART_MAX_POINTS,
   EQUITY_GRANULAR_ROLLING_WINDOW_MS,
   downsampleEquityDenseTicks,
@@ -39,9 +38,8 @@ type AnyObj = Record<string, any>;
 const UI_TRACK = resolveUiTrack();
 const APP_VERSION = String(APP_VERSION_RAW || "").trim() || "unknown";
 
-const DASHBOARD_REQUEST_TIMEOUT_MS = 90_000;
-/** Supersede in-flight ``/api/dashboard`` after this — must stay near the client timeout so repeat polls / Retry do not keep returning one stuck promise for ~3 minutes. */
-const DASHBOARD_STALE_INFLIGHT_MS = DASHBOARD_REQUEST_TIMEOUT_MS + 15_000;
+/** Client-side cap for cached ``/api/dashboard`` JSON (server compose runs only in background). */
+const DASHBOARD_REQUEST_TIMEOUT_MS = 30_000;
 
 /** Stable empty lab when config has no lab object yet — avoids `new {}` every render breaking PUT payloads. */
 const EMPTY_LAB: AnyObj = Object.freeze({});
@@ -61,82 +59,41 @@ function equitySnapshotsArray(...candidates: unknown[]): AnyObj[] {
   return arrays[0] ?? [];
 }
 
-const FAST_POLL_EQ_KEYS = [
-  "equity_snapshots",
-  "equity_snapshots_lab_a",
-  "equity_snapshots_lab_b",
-  "equity_snapshots_lab_c",
-  "equity_snapshots_lab_d",
-  "equity_snapshots_lab_e",
-  "equity_snapshots_lab_children",
-] as const;
+const LAST_DASHBOARD_SNAPSHOT_LS_KEY = "lastDashboardSnapshot";
 
-const FAST_POLL_LIST_KEYS = ["recent_trades", "recent_signals", "not_traded_signals"] as const;
-
-const FAST_POLL_METRIC_KEYS = [
-  "metrics",
-  "metrics_lab_a",
-  "metrics_lab_b",
-  "metrics_lab_c",
-  "metrics_lab_d",
-  "metrics_lab_e",
-  "metrics_lab_children",
-] as const;
-
-/**
- * Keys safe to strip from merged metrics when the increment omits them (null-stripped JSON / thin
- * fast-poll blobs). **Never** delete settled win/loss *counts* here (``wins``, ``losses``, ``settled_trades``)
- * — a partial merge used to drop counts while ``win_rate_pct`` refreshed and tiles disagreed.
- *
- * **Rollup dollars** (PnL, committed, book equity, hourly) **must** be listed: if a thin increment omits them,
- * retaining pre-reset values made ``appendEquityLiveTailFromMetrics`` compute
- * ``paper_start + stale_total_pnl - stale_committed`` → balances looked **instantly doubled** after a wipe.
- */
-const METRIC_MERGE_DROP_WHEN_ABSENT_IN_INCREMENT = new Set<string>([
-  "win_rate_pct",
-  "loss_rate_pct",
-  "win_rate_decisive_pct",
-  "loss_rate_decisive_pct",
-  "avg_realized_per_settled_dollars",
-  "latest_equity_snapshot_dollars",
-  "latest_mtm_snapshot_dollars",
-  /** Thin fast polls sometimes omit MTM; keeping a ghost value made hero $ / % disagree with ledger subtitles. */
-  "current_mtm_dollars",
-  /** Same ghost-data class as MTM — stale book next to fresh equity snapshots inflated the synthetic tail. */
-  "current_equity_dollars",
-  "total_pnl_dollars",
-  "total_kalshi_fees_dollars",
-  "open_sim_committed_dollars",
-  "avg_hourly_pnl_dollars",
-  "open_sim_trades",
-  "return_mtm_vs_start_pct",
-  "return_vs_start_pct",
-  "realized_pnl_pct_of_start",
-  "committed_pct_of_start",
-  "committed_pct_of_fleet_start",
-  "equity_snap_vs_calc_diff_dollars",
-  "exchange_balance_dollars",
-  "exchange_portfolio_value_dollars",
-  "last_snap_mtm_minus_equity_dollars",
-]);
-
-/**
- * Shallow-merge ``inc`` over ``old``, then remove **only** optional derived keys that are absent from
- * ``inc`` so omitted-null JSON cannot leave ghost enrich fields next to fresh rollups.
- */
-function mergeMetricObjectsDropStaleKeys(old: AnyObj, inc: AnyObj): AnyObj {
-  const merged: AnyObj = { ...old, ...inc };
-  for (const k of Object.keys(old)) {
-    if (!(k in inc) && METRIC_MERGE_DROP_WHEN_ABSENT_IN_INCREMENT.has(k)) delete merged[k];
+function readLastDashboardSnapshot(): AnyObj | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_DASHBOARD_SNAPSHOT_LS_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as AnyObj;
+    return d && typeof d === "object" && !Array.isArray(d) ? d : null;
+  } catch {
+    return null;
   }
-  return merged;
 }
 
-/**
- * Per ``lab_child_*`` key, prefer the incoming snapshot array when non-empty; otherwise keep the prior
- * series. Fast ``/api/dashboard/equity`` merges used ``{ ...prev, ...incoming }`` alone, so empty arrays
- * for a slot wiped SQLite history and the Compare overlay showed only forward-filled synthetic tails (flat lines).
- */
+function persistLastDashboardSnapshot(d: AnyObj): void {
+  if (typeof window === "undefined") return;
+  try {
+    const copy = { ...d };
+    delete copy.stale;
+    delete copy.cached_at;
+    delete copy.dashboard_cache_empty;
+    delete copy.dashboard_cache_last_error;
+    window.localStorage.setItem(LAST_DASHBOARD_SNAPSHOT_LS_KEY, JSON.stringify(copy));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+/** Server snapshot wins — background cache + 8s polls replace the prior fast-poll merge graph. */
+function mergeDashboardServerSnapshot(_prev: AnyObj | null, incoming: AnyObj): AnyObj {
+  const next = { ...incoming };
+  delete next.equity_snapshots_sim_lab;
+  return next;
+}
+
 /** Mirrors backend ``live_paper_trading_enabled`` / ``sync_live_paper_trading_keys`` for optimistic UI merges. */
 function livePaperModeFromBotConfig(c: AnyObj | undefined | null): boolean {
   if (!c || typeof c !== "object") return true;
@@ -155,201 +112,6 @@ function effectiveLiveEngineRunningFromBotConfig(c: AnyObj | undefined | null): 
   return livePaperModeFromBotConfig(o);
 }
 
-/** Per-branch shallow merge for ``asset_snapshots`` / ``engine`` (branch → asset map or status block). */
-function mergeDashboardBranchKeyedMaps(prev: AnyObj, incoming: AnyObj, next: AnyObj, key: "asset_snapshots" | "engine"): void {
-  const oldTop = prev[key];
-  const incTop = incoming[key];
-  if (incTop == null || typeof incTop !== "object" || Array.isArray(incTop)) {
-    if (
-      (!(key in incoming) || incTop == null) &&
-      oldTop != null &&
-      typeof oldTop === "object" &&
-      !Array.isArray(oldTop)
-    ) {
-      (next as AnyObj)[key] = oldTop as AnyObj;
-    }
-    return;
-  }
-  if (!oldTop || typeof oldTop !== "object" || Array.isArray(oldTop)) {
-    (next as AnyObj)[key] = { ...(incTop as AnyObj) };
-    return;
-  }
-  const branches = new Set([
-    ...Object.keys(oldTop as AnyObj),
-    ...Object.keys(incTop as AnyObj),
-  ]);
-  const merged: AnyObj = {};
-  for (const bk of branches) {
-    const o = (oldTop as AnyObj)[bk];
-    const i = (incTop as AnyObj)[bk];
-    if (i && typeof i === "object" && !Array.isArray(i) && o && typeof o === "object" && !Array.isArray(o)) {
-      merged[bk] = { ...(o as AnyObj), ...(i as AnyObj) };
-    } else if (i && typeof i === "object" && !Array.isArray(i)) {
-      merged[bk] = { ...(i as AnyObj) };
-    } else if (o && typeof o === "object" && !Array.isArray(o)) {
-      merged[bk] = { ...(o as AnyObj) };
-    }
-  }
-  (next as AnyObj)[key] = merged;
-}
-
-function mergeLabChildSlotEquitySnapshotsMap(prevSlots: unknown, incSlots: unknown): AnyObj {
-  const oldRec = prevSlots && typeof prevSlots === "object" && !Array.isArray(prevSlots) ? (prevSlots as Record<string, unknown>) : {};
-  const incRec = incSlots && typeof incSlots === "object" && !Array.isArray(incSlots) ? (incSlots as Record<string, unknown>) : {};
-  const keys = new Set([...Object.keys(oldRec), ...Object.keys(incRec)]);
-  const out: AnyObj = {};
-  for (const k of keys) {
-    const a = Array.isArray(incRec[k]) ? (incRec[k] as AnyObj[]) : [];
-    const b = Array.isArray(oldRec[k]) ? (oldRec[k] as AnyObj[]) : [];
-    out[k] = a.length > 0 ? a : b;
-  }
-  return out;
-}
-
-/**
- * Merge GET /api/dashboard/equity — same as original ``{ ...prev, ...d }`` plus:
- * - Do not replace equity / trade arrays with ``[]`` or non-arrays **unless** ``trading_data_revision`` advanced
- *   (otherwise post-reset empty arrays were overwritten by this merge and charts kept stale history).
- * - Merge metrics blobs with ``mergeMetricObjectsDropStaleKeys`` so omitted-null **derived** fields cannot stay
- *   stale next to fresh rollups (without stripping ``wins`` / ``losses`` when a thin fast poll omits them).
- * - Deep-merge ``asset_snapshots`` and ``engine`` when revision has not advanced: shallow spread kept only the
- *   last response’s branch keys — a partial or empty ``asset_snapshots`` from a fast poll wiped Live / Lab A / B
- *   cards in Assets to watch while C–E still looked fine (merge order / payload shape).
- * Always drop ``equity_snapshots_sim_lab`` — it is not returned by the server; retaining it from ``prev`` made Lab A
- * charts fall back to stale ghost history whenever ``equity_snapshots_lab_a`` was ``[]`` after a reset.
- */
-function mergeDashboardFastPoll(prev: AnyObj, incoming: AnyObj): AnyObj {
-  const prevRev = Number((prev as AnyObj).trading_data_revision ?? 0);
-  const incRev = Number((incoming as AnyObj).trading_data_revision ?? 0);
-  const revisionAdvanced = Number.isFinite(incRev) && incRev > prevRev;
-
-  const next: AnyObj = { ...prev, ...incoming };
-  next.config =
-    incoming.config && typeof incoming.config === "object"
-      ? { ...((prev.config && typeof prev.config === "object" ? prev.config : {}) as AnyObj), ...(incoming.config as AnyObj) }
-      : prev.config;
-
-  for (const mk of FAST_POLL_METRIC_KEYS) {
-    const inc = incoming[mk];
-    const old = prev[mk];
-    if (inc && typeof inc === "object" && !Array.isArray(inc) && old && typeof old === "object" && !Array.isArray(old)) {
-      next[mk] = mergeMetricObjectsDropStaleKeys(old as AnyObj, inc as AnyObj);
-    }
-  }
-  for (const sk of ["metrics_lab_child_slots", "engine_lab_children"] as const) {
-    const inc = incoming[sk];
-    const old = prev[sk];
-    if (inc && typeof inc === "object" && !Array.isArray(inc)) {
-      if (
-        sk === "metrics_lab_child_slots" &&
-        old &&
-        typeof old === "object" &&
-        !Array.isArray(old)
-      ) {
-        const out: AnyObj = {};
-        const keys = new Set([
-          ...Object.keys(old as AnyObj),
-          ...Object.keys(inc as AnyObj),
-        ]);
-        for (const slotKey of keys) {
-          const o = (old as AnyObj)[slotKey];
-          const i = (inc as AnyObj)[slotKey];
-          if (
-            i &&
-            typeof i === "object" &&
-            !Array.isArray(i) &&
-            o &&
-            typeof o === "object" &&
-            !Array.isArray(o)
-          ) {
-            out[slotKey] = mergeMetricObjectsDropStaleKeys(o as AnyObj, i as AnyObj);
-          } else if (i && typeof i === "object" && !Array.isArray(i)) {
-            out[slotKey] = { ...(i as AnyObj) };
-          } else if (o && typeof o === "object" && !Array.isArray(o)) {
-            out[slotKey] = { ...(o as AnyObj) };
-          }
-        }
-        next[sk] = out;
-      } else {
-        next[sk] =
-          old && typeof old === "object" && !Array.isArray(old)
-            ? { ...(old as AnyObj), ...(inc as AnyObj) }
-            : { ...(inc as AnyObj) };
-      }
-    }
-  }
-
-  if (revisionAdvanced) {
-    // Replace each series entirely — if ``incoming`` omits a key (partial payload / strip), treat as ``[]``.
-    // Otherwise the spread above keeps ``prev.equity_snapshots_lab_*`` and one branch (often last in the object)
-    // can retain pre-reset history while others cleared — classic Lab E vs C/D mismatch after reset.
-    // Still deep-merge ``asset_snapshots`` / ``engine`` so a response with empty ``live`` maps (transient tick gap)
-    // does not wipe Assets to watch while trades bump ``trading_data_revision``.
-    for (const k of FAST_POLL_EQ_KEYS) {
-      const inc = incoming[k];
-      next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
-    }
-    for (const k of FAST_POLL_LIST_KEYS) {
-      const inc = incoming[k];
-      next[k] = k in incoming ? (Array.isArray(inc) ? inc : []) : [];
-    }
-    // Shallow metric merge above retains keys absent from ``incoming`` (e.g. ``current_equity_dollars``). After a data
-    // reset, snapshots can be ``[]`` while those leftovers still drive ``appendEquityLiveTailFromMetrics`` → a synthetic
-    // tail at pre-reset dollars (especially visible on merged child-slot metrics). Replace tiles wholesale when revision advances.
-    for (const mk of FAST_POLL_METRIC_KEYS) {
-      const inc = incoming[mk];
-      next[mk] = inc && typeof inc === "object" && !Array.isArray(inc) ? { ...(inc as AnyObj) } : {};
-    }
-    for (const sk of ["metrics_lab_child_slots", "engine_lab_children"] as const) {
-      const inc = incoming[sk];
-      next[sk] = inc && typeof inc === "object" && !Array.isArray(inc) ? { ...(inc as AnyObj) } : {};
-    }
-    {
-      const inc = incoming.equity_snapshots_lab_child_slots;
-      next.equity_snapshots_lab_child_slots =
-        inc && typeof inc === "object" && !Array.isArray(inc) ? { ...(inc as AnyObj) } : {};
-    }
-    mergeDashboardBranchKeyedMaps(prev as AnyObj, incoming as AnyObj, next, "asset_snapshots");
-    mergeDashboardBranchKeyedMaps(prev as AnyObj, incoming as AnyObj, next, "engine");
-    delete next.equity_snapshots_sim_lab;
-    return next;
-  }
-
-  for (const k of FAST_POLL_EQ_KEYS) {
-    const inc = incoming[k];
-    const old = prev[k];
-    if (!Array.isArray(inc) && Array.isArray(old)) {
-      next[k] = old;
-      continue;
-    }
-    // When revision has not advanced, still trust an explicit empty equity series from the server.
-    // Otherwise a post-reset or post-delete `[]` was discarded here and one branch kept ghost history
-    // (~$5k default seed) while `metrics_lab_*` already reflected the new bankroll — subtitle vs chart mismatch.
-  }
-  for (const k of FAST_POLL_LIST_KEYS) {
-    const inc = incoming[k];
-    const old = prev[k];
-    if (!Array.isArray(inc) && Array.isArray(old)) {
-      next[k] = old;
-      continue;
-    }
-    // Same as equity: do not resurrect stale trades/signals when the poll returns an explicit empty array.
-  }
-
-  next.equity_snapshots_lab_child_slots = mergeLabChildSlotEquitySnapshotsMap(
-    prev.equity_snapshots_lab_child_slots,
-    incoming.equity_snapshots_lab_child_slots,
-  );
-
-  if (!revisionAdvanced) {
-    mergeDashboardBranchKeyedMaps(prev as AnyObj, incoming as AnyObj, next, "asset_snapshots");
-    mergeDashboardBranchKeyedMaps(prev as AnyObj, incoming as AnyObj, next, "engine");
-  }
-
-  delete next.equity_snapshots_sim_lab;
-  return next;
-}
-
 function dashboardPayloadMs(raw: unknown): number | null {
   const s = String(raw ?? "").trim();
   if (!s) return null;
@@ -365,38 +127,9 @@ function dashboardPayloadSeq(p: AnyObj | null | undefined): number | null {
   return n;
 }
 
-/** Hero strip + equity charts share ``dash`` — reject older payloads when full vs fast dashboard GETs finish out of order on the wire. */
-function shouldApplyDashboardPayload(prev: AnyObj | null, incoming: AnyObj): boolean {
-  if (!prev) return true;
-  const incRev = Number((incoming as AnyObj).trading_data_revision ?? 0);
-  const prevRev = Number((prev as AnyObj).trading_data_revision ?? 0);
-  if (Number.isFinite(incRev) && Number.isFinite(prevRev)) {
-    if (incRev > prevRev) return true;
-    if (incRev < prevRev) {
-      // DB restore / migration can rewind revision; accept newer wall-clock or seq so polls do not freeze.
-      const is = dashboardPayloadSeq(incoming as AnyObj);
-      const ps = dashboardPayloadSeq(prev as AnyObj);
-      const incMs = dashboardPayloadMs((incoming as AnyObj).dashboard_payload_at);
-      const prevMs = dashboardPayloadMs((prev as AnyObj).dashboard_payload_at);
-      if (incMs != null && prevMs != null && incMs > prevMs) return true;
-      if (is != null && ps != null && is >= ps) return true;
-      return false;
-    }
-  }
-  const is = dashboardPayloadSeq(incoming as AnyObj);
-  const ps = dashboardPayloadSeq(prev as AnyObj);
-  const incMs = dashboardPayloadMs(incoming.dashboard_payload_at);
-  const prevMs = dashboardPayloadMs(prev.dashboard_payload_at);
-  if (is != null && ps != null) {
-    if (is >= ps) return true;
-    // API restart resets ``dashboard_payload_seq`` to a small value while the SPA still holds the old seq —
-    // every poll was rejected and charts / "Data as of" / body ticker froze until a hard reload.
-    if (incMs != null && prevMs != null && incMs > prevMs) return true;
-    return false;
-  }
-  if (incMs == null) return true;
-  if (prevMs == null) return true;
-  return incMs >= prevMs;
+/** Background cache + 8s polls — always apply the latest server snapshot (merge is a full replace). */
+function shouldApplyDashboardPayload(_prev: AnyObj | null, _incoming: AnyObj): boolean {
+  return true;
 }
 
 function dashboardSyncedClockLabel(rawAt: unknown): string | null {
@@ -412,6 +145,18 @@ function dashboardSyncedClockLabel(rawAt: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+/** Human-readable age for ``cached_at`` / ``dashboard_payload_at`` (server snapshot wall time). */
+function formatSnapshotAgeLabel(d: AnyObj): string | null {
+  const raw = (d as AnyObj).cached_at ?? d.dashboard_payload_at;
+  if (!raw || typeof raw !== "string") return null;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return null;
+  const diffMin = Math.round((Date.now() - ms) / 60_000);
+  if (diffMin <= 0) return "just now";
+  if (diffMin === 1) return "1 min ago";
+  return `${diffMin} min ago`;
 }
 
 /** Paper / simulated trades: branch line in toasts (``Live paper`` vs real ``Live``; labs ``Lab A``…``Lab E``). */
@@ -3836,8 +3581,13 @@ function tradeToastBreakevenLedgerNote(t: AnyObj): string | null {
 }
 
 function tradeResolutionLines(t: AnyObj): { title: string; resolutionTier: "green" | "yellow" | "red" | "neutral"; lines: string[] } {
+  const sim = Boolean(Number(t?.simulated));
   const r = String(t?.result ?? "").trim().toLowerCase();
   const side = String(t?.side ?? "yes").trim().toLowerCase();
+  /** Second line for exits before Kalshi final settlement — avoid “not … market …” phrasing (read as “not market value”). */
+  const earlyCloseFootnote = sim
+    ? "Sim closed early — exit value from Kalshi quotes (bid/mid), not the final settlement payout."
+    : "Closed before final payout — PnL from fills / marks, not the contract’s official settle.";
   if (r === "yes" || r === "no") {
     const won = (side === "yes" && r === "yes") || (side === "no" && r === "no");
     return {
@@ -3845,7 +3595,9 @@ function tradeResolutionLines(t: AnyObj): { title: string; resolutionTier: "gree
       resolutionTier: won ? "green" : "red",
       lines: [
         `Contract settled · market ${r.toUpperCase()} · your ${side.toUpperCase()} ${won ? "won" : "lost"}`,
-        "Held until Kalshi resolution",
+        sim
+          ? "Kalshi published the outcome — applied to your paper/sim ledger (same result the exchange uses)."
+          : "Held until Kalshi published the final result.",
       ],
     };
   }
@@ -3853,37 +3605,34 @@ function tradeResolutionLines(t: AnyObj): { title: string; resolutionTier: "gree
     return {
       title: "Purchase resolved",
       resolutionTier: "yellow",
-      lines: ["Sold before contract expiry · swing exit (bid)", "Early close — not final market settlement"],
+      lines: ["Sold before contract expiry · swing exit (bid)", earlyCloseFootnote],
     };
   }
   if (r === "patient_stop_loss") {
     return {
       title: "Purchase resolved",
       resolutionTier: "yellow",
-      lines: ["Sold before contract expiry · patient stop-loss", "Early close — not final market settlement"],
+      lines: ["Sold before contract expiry · patient stop-loss", earlyCloseFootnote],
     };
   }
   if (r === "auto_timeout") {
     return {
       title: "Purchase resolved",
       resolutionTier: "yellow",
-      lines: ["Sold before contract expiry · auto timeout", "Early close — not final market settlement"],
+      lines: ["Sold before contract expiry · auto timeout", earlyCloseFootnote],
     };
   }
   if (r) {
     return {
       title: "Purchase resolved",
       resolutionTier: "neutral",
-      lines: [
-        `Sold before contract expiry · ${r.replace(/_/g, " ")}`,
-        "Early close — not final market settlement",
-      ],
+      lines: [`Sold before contract expiry · ${r.replace(/_/g, " ")}`, earlyCloseFootnote],
     };
   }
   return {
     title: "Purchase resolved",
     resolutionTier: "neutral",
-    lines: ["Settled", "Outcome details not on this row"],
+    lines: ["Settled", sim ? "Paper row — check Activity for full exit metadata." : "Outcome details not on this row"],
   };
 }
 
@@ -5445,13 +5194,11 @@ function EngineAssetSnapBlock({
 export default function App() {
   const OPTIMIZER_SEEN_IDS_KEY = "optimizer_seen_ids_v1";
   const OPTIMIZER_DISMISSED_IDS_KEY = "optimizer_dismissed_ids_v1";
-  const [dash, setDash] = useState<AnyObj | null>(null);
-  /** Mirrors ``dash`` for ``refresh`` closure without widening deps — used to show blocking reload UI on ``force`` when data already exists. */
+  const [dash, setDash] = useState<AnyObj | null>(() => readLastDashboardSnapshot());
+  const [connectionLostBanner, setConnectionLostBanner] = useState(false);
+  /** Mirrors ``dash`` for ``refresh`` closure without widening deps. */
   const dashRef = useRef<AnyObj | null>(null);
   dashRef.current = dash;
-  /** Full-screen overlay during ``refresh({ force: true })`` when ``dash`` was already set (Settings → Refresh now, etc.). */
-  const dashBlockingRefreshCountRef = useRef(0);
-  const [dashBlockingRefresh, setDashBlockingRefresh] = useState(false);
   /** True until first dashboard JSON applies — visibility / bfcache catch-up uses ``force`` so we do not dedupe against a hung fetch. */
   const dashStillLoadingRef = useRef(true);
   dashStillLoadingRef.current = dash == null;
@@ -5466,8 +5213,6 @@ export default function App() {
   const seenTradeSettleRef = useRef<Set<string>>(new Set());
   /** Baseline ``dash.trading_data_revision`` — when it jumps (data reset), recycle trade ids must not fire toasts for every row. */
   const lastTradeToastDataRevisionRef = useRef<number | null>(null);
-  /** Skips trade-toast effect body when merged trade rows are unchanged (``dash`` identity changes every poll). */
-  const lastTradeToastMergeSigRef = useRef<string>("");
   /** User-dismissed trade toast ids (``trade-initiated-*`` / ``trade-resolved-*``); survives effect re-runs. */
   const dismissedTradeToastIdsRef = useRef<Set<string>>(new Set());
   const [optimizerNotifs, setOptimizerNotifs] = useState<AnyObj[]>([]);
@@ -5547,18 +5292,14 @@ export default function App() {
   const bottomTickerHostRef = useRef<{ el: HTMLDivElement; root: Root } | null>(null);
 
   /**
-   * Dashboard fetch: dedupe in-flight; force aborts. ``dashboardFetchEpochRef`` bumps on Strict Mode
-   * cleanup, superseding a stale request, and forced refresh so an older ``/api/dashboard`` response
-   * cannot call ``setDash`` / ``setErr`` after a newer run has started.
+   * Dashboard fetch: ``dashboardFetchEpochRef`` bumps on Strict Mode cleanup and ``force`` so an older
+   * ``/api/dashboard`` response cannot apply after a newer run.
    */
   const dashboardAbortRef = useRef<AbortController | null>(null);
-  /** Supersede slow / stuck ``/api/dashboard/equity`` polls so overlapping hung requests cannot wedge the tab. */
-  const equityLightPollAbortRef = useRef<AbortController | null>(null);
-  const dashboardInFlightRef = useRef<Promise<AnyObj | null> | null>(null);
-  const dashboardInFlightStartedAtRef = useRef(0);
+  const dashboardPollFailuresRef = useRef(0);
   /** False until the dashboard poll effect runs — avoids treating the tree as mounted before listeners are ready. */
   const dashboardPollMountedRef = useRef(false);
-  /** Merge multiple `/api/dashboard` + `/api/dashboard/equity` responses into one ``setDash`` (one paint for hero, charts, body ticker). */
+  /** Batch multiple dashboard responses into one ``setDash`` (single paint). */
   const dashboardPollBatchRef = useRef<{ items: { payload: AnyObj; clearFetchError?: boolean }[]; scheduled: boolean }>({
     items: [],
     scheduled: false,
@@ -5577,9 +5318,17 @@ export default function App() {
     b.items.push({ payload, clearFetchError: opts?.clearFetchError });
     if (b.scheduled) return;
     b.scheduled = true;
-    queueMicrotask(() => {
-      applyDashboardPollBatchRef.current();
-    });
+    // ``queueMicrotask`` can run before React finishes wiring refs in odd Strict Mode / catch-up races;
+    // a macrotask + finally keeps ``scheduled`` from sticking if apply throws.
+    window.setTimeout(() => {
+      try {
+        applyDashboardPollBatchRef.current();
+      } catch (e) {
+        console.error("dashboard poll batch apply failed", e);
+      } finally {
+        dashboardPollBatchRef.current.scheduled = false;
+      }
+    }, 0);
   }, []);
 
   useLayoutEffect(() => {
@@ -5614,8 +5363,9 @@ export default function App() {
             continue;
           }
           if (!shouldApplyDashboardPayload(next, p)) continue;
-          next = mergeDashboardFastPoll(next, p);
+          next = mergeDashboardServerSnapshot(next, p);
         }
+        if (next) persistLastDashboardSnapshot(next);
         return next;
       });
       if (clearFetchError) setErr(null);
@@ -5627,41 +5377,25 @@ export default function App() {
         }
       }
     };
-  });
+  }, []);
 
   const refresh = useCallback((opts?: { force?: boolean }): Promise<AnyObj | null> => {
     const force = Boolean(opts?.force);
-    const hadDash = dashRef.current != null;
     if (force) {
       dashboardFetchEpochRef.current += 1;
       dashboardAbortRef.current?.abort();
-      dashboardInFlightRef.current = null;
-      dashboardInFlightStartedAtRef.current = 0;
     }
-    const inFlight = dashboardInFlightRef.current;
-    const hasFreshInFlight =
-      inFlight &&
-      Date.now() - dashboardInFlightStartedAtRef.current < DASHBOARD_STALE_INFLIGHT_MS;
-    if (hasFreshInFlight && !force) {
-      void inFlight.catch(() => {});
-      return inFlight;
-    }
-    if (dashboardInFlightRef.current && !hasFreshInFlight) {
-      dashboardAbortRef.current?.abort();
-      dashboardInFlightRef.current = null;
-      dashboardInFlightStartedAtRef.current = 0;
-      dashboardFetchEpochRef.current += 1;
-    }
+    const epochAtStart = dashboardFetchEpochRef.current;
+    const ac = new AbortController();
+    dashboardAbortRef.current = ac;
+    const maxMs = DASHBOARD_REQUEST_TIMEOUT_MS;
+    let timedOutByDeadline = false;
+    const tid = window.setTimeout(() => {
+      timedOutByDeadline = true;
+      ac.abort();
+    }, maxMs);
+
     const req = (async (): Promise<AnyObj | null> => {
-      const epochAtStart = dashboardFetchEpochRef.current;
-      const ac = new AbortController();
-      dashboardAbortRef.current = ac;
-      const maxMs = DASHBOARD_REQUEST_TIMEOUT_MS;
-      let timedOutByDeadline = false;
-      const tid = window.setTimeout(() => {
-        timedOutByDeadline = true;
-        ac.abort();
-      }, maxMs);
       let payload: AnyObj | null = null;
       try {
         if (force) setErr(null);
@@ -5682,20 +5416,31 @@ export default function App() {
         if (!dashboardPollMountedRef.current) return null;
         if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         enqueueDashboardPollPayload(d, { clearFetchError: true });
+        dashboardPollFailuresRef.current = 0;
+        setConnectionLostBanner(false);
         payload = d;
       } catch (e: any) {
         if (!dashboardPollMountedRef.current) return null;
-        if (epochAtStart !== dashboardFetchEpochRef.current) return null;
         const msg = String(e?.message || e);
         const aborted =
           String(e?.name || "") === "AbortError" || /aborted|AbortError/i.test(msg);
-        if (aborted) {
-          if (timedOutByDeadline) {
+        if (aborted && timedOutByDeadline) {
+          if (dashRef.current == null) {
             setErr(
-              `Dashboard request timed out after ${maxMs / 1000}s. The API is running but /api/dashboard is very slow (often Kalshi order books for open paper positions). Try turning engines off, reduce open sim trades, or check backend logs.`,
+              `Dashboard request timed out after ${maxMs / 1000}s. The API may still be building the first background snapshot — retry in a few seconds.`,
             );
           }
-        } else if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
+          return null;
+        }
+        if (epochAtStart !== dashboardFetchEpochRef.current) return null;
+        if (aborted) {
+          return null;
+        }
+        dashboardPollFailuresRef.current += 1;
+        if (dashboardPollFailuresRef.current >= 3) {
+          setConnectionLostBanner(true);
+        }
+        if (/Failed to fetch|NetworkError|network error|Load failed|ECONNREFUSED/i.test(msg)) {
           setErr(
             `Cannot reach the backend. Run the API first (e.g. .\\scripts\\run_backend.ps1 or .\\scripts\\launch_local.ps1), then open this app in the browser at ${
               typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"
@@ -5719,23 +5464,7 @@ export default function App() {
       return payload;
     })();
 
-    if (force && hadDash) {
-      dashBlockingRefreshCountRef.current += 1;
-      if (dashBlockingRefreshCountRef.current === 1) setDashBlockingRefresh(true);
-    }
-
-    dashboardInFlightRef.current = req;
-    dashboardInFlightStartedAtRef.current = Date.now();
-    return req.finally(() => {
-      if (dashboardInFlightRef.current === req) {
-        dashboardInFlightRef.current = null;
-        dashboardInFlightStartedAtRef.current = 0;
-      }
-      if (force && hadDash) {
-        dashBlockingRefreshCountRef.current = Math.max(0, dashBlockingRefreshCountRef.current - 1);
-        if (dashBlockingRefreshCountRef.current === 0) setDashBlockingRefresh(false);
-      }
-    });
+    return req;
   }, [enqueueDashboardPollPayload]);
 
   /** Merge saved bot config into dashboard state without waiting on slow ``/api/dashboard`` (MTM, order books). */
@@ -5782,37 +5511,14 @@ export default function App() {
         kalshi.order_writes_live = Boolean(kalshi.private_ok) && !sim;
       }
 
-      return { ...prev, config: nextConfig, engine, kalshi };
+      const out = { ...prev, config: nextConfig, engine, kalshi };
+      persistLastDashboardSnapshot(out);
+      return out;
     });
   }, []);
 
-  const refreshEquityLight = useCallback((): void => {
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-    equityLightPollAbortRef.current?.abort();
-    const ac = new AbortController();
-    equityLightPollAbortRef.current = ac;
-    const maxMs = Math.min(75_000, Math.max(25_000, DASHBOARD_REQUEST_TIMEOUT_MS - 5000));
-    const tid = window.setTimeout(() => ac.abort(), maxMs);
-    void (async () => {
-      try {
-        const r = await fetch("/api/dashboard/equity", withApiAuth({ signal: ac.signal, cache: "no-store" }));
-        if (!r.ok) return;
-        const d = (await r.json()) as AnyObj;
-        if (!d || typeof d !== "object" || Array.isArray(d)) return;
-        enqueueDashboardPollPayload(d);
-      } catch {
-        /* ignore */
-      } finally {
-        window.clearTimeout(tid);
-        if (equityLightPollAbortRef.current === ac) equityLightPollAbortRef.current = null;
-      }
-    })();
-  }, [enqueueDashboardPollPayload]);
-
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
-  const refreshEquityLightRef = useRef(refreshEquityLight);
-  refreshEquityLightRef.current = refreshEquityLight;
 
   useLayoutEffect(() => {
     document.title = resolveDocumentTitle();
@@ -5822,10 +5528,7 @@ export default function App() {
     dashboardPollMountedRef.current = true;
     void refreshRef.current();
     const idFull = window.setInterval(() => void refreshRef.current(), DASHBOARD_FULL_POLL_MS);
-    // Equity poll cadence follows ``equityGranularity`` in a separate effect (Live tab = faster partial refresh).
-    // Background tabs throttle timers; editing looked like the “fix” because Vite remount re-ran this effect.
     const unsubCatchUp = subscribeDashboardCatchUp(() => {
-      refreshEquityLightRef.current();
       tradesPollNowRef.current();
       void refreshRef.current({ force: dashStillLoadingRef.current });
     });
@@ -5834,39 +5537,11 @@ export default function App() {
       window.clearInterval(idFull);
       dashboardPollMountedRef.current = false;
       dashboardAbortRef.current?.abort();
-      equityLightPollAbortRef.current?.abort();
-      // Strict Mode (or tab background): abort leaves the old promise in ``dashboardInFlightRef`` until it
-      // settles. A remount's ``refresh()`` would then dedupe against that "fresh" promise and never start a
-      // new fetch — ``dash`` stays null and the loading screen never clears until the next full dashboard poll fires.
-      dashboardInFlightRef.current = null;
-      dashboardInFlightStartedAtRef.current = 0;
       dashboardFetchEpochRef.current += 1;
-      dashBlockingRefreshCountRef.current = 0;
-      setDashBlockingRefresh(false);
       dashboardPollBatchRef.current.items = [];
       dashboardPollBatchRef.current.scheduled = false;
     };
   }, []);
-
-  /** If the first ``/api/dashboard`` never applies state (stuck promise, epoch mismatch), force a retry sooner then again after the HTTP timeout window. */
-  useEffect(() => {
-    if (dash != null) return;
-    const earlyMs = 28_000;
-    const lateMs = DASHBOARD_REQUEST_TIMEOUT_MS + 12_000;
-    const idEarly = window.setTimeout(() => void refreshRef.current({ force: true }), earlyMs);
-    const idLate = window.setTimeout(() => void refreshRef.current({ force: true }), lateMs);
-    return () => {
-      window.clearTimeout(idEarly);
-      window.clearTimeout(idLate);
-    };
-  }, [dash]);
-
-  useEffect(() => {
-    const ms = dashboardEquityPollIntervalMs(equityGranularity);
-    void refreshEquityLightRef.current();
-    const idEq = window.setInterval(() => void refreshEquityLightRef.current(), ms);
-    return () => window.clearInterval(idEq);
-  }, [equityGranularity]);
 
   const loadOptimizer = useCallback(async () => {
     try {
@@ -5887,7 +5562,7 @@ export default function App() {
 
   useEffect(() => {
     tradesPollMountedRef.current = true;
-    const pollMs = dashboardEquityPollIntervalMs(equityGranularity);
+    const pollMs = DASHBOARD_FULL_POLL_MS;
     const poll = async () => {
       tradesAbortRef.current?.abort();
       const epochAtStart = tradesFetchEpochRef.current;
@@ -5929,9 +5604,11 @@ export default function App() {
       tradesFetchEpochRef.current += 1;
       window.clearInterval(id);
     };
-  }, [equityGranularity]);
+  }, []);
 
   const cfg = dash?.config || {};
+  /** Server returned the empty shell before the first background compose — show section skeletons over the layout. */
+  const dashCacheBooting = Boolean(dash && (dash as AnyObj).dashboard_cache_empty);
   const setHeroMarqueeSpeedMultPersist = useCallback((mult: number) => {
     const clamped = Math.min(4, Math.max(0.35, mult));
     persistHeroMarqueeSpeedMult(clamped);
@@ -5945,6 +5622,34 @@ export default function App() {
 
   useEffect(() => {
     if (dash) dashSnapshotRef.current = dash as AnyObj;
+  }, [dash]);
+
+  const firstColdBootNoLsRef = useRef(
+    typeof window !== "undefined" && !window.localStorage.getItem(LAST_DASHBOARD_SNAPSHOT_LS_KEY),
+  );
+  useEffect(() => {
+    if (!firstColdBootNoLsRef.current || !dash) return;
+    const d = dash as AnyObj;
+    if (d.dashboard_cache_empty && d.stale) {
+      const tid = "kalshibot-first-sync-bootstrap";
+      setOptimizerNotifs((prev) => {
+        if (prev.some((x) => String(x.id) === tid)) return prev;
+        return [
+          ...prev,
+          {
+            id: tid,
+            title: "Kalshibot",
+            tone: "neutral",
+            segments: [{ tier: "neutral" as const, text: "First sync in progress…" }],
+            created_at: new Date().toISOString(),
+          },
+        ];
+      });
+    }
+    if (!d.stale && !d.dashboard_cache_empty) {
+      firstColdBootNoLsRef.current = false;
+      setOptimizerNotifs((prev) => prev.filter((x) => String(x.id) !== "kalshibot-first-sync-bootstrap"));
+    }
   }, [dash]);
 
   useEffect(() => {
@@ -6110,11 +5815,14 @@ export default function App() {
       if (toastAutoDismissTimeoutsRef.current.has(id)) continue;
       const isSuggested = id.startsWith("optimizer-suggested-");
       const isLabsBreedingToast = id.startsWith("labs-breeding-toast-");
+      const isFirstSyncBootstrap = id === "kalshibot-first-sync-bootstrap";
       const delayMs = isSuggested
         ? OPTIMIZER_SUGGESTED_TOAST_MS
         : isLabsBreedingToast
           ? LABS_BREEDING_TOAST_MS
-          : isTradeStackToastId(id)
+          : isFirstSyncBootstrap
+            ? 90_000
+            : isTradeStackToastId(id)
             ? TRADE_TOAST_AUTOCLOSE_MIN_MS +
               Math.floor(Math.random() * Math.max(0, TRADE_TOAST_AUTOCLOSE_MAX_MS - TRADE_TOAST_AUTOCLOSE_MIN_MS + 1))
             : OTHER_STACK_TOAST_AUTOCLOSE_MIN_MS +
@@ -6165,7 +5873,6 @@ export default function App() {
     seenTradeInitRef.current.clear();
     seenTradeSettleRef.current.clear();
     tradeToastsBootstrappedRef.current = false;
-    lastTradeToastMergeSigRef.current = "";
     // Force a fresh ``/api/trades`` read before re-bootstrap so we never mark bootstrapped on a transient
     // empty merge while ``recent_trades`` repopulates on the next dashboard tick (SQLite id recycle → spam).
     setToastTradeRows(null);
@@ -6186,21 +5893,6 @@ export default function App() {
    */
   useEffect(() => {
     const rows = mergeTradeRowsForToastEffect(dash?.recent_trades, toastTradeRows);
-    const mergeSig = rows
-      .map((t) => {
-        const k = tradeToastRowKey(t);
-        const st = String(t.status || "").toLowerCase();
-        const settled = tradeRowLooksResolved(t);
-        const tail = settled ? `${String(t.settled_at || "")}|${String(t.pnl_cents ?? "")}` : "";
-        return `${k}|${st}|${tail}`;
-      })
-      .sort()
-      .join(";");
-    if (tradeToastsBootstrappedRef.current && mergeSig === lastTradeToastMergeSigRef.current) {
-      return;
-    }
-    lastTradeToastMergeSigRef.current = mergeSig;
-
     const dashReady = dash != null;
     const tradesPollCompleted = toastTradeRows !== null;
     if (!tradeToastsBootstrappedRef.current) {
@@ -6214,9 +5906,20 @@ export default function App() {
         tradeToastsBootstrappedRef.current = true;
         return;
       }
+      // Only mark rows that ``/api/trades`` has returned as "already known". If ``recent_trades`` on the
+      // dashboard arrived first, merging those ids into ``seen*`` here swallowed open/settle toasts until
+      // something else changed the merge signature (race vs. the stagger queue).
+      const pollKeys = new Set<string>();
+      if (Array.isArray(toastTradeRows)) {
+        for (const pt of toastTradeRows) {
+          const pk = tradeToastRowKey(pt);
+          if (pk) pollKeys.add(pk);
+        }
+      }
       for (const t of rows) {
         const idStr = tradeToastRowKey(t);
         if (!idStr) continue;
+        if (pollKeys.size > 0 && !pollKeys.has(idStr)) continue;
         const st = String(t.status || "").toLowerCase();
         const resolved = tradeRowLooksResolved(t);
         if (resolved) {
@@ -7394,11 +7097,8 @@ export default function App() {
       await apiPutLabBranches(body);
       const reset = String(body.reset_data ?? "none").trim().toLowerCase();
       const didReset = reset !== "" && reset !== "none";
-      // Same failure mode as ``resetTradingData``: a deduped in-flight ``/api/dashboard`` can return pre-wipe JSON so
-      // ``mergeDashboardFastPoll`` never sees a higher ``trading_data_revision`` and equity/trades stay stale.
       if (didReset) {
         await refresh({ force: true });
-        refreshEquityLight();
         setBreederRefetchNonce((n) => n + 1);
       } else {
         await refresh();
@@ -7474,12 +7174,9 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-    // A plain refresh() reuses a "fresh" in-flight /api/dashboard and can re-apply pre-reset data; force refetches
-    // so equity/branch charts pick up cleared snapshots and ``trading_data_revision`` advances in merged state.
     if (resetOk) {
       try {
         await refresh({ force: true });
-        refreshEquityLight();
         setBreederRefetchNonce((n) => n + 1);
       } catch {
         /* network errors already surfaced via reset POST failure when applicable */
@@ -7673,12 +7370,36 @@ export default function App() {
       </div>
 
       {!dash && err ? <ApiOfflineCallout message={err} /> : null}
-      {((!dash && !err) || (dashBlockingRefresh && !err)) ? (
-        <DashboardLoadingScreen
-          variant={dashBlockingRefresh && dash ? "reload" : "initial"}
-          onRetry={() => void refresh({ force: true })}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
+      {connectionLostBanner && dash ? (
+        <div
+          className="callout callout-bad"
+          role="status"
+          style={{
+            position: "fixed",
+            bottom: 16,
+            right: 16,
+            zIndex: 100,
+            maxWidth: 380,
+            margin: 0,
+            boxShadow: "0 8px 28px rgba(0,0,0,0.35)",
+          }}
+        >
+          <p className="callout-body" style={{ margin: 0 }}>
+            <strong>Connection lost</strong> — still showing your last saved snapshot.{" "}
+            <button type="button" className="primary" onClick={() => void refresh({ force: true })}>
+              Retry
+            </button>{" "}
+            <button type="button" onClick={() => setConnectionLostBanner(false)}>
+              Dismiss
+            </button>
+          </p>
+        </div>
+      ) : null}
+      {!dash && !err ? (
+        <div className="kb-dash-awaiting-snapshot" role="status" aria-live="polite">
+          <div className="kb-dash-awaiting-snapshot__bar" aria-hidden />
+          <span className="sub">Connecting to dashboard…</span>
+        </div>
       ) : null}
       {dash && err ? (
         <div className="error" title="Last API or validation error from this browser session.">
@@ -7688,9 +7409,63 @@ export default function App() {
 
       {dash ? (
         <>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+        {formatSnapshotAgeLabel(dash as AnyObj) ? (
+          <span className="sub" style={{ fontSize: 11, opacity: 0.88 }} title="When this snapshot was built on the server">
+            Last updated {formatSnapshotAgeLabel(dash as AnyObj)}
+          </span>
+        ) : null}
+        {Boolean((dash as AnyObj).stale) ? (
+          <span
+            className="sub"
+            style={{
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: "1px solid rgba(110, 231, 255, 0.4)",
+              background: "rgba(15, 28, 48, 0.72)",
+            }}
+            title="Snapshot is older than 30s — background refresh may still be running."
+          >
+            Syncing Kalshi…
+          </span>
+        ) : null}
+        {String((dash as AnyObj).dashboard_cache_last_error || "").trim() ? (
+          <span
+            className="sub"
+            style={{
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: "1px solid rgba(255, 168, 72, 0.45)",
+              background: "rgba(40, 28, 10, 0.62)",
+              maxWidth: 400,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={String((dash as AnyObj).dashboard_cache_last_error)}
+          >
+            Background refresh error —{" "}
+            {String((dash as AnyObj).dashboard_cache_last_error).slice(0, 96)}
+            {String((dash as AnyObj).dashboard_cache_last_error).length > 96 ? "…" : ""}
+          </span>
+        ) : null}
+      </div>
       <KalshiStatusBanner dash={dash} cfg={cfg} />
 
-      <div className="dash-main-4grid">
+      <div
+        className={`dash-main-4grid${dashCacheBooting ? " dash-main-4grid--cache-boot" : ""}`}
+        style={{ position: "relative" }}
+      >
+        {dashCacheBooting ? (
+          <div className="dash-per-section-skeleton-overlay" aria-hidden="true">
+            <div className="dash-skel-block dash-skel-block--branch" />
+            <div className="dash-skel-block dash-skel-block--equity" />
+            <div className="dash-skel-block dash-skel-block--assets" />
+            <div className="dash-skel-block dash-skel-block--account" />
+          </div>
+        ) : null}
         <div className="dash-split-row__col dash-split-row__col--metrics dash-split-metrics-stack">
       <div className="dash-split-card">
       <section className="dash-section dash-section--split-card" aria-labelledby="dash-heading-branch-performance">
@@ -9935,84 +9710,6 @@ function ApiOfflineCallout({ message }: { message: string }) {
           <code>frontend/vite.config.ts</code> proxy <code>target</code>.
         </li>
       </ol>
-    </div>
-  );
-}
-
-/** First dashboard fetch or forced reload: full-screen state until `/api/dashboard` returns. */
-function DashboardLoadingScreen({
-  variant = "initial",
-  onRetry,
-  onOpenSettings,
-}: {
-  variant?: "initial" | "reload";
-  onRetry: () => void;
-  onOpenSettings: () => void;
-}) {
-  const [elapsedSec, setElapsedSec] = useState(0);
-  useEffect(() => {
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const id = window.setInterval(() => setElapsedSec((n) => n + 1), 1000);
-    return () => {
-      window.clearInterval(id);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, []);
-
-  return (
-    <div
-      className="app-loading-screen"
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-      aria-label="Loading dashboard"
-    >
-      <div className="app-loading-screen__panel">
-        <div className="app-loading-screen__spinner" aria-hidden />
-        <h1 className="app-loading-screen__title">Chomp's Diner</h1>
-        <p className="app-loading-screen__line">
-          {variant === "reload" ? "Refreshing dashboard…" : "Loading…"}
-        </p>
-        <p className="app-loading-screen__elapsed" aria-live="off">
-          {elapsedSec}s
-        </p>
-        <p className="app-loading-screen__retry-hint" role="note">
-          {variant === "reload" ? (
-            <>
-              Pulling a fresh <code>/api/dashboard</code> (Kalshi + paper marks can take up to{" "}
-              {Math.ceil(DASHBOARD_REQUEST_TIMEOUT_MS / 1000)}s). <strong>Retry</strong> aborts the in-flight request and
-              starts again.
-            </>
-          ) : (
-            <>
-              Stuck? <strong>Retry</strong> below — forced reload aborts any hung request. If the API is slow, this screen
-              also auto-retries once after ~{Math.ceil((DASHBOARD_REQUEST_TIMEOUT_MS + 12_000) / 1000)}s. Use{" "}
-              <strong>Settings</strong> for <strong>Refresh now</strong>. Open via the Vite URL (this page:{" "}
-              <code>{typeof window !== "undefined" ? window.location.origin : "http://localhost:5174"}</code>) so{" "}
-              <code>/api</code> proxies to Python.
-            </>
-          )}
-        </p>
-        <div className="app-loading-screen__actions">
-          <button
-            type="button"
-            className="primary app-loading-screen__retry-btn"
-            onClick={onRetry}
-            title="Force a new /api/dashboard request (same as Settings → Refresh now)."
-          >
-            Retry
-          </button>
-          <button
-            type="button"
-            className="app-loading-screen__retry-btn"
-            onClick={onOpenSettings}
-            title="Open Settings (Kalshi link, Refresh now, rules)."
-          >
-            Settings ⚙
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

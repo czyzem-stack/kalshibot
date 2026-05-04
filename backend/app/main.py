@@ -65,7 +65,11 @@ from .lab_communication import (
 )
 from .market_pulse import fetch_market_pulse, market_passes_subtitle_excludes
 from .rule_hints import rule_suggestions_from_snapshots
-from .persistence import breeder_smart_defaults_snapshot, expand_partial_lab_branch
+from .persistence import (
+    breeder_smart_defaults_snapshot,
+    default_bot_config,
+    expand_partial_lab_branch,
+)
 from .optimizer.promotion import lab_a_promotion_report
 from .optimizer_claude import pulse_chart_baseline, run_optimizer_once
 from .middleware import ApiBearerAuthMiddleware, SecurityHeadersMiddleware
@@ -109,12 +113,33 @@ def _next_dashboard_payload_seq() -> int:
     return _dashboard_payload_seq
 
 
+# SPA may open multiple tabs / remounts — parallel GET /api/trades stacks SQLite against dashboard compose.
+_recent_trades_fetch_lock = asyncio.Lock()
+
+
 # Must match ``default_bot_config`` / snapshot_equity Live paper fallback so tiles and chart tail
 # never disagree when ``paper_balance_cents`` is unset.
 _DEFAULT_PAPER_BALANCE_CENTS = 500_000
 
 # Newest-first cap per branch for dashboard equity charts (dense rolling windows on D/D+ tabs).
 DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT = 4000
+
+# --- INSTANT DASHBOARD CACHE — request path is now O(1) ---
+# Heavy compose runs only in ``_dashboard_background_refresh_loop``; HTTP handlers return the last snapshot + metadata.
+_dashboard_cache_lock = asyncio.Lock()
+_dashboard_cache_body: dict[str, Any] | None = None
+_dashboard_cache_wall_s: float = 0.0
+_DASHBOARD_CACHE_STALE_AFTER_S = 30.0
+_DASHBOARD_CACHE_REFRESH_INTERVAL_S = 8.0
+
+# Incremental dashboard SQLite seed — reuse prior snapshots/rollups for branches whose MAX(id) lineage is unchanged.
+_DASHBOARD_PARENT_BRANCH_SQL_ORDER = (BRANCH_LIVE,) + BRANCH_LABS
+_incremental_last_full_compose_mono: float = 0.0
+_incremental_fp_at_save: dict[str, Any] | None = None
+_incremental_aux: dict[str, Any] | None = None
+_incremental_breeding_seq_saved: int | None = None
+_dashboard_cache_refresh_fail_streak: int = 0
+_DASHBOARD_INCREMENTAL_FULL_COMPOSE_INTERVAL_S = 60.0
 
 
 def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
@@ -137,21 +162,52 @@ def _optimizer_change_stable_id(x: dict[str, Any]) -> str:
     return f"ch-{h}"
 
 
-def _engine_status_block(
-    engine: TradingEngine,
+def _engine_branch_dashboard_block(
+    engine: TradingEngine | None,
     *,
     engine_running: bool,
     simulate_orders: bool,
-    extra: dict[str, Any] | None = None,
-) -> EngineStatusBlock:
-    out = {
+) -> dict[str, Any]:
+    """Parent-branch engine slice for dashboard JSON — tolerate ``None`` before lifespan or if init failed."""
+    if engine is None:
+        return {
+            "engine_running": bool(engine_running),
+            "simulate_orders": bool(simulate_orders),
+            "last_tick_at": None,
+            "last_error": "engine not initialized",
+            "markets_scanned": 0,
+            "last_tick_trace": [],
+        }
+    return {
         "engine_running": bool(engine_running),
         "simulate_orders": bool(simulate_orders),
         "last_tick_at": engine.state.last_tick_at,
         "last_error": engine.state.last_error,
         "markets_scanned": engine.state.markets_scanned,
         "last_tick_trace": engine.state.last_tick_trace,
-        "asset_snapshots": engine.state.asset_snapshots or {},
+    }
+
+
+def _engine_asset_snapshots_safe(engine: TradingEngine | None) -> dict[str, Any]:
+    if engine is None:
+        return {}
+    return engine.state.asset_snapshots or {}
+
+
+def _engine_status_block(
+    engine: TradingEngine | None,
+    *,
+    engine_running: bool,
+    simulate_orders: bool,
+    extra: dict[str, Any] | None = None,
+) -> EngineStatusBlock:
+    out = {
+        **_engine_branch_dashboard_block(
+            engine,
+            engine_running=engine_running,
+            simulate_orders=simulate_orders,
+        ),
+        "asset_snapshots": _engine_asset_snapshots_safe(engine),
     }
     if extra:
         out.update(extra)
@@ -1032,6 +1088,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     state.bg_task = asyncio.create_task(
         dual_engine_loop(state.ENGINES, state.stop_event)
     )
+    state.dashboard_cache_task = asyncio.create_task(_dashboard_background_refresh_loop())
     state.optimizer_task = asyncio.create_task(_optimizer_loop(state.stop_event))
     if env.kalshi_ws_enabled:
         state.kalshi_ws_task = asyncio.create_task(
@@ -1054,7 +1111,12 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         state.stop_event.set()
         tasks = [
             t
-            for t in (state.bg_task, state.optimizer_task, state.kalshi_ws_task)
+            for t in (
+                state.bg_task,
+                state.dashboard_cache_task,
+                state.optimizer_task,
+                state.kalshi_ws_task,
+            )
             if t is not None
         ]
         for t in tasks:
@@ -1062,6 +1124,7 @@ async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         state.bg_task = None
+        state.dashboard_cache_task = None
         state.optimizer_task = None
         state.kalshi_ws_task = None
         state.app_started_at_iso = None
@@ -1849,7 +1912,9 @@ async def signals(limit: int = 200) -> list[dict[str, Any]]:
 
 @app.get("/api/trades")
 async def trades(limit: int = 200) -> list[dict[str, Any]]:
-    return await store.recent_trades(limit=limit)
+    lim = max(1, min(int(limit), 500))
+    async with _recent_trades_fetch_lock:
+        return await store.recent_trades(limit=lim)
 
 
 def _position_rows_for_series(
@@ -2049,45 +2114,10 @@ def _sim_open_holdings_asset_count(
     return n
 
 
-async def _compose_dashboard_base(
-    *, with_marks: bool, _retry_depth: int = 0
-) -> DashboardResponse:
-    """
-    Assemble the full dashboard JSON. When ``with_marks`` is False, the same
-    ``_refresh_paper_mtm_from_marks`` runs per branch with ``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``
-    (default ~30s) so ``GET /api/dashboard/equity`` can refresh paper MTM between full polls; a slow
-    branch times out alone — others still get live marks. On per-branch timeout, that branch falls
-    back to snapshot-based values from ``_enrich_strategy_metrics`` until the next poll. The **batch**
-    ``wait_for`` uses at least ``gather_timeout + 5`` seconds so the wall is never below the per-branch cap.
-
-    When ``with_marks`` is True and ``DASHBOARD_FULL_PAPER_MTM`` is on, the parallel Kalshi paper-MTM batch
-    runs and is capped by ``DASHBOARD_FULL_MTM_BATCH_WALL_S``. Default: full route skips that batch so the
-    Vite shell clears immediately; ``GET /api/dashboard/equity`` still refreshes marks when fast paper MTM is enabled.
-
-    If ``POST /api/data/reset`` runs while this coroutine is mid-flight (long MTM), the first pass can
-    still hold pre-wipe ``trades`` / rollups loaded at the start — ``trading_data_revision`` will have
-    advanced; we discard that body and compose again (bounded retries).
-    """
-    cfg = await store.load_config()
-    rev_start = store.trading_data_revision
-    mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
-    # Heavy I/O: SQLite gather + Kalshi (capped) + optional paper MTM (capped per route).
-    (
-        trades,
-        signals,
-        snaps_live,
-        snaps_lab_a,
-        snaps_lab_b,
-        snaps_lab_c,
-        snaps_lab_d,
-        snaps_lab_e,
-        roll_live,
-        roll_lab_a,
-        roll_lab_b,
-        roll_lab_c,
-        roll_lab_d,
-        roll_lab_e,
-    ) = await asyncio.gather(
+async def _seed_sqlite_dashboard_pack_full(
+    mode_live: str,
+) -> tuple[tuple[Any, ...], tuple[Any, Any]]:
+    pack_a = await asyncio.gather(
         store.recent_trades(limit=500),
         store.recent_signals(limit=500),
         store.equity_series(
@@ -2131,6 +2161,198 @@ async def _compose_dashboard_base(
             ]
         ),
     )
+    return pack_a, (child_equities, child_rolls)
+
+
+async def _seed_sqlite_dashboard_pack_incremental(
+    dirty: set[str], mode_live: str, aux: dict[str, Any]
+) -> tuple[tuple[Any, ...], tuple[Any, Any]]:
+    trades, signals = await asyncio.gather(
+        store.recent_trades(limit=500),
+        store.recent_signals(limit=500),
+    )
+
+    async def _snaps_roll_for(
+        br: str, roll_mode: str
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        sn, rl = await asyncio.gather(
+            store.equity_series(
+                limit=DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT, branch=br
+            ),
+            store.dashboard_branch_trade_rollups(br, roll_mode),
+        )
+        return sn, rl
+
+    async def _parent_slot(br: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        rm = mode_live if br == BRANCH_LIVE else "simulate"
+        if br in dirty:
+            sn, rl = await _snaps_roll_for(br, rm)
+        else:
+            sn = copy.deepcopy(aux["snaps"][br])
+            rl = copy.deepcopy(aux["rolls"][br])
+        return br, sn, rl
+
+    parent_results = await asyncio.gather(
+        *[_parent_slot(br) for br in _DASHBOARD_PARENT_BRANCH_SQL_ORDER]
+    )
+    pmap = {br: (sn, rl) for br, sn, rl in parent_results}
+
+    async def _child_slot(br: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        if br in dirty:
+            sn, rl = await _snaps_roll_for(br, "simulate")
+        else:
+            sn = copy.deepcopy(aux["child_snaps"][br])
+            rl = copy.deepcopy(aux["child_rolls"][br])
+        return br, sn, rl
+
+    child_results = await asyncio.gather(*[_child_slot(br) for br in BRANCH_CHILD_LABS])
+    cmap = {br: (sn, rl) for br, sn, rl in child_results}
+    child_equities = [cmap[br][0] for br in BRANCH_CHILD_LABS]
+    child_rolls = [cmap[br][1] for br in BRANCH_CHILD_LABS]
+
+    snaps_live, roll_live = pmap[BRANCH_LIVE]
+    snaps_lab_a, roll_lab_a = pmap[BRANCH_LAB_A]
+    snaps_lab_b, roll_lab_b = pmap[BRANCH_LAB_B]
+    snaps_lab_c, roll_lab_c = pmap[BRANCH_LAB_C]
+    snaps_lab_d, roll_lab_d = pmap[BRANCH_LAB_D]
+    snaps_lab_e, roll_lab_e = pmap[BRANCH_LAB_E]
+    pack_a = (
+        trades,
+        signals,
+        snaps_live,
+        snaps_lab_a,
+        snaps_lab_b,
+        snaps_lab_c,
+        snaps_lab_d,
+        snaps_lab_e,
+        roll_live,
+        roll_lab_a,
+        roll_lab_b,
+        roll_lab_c,
+        roll_lab_d,
+        roll_lab_e,
+    )
+    return pack_a, (child_equities, child_rolls)
+
+
+def _dashboard_incremental_aux_save(
+    *,
+    bump_full_compose_mono: bool,
+    fp_now: dict[str, Any],
+    breeding_seq: int,
+    snaps_live: list[dict[str, Any]],
+    snaps_lab_a: list[dict[str, Any]],
+    snaps_lab_b: list[dict[str, Any]],
+    snaps_lab_c: list[dict[str, Any]],
+    snaps_lab_d: list[dict[str, Any]],
+    snaps_lab_e: list[dict[str, Any]],
+    roll_live: dict[str, Any],
+    roll_lab_a: dict[str, Any],
+    roll_lab_b: dict[str, Any],
+    roll_lab_c: dict[str, Any],
+    roll_lab_d: dict[str, Any],
+    roll_lab_e: dict[str, Any],
+    child_equities: list[list[dict[str, Any]]],
+    child_rolls: list[dict[str, Any]],
+) -> None:
+    global _incremental_aux, _incremental_fp_at_save, _incremental_breeding_seq_saved, _incremental_last_full_compose_mono
+    _incremental_fp_at_save = fp_now
+    _incremental_breeding_seq_saved = breeding_seq
+    _incremental_aux = {
+        "snaps": {
+            BRANCH_LIVE: copy.deepcopy(snaps_live),
+            BRANCH_LAB_A: copy.deepcopy(snaps_lab_a),
+            BRANCH_LAB_B: copy.deepcopy(snaps_lab_b),
+            BRANCH_LAB_C: copy.deepcopy(snaps_lab_c),
+            BRANCH_LAB_D: copy.deepcopy(snaps_lab_d),
+            BRANCH_LAB_E: copy.deepcopy(snaps_lab_e),
+        },
+        "rolls": {
+            BRANCH_LIVE: copy.deepcopy(roll_live),
+            BRANCH_LAB_A: copy.deepcopy(roll_lab_a),
+            BRANCH_LAB_B: copy.deepcopy(roll_lab_b),
+            BRANCH_LAB_C: copy.deepcopy(roll_lab_c),
+            BRANCH_LAB_D: copy.deepcopy(roll_lab_d),
+            BRANCH_LAB_E: copy.deepcopy(roll_lab_e),
+        },
+        "child_snaps": {
+            br: copy.deepcopy(child_equities[i])
+            for i, br in enumerate(BRANCH_CHILD_LABS)
+        },
+        "child_rolls": {
+            br: copy.deepcopy(child_rolls[i]) for i, br in enumerate(BRANCH_CHILD_LABS)
+        },
+    }
+    if bump_full_compose_mono:
+        _incremental_last_full_compose_mono = time.monotonic()
+
+
+async def _compose_dashboard_full(
+    *, with_marks: bool, _retry_depth: int = 0
+) -> DashboardResponse:
+    """
+    Assemble the full dashboard JSON (SQLite seed + Kalshi + optional paper MTM). Intended **only** for the
+    background cache refresher — HTTP handlers return :func:`_dashboard_cache_http_response` in O(1).
+
+    When ``with_marks`` is False, fast paper MTM gather still runs per ``DASHBOARD_FAST_PAPER_MTM`` (legacy shape).
+    Background loop always uses ``with_marks=True``.
+
+    If ``POST /api/data/reset`` runs mid-flight, ``trading_data_revision`` may advance; we discard and compose
+    again (bounded retries).
+    """
+    cfg = await store.load_config()
+    rev_start = store.trading_data_revision
+    mode_live = "simulate" if live_paper_trading_enabled(cfg) else "live"
+    opt_blk0 = cfg.get("optimizer") if isinstance(cfg.get("optimizer"), dict) else {}
+    breeding_seq = int(opt_blk0.get("labs_breeding_event_seq") or 0)
+    fp_now = await store.dashboard_sqlite_fingerprints_for_incremental()
+    now_mono = time.monotonic()
+    force_full_sql = (
+        _incremental_aux is None
+        or _incremental_fp_at_save is None
+        or (now_mono - _incremental_last_full_compose_mono)
+        >= _DASHBOARD_INCREMENTAL_FULL_COMPOSE_INTERVAL_S
+        or int(_incremental_fp_at_save.get("trading_data_revision") or -1)
+        != int(fp_now.get("trading_data_revision") or 0)
+        or (
+            _incremental_breeding_seq_saved is not None
+            and _incremental_breeding_seq_saved != breeding_seq
+        )
+    )
+    dirty_branches: set[str] = set()
+    if not force_full_sql and _incremental_fp_at_save is not None and _incremental_aux is not None:
+        prev_per = _incremental_fp_at_save.get("per_branch") or {}
+        cur_per = fp_now.get("per_branch") or {}
+        if isinstance(prev_per, dict) and isinstance(cur_per, dict):
+            for br, sig in cur_per.items():
+                b = str(br)
+                if prev_per.get(b) != sig:
+                    dirty_branches.add(b)
+    if force_full_sql:
+        pack_a, pack_b = await _seed_sqlite_dashboard_pack_full(mode_live)
+    else:
+        # Incremental compose — only dirty labs are refreshed
+        pack_a, pack_b = await _seed_sqlite_dashboard_pack_incremental(
+            dirty_branches, mode_live, _incremental_aux
+        )
+    did_full_sqlite_seed = force_full_sql
+    (
+        trades,
+        signals,
+        snaps_live,
+        snaps_lab_a,
+        snaps_lab_b,
+        snaps_lab_c,
+        snaps_lab_d,
+        snaps_lab_e,
+        roll_live,
+        roll_lab_a,
+        roll_lab_b,
+        roll_lab_c,
+        roll_lab_d,
+        roll_lab_e,
+    ) = pack_a
+    child_equities, child_rolls = pack_b
     snaps_lab_children = _merge_lab_children_equity_snapshots(
         list(child_equities), DASHBOARD_EQUITY_SNAPSHOT_SERIES_LIMIT
     )
@@ -2388,23 +2610,28 @@ async def _compose_dashboard_base(
                 "last_tick_trace_tail": [],
             }
 
-    # Paper MTM from Kalshi mids: optional on full ``/api/dashboard`` (see ``DASHBOARD_FULL_PAPER_MTM`` — default off
-    # so first paint is not blocked). Fast ``/api/dashboard/equity`` still refreshes marks when ``DASHBOARD_FAST_PAPER_MTM`` is on.
+    # Paper MTM from Kalshi mids: optional when ``DASHBOARD_FULL_PAPER_MTM`` / ``DASHBOARD_FAST_PAPER_MTM`` are on.
     persist_mtm_eq_snaps = env.dashboard_persist_mtm_equity_snapshots
-    # GA ``lab_child_*`` slots are **not** refreshed here: six extra Kalshi mark passes inflated the full-route
-    # wall time and blocked the Vite loading screen. Per-slot tiles use ``_enrich_strategy_metrics`` + SQLite
-    # snapshots; consolidated child KPIs still use ``_sync_consolidated_lab_children_metrics`` from those slots.
-    # ``/api/dashboard/equity`` can opt out via ``DASHBOARD_FAST_PAPER_MTM=0``. Full ``/api/dashboard`` runs this batch
-    # only when ``DASHBOARD_FULL_PAPER_MTM=1`` (otherwise first JSON returns quickly; equity polls fill live marks).
+    # GA ``lab_child_*`` slots are **not** refreshed here (six extra Kalshi mark passes). Per-slot tiles use SQLite
+    # snapshots; consolidated child KPIs use ``_sync_consolidated_lab_children_metrics`` from those slots.
     #
     # Build coroutines **only** when the batch will run — calling ``_refresh_paper_mtm_from_marks(...)`` creates a
     # coroutine object; if we skipped the batch after appending, Python would warn "coroutine was never awaited".
+    def _skip_paper_mtm_for_branch(br: str, roll: dict[str, Any]) -> bool:
+        if did_full_sqlite_seed:
+            return False
+        if br in dirty_branches:
+            return False
+        return int(roll.get("open_n") or 0) == 0
+
     want_paper_mtm_batch = (with_marks and env.dashboard_full_paper_mtm) or (
         not with_marks and env.dashboard_fast_paper_mtm
     )
     mtm_tasks: list[Any] = []
     if want_paper_mtm_batch:
-        if simulate_live:
+        if simulate_live and state.engine_live is not None and not _skip_paper_mtm_for_branch(
+            BRANCH_LIVE, roll_live
+        ):
             mtm_tasks.append(
                 _refresh_paper_mtm_from_marks(
                     state.engine_live,
@@ -2416,45 +2643,23 @@ async def _compose_dashboard_base(
                     persist_snapshot=persist_mtm_eq_snaps,
                 )
             )
-        mtm_tasks.extend(
-            [
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_a,
-                    paper_start_cents=lab_paper_basis_a,
-                    roll=roll_lab_a,
-                    out_metrics=metrics_lab_a,
-                    persist_snapshot=persist_mtm_eq_snaps,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_b,
-                    paper_start_cents=lab_paper_basis_b,
-                    roll=roll_lab_b,
-                    out_metrics=metrics_lab_b,
-                    persist_snapshot=persist_mtm_eq_snaps,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_c,
-                    paper_start_cents=lab_paper_basis_c,
-                    roll=roll_lab_c,
-                    out_metrics=metrics_lab_c,
-                    persist_snapshot=persist_mtm_eq_snaps,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_d,
-                    paper_start_cents=lab_paper_basis_d,
-                    roll=roll_lab_d,
-                    out_metrics=metrics_lab_d,
-                    persist_snapshot=persist_mtm_eq_snaps,
-                ),
-                _refresh_paper_mtm_from_marks(
-                    state.engine_lab_e,
-                    paper_start_cents=lab_paper_basis_e,
-                    roll=roll_lab_e,
-                    out_metrics=metrics_lab_e,
-                    persist_snapshot=persist_mtm_eq_snaps,
-                ),
-            ]
-        )
+        for br, eng, basis, roll, met in (
+            (BRANCH_LAB_A, state.engine_lab_a, lab_paper_basis_a, roll_lab_a, metrics_lab_a),
+            (BRANCH_LAB_B, state.engine_lab_b, lab_paper_basis_b, roll_lab_b, metrics_lab_b),
+            (BRANCH_LAB_C, state.engine_lab_c, lab_paper_basis_c, roll_lab_c, metrics_lab_c),
+            (BRANCH_LAB_D, state.engine_lab_d, lab_paper_basis_d, roll_lab_d, metrics_lab_d),
+            (BRANCH_LAB_E, state.engine_lab_e, lab_paper_basis_e, roll_lab_e, metrics_lab_e),
+        ):
+            if eng is not None and not _skip_paper_mtm_for_branch(br, roll):
+                mtm_tasks.append(
+                    _refresh_paper_mtm_from_marks(
+                        eng,
+                        paper_start_cents=basis,
+                        roll=roll,
+                        out_metrics=met,
+                        persist_snapshot=persist_mtm_eq_snaps,
+                    )
+                )
     if mtm_tasks:
         mtm_timeout = (
             50.0 if with_marks else float(env.dashboard_fast_mtm_gather_timeout_s)
@@ -2669,82 +2874,54 @@ async def _compose_dashboard_base(
             "order_writes_live": order_writes_live,
         },
         "engine": {
-            "live": {
-                "engine_running": live_engine_on,
-                "simulate_orders": bool(eff_live.get("_simulate_orders"))
+            "live": _engine_branch_dashboard_block(
+                state.engine_live,
+                engine_running=live_engine_on,
+                simulate_orders=bool(eff_live.get("_simulate_orders"))
                 if eff_live
                 else simulate_live,
-                "last_tick_at": state.engine_live.state.last_tick_at,
-                "last_error": state.engine_live.state.last_error,
-                "markets_scanned": state.engine_live.state.markets_scanned,
-                "last_tick_trace": state.engine_live.state.last_tick_trace,
-            },
-            "lab_a": {
-                "engine_running": lab_a_engine_on,
-                "simulate_orders": bool(eff_lab_a.get("_simulate_orders"))
-                if eff_lab_a
-                else True,
-                "last_tick_at": state.engine_lab_a.state.last_tick_at,
-                "last_error": state.engine_lab_a.state.last_error,
-                "markets_scanned": state.engine_lab_a.state.markets_scanned,
-                "last_tick_trace": state.engine_lab_a.state.last_tick_trace,
-            },
-            "lab_b": {
-                "engine_running": lab_b_engine_on,
-                "simulate_orders": bool(eff_lab_b.get("_simulate_orders"))
-                if eff_lab_b
-                else True,
-                "last_tick_at": state.engine_lab_b.state.last_tick_at,
-                "last_error": state.engine_lab_b.state.last_error,
-                "markets_scanned": state.engine_lab_b.state.markets_scanned,
-                "last_tick_trace": state.engine_lab_b.state.last_tick_trace,
-            },
-            "lab_c": {
-                "engine_running": lab_c_engine_on,
-                "simulate_orders": bool(eff_lab_c.get("_simulate_orders"))
-                if eff_lab_c
-                else True,
-                "last_tick_at": state.engine_lab_c.state.last_tick_at,
-                "last_error": state.engine_lab_c.state.last_error,
-                "markets_scanned": state.engine_lab_c.state.markets_scanned,
-                "last_tick_trace": state.engine_lab_c.state.last_tick_trace,
-            },
-            "lab_d": {
-                "engine_running": lab_d_engine_on,
-                "simulate_orders": bool(eff_lab_d.get("_simulate_orders"))
-                if eff_lab_d
-                else True,
-                "last_tick_at": state.engine_lab_d.state.last_tick_at,
-                "last_error": state.engine_lab_d.state.last_error,
-                "markets_scanned": state.engine_lab_d.state.markets_scanned,
-                "last_tick_trace": state.engine_lab_d.state.last_tick_trace,
-            },
-            "lab_e": {
-                "engine_running": lab_e_engine_on,
-                "simulate_orders": bool(eff_lab_e.get("_simulate_orders"))
-                if eff_lab_e
-                else True,
-                "last_tick_at": state.engine_lab_e.state.last_tick_at,
-                "last_error": state.engine_lab_e.state.last_error,
-                "markets_scanned": state.engine_lab_e.state.markets_scanned,
-                "last_tick_trace": state.engine_lab_e.state.last_tick_trace,
-            },
+            ),
+            "lab_a": _engine_branch_dashboard_block(
+                state.engine_lab_a,
+                engine_running=lab_a_engine_on,
+                simulate_orders=bool(eff_lab_a.get("_simulate_orders")) if eff_lab_a else True,
+            ),
+            "lab_b": _engine_branch_dashboard_block(
+                state.engine_lab_b,
+                engine_running=lab_b_engine_on,
+                simulate_orders=bool(eff_lab_b.get("_simulate_orders")) if eff_lab_b else True,
+            ),
+            "lab_c": _engine_branch_dashboard_block(
+                state.engine_lab_c,
+                engine_running=lab_c_engine_on,
+                simulate_orders=bool(eff_lab_c.get("_simulate_orders")) if eff_lab_c else True,
+            ),
+            "lab_d": _engine_branch_dashboard_block(
+                state.engine_lab_d,
+                engine_running=lab_d_engine_on,
+                simulate_orders=bool(eff_lab_d.get("_simulate_orders")) if eff_lab_d else True,
+            ),
+            "lab_e": _engine_branch_dashboard_block(
+                state.engine_lab_e,
+                engine_running=lab_e_engine_on,
+                simulate_orders=bool(eff_lab_e.get("_simulate_orders")) if eff_lab_e else True,
+            ),
         },
         "asset_snapshots": {
-            "live": state.engine_live.state.asset_snapshots or {},
-            "lab_a": state.engine_lab_a.state.asset_snapshots or {},
-            "lab_b": state.engine_lab_b.state.asset_snapshots or {},
-            "lab_c": state.engine_lab_c.state.asset_snapshots or {},
-            "lab_d": state.engine_lab_d.state.asset_snapshots or {},
-            "lab_e": state.engine_lab_e.state.asset_snapshots or {},
+            "live": _engine_asset_snapshots_safe(state.engine_live),
+            "lab_a": _engine_asset_snapshots_safe(state.engine_lab_a),
+            "lab_b": _engine_asset_snapshots_safe(state.engine_lab_b),
+            "lab_c": _engine_asset_snapshots_safe(state.engine_lab_c),
+            "lab_d": _engine_asset_snapshots_safe(state.engine_lab_d),
+            "lab_e": _engine_asset_snapshots_safe(state.engine_lab_e),
         },
         "rule_suggestions": rule_suggestions_from_snapshots(
-            state.engine_live.state.asset_snapshots or {},
-            state.engine_lab_a.state.asset_snapshots or {},
-            state.engine_lab_b.state.asset_snapshots or {},
-            state.engine_lab_c.state.asset_snapshots or {},
-            state.engine_lab_d.state.asset_snapshots or {},
-            state.engine_lab_e.state.asset_snapshots or {},
+            _engine_asset_snapshots_safe(state.engine_live),
+            _engine_asset_snapshots_safe(state.engine_lab_a),
+            _engine_asset_snapshots_safe(state.engine_lab_b),
+            _engine_asset_snapshots_safe(state.engine_lab_c),
+            _engine_asset_snapshots_safe(state.engine_lab_d),
+            _engine_asset_snapshots_safe(state.engine_lab_e),
         ),
         "metrics": {
             "mode": mode_live,
@@ -2828,47 +3005,261 @@ async def _compose_dashboard_base(
             store.trading_data_revision,
             _retry_depth + 1,
         )
-        return await _compose_dashboard_base(
-            with_marks=with_marks, _retry_depth=_retry_depth + 1
+        return await _compose_dashboard_full(
+            with_marks=with_marks,
+            _retry_depth=_retry_depth + 1,
         )
+    _dashboard_incremental_aux_save(
+        bump_full_compose_mono=did_full_sqlite_seed,
+        fp_now=fp_now,
+        breeding_seq=breeding_seq,
+        snaps_live=snaps_live,
+        snaps_lab_a=snaps_lab_a,
+        snaps_lab_b=snaps_lab_b,
+        snaps_lab_c=snaps_lab_c,
+        snaps_lab_d=snaps_lab_d,
+        snaps_lab_e=snaps_lab_e,
+        roll_live=roll_live,
+        roll_lab_a=roll_lab_a,
+        roll_lab_b=roll_lab_b,
+        roll_lab_c=roll_lab_c,
+        roll_lab_d=roll_lab_d,
+        roll_lab_e=roll_lab_e,
+        child_equities=list(child_equities),
+        child_rolls=list(child_rolls),
+    )
     return out
 
 
-# ``GET /api/dashboard/equity`` is polled every few seconds from the SPA (and can overlap tabs / catch-up).
-# Without single-flight, each handler runs a parallel Kalshi MTM batch → httpx stampede, 30s branch caps, log spam.
-_equity_dashboard_singleflight_lock: asyncio.Lock | None = None
-_equity_dashboard_singleflight_task: asyncio.Task[Any] | None = None
+def _empty_dashboard_cache_shell() -> dict[str, Any]:
+    """Minimal dashboard JSON before the first background compose finishes (HTTP O(1) path)."""
+    cfg = default_bot_config()
+    simulate_live = live_paper_trading_enabled(cfg)
+    live_on = effective_live_engine_running(cfg)
+    lab_a = cfg.get("lab_a") if isinstance(cfg.get("lab_a"), dict) else {}
+    lab_b = cfg.get("lab_b") if isinstance(cfg.get("lab_b"), dict) else {}
+    lab_c = cfg.get("lab_c") if isinstance(cfg.get("lab_c"), dict) else {}
+    lab_d = cfg.get("lab_d") if isinstance(cfg.get("lab_d"), dict) else {}
+    lab_e = cfg.get("lab_e") if isinstance(cfg.get("lab_e"), dict) else {}
+    lab_a_on = effective_parent_lab_engine_running(lab_a, BRANCH_LAB_A)
+    lab_b_on = effective_parent_lab_engine_running(lab_b, BRANCH_LAB_B)
+    lab_c_on = effective_parent_lab_engine_running(lab_c, BRANCH_LAB_C)
+    lab_d_on = effective_parent_lab_engine_running(lab_d, BRANCH_LAB_D)
+    lab_e_on = effective_parent_lab_engine_running(lab_e, BRANCH_LAB_E)
+    eff_live = cfg.get("live") if isinstance(cfg.get("live"), dict) else {}
+    opt_blk: dict[str, Any] = {}
+    kc = require_kalshi()
+    return {
+        "config": cfg,
+        "storage": storage_dict(),
+        "kalshi": {
+            "api_base": kc.base,
+            "env": env.kalshi_env,
+            "public_ok": False,
+            "public_error": None,
+            "private_ok": False,
+            "private_error": "dashboard cache warming",
+            "portfolio_notes": None,
+            "polling_enabled": False,
+            "credentials": kalshi_credentials_report(),
+            "simulate_live": simulate_live,
+            "portfolio_read_ok": False,
+            "position_count": 0,
+            "resting_order_count": 0,
+            "order_writes_live": False,
+        },
+        "engine": {
+            "live": _engine_branch_dashboard_block(
+                state.engine_live,
+                engine_running=live_on,
+                simulate_orders=bool(eff_live.get("_simulate_orders"))
+                if eff_live
+                else simulate_live,
+            ),
+            "lab_a": _engine_branch_dashboard_block(
+                state.engine_lab_a,
+                engine_running=lab_a_on,
+                simulate_orders=bool(lab_a.get("_simulate_orders")) if lab_a else True,
+            ),
+            "lab_b": _engine_branch_dashboard_block(
+                state.engine_lab_b,
+                engine_running=lab_b_on,
+                simulate_orders=bool(lab_b.get("_simulate_orders")) if lab_b else True,
+            ),
+            "lab_c": _engine_branch_dashboard_block(
+                state.engine_lab_c,
+                engine_running=lab_c_on,
+                simulate_orders=bool(lab_c.get("_simulate_orders")) if lab_c else True,
+            ),
+            "lab_d": _engine_branch_dashboard_block(
+                state.engine_lab_d,
+                engine_running=lab_d_on,
+                simulate_orders=bool(lab_d.get("_simulate_orders")) if lab_d else True,
+            ),
+            "lab_e": _engine_branch_dashboard_block(
+                state.engine_lab_e,
+                engine_running=lab_e_on,
+                simulate_orders=bool(lab_e.get("_simulate_orders")) if lab_e else True,
+            ),
+        },
+        "asset_snapshots": {
+            "live": _engine_asset_snapshots_safe(state.engine_live),
+            "lab_a": _engine_asset_snapshots_safe(state.engine_lab_a),
+            "lab_b": _engine_asset_snapshots_safe(state.engine_lab_b),
+            "lab_c": _engine_asset_snapshots_safe(state.engine_lab_c),
+            "lab_d": _engine_asset_snapshots_safe(state.engine_lab_d),
+            "lab_e": _engine_asset_snapshots_safe(state.engine_lab_e),
+        },
+        "rule_suggestions": rule_suggestions_from_snapshots(
+            _engine_asset_snapshots_safe(state.engine_live),
+            _engine_asset_snapshots_safe(state.engine_lab_a),
+            _engine_asset_snapshots_safe(state.engine_lab_b),
+            _engine_asset_snapshots_safe(state.engine_lab_c),
+            _engine_asset_snapshots_safe(state.engine_lab_d),
+            _engine_asset_snapshots_safe(state.engine_lab_e),
+        ),
+        "metrics": {"mode": "simulate" if simulate_live else "live"},
+        "metrics_lab_a": {},
+        "metrics_lab_b": {},
+        "metrics_lab_c": {},
+        "metrics_lab_d": {},
+        "metrics_lab_e": {},
+        "metrics_lab_children": {},
+        "metrics_lab_child_slots": {},
+        "engine_lab_children": {},
+        "equity_snapshots": [],
+        "equity_snapshots_lab_a": [],
+        "equity_snapshots_lab_b": [],
+        "equity_snapshots_lab_c": [],
+        "equity_snapshots_lab_d": [],
+        "equity_snapshots_lab_e": [],
+        "equity_snapshots_lab_children": [],
+        "equity_snapshots_lab_child_slots": {br: [] for br in BRANCH_CHILD_LABS},
+        "recent_signals": [],
+        "not_traded_signals": [],
+        "recent_trades": [],
+        "remote_balance": None,
+        "account_snapshot": {
+            "position_count": 0,
+            "resting_order_count": 0,
+            "portfolio_error": None,
+            "position_by_asset": {},
+        },
+        "lab_a_config": lab_a,
+        "lab_b_config": lab_b,
+        "lab_c_config": lab_c,
+        "lab_d_config": lab_d,
+        "lab_e_config": lab_e,
+        "lab_thoughts": _lab_thought_stream(
+            cfg,
+            [],
+            lab_a=lab_a,
+            lab_b=lab_b,
+            lab_c=lab_c,
+            lab_d=lab_d,
+            lab_e=lab_e,
+            metrics_lab_a={},
+            metrics_lab_b={},
+            metrics_lab_c={},
+            metrics_lab_d={},
+            metrics_lab_e={},
+            lab_a_engine_on=lab_a_on,
+            lab_b_engine_on=lab_b_on,
+            lab_c_engine_on=lab_c_on,
+            lab_d_engine_on=lab_d_on,
+            lab_e_engine_on=lab_e_on,
+        ),
+        "optimizer_activity": {
+            "change_history": [],
+            "runs": [],
+            "pulse_chart_seed": pulse_chart_baseline(cfg, opt_blk),
+            "radar": build_optimizer_radar_payload(cfg, opt_blk),
+            "pulse_eval_count": 0,
+            "last_pulse_eval_at": "",
+            "next_tick_preview": "",
+            "pulse_trace": [],
+        },
+        "dashboard_payload_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "dashboard_payload_seq": _next_dashboard_payload_seq(),
+        "trading_data_revision": store.trading_data_revision,
+    }
 
 
-async def _await_equity_dashboard_singleflight() -> DashboardResponse:
-    global _equity_dashboard_singleflight_lock, _equity_dashboard_singleflight_task
-    if _equity_dashboard_singleflight_lock is None:
-        _equity_dashboard_singleflight_lock = asyncio.Lock()
-    async with _equity_dashboard_singleflight_lock:
-        if _equity_dashboard_singleflight_task is None or _equity_dashboard_singleflight_task.done():
-            _equity_dashboard_singleflight_task = asyncio.create_task(
-                _compose_dashboard_base(with_marks=False)
+async def _run_dashboard_cache_refresh_once() -> None:
+    """Runs full compose and swaps process-wide cache (background only)."""
+    global _dashboard_cache_body, _dashboard_cache_wall_s, _dashboard_cache_refresh_fail_streak
+    t0 = time.perf_counter()
+    try:
+        body = await _compose_dashboard_full(with_marks=True)
+        async with _dashboard_cache_lock:
+            _dashboard_cache_body = body
+            _dashboard_cache_wall_s = time.time()
+        _dashboard_cache_refresh_fail_streak = 0
+        state.dashboard_cache_last_error = None
+        logger.info(
+            "dashboard_cache_background_refresh ok wall_ms=%.1f",
+            (time.perf_counter() - t0) * 1000.0,
+        )
+    except Exception as e:
+        _dashboard_cache_refresh_fail_streak += 1
+        msg = f"{type(e).__name__}: {e}"
+        state.dashboard_cache_last_error = msg[:800]
+        if _dashboard_cache_refresh_fail_streak >= 3:
+            logger.error(
+                "dashboard_cache_background_refresh failed %d times in a row — last error: %s",
+                _dashboard_cache_refresh_fail_streak,
+                msg,
+                exc_info=True,
             )
-        t = _equity_dashboard_singleflight_task
-    return cast(DashboardResponse, await t)
+        else:
+            logger.warning(
+                "dashboard_cache_background_refresh failed (next retry on interval): %s",
+                msg,
+            )
+
+
+async def _dashboard_background_refresh_loop() -> None:
+    await state.startup_complete.wait()
+    while not state.stop_event.is_set():
+        await _run_dashboard_cache_refresh_once()
+        for _ in range(int(_DASHBOARD_CACHE_REFRESH_INTERVAL_S * 10)):
+            if state.stop_event.is_set():
+                return
+            await asyncio.sleep(0.1)
+
+
+async def _dashboard_cache_http_response(*, source: str) -> dict[str, Any]:
+    """O(1) read of last background compose + ``cached_at`` / ``stale`` flags."""
+    async with _dashboard_cache_lock:
+        raw = copy.deepcopy(_dashboard_cache_body) if _dashboard_cache_body is not None else None
+        wall = float(_dashboard_cache_wall_s or 0.0)
+    if raw is None:
+        out = _empty_dashboard_cache_shell()
+        logger.debug("dashboard_cache_http serving empty shell source=%s", source)
+    else:
+        out = raw
+        logger.debug("dashboard_cache_http serving snapshot source=%s age_s=%.2f", source, time.time() - wall)
+    noww = time.time()
+    out["cached_at"] = (
+        dt.datetime.fromtimestamp(wall, tz=dt.timezone.utc).isoformat()
+        if wall > 0
+        else None
+    )
+    out["stale"] = bool(wall <= 0 or (noww - wall) > _DASHBOARD_CACHE_STALE_AFTER_S)
+    out["dashboard_cache_empty"] = raw is None
+    out["dashboard_cache_last_error"] = getattr(state, "dashboard_cache_last_error", None)
+    return cast(dict[str, Any], out)
 
 
 @app.get("/api/dashboard")
 async def dashboard() -> DashboardResponse:
-    return await _compose_dashboard_base(with_marks=True)
+    return cast(DashboardResponse, await _dashboard_cache_http_response(source="GET /api/dashboard"))
 
 
 @app.get("/api/dashboard/equity")
 async def dashboard_equity() -> DashboardResponse:
-    """
-    Same structure as ``/api/dashboard`` but the paper mark-refresh pass uses ``DASHBOARD_FAST_MTM_GATHER_TIMEOUT_S``
-    per branch and ``max(DASHBOARD_FAST_MTM_BATCH_WALL_S, gather + 5s)`` for the whole batch (and skips entirely when
-    ``DASHBOARD_FAST_PAPER_MTM=0``). ``metrics*`` get live mids when the gather finishes in time; otherwise snapshot /
-    book fallback until the next poll.
-
-    Concurrent requests share one in-flight compose (single-flight) so overlapping polls do not multiply Kalshi work.
-    """
-    return await _await_equity_dashboard_singleflight()
+    """Same cached snapshot as ``GET /api/dashboard`` (legacy path; compose runs only in background)."""
+    return cast(DashboardResponse, await _dashboard_cache_http_response(source="GET /api/dashboard/equity"))
 
 
 @app.get("/api/dashboard/recent_trades")
@@ -2942,20 +3333,22 @@ async def dashboard_open_positions() -> DashboardOpenPositionsResponse:
 @app.get("/api/dashboard/orderbooks")
 async def dashboard_orderbooks() -> DashboardOrderbooksResponse:
     """
-    Last refreshed paper MTM / mark-derived metrics (cached ~5s from the most recent full dashboard run
-    with ``with_marks=True``). Triggers a full mark pass when the cache is stale.
+    Last refreshed paper MTM / mark-derived metrics (from the in-memory dashboard cache + short TTL strip).
+    Never runs compose inline — background refresher owns Kalshi / MTM work.
     """
     now = time.monotonic()
     pl = DASHBOARD_ORDERBOOK_CACHE.get("payload")
     t0 = float(DASHBOARD_ORDERBOOK_CACHE.get("t_mono") or 0.0)
     if pl and (now - t0) < DASHBOARD_ORDERBOOK_CACHE_TTL_S:
         return {"cached": True, "cache_age_s": round(now - t0, 3), **pl}
-    full = await _compose_dashboard_base(with_marks=True)
+    async with _dashboard_cache_lock:
+        full = copy.deepcopy(_dashboard_cache_body) if _dashboard_cache_body is not None else None
     p2 = DASHBOARD_ORDERBOOK_CACHE.get("payload") or {}
+    kal = (full or {}).get("kalshi") if isinstance(full, dict) else {}
     return {
         "cached": False,
         **p2,
-        "order_writes_live": (full.get("kalshi") or {}).get("order_writes_live"),
+        "order_writes_live": kal.get("order_writes_live") if isinstance(kal, dict) else None,
     }
 
 

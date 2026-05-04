@@ -16,6 +16,8 @@ import aiosqlite
 from .branch_config import (
     ALL_CFG_LAB_KEYS,
     BRANCH_CHILD_LABS,
+    BRANCH_LABS,
+    BRANCH_LIVE,
     ensure_patient_stop_loss_on_branch_dict,
     sync_live_paper_trading_keys,
 )
@@ -608,6 +610,9 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
   note TEXT,
   branch TEXT DEFAULT 'live'
 );
+CREATE INDEX IF NOT EXISTS idx_equity_snapshots_branch_id ON equity_snapshots (branch, id DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_branch_created ON trades (branch, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_branch_created ON signals (branch, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS optimizer_recommendations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1172,6 +1177,9 @@ class Store:
             db.row_factory = aiosqlite.Row
             # Avoid ``database is locked`` flakes when the engine loop and /api/dashboard overlap.
             await db.execute("PRAGMA busy_timeout=10000")
+            # WAL: concurrent readers (dashboard gather + many /api/trades) while breeding writes reset rows.
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA synchronous=NORMAL")
             await db.executescript(SCHEMA)
             await _migrate_columns(db)
             await _migrate_trades_open_sim_unique(db)
@@ -1753,6 +1761,37 @@ class Store:
             )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+    async def dashboard_sqlite_fingerprints_for_incremental(self) -> dict[str, Any]:
+        """MAX(id) lineage per branch + global trade/signal heads — cheap input for incremental dashboard SQLite seed."""
+        branches = (BRANCH_LIVE,) + BRANCH_LABS + BRANCH_CHILD_LABS
+        per: dict[str, dict[str, int]] = {}
+        async with self._open_db() as db:
+            for br in branches:
+                bp = _sql_branch_predicate(br)
+                cur = await db.execute(
+                    f"SELECT COALESCE(MAX(id), 0) FROM equity_snapshots WHERE {bp}",
+                )
+                row = await cur.fetchone()
+                eq_max = int(row[0] if row and row[0] is not None else 0)
+                cur = await db.execute(
+                    f"SELECT COALESCE(MAX(id), 0) FROM trades WHERE {bp}",
+                )
+                row = await cur.fetchone()
+                tr_max = int(row[0] if row and row[0] is not None else 0)
+                per[br] = {"eq_max": eq_max, "tr_max": tr_max}
+            cur = await db.execute("SELECT COALESCE(MAX(id), 0) FROM trades")
+            row = await cur.fetchone()
+            gt = int(row[0] if row and row[0] is not None else 0)
+            cur = await db.execute("SELECT COALESCE(MAX(id), 0) FROM signals")
+            row = await cur.fetchone()
+            gs = int(row[0] if row and row[0] is not None else 0)
+        return {
+            "trading_data_revision": int(self.trading_data_revision),
+            "global_trade_max_id": gt,
+            "global_signal_max_id": gs,
+            "per_branch": per,
+        }
 
     async def dashboard_branch_trade_rollups(
         self, branch: str, trade_mode: str

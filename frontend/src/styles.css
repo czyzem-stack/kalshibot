@@ -1389,6 +1389,100 @@ input[type="number"] {
   min-width: 0;
 }
 
+/* Thin strip when the browser is still waiting for the first /api/dashboard byte (no full-screen loader). */
+.kb-dash-awaiting-snapshot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(110, 231, 255, 0.22);
+  background: rgba(12, 22, 40, 0.55);
+}
+.kb-dash-awaiting-snapshot__bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(80, 120, 180, 0.25) 0%,
+    rgba(140, 200, 255, 0.45) 50%,
+    rgba(80, 120, 180, 0.25) 100%
+  );
+  background-size: 200% 100%;
+  animation: kb-dash-shimmer 1.2s ease-in-out infinite;
+}
+
+.dash-main-4grid--cache-boot {
+  position: relative;
+}
+.dash-per-section-skeleton-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+@media (min-width: 980px) {
+  .dash-per-section-skeleton-overlay {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    gap: 12px 14px;
+  }
+  .dash-skel-block--branch {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .dash-skel-block--assets {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .dash-skel-block--equity {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .dash-skel-block--account {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+.dash-skel-block {
+  min-height: 120px;
+  border-radius: 10px;
+  border: 1px solid rgba(110, 231, 255, 0.12);
+  background: linear-gradient(
+    110deg,
+    rgba(30, 48, 72, 0.35) 0%,
+    rgba(55, 88, 120, 0.5) 45%,
+    rgba(30, 48, 72, 0.35) 90%
+  );
+  background-size: 220% 100%;
+  animation: kb-dash-shimmer 1.35s ease-in-out infinite;
+}
+.dash-skel-block--branch {
+  min-height: 220px;
+}
+.dash-skel-block--equity {
+  min-height: 180px;
+}
+.dash-skel-block--assets {
+  min-height: 160px;
+}
+.dash-skel-block--account {
+  min-height: 200px;
+}
+@keyframes kb-dash-shimmer {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 100% 0%;
+  }
+}
+
 .dash-main-4grid > .dashboard-grid-panel,
 .dash-main-4grid__rail > .dashboard-grid-panel {
   align-self: stretch;

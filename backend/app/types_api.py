@@ -157,10 +157,15 @@ class DashboardResponse(TypedDict, total=False):
     optimizer_activity: dict[str, Any]
     # ISO UTC — lets the UI reject overlapping responses delivered out of order (charts vs hero stay one generation).
     dashboard_payload_at: str
-    # Monotonic counter assigned when the response body is finalized — orders merges when ``dashboard_payload_at`` ties or skews vs fast /equity polls.
+    # Monotonic counter assigned when the response body is finalized — orders merges when ``dashboard_payload_at`` ties or skews between polls.
     dashboard_payload_seq: int
-    # Monotonic counter bumped on each ``reset_trading_data`` — fast equity merge treats empty arrays as authoritative when this advances.
+    # Monotonic counter bumped on each ``reset_trading_data`` — clients treat empty arrays as authoritative when this advances.
     trading_data_revision: int
+    # Instant dashboard cache: HTTP returns last background compose; ``stale`` when wall age exceeds threshold.
+    cached_at: str | None
+    stale: bool
+    dashboard_cache_empty: bool
+    dashboard_cache_last_error: str | None
 
 
 class OptimizerStatusResponse(TypedDict, total=False):

@@ -5,19 +5,19 @@
  * “frozen” until something forces a remount — e.g. Vite Fast Refresh while editing. Subscribing to
  * visibility / pageshow / online fires an immediate catch-up when the tab is active again.
  *
- * **Lab E parity:** fast equity refresh in ``App.tsx`` merges ``FAST_POLL_EQ_KEYS`` /
- * ``FAST_POLL_METRIC_KEYS`` (includes ``equity_snapshots_lab_e`` and ``metrics_lab_e``). When adding
- * branches, extend those tuples so partial ``GET /api/dashboard/equity`` payloads never leave Lab E
- * as ``undefined`` (which caused hero / chart code to hit ``NoneType``-style ``.get`` errors in TS).
+ * **Lab E parity:** when merging partial dashboard payloads in ``App.tsx``, keep Lab E keys in sync so
+ * ``equity_snapshots_lab_e`` / ``metrics_lab_e`` are never left ``undefined`` (which caused hero / chart
+ * code to hit ``NoneType``-style ``.get`` errors in TS). ``GET /api/dashboard/equity`` returns the same
+ * cached snapshot as ``GET /api/dashboard``.
  *
  * **Child slots:** ``equity_snapshots_lab_child_slots`` is a map of branch → array; it is merged in
  * ``App.tsx`` with per-key non-empty preference so an empty array from a fast poll cannot wipe SQLite
  * history (Compare equity overlay would otherwise forward-fill flat lines across the whole X-axis).
  */
 
-/** Full dashboard (heavy Kalshi pass). Slightly under legacy 12s so tiles/config catch up between fast equity polls. */
-export const DASHBOARD_FULL_POLL_MS = 10_000;
-/** Partial dashboard (`GET /api/dashboard/equity`) — slower tabs still refresh MTM vs Kalshi faster than full route. */
+/** Full dashboard read — matches backend background cache refresh interval (8s). */
+export const DASHBOARD_FULL_POLL_MS = 8_000;
+/** Legacy alias interval name — full snapshot is served from the same cache as ``GET /api/dashboard``. */
 export const DASHBOARD_EQUITY_POLL_MS = 4_000;
 /**
  * Short rolling-window equity tabs (6h “Live” + 24h “Intraday”): same interval for hero, charts, body ticker,
